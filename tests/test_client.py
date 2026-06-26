@@ -30,9 +30,36 @@ class ClientTests(unittest.TestCase):
     def test_lookup_uses_cache_without_network(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = JsonCache(Path(temp_dir))
-            cache.write_lookup("576 U.S. 644", [{"status": 200, "clusters": []}])
+            cached_lookup = [
+                {
+                    "status": 200,
+                    "clusters": [
+                        {
+                            "id": 42,
+                            "case_name": "Example v. State",
+                            "citations": [{"volume": 1, "reporter": "Cal.", "page": "2"}],
+                        }
+                    ],
+                }
+            ]
+            cache.write_lookup("576 U.S. 644", cached_lookup)
             client = CourtListenerClient(cache=cache)
-            self.assertEqual(client.lookup_citation("576   U.S. 644"), [{"status": 200, "clusters": []}])
+            self.assertEqual(client.lookup_citation("576   U.S. 644"), cached_lookup)
+            self.assertEqual(client.cached_clusters()[0]["case_name"], "Example v. State")
+
+    def test_fetch_cluster_opinions_updates_case_index(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cache.write_resource("opinions", "10", {"id": 10, "plain_text": "Opinion text"})
+            client = CourtListenerClient(cache=cache)
+            cluster = {
+                "id": 42,
+                "case_name": "Example v. State",
+                "sub_opinions": ["/api/rest/v4/opinions/10/"],
+            }
+            opinions = client.fetch_cluster_opinions(cluster)
+            self.assertEqual(opinions, [{"id": 10, "plain_text": "Opinion text"}])
+            self.assertEqual(cache.list_case_entries()[0]["opinion_ids"], ["10"])
 
     def test_lookup_rejects_empty_citation(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -43,4 +70,3 @@ class ClientTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

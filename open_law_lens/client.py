@@ -10,7 +10,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from .cache import JsonCache, normalize_citation, resource_id_from_url
+from .cache import JsonCache, cluster_id_from_cluster, normalize_citation, resource_id_from_url
 from .config import courtlistener_token
 
 
@@ -151,6 +151,7 @@ class CourtListenerClient:
         if not refresh:
             cached = self.cache.read_lookup(normalized)
             if isinstance(cached, list):
+                self._cache_lookup_clusters(cached)
                 return cached
         data = urlencode({"text": normalized}).encode("utf-8")
         request = Request(
@@ -166,6 +167,7 @@ class CourtListenerClient:
         if not isinstance(result, list):
             raise CourtListenerError("CourtListener citation lookup returned unexpected JSON.")
         self.cache.write_lookup(normalized, result)
+        self._cache_lookup_clusters(result)
         return result
 
     def fetch_url(self, url: str, *, kind: str, refresh: bool = False) -> dict[str, Any]:
@@ -187,11 +189,18 @@ class CourtListenerClient:
     ) -> list[dict[str, Any]]:
         urls = cluster.get("sub_opinions")
         if not isinstance(urls, list):
+            self.cache.upsert_cluster(cluster)
             return []
         opinions: list[dict[str, Any]] = []
+        opinion_ids: list[str] = []
         for url in urls:
             if isinstance(url, str) and url:
-                opinions.append(self.fetch_url(url, kind="opinions", refresh=refresh))
+                opinion = self.fetch_url(url, kind="opinions", refresh=refresh)
+                opinions.append(opinion)
+                opinion_id = str(opinion.get("id") or resource_id_from_url(url)).strip()
+                if opinion_id:
+                    opinion_ids.append(opinion_id)
+        self.cache.update_case_opinions(cluster, opinion_ids)
         return opinions
 
     def first_opinion_text(self, cluster: dict[str, Any], *, refresh: bool = False) -> str:
@@ -209,3 +218,19 @@ class CourtListenerClient:
             if isinstance(values, list):
                 clusters.extend(cluster for cluster in values if isinstance(cluster, dict))
         return clusters
+
+    def cached_clusters(self) -> list[dict[str, Any]]:
+        clusters: list[dict[str, Any]] = []
+        for entry in self.cache.list_case_entries():
+            cluster_id = str(entry.get("cluster_id", "")).strip()
+            if not cluster_id:
+                continue
+            cluster = self.cache.read_cached_cluster(cluster_id)
+            if cluster is not None:
+                clusters.append(cluster)
+        return clusters
+
+    def _cache_lookup_clusters(self, result: list[dict[str, Any]]) -> None:
+        for cluster in self.clusters_from_lookup(result):
+            if cluster_id_from_cluster(cluster):
+                self.cache.upsert_cluster(cluster)

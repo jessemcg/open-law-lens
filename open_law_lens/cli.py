@@ -6,7 +6,7 @@ import sys
 from typing import Any
 
 from .cache import JsonCache
-from .client import CourtListenerClient, CourtListenerError, cluster_title, opinion_text
+from .client import CourtListenerClient, CourtListenerError, opinion_text
 
 
 def _print_json(value: Any) -> None:
@@ -41,22 +41,30 @@ def _cmd_lookup(args: argparse.Namespace) -> int:
 
 def _cmd_show_cache(_args: argparse.Namespace) -> int:
     cache = JsonCache.default()
-    paths = cache.list_lookups()
-    if not paths:
-        print("No cached citation lookups.")
+    entries = cache.list_case_entries()
+    if not entries:
+        print("No cached cases.")
         return 0
-    for path in paths:
-        data = cache.read_json(path)
-        labels: list[str] = []
-        if isinstance(data, list):
-            for item in data:
-                if not isinstance(item, dict):
-                    continue
-                citation = item.get("citation")
-                clusters = item.get("clusters")
-                cluster_count = len(clusters) if isinstance(clusters, list) else 0
-                labels.append(f"{citation} ({cluster_count} cluster(s))")
-        print(f"{path.name}: {', '.join(labels) if labels else 'unrecognized lookup'}")
+    for entry in entries:
+        title = str(entry.get("title") or "Untitled case")
+        citation = str(entry.get("citation_text") or "").strip()
+        cluster_id = str(entry.get("cluster_id") or "").strip()
+        opinion_ids = entry.get("opinion_ids")
+        opinion_count = len(opinion_ids) if isinstance(opinion_ids, list) else 0
+        citation_part = f" | {citation}" if citation else ""
+        print(f"{title}{citation_part} | cluster {cluster_id} | {opinion_count} opinion(s)")
+    return 0
+
+
+def _cmd_clear_cache(_args: argparse.Namespace) -> int:
+    cache = JsonCache.default()
+    cache.clear()
+    print(f"Cleared cache: {cache.root}")
+    return 0
+
+
+def _cmd_cache_dir(_args: argparse.Namespace) -> int:
+    print(JsonCache.default().root)
     return 0
 
 
@@ -73,8 +81,14 @@ def build_parser() -> argparse.ArgumentParser:
     lookup_parser.add_argument("--text", action="store_true", help="print first matching opinion text")
     lookup_parser.set_defaults(func=_cmd_lookup)
 
-    cache_parser = subparsers.add_parser("show-cache", help="list cached citation lookups")
+    cache_parser = subparsers.add_parser("show-cache", help="list cached cases")
     cache_parser.set_defaults(func=_cmd_show_cache)
+
+    clear_cache_parser = subparsers.add_parser("clear-cache", help="delete cached case data")
+    clear_cache_parser.set_defaults(func=_cmd_clear_cache)
+
+    cache_dir_parser = subparsers.add_parser("cache-dir", help="print the cache directory")
+    cache_dir_parser.set_defaults(func=_cmd_cache_dir)
     return parser
 
 
@@ -86,4 +100,3 @@ def main(argv: list[str] | None = None) -> int:
     except (CourtListenerError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
-

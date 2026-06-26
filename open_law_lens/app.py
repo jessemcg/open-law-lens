@@ -23,6 +23,7 @@ except (ImportError, ValueError):
     Vte = None
 
 from . import APP_ID, APP_NAME
+from .cache import cluster_id_from_cluster
 from .client import (
     CourtListenerClient,
     CourtListenerError,
@@ -39,6 +40,8 @@ DEFAULT_CODEX_BIN = "codex"
 DEFAULT_CODEX_PROFILE = "fireworks"
 READER_BG = "#ffffff"
 READER_FG = "#000000"
+AGENT_TERMINAL_MAX_HEIGHT = 260
+AGENT_HEIGHT_DIVISOR = 4
 TERMINAL_DARK_FOREGROUND = "#f2f4f8"
 TERMINAL_DARK_BACKGROUND = "#3d3d3d"
 TERMINAL_LIGHT_FOREGROUND = "#20242c"
@@ -150,6 +153,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._selected_cluster: dict[str, Any] | None = None
         self._agent_terminal: Any | None = None
         self._agent_pid: int | None = None
+        self._agent_frame: Gtk.Box | None = None
+        self._agent_active = False
         self._settings_window: SettingsWindow | None = None
 
         self.set_title(APP_NAME)
@@ -157,11 +162,16 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._install_css()
         self._install_actions()
         self.set_content(self._build_ui())
+        self._load_cached_cases()
+        self.add_tick_callback(self._on_window_tick)
 
     def _install_actions(self) -> None:
         settings = Gio.SimpleAction.new("settings", None)
         settings.connect("activate", self._on_open_settings)
         self.add_action(settings)
+        clear_cache = Gio.SimpleAction.new("clear_cache", None)
+        clear_cache.connect("activate", self._on_clear_cache)
+        self.add_action(clear_cache)
 
     def _install_css(self) -> None:
         provider = Gtk.CssProvider()
@@ -190,14 +200,27 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             .agent-terminal-frame {{
               border-radius: 8px;
               background-color: @window_bg_color;
-              padding: 6px;
+              background-image: none;
+              border: none;
+              box-shadow: none;
             }}
             .agent-terminal {{
               border-radius: 8px;
               padding: 8px;
+              background-color: @window_bg_color;
+              background-image: none;
+              color: @window_fg_color;
             }}
-            .sidebar-box {{
-              border-right: 1px solid alpha(@window_fg_color, 0.12);
+            .case-list-frame {{
+              border-radius: 8px;
+              background: transparent;
+            }}
+            .case-list-frame > viewport {{
+              background: transparent;
+            }}
+            list.case-list {{
+              background-color: @window_bg_color;
+              border-radius: 8px;
             }}
             """.encode("utf-8")
         )
@@ -222,30 +245,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         root.set_margin_start(10)
         root.set_margin_end(10)
 
-        lookup_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        self.citation_entry = Gtk.Entry()
-        self.citation_entry.set_hexpand(True)
-        self.citation_entry.set_placeholder_text("Citation, e.g. 576 U.S. 644")
-        self.citation_entry.connect("activate", self._on_lookup_clicked)
-        lookup_row.append(self.citation_entry)
-
-        lookup_button = Gtk.Button(icon_name="system-search-symbolic")
-        lookup_button.set_tooltip_text("Look up citation")
-        lookup_button.connect("clicked", self._on_lookup_clicked)
-        lookup_row.append(lookup_button)
-
-        self.status_label = Gtk.Label(label="", xalign=0)
-        self.status_label.add_css_class("dim-label")
-        lookup_row.append(self.status_label)
-        root.append(lookup_row)
-
-        main = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+        main = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         main.set_hexpand(True)
         main.set_vexpand(True)
-        main.set_start_child(self._build_sidebar())
-        main.set_resize_start_child(False)
-        main.set_shrink_start_child(False)
-        main.set_end_child(self._build_right_side())
+        main.append(self._build_sidebar())
+        main.append(self._build_right_side())
         root.append(main)
 
         toolbar_view.set_content(root)
@@ -254,6 +258,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _build_menu_button(self) -> Gtk.MenuButton:
         menu = Gio.Menu()
         menu.append("Settings", "win.settings")
+        menu.append("Clear Cache", "win.clear_cache")
         button = Gtk.MenuButton(icon_name="open-menu-symbolic")
         button.set_tooltip_text("Menu")
         button.set_menu_model(menu)
@@ -262,16 +267,33 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _build_sidebar(self) -> Gtk.Widget:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         box.set_size_request(320, -1)
-        box.add_css_class("sidebar-box")
+        box.set_hexpand(False)
+        box.set_halign(Gtk.Align.START)
+
+        self.citation_entry = Gtk.Entry()
+        self.citation_entry.set_hexpand(True)
+        self.citation_entry.set_width_chars(18)
+        self.citation_entry.set_max_width_chars(24)
+        self.citation_entry.set_placeholder_text("Citation, e.g. 576 U.S. 644")
+        self.citation_entry.connect("activate", self._on_lookup_clicked)
+        box.append(self.citation_entry)
+
+        self.status_label = Gtk.Label(label="", xalign=0)
+        self.status_label.add_css_class("dim-label")
+        box.append(self.status_label)
+
         heading = Gtk.Label(label="Cases", xalign=0)
         heading.add_css_class("heading")
         box.append(heading)
 
         self.case_list = Gtk.ListBox()
+        self.case_list.add_css_class("case-list")
         self.case_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
         self.case_list.connect("row-selected", self._on_case_selected)
 
         scroller = Gtk.ScrolledWindow()
+        scroller.add_css_class("case-list-frame")
+        scroller.set_overflow(Gtk.Overflow.HIDDEN)
         scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         scroller.set_child(self.case_list)
         scroller.set_vexpand(True)
@@ -282,6 +304,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         box.set_hexpand(True)
         box.set_vexpand(True)
+        box.set_halign(Gtk.Align.FILL)
         box.append(self._build_agent_box())
 
         self.reader_buffer = Gtk.TextBuffer()
@@ -297,12 +320,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
         reader_scroller = Gtk.ScrolledWindow()
         reader_scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        reader_scroller.set_hexpand(True)
         reader_scroller.set_vexpand(True)
         reader_scroller.set_child(self.reader_view)
 
         frame = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         frame.add_css_class("case-reader-frame")
+        frame.set_hexpand(True)
         frame.set_vexpand(True)
+        frame.set_halign(Gtk.Align.FILL)
         frame.append(reader_scroller)
         box.append(frame)
         self.reader_buffer.set_text("Enter a citation to load a CourtListener case.")
@@ -310,20 +336,17 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def _build_agent_box(self) -> Gtk.Widget:
         frame = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        frame.add_css_class("agent-terminal-frame")
-        frame.set_size_request(-1, 260)
+        frame.set_hexpand(True)
+        frame.set_vexpand(False)
+        frame.set_halign(Gtk.Align.FILL)
 
         controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        controls.set_hexpand(True)
         self.agent_entry = Gtk.Entry()
         self.agent_entry.set_hexpand(True)
         self.agent_entry.set_placeholder_text("Agent question about selected case")
         self.agent_entry.connect("activate", self._on_agent_launch)
         controls.append(self.agent_entry)
-
-        launch_button = Gtk.Button(icon_name="utilities-terminal-symbolic")
-        launch_button.set_tooltip_text("Launch Codex agent")
-        launch_button.connect("clicked", self._on_agent_launch)
-        controls.append(launch_button)
         frame.append(controls)
 
         if Vte is None:
@@ -335,6 +358,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             frame.append(missing)
             return frame
 
+        terminal_frame = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        terminal_frame.add_css_class("agent-terminal-frame")
+        terminal_frame.set_hexpand(True)
+        terminal_frame.set_vexpand(False)
+        terminal_frame.set_halign(Gtk.Align.FILL)
+        terminal_frame.set_overflow(Gtk.Overflow.HIDDEN)
+        terminal_frame.set_visible(False)
+        self._agent_frame = terminal_frame
+
         terminal = Vte.Terminal()
         terminal.set_hexpand(True)
         terminal.set_vexpand(True)
@@ -344,16 +376,43 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         key_controller.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         key_controller.connect("key-pressed", self._on_agent_terminal_key_pressed)
         terminal.add_controller(key_controller)
+        Adw.StyleManager.get_default().connect(
+            "notify::dark",
+            self._on_agent_terminal_style_changed,
+        )
         terminal.connect("child-exited", self._on_agent_exited)
-        frame.append(terminal)
+        terminal_frame.append(terminal)
+        frame.append(terminal_frame)
         self._agent_terminal = terminal
         return frame
 
     def _set_status(self, text: str) -> None:
         self.status_label.set_text(text)
 
+    def _target_agent_height(self) -> int:
+        host_height = max(0, self.get_height())
+        if host_height <= 0:
+            return 0
+        return min(AGENT_TERMINAL_MAX_HEIGHT, host_height // AGENT_HEIGHT_DIVISOR)
+
+    def _update_agent_frame_height(self, *, force: bool = False) -> None:
+        if self._agent_frame is None:
+            return
+        self._agent_frame.set_visible(self._agent_active)
+        if not self._agent_active:
+            self._agent_frame.set_size_request(-1, 0)
+            return
+        target_height = self._target_agent_height()
+        if force or self._agent_frame.get_height() != target_height:
+            self._agent_frame.set_size_request(-1, target_height)
+
+    def _on_window_tick(self, _widget: Gtk.Widget, _clock: Gdk.FrameClock) -> bool:
+        self._update_agent_frame_height()
+        return True
+
     def reload_settings(self) -> None:
         self.client = CourtListenerClient.default()
+        self._load_cached_cases()
         self._set_status("Settings saved.")
 
     def _on_open_settings(self, _action: Gio.SimpleAction, _parameter: GLib.Variant | None) -> None:
@@ -365,6 +424,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _on_settings_closed(self, _window: Gtk.Window) -> bool:
         self._settings_window = None
         return False
+
+    def _on_clear_cache(self, _action: Gio.SimpleAction, _parameter: GLib.Variant | None) -> None:
+        self.client.cache.clear()
+        self._set_sidebar_clusters([])
+        self._selected_cluster = None
+        self.reader_buffer.set_text("Enter a citation to load a CourtListener case.")
+        self._set_status("Cache cleared.")
 
     def _on_lookup_clicked(self, _widget: Gtk.Widget) -> None:
         citation = self.citation_entry.get_text().strip()
@@ -398,16 +464,24 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         ]
         return messages[0] if messages else f"No matching cases. Status: {', '.join(statuses)}"
 
-    def _apply_lookup_result(
+    def _load_cached_cases(self) -> None:
+        clusters = self.client.cached_clusters()
+        self._set_sidebar_clusters(clusters)
+        if clusters:
+            self._set_status(f"{len(clusters)} cached case(s).")
+
+    def _set_sidebar_clusters(
         self,
-        _result: list[dict[str, Any]],
         clusters: list[dict[str, Any]],
-        status: str,
-    ) -> bool:
+        *,
+        select_cluster_id: str = "",
+        select_first: bool = False,
+    ) -> None:
         self._clusters = clusters
         self._selected_cluster = None
         while row := self.case_list.get_row_at_index(0):
             self.case_list.remove(row)
+        selected_row: Gtk.ListBoxRow | None = None
         for index, cluster in enumerate(clusters):
             row = Gtk.ListBoxRow()
             row.set_selectable(True)
@@ -427,11 +501,31 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             row.set_child(row_box)
             row._open_law_lens_cluster_index = index
             self.case_list.append(row)
+            if select_cluster_id and cluster_id_from_cluster(cluster) == select_cluster_id:
+                selected_row = row
+        if selected_row is None and select_first:
+            selected_row = self.case_list.get_row_at_index(0)
+        if selected_row is not None:
+            self.case_list.select_row(selected_row)
+
+    def _apply_lookup_result(
+        self,
+        _result: list[dict[str, Any]],
+        clusters: list[dict[str, Any]],
+        status: str,
+    ) -> bool:
+        select_cluster_id = cluster_id_from_cluster(clusters[0]) if clusters else ""
+        self._set_sidebar_clusters(
+            self.client.cached_clusters(),
+            select_cluster_id=select_cluster_id,
+            select_first=bool(clusters),
+        )
         self._set_status(status)
         if clusters:
-            first = self.case_list.get_row_at_index(0)
-            if first:
-                self.case_list.select_row(first)
+            if self.case_list.get_selected_row() is None:
+                first = self.case_list.get_row_at_index(0)
+                if first:
+                    self.case_list.select_row(first)
         else:
             self.reader_buffer.set_text(status)
         return False
@@ -543,6 +637,8 @@ For this version, do not modify app files or cache files unless explicitly asked
                 self._on_agent_spawned,
                 None,
             )
+            self._agent_active = True
+            self._update_agent_frame_height(force=True)
             self._set_status("Started embedded Codex agent.")
             self._agent_terminal.grab_focus()
         except Exception as exc:
@@ -563,7 +659,13 @@ For this version, do not modify app files or cache files unless explicitly asked
 
     def _on_agent_exited(self, _terminal: Any, _status: int) -> None:
         self._agent_pid = None
+        self._agent_active = False
+        self._update_agent_frame_height(force=True)
         self._set_status("Embedded agent session ended.")
+
+    def _on_agent_terminal_style_changed(self, *_args: object) -> None:
+        if self._agent_terminal is not None:
+            _apply_terminal_theme(self._agent_terminal)
 
     def _on_agent_terminal_key_pressed(
         self,
@@ -593,6 +695,8 @@ For this version, do not modify app files or cache files unless explicitly asked
             except OSError:
                 pass
             self._agent_pid = None
+        self._agent_active = False
+        self._update_agent_frame_height(force=True)
 
 
 class OpenLawLensApp(Adw.Application):
