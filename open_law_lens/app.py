@@ -11,7 +11,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # type: ignore
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # type: ignore
 
 Vte = None
 try:
@@ -27,11 +27,15 @@ from .cache import cluster_id_from_cluster
 from .client import (
     CourtListenerClient,
     CourtListenerError,
+    cluster_short_title,
     cluster_citation_line,
     cluster_title,
-    opinion_text,
+    dedupe_case_clusters,
+    format_official_california_citation,
+    official_california_reporter_citation,
 )
 from .config import AppConfig, load_config, save_config
+from .library import PageMarker
 
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -156,6 +160,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_frame: Gtk.Box | None = None
         self._agent_active = False
         self._settings_window: SettingsWindow | None = None
+        self.toast_overlay: Adw.ToastOverlay | None = None
 
         self.set_title(APP_NAME)
         self.set_default_size(1260, 860)
@@ -252,13 +257,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         main.append(self._build_right_side())
         root.append(main)
 
-        toolbar_view.set_content(root)
+        self.toast_overlay = Adw.ToastOverlay()
+        self.toast_overlay.set_child(root)
+        toolbar_view.set_content(self.toast_overlay)
         return toolbar_view
 
     def _build_menu_button(self) -> Gtk.MenuButton:
         menu = Gio.Menu()
         menu.append("Settings", "win.settings")
-        menu.append("Clear Cache", "win.clear_cache")
+        menu.append("Clear Research Cache", "win.clear_cache")
         button = Gtk.MenuButton(icon_name="open-menu-symbolic")
         button.set_tooltip_text("Menu")
         button.set_menu_model(menu)
@@ -270,19 +277,25 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         box.set_hexpand(False)
         box.set_halign(Gtk.Align.START)
 
+        input_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        input_row.set_hexpand(True)
+
         self.citation_entry = Gtk.Entry()
         self.citation_entry.set_hexpand(True)
         self.citation_entry.set_width_chars(18)
         self.citation_entry.set_max_width_chars(24)
         self.citation_entry.set_placeholder_text("Citation, e.g. 576 U.S. 644")
         self.citation_entry.connect("activate", self._on_lookup_clicked)
-        box.append(self.citation_entry)
+        input_row.append(self.citation_entry)
 
-        self.status_label = Gtk.Label(label="", xalign=0)
-        self.status_label.add_css_class("dim-label")
-        box.append(self.status_label)
+        copy_citation_button = Gtk.Button(icon_name="edit-copy-symbolic")
+        copy_citation_button.add_css_class("flat")
+        copy_citation_button.set_tooltip_text("Copy official citation")
+        copy_citation_button.connect("clicked", self._on_copy_official_citation)
+        input_row.append(copy_citation_button)
+        box.append(input_row)
 
-        heading = Gtk.Label(label="Cases", xalign=0)
+        heading = Gtk.Label(label="Research Cache", xalign=0)
         heading.add_css_class("heading")
         box.append(heading)
 
@@ -308,6 +321,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         box.append(self._build_agent_box())
 
         self.reader_buffer = Gtk.TextBuffer()
+        self.page_marker_tag = self.reader_buffer.create_tag(
+            "page-marker",
+            weight=Pango.Weight.BOLD,
+            foreground="#8a3d00",
+        )
         self.reader_view = Gtk.TextView(buffer=self.reader_buffer)
         self.reader_view.set_editable(False)
         self.reader_view.set_cursor_visible(False)
@@ -387,7 +405,26 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return frame
 
     def _set_status(self, text: str) -> None:
-        self.status_label.set_text(text)
+        if not text:
+            return
+        if self.toast_overlay is None:
+            return
+        self.toast_overlay.add_toast(Adw.Toast.new(text))
+
+    def _set_reader_text(self, text: str, page_markers: list[PageMarker] | None = None) -> bool:
+        self.reader_buffer.set_text(text)
+        if page_markers:
+            for marker in page_markers:
+                start = max(0, min(marker.start_offset, len(text)))
+                end = max(start, min(marker.end_offset, len(text)))
+                if start == end:
+                    continue
+                self.reader_buffer.apply_tag(
+                    self.page_marker_tag,
+                    self.reader_buffer.get_iter_at_offset(start),
+                    self.reader_buffer.get_iter_at_offset(end),
+                )
+        return False
 
     def _target_agent_height(self) -> int:
         host_height = max(0, self.get_height())
@@ -427,10 +464,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def _on_clear_cache(self, _action: Gio.SimpleAction, _parameter: GLib.Variant | None) -> None:
         self.client.cache.clear()
-        self._set_sidebar_clusters([])
-        self._selected_cluster = None
+        self._load_cached_cases()
         self.reader_buffer.set_text("Enter a citation to load a CourtListener case.")
-        self._set_status("Cache cleared.")
+        self._set_status("Research Cache cleared. Library preserved.")
 
     def _on_lookup_clicked(self, _widget: Gtk.Widget) -> None:
         citation = self.citation_entry.get_text().strip()
@@ -442,33 +478,88 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         thread = threading.Thread(target=self._lookup_worker, args=(citation,), daemon=True)
         thread.start()
 
+    def _on_copy_official_citation(self, _button: Gtk.Button) -> None:
+        if self._selected_cluster is None:
+            self._set_status("Select a Research Cache case first.")
+            return
+        citation = format_official_california_citation(self._selected_cluster)
+        if citation is None:
+            self._set_status("No official California reporter citation found.")
+            return
+        display = Gdk.Display.get_default()
+        if display is None:
+            self._set_status("Could not access clipboard.")
+            return
+        html_provider = Gdk.ContentProvider.new_for_bytes(
+            "text/html",
+            GLib.Bytes.new(citation.html_text.encode("utf-8")),
+        )
+        plain_provider = Gdk.ContentProvider.new_for_bytes(
+            "text/plain",
+            GLib.Bytes.new(citation.plain_text.encode("utf-8")),
+        )
+        provider = Gdk.ContentProvider.new_union([html_provider, plain_provider])
+        if not display.get_clipboard().set_content(provider):
+            self._set_status("Could not copy official citation.")
+            return
+        self._set_status("Official citation copied.")
+
     def _lookup_worker(self, citation: str) -> None:
         try:
             result = self.client.lookup_citation(citation)
-            clusters = self.client.clusters_from_lookup(result)
-            status = self._lookup_status_text(result, clusters)
-            GLib.idle_add(self._apply_lookup_result, result, clusters, status)
+            raw_clusters = self.client.clusters_from_lookup(result)
+            shown_clusters = dedupe_case_clusters(raw_clusters)
+            status = self._lookup_status_text(result, raw_clusters, shown_clusters)
+            GLib.idle_add(self._apply_lookup_result, result, shown_clusters, status)
         except (CourtListenerError, ValueError) as exc:
             GLib.idle_add(self._apply_error, str(exc))
 
-    def _lookup_status_text(self, result: list[dict[str, Any]], clusters: list[dict[str, Any]]) -> str:
+    def _lookup_status_text(
+        self,
+        result: list[dict[str, Any]],
+        raw_clusters: list[dict[str, Any]],
+        shown_clusters: list[dict[str, Any]],
+    ) -> str:
+        source = self.client.last_lookup_source or "Unknown source"
         if not result:
-            return "No citation found in text."
+            return f"{source}: no citation found"
         statuses = [str(item.get("status", "")) for item in result if isinstance(item, dict)]
-        if clusters:
-            return f"{len(clusters)} case(s). Status: {', '.join(statuses)}"
+        status_text = self._format_lookup_statuses(statuses)
+        if raw_clusters:
+            noun = "match" if len(raw_clusters) == 1 else "matches"
+            if len(raw_clusters) != len(shown_clusters):
+                return (
+                    f"{source}: {len(raw_clusters)} {noun}, "
+                    f"{len(shown_clusters)} shown, {status_text}"
+                )
+            return f"{source}: {len(raw_clusters)} {noun}, {status_text}"
         messages = [
             str(item.get("error_message", "")).strip()
             for item in result
             if isinstance(item, dict) and item.get("error_message")
         ]
-        return messages[0] if messages else f"No matching cases. Status: {', '.join(statuses)}"
+        message = messages[0] if messages else "no matches"
+        return f"{source}: {message}, {status_text}"
+
+    def _format_lookup_statuses(self, statuses: list[str]) -> str:
+        labels = {
+            "200": "exact match",
+            "300": "multiple matches",
+            "404": "not found",
+        }
+        rendered: list[str] = []
+        for status in statuses:
+            label = labels.get(status)
+            rendered.append(f"{status} ({label})" if label else status)
+        if not rendered:
+            return "status unknown"
+        return f"status {', '.join(rendered)}"
 
     def _load_cached_cases(self) -> None:
         clusters = self.client.cached_clusters()
         self._set_sidebar_clusters(clusters)
         if clusters:
-            self._set_status(f"{len(clusters)} cached case(s).")
+            self._set_status(f"{len(clusters)} Research Cache item(s).")
 
     def _set_sidebar_clusters(
         self,
@@ -491,13 +582,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             row_box.set_margin_bottom(8)
             row_box.set_margin_start(8)
             row_box.set_margin_end(8)
-            title = Gtk.Label(label=cluster_title(cluster), xalign=0)
+            title = Gtk.Label(label=cluster_short_title(cluster), xalign=0)
             title.set_wrap(True)
-            citation = Gtk.Label(label=cluster_citation_line(cluster), xalign=0)
-            citation.add_css_class("dim-label")
-            citation.set_wrap(True)
             row_box.append(title)
-            row_box.append(citation)
+            official_citation = official_california_reporter_citation(cluster)
+            if official_citation:
+                citation = Gtk.Label(label=official_citation, xalign=0)
+                citation.add_css_class("dim-label")
+                citation.set_wrap(True)
+                row_box.append(citation)
             row.set_child(row_box)
             row._open_law_lens_cluster_index = index
             self.case_list.append(row)
@@ -550,19 +643,30 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _case_worker(self, cluster: dict[str, Any]) -> None:
         try:
             opinions = self.client.fetch_cluster_opinions(cluster)
-            text_parts: list[str] = []
             title = cluster_title(cluster)
             citation = cluster_citation_line(cluster)
             header = title if not citation else f"{title}\n{citation}"
-            text_parts.append(header)
+            text = header
+            page_markers: list[PageMarker] = []
             for opinion in opinions:
-                text = opinion_text(opinion)
-                if text:
-                    text_parts.append(text)
-            text = "\n\n".join(text_parts).strip()
+                display = self.client.opinion_display(opinion)
+                if not display.text:
+                    continue
+                base_offset = len(text) + 2
+                text = f"{text}\n\n{display.text}"
+                page_markers.extend(
+                    PageMarker(
+                        page_label=marker.page_label,
+                        marker_text=marker.marker_text,
+                        start_offset=base_offset + marker.start_offset,
+                        end_offset=base_offset + marker.end_offset,
+                        source_field=marker.source_field,
+                    )
+                    for marker in display.page_markers
+                )
             if not text:
                 text = f"{header}\n\nNo opinion text found."
-            GLib.idle_add(self.reader_buffer.set_text, text)
+            GLib.idle_add(self._set_reader_text, text, page_markers)
         except CourtListenerError as exc:
             GLib.idle_add(self._apply_error, str(exc))
 
@@ -580,14 +684,16 @@ Selected case:
 - Title: {title}
 - Citations: {citation}
 - CourtListener cluster id: {cluster_id}
+- Library database: {self.client.library.path}
 - Cache root: {self.client.cache.root}
 
-Use the local Open Law Lens CLI and cached JSON before making network calls when possible:
-- open-law-lens show-cache
+Use the local Open Law Lens CLI and library before making network calls when possible:
+- open-law-lens show-library
+- open-law-lens library-db
 - open-law-lens lookup-citation "<citation>"
 - open-law-lens lookup-citation "<citation>" --text
 
-For this version, do not modify app files or cache files unless explicitly asked. Focus on reading and explaining the selected CourtListener case data.""".strip()
+Do not modify app files, library files, or cache files unless explicitly asked. Focus on reading and explaining the selected CourtListener case data.""".strip()
 
     def _write_prompt_file(self, prompt: str) -> Path:
         handle = tempfile.NamedTemporaryFile(

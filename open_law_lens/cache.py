@@ -46,6 +46,11 @@ def cluster_id_from_cluster(cluster: dict[str, Any]) -> str:
     return ""
 
 
+def _normalize_case_title(title: str) -> str:
+    normalized = re.sub(r"\s+", " ", title.strip())
+    return re.sub(r"^in\s+re\b", "In re", normalized, count=1, flags=re.IGNORECASE)
+
+
 def _utc_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat()
 
@@ -192,7 +197,7 @@ def _cluster_title(cluster: dict[str, Any]) -> str:
     for key in ("case_name", "case_name_full", "case_name_short"):
         value = cluster.get(key)
         if isinstance(value, str) and value.strip():
-            return value.strip()
+            return _normalize_case_title(value)
     cluster_id = cluster_id_from_cluster(cluster)
     return f"Cluster {cluster_id}" if cluster_id else "Untitled case"
 

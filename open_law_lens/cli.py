@@ -6,7 +6,8 @@ import sys
 from typing import Any
 
 from .cache import JsonCache
-from .client import CourtListenerClient, CourtListenerError, opinion_text
+from .client import CourtListenerClient, CourtListenerError
+from .library import CaseLibrary
 
 
 def _print_json(value: Any) -> None:
@@ -31,7 +32,7 @@ def _cmd_lookup(args: argparse.Namespace) -> int:
         return 1
     opinions = client.fetch_cluster_opinions(clusters[0], refresh=args.refresh)
     for opinion in opinions:
-        text = opinion_text(opinion)
+        text = client.opinion_display(opinion).text
         if text:
             print(text)
             return 0
@@ -39,11 +40,28 @@ def _cmd_lookup(args: argparse.Namespace) -> int:
     return 1
 
 
+def _cmd_show_library(_args: argparse.Namespace) -> int:
+    library = CaseLibrary.default()
+    entries = library.list_case_entries()
+    if not entries:
+        print("No saved library cases.")
+        return 0
+    for entry in entries:
+        title = str(entry.get("title") or "Untitled case")
+        citation = str(entry.get("citation_text") or "").strip()
+        cluster_id = str(entry.get("cluster_id") or "").strip()
+        opinion_ids = entry.get("opinion_ids")
+        opinion_count = len(opinion_ids) if isinstance(opinion_ids, list) else 0
+        citation_part = f" | {citation}" if citation else ""
+        print(f"{title}{citation_part} | cluster {cluster_id} | {opinion_count} opinion(s)")
+    return 0
+
+
 def _cmd_show_cache(_args: argparse.Namespace) -> int:
     cache = JsonCache.default()
     entries = cache.list_case_entries()
     if not entries:
-        print("No cached cases.")
+        print("No Research Cache cases.")
         return 0
     for entry in entries:
         title = str(entry.get("title") or "Untitled case")
@@ -59,12 +77,17 @@ def _cmd_show_cache(_args: argparse.Namespace) -> int:
 def _cmd_clear_cache(_args: argparse.Namespace) -> int:
     cache = JsonCache.default()
     cache.clear()
-    print(f"Cleared cache: {cache.root}")
+    print(f"Cleared Research Cache: {cache.root}")
     return 0
 
 
 def _cmd_cache_dir(_args: argparse.Namespace) -> int:
     print(JsonCache.default().root)
+    return 0
+
+
+def _cmd_library_db(_args: argparse.Namespace) -> int:
+    print(CaseLibrary.default().path)
     return 0
 
 
@@ -81,14 +104,20 @@ def build_parser() -> argparse.ArgumentParser:
     lookup_parser.add_argument("--text", action="store_true", help="print first matching opinion text")
     lookup_parser.set_defaults(func=_cmd_lookup)
 
-    cache_parser = subparsers.add_parser("show-cache", help="list cached cases")
+    library_parser = subparsers.add_parser("show-library", help="list saved library cases")
+    library_parser.set_defaults(func=_cmd_show_library)
+
+    cache_parser = subparsers.add_parser("show-cache", help="list Research Cache cases")
     cache_parser.set_defaults(func=_cmd_show_cache)
 
-    clear_cache_parser = subparsers.add_parser("clear-cache", help="delete cached case data")
+    clear_cache_parser = subparsers.add_parser("clear-cache", help="delete Research Cache data")
     clear_cache_parser.set_defaults(func=_cmd_clear_cache)
 
     cache_dir_parser = subparsers.add_parser("cache-dir", help="print the cache directory")
     cache_dir_parser.set_defaults(func=_cmd_cache_dir)
+
+    library_db_parser = subparsers.add_parser("library-db", help="print the library database path")
+    library_db_parser.set_defaults(func=_cmd_library_db)
     return parser
 
 
