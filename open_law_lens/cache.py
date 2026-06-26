@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_CACHE_DIR = PROJECT_ROOT / "cache"
+
 
 def normalize_citation(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip())
@@ -19,10 +22,7 @@ def cache_root() -> Path:
     root = os.environ.get("OPEN_LAW_LENS_CACHE_DIR")
     if root:
         return Path(root).expanduser()
-    xdg_cache = os.environ.get("XDG_CACHE_HOME")
-    if xdg_cache:
-        return Path(xdg_cache) / "open-law-lens"
-    return Path.home() / ".cache" / "open-law-lens"
+    return PROJECT_CACHE_DIR
 
 
 def citation_cache_key(citation: str) -> str:

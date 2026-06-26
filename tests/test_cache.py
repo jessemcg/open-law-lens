@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from open_law_lens.cache import (
     JsonCache,
+    PROJECT_CACHE_DIR,
     citation_cache_key,
     cluster_id_from_cluster,
+    cache_root,
     normalize_citation,
     resource_id_from_url,
 )
@@ -25,6 +29,10 @@ class CacheTests(unittest.TestCase):
             resource_id_from_url("https://www.courtlistener.com/api/rest/v4/opinions/9969234/"),
             "9969234",
         )
+
+    def test_cache_root_defaults_to_project_cache(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(cache_root(), PROJECT_CACHE_DIR)
 
     def test_cluster_id_from_cluster_prefers_id(self) -> None:
         self.assertEqual(cluster_id_from_cluster({"id": 123, "resource_uri": "/clusters/456/"}), "123")
