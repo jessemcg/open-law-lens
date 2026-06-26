@@ -50,7 +50,14 @@ class ClientTests(unittest.TestCase):
     def test_case_title_normalizes_leading_in_re_only(self) -> None:
         self.assertEqual(normalize_case_title(" In Re Emily D. "), "In re Emily D.")
         self.assertEqual(normalize_case_title("IN RE Malinda S."), "In re Malinda S.")
+        self.assertEqual(normalize_case_title("In re KC"), "In re K.C.")
+        self.assertEqual(normalize_case_title("In re KC."), "In re K.C.")
+        self.assertEqual(normalize_case_title("In re BG (1974)"), "In re B.G. (1974)")
+        self.assertEqual(normalize_case_title("In re B. G."), "In re B.G.")
+        self.assertEqual(normalize_case_title("In re D.P. CA6"), "In re D.P.")
         self.assertEqual(normalize_case_title("People v. In Re Holdings"), "People v. In Re Holdings")
+        self.assertEqual(normalize_case_title("People v. KC Holdings"), "People v. KC Holdings")
+        self.assertEqual(normalize_case_title("In re Marriage of Smith"), "In re Marriage of Smith")
 
     def test_cluster_title_normalizes_in_re_casing(self) -> None:
         cluster = {"case_name": "In Re Emily D.", "case_name_short": "In Re Emily D."}
@@ -63,6 +70,43 @@ class ClientTests(unittest.TestCase):
 
         self.assertEqual(cluster_short_title(cluster), "Example v. State")
 
+    def test_cluster_short_title_uses_full_in_re_title_for_bare_initial_short_name(self) -> None:
+        cluster = {
+            "case_name": "Kings County Human Services Agency v. J.C.",
+            "case_name_full": (
+                "In re K.C., a Person Coming Under the Juvenile Court Law. "
+                "KINGS COUNTY HUMAN SERVICES AGENCY, and v. J.C., and"
+            ),
+            "case_name_short": "J.C.",
+        }
+
+        self.assertEqual(cluster_short_title(cluster), "In re K.C.")
+
+    def test_cluster_short_title_extracts_full_in_re_title_when_short_name_missing(self) -> None:
+        cluster = {
+            "case_name": "Vlasta Z. v. San Bernardino County Welfare Department",
+            "case_name_full": (
+                "In re B. G., Persons Coming Under the Juvenile Court Law. "
+                "VLASTA Z., and v. SAN BERNARDINO COUNTY WELFARE DEPARTMENT, and"
+            ),
+            "case_name_short": "",
+        }
+
+        self.assertEqual(cluster_short_title(cluster), "In re B.G.")
+
+    def test_cluster_short_title_removes_trailing_appellate_district_marker(self) -> None:
+        cluster = {
+            "case_name": "Santa Clara County Department of Family and Children's Services v. M.H.",
+            "case_name_full": (
+                "In Re D.P., a Person Coming Under the Juvenile Court Law. "
+                "SANTA CLARA COUNTY DEPARTMENT OF FAMILY AND CHILDREN'S SERVICES, "
+                "Plaintiff and Respondent, v. M.H., Defendant and Appellant"
+            ),
+            "case_name_short": "In re D.P. CA6",
+        }
+
+        self.assertEqual(cluster_short_title(cluster), "In re D.P.")
+
     def test_official_california_reporter_citation_prefers_official_reporter(self) -> None:
         cluster = {
             "citations": [
@@ -72,13 +116,19 @@ class ClientTests(unittest.TestCase):
             ],
         }
 
-        self.assertEqual(official_california_reporter_citation(cluster), "51 Cal. 3d 368")
+        self.assertEqual(official_california_reporter_citation(cluster), "51 Cal.3d 368")
 
     def test_official_california_reporter_citation_supports_newer_appellate_reporters(self) -> None:
-        for reporter in ("Cal. 4th", "Cal. 5th", "Cal.App.4th", "Cal.App.5th"):
+        reporters = {
+            "Cal. 4th": "Cal.4th",
+            "Cal. 5th": "Cal.5th",
+            "Cal.App.4th": "Cal.App.4th",
+            "Cal.App.5th": "Cal.App.5th",
+        }
+        for reporter, expected in reporters.items():
             with self.subTest(reporter=reporter):
                 cluster = {"citations": [{"volume": "1", "reporter": reporter, "page": "2"}]}
-                self.assertEqual(official_california_reporter_citation(cluster), f"1 {reporter} 2")
+                self.assertEqual(official_california_reporter_citation(cluster), f"1 {expected} 2")
 
     def test_official_california_reporter_citation_returns_empty_for_unofficial_reporter(self) -> None:
         cluster = {"citations": [{"volume": "1", "reporter": "Cal. Rptr.", "page": "2"}]}
@@ -96,8 +146,8 @@ class ClientTests(unittest.TestCase):
 
         self.assertIsNotNone(citation)
         assert citation is not None
-        self.assertEqual(citation.plain_text, "Smith & Jones v. State (2024) 1 Cal. 5th 2")
-        self.assertEqual(citation.html_text, "<i>Smith &amp; Jones v. State</i> (2024) 1 Cal. 5th 2")
+        self.assertEqual(citation.plain_text, "Smith & Jones v. State (2024) 1 Cal.5th 2")
+        self.assertEqual(citation.html_text, "<i>Smith &amp; Jones v. State</i> (2024) 1 Cal.5th 2")
 
     def test_format_official_california_citation_uses_short_name(self) -> None:
         cluster = {
@@ -111,8 +161,38 @@ class ClientTests(unittest.TestCase):
 
         self.assertIsNotNone(citation)
         assert citation is not None
-        self.assertEqual(citation.plain_text, "In re Emily D. (2015) 234 Cal. App. 4th 438")
-        self.assertEqual(official_california_reporter_citation(cluster), "234 Cal. App. 4th 438")
+        self.assertEqual(citation.plain_text, "In re Emily D. (2015) 234 Cal.App.4th 438")
+        self.assertEqual(official_california_reporter_citation(cluster), "234 Cal.App.4th 438")
+
+    def test_format_official_california_citation_uses_extracted_in_re_initial_title(self) -> None:
+        cluster = {
+            "case_name": "Kings County Human Services Agency v. J.C.",
+            "case_name_full": "In re K.C., a Person Coming Under the Juvenile Court Law.",
+            "case_name_short": "J.C.",
+            "date_filed": "2011-07-21",
+            "citations": [{"volume": "52", "reporter": "Cal. 4th", "page": "231"}],
+        }
+
+        citation = format_official_california_citation(cluster)
+
+        self.assertIsNotNone(citation)
+        assert citation is not None
+        self.assertEqual(citation.plain_text, "In re K.C. (2011) 52 Cal.4th 231")
+
+    def test_format_official_california_citation_removes_appellate_district_marker(self) -> None:
+        cluster = {
+            "case_name": "Santa Clara County Department of Family and Children's Services v. M.H.",
+            "case_name_full": "In Re D.P., a Person Coming Under the Juvenile Court Law.",
+            "case_name_short": "In re D.P. CA6",
+            "date_filed": "2015-05-21",
+            "citations": [{"volume": "237", "reporter": "Cal. App. 4th", "page": "911"}],
+        }
+
+        citation = format_official_california_citation(cluster)
+
+        self.assertIsNotNone(citation)
+        assert citation is not None
+        self.assertEqual(citation.plain_text, "In re D.P. (2015) 237 Cal.App.4th 911")
 
     def test_dedupe_case_clusters_prefers_cleaner_official_citation_match(self) -> None:
         duplicate_with_lexis = {

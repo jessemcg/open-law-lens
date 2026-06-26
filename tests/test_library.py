@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from open_law_lens.cache import JsonCache
 from open_law_lens.library import CaseLibrary, opinion_display_text
 
 
@@ -24,6 +25,61 @@ class LibraryTests(unittest.TestCase):
             self.assertIsNotNone(result)
             assert result is not None
             self.assertEqual(result[0]["clusters"][0]["case_name"], "Example v. State")
+
+    def test_library_case_index_uses_extracted_in_re_initial_title(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            library.upsert_cluster(
+                {
+                    "id": 5607709,
+                    "case_name": "Vlasta Z. v. San Bernardino County Welfare Department",
+                    "case_name_full": "In re B. G., Persons Coming Under the Juvenile Court Law.",
+                    "case_name_short": "",
+                }
+            )
+
+            self.assertEqual(library.list_case_entries()[0]["title"], "In re B.G.")
+
+    def test_json_cache_case_index_uses_extracted_in_re_initial_title(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cache.ensure()
+            cache.upsert_cluster(
+                {
+                    "id": 5608115,
+                    "case_name": "Kings County Human Services Agency v. J.C.",
+                    "case_name_full": "In re K.C., a Person Coming Under the Juvenile Court Law.",
+                    "case_name_short": "J.C.",
+                }
+            )
+
+            self.assertEqual(cache.list_case_entries()[0]["title"], "In re K.C.")
+
+    def test_json_cache_case_index_normalizes_stale_title_from_cluster_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cache.ensure()
+            cache.write_resource(
+                "clusters",
+                "2802799",
+                {
+                    "id": 2802799,
+                    "case_name_full": "In Re D.P., a Person Coming Under the Juvenile Court Law.",
+                    "case_name_short": "In re D.P. CA6",
+                },
+            )
+            cache.write_case_index(
+                {
+                    "2802799": {
+                        "cluster_id": "2802799",
+                        "title": "In re D.P. CA6",
+                        "citation_text": "237 Cal. App. 4th 911",
+                    }
+                }
+            )
+
+            self.assertEqual(cache.list_case_entries()[0]["title"], "In re D.P.")
 
     def test_upsert_lookup_preserves_raw_lookup_json(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

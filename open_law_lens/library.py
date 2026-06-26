@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .cache import JsonCache, cluster_id_from_cluster, normalize_citation, resource_id_from_url
+from .case_titles import cluster_short_title_value
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -49,16 +50,10 @@ def _json_loads(value: str) -> Any:
     return json.loads(value)
 
 
-def _normalize_case_title(title: str) -> str:
-    normalized = re.sub(r"\s+", " ", title.strip())
-    return re.sub(r"^in\s+re\b", "In re", normalized, count=1, flags=re.IGNORECASE)
-
-
 def _cluster_title(cluster: dict[str, Any]) -> str:
-    for key in ("case_name", "case_name_full", "case_name_short"):
-        value = cluster.get(key)
-        if isinstance(value, str) and value.strip():
-            return _normalize_case_title(value)
+    title = cluster_short_title_value(cluster)
+    if title:
+        return title
     cluster_id = cluster_id_from_cluster(cluster)
     return f"Cluster {cluster_id}" if cluster_id else "Untitled case"
 
@@ -635,7 +630,7 @@ class CaseLibrary:
         with self.connection() as conn:
             rows = conn.execute(
                 """
-                SELECT cluster_id, title, citation_text, opinion_ids_json, added_at, last_accessed
+                SELECT cluster_id, title, citation_text, cluster_json, opinion_ids_json, added_at, last_accessed
                 FROM cases
                 ORDER BY title COLLATE NOCASE, citation_text COLLATE NOCASE, cluster_id
                 """
@@ -643,10 +638,12 @@ class CaseLibrary:
         entries: list[dict[str, Any]] = []
         for row in rows:
             opinion_ids = _json_loads(str(row["opinion_ids_json"]))
+            cluster = _json_loads(str(row["cluster_json"]))
+            title = _cluster_title(cluster) if isinstance(cluster, dict) else str(row["title"])
             entries.append(
                 {
                     "cluster_id": str(row["cluster_id"]),
-                    "title": str(row["title"]),
+                    "title": title,
                     "citation_text": str(row["citation_text"]),
                     "opinion_ids": opinion_ids if isinstance(opinion_ids, list) else [],
                     "added_at": str(row["added_at"]),

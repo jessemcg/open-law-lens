@@ -11,6 +11,11 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from .cache import JsonCache, cluster_id_from_cluster, normalize_citation, resource_id_from_url
+from .case_titles import (
+    cluster_short_title_value,
+    cluster_title_value,
+    normalize_case_title,
+)
 from .config import courtlistener_token
 from .library import CaseLibrary, DisplayText, opinion_display_text
 
@@ -28,16 +33,16 @@ TEXT_FIELDS = (
     "xml_harvard",
 )
 OFFICIAL_CALIFORNIA_REPORTERS = {
-    "cal.",
-    "cal.2d",
-    "cal.3d",
-    "cal.4th",
-    "cal.5th",
-    "cal.app.",
-    "cal.app.2d",
-    "cal.app.3d",
-    "cal.app.4th",
-    "cal.app.5th",
+    "cal.": "Cal.",
+    "cal.2d": "Cal.2d",
+    "cal.3d": "Cal.3d",
+    "cal.4th": "Cal.4th",
+    "cal.5th": "Cal.5th",
+    "cal.app.": "Cal.App.",
+    "cal.app.2d": "Cal.App.2d",
+    "cal.app.3d": "Cal.App.3d",
+    "cal.app.4th": "Cal.App.4th",
+    "cal.app.5th": "Cal.App.5th",
 }
 
 
@@ -95,25 +100,18 @@ def opinion_text(opinion: dict[str, Any]) -> str:
     return ""
 
 
-def normalize_case_title(title: str) -> str:
-    normalized = re.sub(r"\s+", " ", title.strip())
-    return re.sub(r"^in\s+re\b", "In re", normalized, count=1, flags=re.IGNORECASE)
-
-
 def cluster_title(cluster: dict[str, Any]) -> str:
-    for key in ("case_name", "case_name_full", "case_name_short"):
-        value = cluster.get(key)
-        if isinstance(value, str) and value.strip():
-            return normalize_case_title(value)
+    title = cluster_title_value(cluster)
+    if title:
+        return title
     cluster_id = cluster.get("id")
     return f"Cluster {cluster_id}" if cluster_id else "Untitled case"
 
 
 def cluster_short_title(cluster: dict[str, Any]) -> str:
-    for key in ("case_name_short", "case_name", "case_name_full"):
-        value = cluster.get(key)
-        if isinstance(value, str) and value.strip():
-            return normalize_case_title(value)
+    title = cluster_short_title_value(cluster)
+    if title:
+        return title
     cluster_id = cluster.get("id")
     return f"Cluster {cluster_id}" if cluster_id else "Untitled case"
 
@@ -149,11 +147,13 @@ def official_california_reporter_citation(cluster: dict[str, Any]) -> str:
         reporter = citation.get("reporter")
         if not isinstance(reporter, str):
             continue
-        if _normalized_reporter(reporter) not in OFFICIAL_CALIFORNIA_REPORTERS:
+        normalized_reporter = _normalized_reporter(reporter)
+        display_reporter = OFFICIAL_CALIFORNIA_REPORTERS.get(normalized_reporter)
+        if display_reporter is None:
             continue
         pieces = [
             str(piece).strip()
-            for piece in (citation.get("volume"), reporter, citation.get("page"))
+            for piece in (citation.get("volume"), display_reporter, citation.get("page"))
             if str(piece).strip()
         ]
         if len(pieces) == 3:

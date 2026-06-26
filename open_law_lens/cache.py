@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .case_titles import cluster_short_title_value
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PROJECT_CACHE_DIR = PROJECT_ROOT / "cache"
 
@@ -44,11 +46,6 @@ def cluster_id_from_cluster(cluster: dict[str, Any]) -> str:
         if isinstance(url, str) and url.strip():
             return resource_id_from_url(url)
     return ""
-
-
-def _normalize_case_title(title: str) -> str:
-    normalized = re.sub(r"\s+", " ", title.strip())
-    return re.sub(r"^in\s+re\b", "In re", normalized, count=1, flags=re.IGNORECASE)
 
 
 def _utc_now() -> str:
@@ -168,8 +165,15 @@ class JsonCache:
 
     def list_case_entries(self) -> list[dict[str, Any]]:
         entries = list(self.read_case_index().values())
+        normalized_entries: list[dict[str, Any]] = []
+        for entry in entries:
+            cluster_id = str(entry.get("cluster_id", "")).strip()
+            cluster = self.read_cached_cluster(cluster_id) if cluster_id else None
+            if cluster is not None:
+                entry = {**entry, "title": _cluster_title(cluster)}
+            normalized_entries.append(entry)
         return sorted(
-            entries,
+            normalized_entries,
             key=lambda item: (
                 str(item.get("title", "")).casefold(),
                 str(item.get("citation_text", "")).casefold(),
@@ -194,10 +198,9 @@ class JsonCache:
 
 
 def _cluster_title(cluster: dict[str, Any]) -> str:
-    for key in ("case_name", "case_name_full", "case_name_short"):
-        value = cluster.get(key)
-        if isinstance(value, str) and value.strip():
-            return _normalize_case_title(value)
+    title = cluster_short_title_value(cluster)
+    if title:
+        return title
     cluster_id = cluster_id_from_cluster(cluster)
     return f"Cluster {cluster_id}" if cluster_id else "Untitled case"
 
