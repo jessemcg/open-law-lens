@@ -93,6 +93,8 @@ class DisplayText:
 
 
 class _DisplayTextExtractor(HTMLParser):
+    BLOCK_TAGS = {"p", "div", "li", "tr", "h1", "h2", "h3", "h4", "center", "author"}
+
     def __init__(self, source_field: str) -> None:
         super().__init__()
         self.source_field = source_field
@@ -100,116 +102,137 @@ class _DisplayTextExtractor(HTMLParser):
         self.page_markers: list[PageMarker] = []
         self._page_label: str | None = None
         self._page_text_parts: list[str] = []
+        self._pending_space = False
+        self._pending_break = False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag == "page-number":
-            attr_map = dict(attrs)
-            label = attr_map.get("label")
-            self._page_label = label.strip() if isinstance(label, str) else ""
-            self._page_text_parts = []
+        attr_map = dict(attrs)
+        if tag == "page-number" or self._is_star_pagination(tag, attr_map):
+            self._start_page_marker(attr_map)
             return
-        if tag in {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4"}:
-            self.parts.append("\n")
+        if tag == "br":
+            self._queue_block_break()
+            return
+        if tag in self.BLOCK_TAGS:
+            self._queue_block_break()
 
     def handle_endtag(self, tag: str) -> None:
-        if tag == "page-number" and self._page_label is not None:
-            raw_text = html.unescape("".join(self._page_text_parts)).strip()
-            label = self._page_label or raw_text.lstrip("*").strip()
-            if label:
-                marker_text = f"[*{label}]"
-                start = len("".join(self.parts))
-                self.parts.append(marker_text)
-                end = start + len(marker_text)
-                self.page_markers.append(
-                    PageMarker(
-                        page_label=label,
-                        marker_text=marker_text,
-                        start_offset=start,
-                        end_offset=end,
-                        source_field=self.source_field,
-                    )
-                )
-            self._page_label = None
-            self._page_text_parts = []
+        if tag in {"page-number", "span"} and self._page_label is not None:
+            self._finish_page_marker()
             return
-        if tag in {"p", "div", "li", "tr", "h1", "h2", "h3", "h4"}:
-            self.parts.append("\n")
+        if tag in self.BLOCK_TAGS:
+            self._queue_block_break()
 
     def handle_data(self, data: str) -> None:
         if self._page_label is not None:
             self._page_text_parts.append(data)
             return
-        self.parts.append(data)
+        self._append_data(data)
 
     def display_text(self) -> DisplayText:
-        text, markers = _normalize_text_and_markers("".join(self.parts), self.page_markers)
-        return DisplayText(text=text, source_field=self.source_field, page_markers=markers)
+        text = "".join(self.parts).strip()
+        return DisplayText(text=text, source_field=self.source_field, page_markers=self.page_markers)
 
+    def _append_data(self, data: str) -> None:
+        if not data:
+            return
+        has_leading_space = data[:1].isspace()
+        has_trailing_space = data[-1:].isspace()
+        text = re.sub(r"\s+", " ", data.strip())
+        if not text:
+            if self._has_text() and not self._ends_with_break():
+                self._pending_space = True
+            return
+        if has_leading_space:
+            self._pending_space = True
+        self._append_text(text)
+        if has_trailing_space:
+            self._pending_space = True
 
-def _normalize_text_and_markers(
-    raw_text: str,
-    raw_markers: list[PageMarker],
-) -> tuple[str, list[PageMarker]]:
-    replacements: list[tuple[int, int, str]] = []
-    for match in re.finditer(r"[ \t\r\f\v]+", raw_text):
-        replacements.append((match.start(), match.end(), " "))
-    for match in re.finditer(r"\n{3,}", raw_text):
-        replacements.append((match.start(), match.end(), "\n\n"))
-    leading = len(raw_text) - len(raw_text.lstrip())
-    trailing_end = len(raw_text.rstrip())
-    if leading:
-        replacements.append((0, leading, ""))
-    if trailing_end < len(raw_text):
-        replacements.append((trailing_end, len(raw_text), ""))
-    replacements.sort(key=lambda item: item[0])
+    def _append_text(self, text: str) -> int:
+        self._flush_pending(text[:1])
+        start = len("".join(self.parts))
+        self.parts.append(text)
+        return start
 
-    parts: list[str] = []
-    marker_positions = {index: marker for index, marker in enumerate(raw_markers)}
-    marker_cursors: dict[int, int] = {}
-    cursor = 0
-    output_len = 0
-    for start, end, replacement in replacements:
-        if start < cursor:
-            continue
-        unchanged = raw_text[cursor:start]
-        parts.append(unchanged)
-        for marker_index, marker in marker_positions.items():
-            if cursor <= marker.start_offset < start:
-                marker_cursors[marker_index] = output_len + (marker.start_offset - cursor)
-        output_len += len(unchanged)
-        parts.append(replacement)
-        for marker_index, marker in marker_positions.items():
-            if start <= marker.start_offset < end:
-                marker_cursors[marker_index] = output_len
-        output_len += len(replacement)
-        cursor = end
-    tail = raw_text[cursor:]
-    parts.append(tail)
-    for marker_index, marker in marker_positions.items():
-        if marker_index not in marker_cursors and cursor <= marker.start_offset <= len(raw_text):
-            marker_cursors[marker_index] = output_len + (marker.start_offset - cursor)
-    normalized = "".join(parts)
-    markers: list[PageMarker] = []
-    for marker_index, marker in enumerate(raw_markers):
-        start = marker_cursors.get(marker_index)
-        if start is None:
-            continue
-        end = start + len(marker.marker_text)
-        if normalized[start:end] != marker.marker_text:
-            found = normalized.find(marker.marker_text, max(0, start - 4), end + 4)
-            if found >= 0:
-                start = found
-                end = found + len(marker.marker_text)
-        markers.append(
-            PageMarker(
-                page_label=marker.page_label,
-                marker_text=marker.marker_text,
-                start_offset=start,
-                end_offset=end,
-                source_field=marker.source_field,
+    def _append_marker_text(self, marker_text: str) -> int:
+        return self._append_text(marker_text)
+
+    def _start_page_marker(self, attr_map: dict[str, str | None]) -> None:
+        label = attr_map.get("label")
+        self._page_label = label.strip() if isinstance(label, str) else ""
+        self._page_text_parts = []
+
+    def _finish_page_marker(self) -> None:
+        raw_text = html.unescape("".join(self._page_text_parts)).strip()
+        label = _page_marker_label(self._page_label or raw_text)
+        if label:
+            marker_text = f"[*{label}]"
+            start = self._append_marker_text(marker_text)
+            end = start + len(marker_text)
+            self.page_markers.append(
+                PageMarker(
+                    page_label=label,
+                    marker_text=marker_text,
+                    start_offset=start,
+                    end_offset=end,
+                    source_field=self.source_field,
+                )
             )
-        )
-    return normalized, markers
+        self._page_label = None
+        self._page_text_parts = []
+
+    @staticmethod
+    def _is_star_pagination(tag: str, attr_map: dict[str, str | None]) -> bool:
+        class_value = attr_map.get("class")
+        if tag != "span" or not isinstance(class_value, str):
+            return False
+        return "star-pagination" in class_value.split()
+
+    def _queue_block_break(self) -> None:
+        if self._has_text() and not self._ends_with_break():
+            self._pending_break = True
+        self._pending_space = False
+
+    def _flush_pending(self, next_char: str) -> None:
+        if self._pending_break:
+            self._trim_trailing_spaces()
+            if self._has_text() and not self._ends_with_break():
+                self.parts.append("\n\n")
+            self._pending_break = False
+            self._pending_space = False
+            return
+        if self._pending_space and self._should_insert_space(next_char):
+            self.parts.append(" ")
+        self._pending_space = False
+
+    def _should_insert_space(self, next_char: str) -> bool:
+        if not self.parts or not next_char:
+            return False
+        previous = self.parts[-1][-1:] if self.parts[-1] else ""
+        if not previous or previous.isspace():
+            return False
+        return next_char not in ".,;:)]}?!"
+
+    def _trim_trailing_spaces(self) -> None:
+        while self.parts and self.parts[-1] == "":
+            self.parts.pop()
+        if self.parts:
+            self.parts[-1] = self.parts[-1].rstrip(" ")
+
+    def _has_text(self) -> bool:
+        return bool("".join(self.parts).strip())
+
+    def _ends_with_break(self) -> bool:
+        return "".join(self.parts).endswith("\n\n")
+
+
+def _page_marker_label(value: str) -> str:
+    label = html.unescape(value).strip()
+    label = re.sub(r"\s+", " ", label)
+    label = label.lstrip("*").strip()
+    label = re.sub(r"(?i)^page\s+", "", label).strip()
+    return label
 
 
 def opinion_display_text(opinion: dict[str, Any]) -> DisplayText:
@@ -573,7 +596,7 @@ class CaseLibrary:
     def read_opinion_display(self, opinion_id: str) -> DisplayText | None:
         with self.connection() as conn:
             row = conn.execute(
-                "SELECT display_text, source_field FROM opinions WHERE opinion_id = ?",
+                "SELECT opinion_json, display_text, source_field FROM opinions WHERE opinion_id = ?",
                 (opinion_id,),
             ).fetchone()
             if row is None:
@@ -587,6 +610,14 @@ class CaseLibrary:
                 """,
                 (opinion_id,),
             ).fetchall()
+        try:
+            opinion = _json_loads(str(row["opinion_json"]))
+        except json.JSONDecodeError:
+            opinion = None
+        if isinstance(opinion, dict):
+            display = opinion_display_text(opinion)
+            if display.text:
+                return display
         return DisplayText(
             text=str(row["display_text"]),
             source_field=str(row["source_field"]),

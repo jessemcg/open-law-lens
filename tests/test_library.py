@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -119,6 +120,92 @@ class LibraryTests(unittest.TestCase):
         self.assertEqual(marker.page_label, "373")
         self.assertEqual(display.text[marker.start_offset:marker.end_offset], "[*373]")
 
+    def test_opinion_display_text_keeps_pretty_printed_inline_citation_together(self) -> None:
+        opinion = {
+            "id": 10,
+            "html_with_citations": (
+                "<p>"
+                "jurisdiction is supported by substantial evidence."
+                "\n  <em>\n   (In re Alexis E.\n  </em>\n"
+                '  (2009) <span class="citation">'
+                '<a href="/opinion/2256739/in-re-alexis-e/#451">'
+                "171 Cal.App.4th 438, 451</a></span>"
+                " [90 Cal.Rptr.3d 44].)"
+                "</p>"
+            ),
+        }
+
+        display = opinion_display_text(opinion)
+
+        self.assertEqual(
+            display.text,
+            (
+                "jurisdiction is supported by substantial evidence. "
+                "(In re Alexis E. (2009) 171 Cal.App.4th 438, 451 "
+                "[90 Cal.Rptr.3d 44].)"
+            ),
+        )
+
+    def test_opinion_display_text_keeps_pretty_printed_star_pagination_inline(self) -> None:
+        opinion = {
+            "id": 10,
+            "html_with_citations": (
+                "<p>serious emotional\n"
+                '  <span citation-index="1" class="star-pagination" label="913"> \n'
+                "   *913\n"
+                "   </span>\n"
+                "  damage.</p>"
+            ),
+        }
+
+        display = opinion_display_text(opinion)
+
+        self.assertEqual(display.text, "serious emotional [*913] damage.")
+        self.assertEqual(len(display.page_markers), 1)
+        marker = display.page_markers[0]
+        self.assertEqual(marker.page_label, "913")
+        self.assertEqual(display.text[marker.start_offset:marker.end_offset], "[*913]")
+
+    def test_opinion_display_text_normalizes_page_word_star_pagination(self) -> None:
+        opinion = {
+            "id": 10,
+            "html_with_citations": '<p>Text <span class="star-pagination">*Page 1566</span> continues.</p>',
+        }
+
+        display = opinion_display_text(opinion)
+
+        self.assertEqual(display.text, "Text [*1566] continues.")
+        self.assertEqual(len(display.page_markers), 1)
+        marker = display.page_markers[0]
+        self.assertEqual(marker.page_label, "1566")
+        self.assertEqual(display.text[marker.start_offset:marker.end_offset], "[*1566]")
+
+    def test_opinion_display_text_preserves_reporter_header_lines(self) -> None:
+        opinion = {
+            "id": 10,
+            "html_with_citations": (
+                '<div><center><b><span class="citation">51 Cal.3d 368</span> '
+                "(1990)</b></center>"
+                '<center><b><span class="citation">795 P.2d 1244</span></b></center>'
+                '<center><b><span class="citation">272 Cal. Rptr. 787</span></b></center>'
+                "<center><h1>In re MALINDA S.<br>v.<br>RUSSELL S.</h1></center></div>"
+            ),
+        }
+
+        display = opinion_display_text(opinion)
+
+        self.assertEqual(
+            display.text,
+            (
+                "51 Cal.3d 368 (1990)\n\n"
+                "795 P.2d 1244\n\n"
+                "272 Cal. Rptr. 787\n\n"
+                "In re MALINDA S.\n\n"
+                "v.\n\n"
+                "RUSSELL S."
+            ),
+        )
+
     def test_opinion_display_text_does_not_infer_paragraph_page_ids(self) -> None:
         opinion = {
             "id": 10,
@@ -149,6 +236,42 @@ class LibraryTests(unittest.TestCase):
             assert display is not None
             self.assertEqual(display.text, "Alpha [*373] beta.")
             self.assertEqual(display.text[display.page_markers[0].start_offset:display.page_markers[0].end_offset], "[*373]")
+
+    def test_read_opinion_display_regenerates_from_stored_opinion_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            opinion = {
+                "id": 10,
+                "cluster_id": 42,
+                "html_with_citations": (
+                    '<p>Alpha <span class="star-pagination" label="913"> *913 </span> beta.</p>'
+                ),
+            }
+            with library.connection() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO opinions(
+                        opinion_id, cluster_id, opinion_json, display_text, source_field, added_at, last_accessed
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "10",
+                        "42",
+                        json.dumps(opinion),
+                        "stale display text",
+                        "html_with_citations",
+                        "2026-01-01T00:00:00+00:00",
+                        "2026-01-01T00:00:00+00:00",
+                    ),
+                )
+
+            display = library.read_opinion_display("10")
+
+            self.assertIsNotNone(display)
+            assert display is not None
+            self.assertEqual(display.text, "Alpha [*913] beta.")
+            self.assertEqual(display.text[display.page_markers[0].start_offset:display.page_markers[0].end_offset], "[*913]")
 
 
 if __name__ == "__main__":

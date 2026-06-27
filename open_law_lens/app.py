@@ -324,7 +324,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.page_marker_tag = self.reader_buffer.create_tag(
             "page-marker",
             weight=Pango.Weight.BOLD,
-            foreground="#8a3d00",
+            foreground="#6f2f00",
+            background="#fff0a6",
         )
         self.reader_view = Gtk.TextView(buffer=self.reader_buffer)
         self.reader_view.set_editable(False)
