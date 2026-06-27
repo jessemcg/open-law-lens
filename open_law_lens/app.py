@@ -42,14 +42,19 @@ from .case_suggestions import (
     merge_case_suggestions,
     resolve_case_lookup_text,
 )
-from .config import AppConfig, concordance_file_path, load_config, save_config
+from .config import (
+    AppConfig,
+    concordance_file_path,
+    courtlistener_token,
+    load_config,
+    save_config,
+)
 from .library import PageMarker
 
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 AGENT_WRAPPER = PROJECT_DIR / "scripts" / "open-law-lens-codex-agent-vte.sh"
 DEFAULT_CODEX_BIN = "codex"
-DEFAULT_CODEX_PROFILE = "fireworks"
 READER_BG = "#ffffff"
 READER_FG = "#000000"
 AGENT_TERMINAL_MAX_HEIGHT = 260
@@ -913,6 +918,11 @@ Use the local Open Law Lens CLI and library before making network calls when pos
 - open-law-lens lookup-citation "<citation>"
 - open-law-lens lookup-citation "<citation>" --text
 
+For new case discovery, use a CourtListener MCP server if one is available in Codex.
+Unless the question asks for a broader search, confine discovery to California state law.
+Prefer CourtListener's fielded search filter court_id:(cal OR calctapp OR calappdeptsuper),
+or the equivalent court/tool parameters exposed by the installed MCP server.
+
 Do not modify app files, library files, or cache files unless explicitly asked. Focus on reading and explaining the selected CourtListener case data.""".strip()
 
     def _write_prompt_file(self, prompt: str) -> Path:
@@ -938,14 +948,22 @@ Do not modify app files, library files, or cache files unless explicitly asked. 
             self._set_status(f"Agent wrapper not found: {AGENT_WRAPPER}")
             return
         env = os.environ.copy()
+        if not env.get("COURTLISTENER_TOKEN"):
+            token = courtlistener_token()
+            if token:
+                env["COURTLISTENER_TOKEN"] = token
         env.update(
             {
                 "OPEN_LAW_LENS_AGENT_PROMPT_FILE": str(prompt_path),
                 "OPEN_LAW_LENS_CACHE_DIR": str(self.client.cache.root),
                 "CODEX_BIN": os.environ.get("OPEN_LAW_LENS_CODEX_BIN", DEFAULT_CODEX_BIN),
-                "CODEX_PROFILE": os.environ.get("OPEN_LAW_LENS_CODEX_PROFILE", DEFAULT_CODEX_PROFILE),
             }
         )
+        profile = os.environ.get("OPEN_LAW_LENS_CODEX_PROFILE", "").strip()
+        if profile:
+            env["CODEX_PROFILE"] = profile
+        else:
+            env.pop("CODEX_PROFILE", None)
         argv = ["bash", str(AGENT_WRAPPER)]
         try:
             self._agent_terminal.reset(True, True)
