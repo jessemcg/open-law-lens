@@ -34,7 +34,15 @@ from .client import (
     format_official_california_citation,
     official_california_reporter_citation,
 )
-from .config import AppConfig, load_config, save_config
+from .case_suggestions import (
+    CaseSuggestion,
+    case_suggestions_from_library,
+    load_concordance_case_suggestions,
+    matching_case_suggestions,
+    merge_case_suggestions,
+    resolve_case_lookup_text,
+)
+from .config import AppConfig, concordance_file_path, load_config, save_config
 from .library import PageMarker
 
 
@@ -109,9 +117,17 @@ class SettingsWindow(Adw.ApplicationWindow):
 
         group = Adw.PreferencesGroup(title="CourtListener")
         self.token_row = self._build_token_row()
-        self.token_row.set_text(load_config().courtlistener_token)
+        config = load_config()
+        self.token_row.set_text(config.courtlistener_token)
         group.add(self.token_row)
         outer.append(group)
+
+        concordance_group = Adw.PreferencesGroup(title="Concordance")
+        self.concordance_row = Adw.EntryRow(title="Concordance file")
+        self.concordance_row.set_text(config.concordance_file_path)
+        self._add_concordance_row_buttons()
+        concordance_group.add(self.concordance_row)
+        outer.append(concordance_group)
 
         buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         buttons.set_halign(Gtk.Align.END)
@@ -144,9 +160,48 @@ class SettingsWindow(Adw.ApplicationWindow):
 
     def _on_save_clicked(self, _button: Gtk.Button) -> None:
         token = self.token_row.get_text().strip()
-        save_config(AppConfig(courtlistener_token=token))
+        concordance_path = self.concordance_row.get_text().strip()
+        save_config(AppConfig(courtlistener_token=token, concordance_file_path=concordance_path))
         self.parent_window.reload_settings()
         self.status_label.set_text("Settings saved.")
+
+    def _add_concordance_row_buttons(self) -> None:
+        add_suffix = getattr(self.concordance_row, "add_suffix", None)
+        if not callable(add_suffix):
+            return
+        choose_button = Gtk.Button(icon_name="document-open-symbolic")
+        choose_button.add_css_class("flat")
+        choose_button.set_tooltip_text("Choose concordance file")
+        choose_button.connect("clicked", self._on_choose_concordance_file)
+        add_suffix(choose_button)
+
+        clear_button = Gtk.Button(icon_name="edit-clear-symbolic")
+        clear_button.add_css_class("flat")
+        clear_button.set_tooltip_text("Clear concordance file")
+        clear_button.connect("clicked", self._on_clear_concordance_file)
+        add_suffix(clear_button)
+
+    def _on_choose_concordance_file(self, _button: Gtk.Button) -> None:
+        file_dialog_cls = getattr(Gtk, "FileDialog", None)
+        if file_dialog_cls is None:
+            self.status_label.set_text("File chooser is unavailable in this GTK version.")
+            return
+        dialog = file_dialog_cls(title="Choose concordance file")
+        dialog.open(self, None, self._on_concordance_file_chosen)
+
+    def _on_concordance_file_chosen(self, dialog: Any, result: Gio.AsyncResult) -> None:
+        try:
+            file = dialog.open_finish(result)
+        except GLib.Error:
+            return
+        if file is None:
+            return
+        path = file.get_path()
+        if path:
+            self.concordance_row.set_text(path)
+
+    def _on_clear_concordance_file(self, _button: Gtk.Button) -> None:
+        self.concordance_row.set_text("")
 
 
 class OpenLawLensWindow(Adw.ApplicationWindow):
@@ -160,6 +215,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_frame: Gtk.Box | None = None
         self._agent_active = False
         self._settings_window: SettingsWindow | None = None
+        self._case_suggestions: list[CaseSuggestion] = []
+        self._case_suggestions_loaded = False
+        self._case_completion_matches: list[CaseSuggestion] = []
+        self._case_completion_selected_index = 0
+        self._case_completion_results_scroller: Gtk.ScrolledWindow | None = None
+        self._case_completion_list_box: Gtk.ListBox | None = None
+        self._case_completion_changing = False
         self.toast_overlay: Adw.ToastOverlay | None = None
 
         self.set_title(APP_NAME)
@@ -227,6 +289,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
               background-color: @window_bg_color;
               border-radius: 8px;
             }}
+            .case-completion-results {{
+              background: transparent;
+            }}
             """.encode("utf-8")
         )
         display = Gdk.Display.get_default()
@@ -284,8 +349,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.citation_entry.set_hexpand(True)
         self.citation_entry.set_width_chars(18)
         self.citation_entry.set_max_width_chars(24)
-        self.citation_entry.set_placeholder_text("Citation, e.g. 576 U.S. 644")
+        self.citation_entry.set_placeholder_text("Citation or case name")
         self.citation_entry.connect("activate", self._on_lookup_clicked)
+        self.citation_entry.connect("changed", self._on_citation_entry_changed)
+        key_controller = Gtk.EventControllerKey()
+        key_controller.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        key_controller.connect("key-pressed", self._on_citation_entry_key_pressed)
+        self.citation_entry.add_controller(key_controller)
         input_row.append(self.citation_entry)
 
         copy_citation_button = Gtk.Button(icon_name="edit-copy-symbolic")
@@ -294,6 +364,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         copy_citation_button.connect("clicked", self._on_copy_official_citation)
         input_row.append(copy_citation_button)
         box.append(input_row)
+        box.append(self._build_case_completion_results())
 
         heading = Gtk.Label(label="Research Cache", xalign=0)
         heading.add_css_class("heading")
@@ -312,6 +383,149 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         scroller.set_vexpand(True)
         box.append(scroller)
         return box
+
+    def _build_case_completion_results(self) -> Gtk.Widget:
+        scroller = Gtk.ScrolledWindow()
+        scroller.add_css_class("case-completion-results")
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_max_content_height(220)
+        scroller.set_propagate_natural_height(True)
+        scroller.set_visible(False)
+
+        list_box = Gtk.ListBox()
+        list_box.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        list_box.connect("row-activated", self._on_case_completion_row_activated)
+        scroller.set_child(list_box)
+
+        self._case_completion_results_scroller = scroller
+        self._case_completion_list_box = list_box
+        return scroller
+
+    def _refresh_case_suggestion_index(self, *, force: bool = False) -> None:
+        if self._case_suggestions_loaded and not force:
+            return
+        configured_path = concordance_file_path()
+        concordance_suggestions: list[CaseSuggestion] = []
+        if configured_path is not None:
+            concordance_suggestions = load_concordance_case_suggestions(configured_path)
+        library_suggestions = case_suggestions_from_library(self.client.library)
+        self._case_suggestions = merge_case_suggestions(concordance_suggestions, library_suggestions)
+        self._case_suggestions_loaded = True
+
+    def _on_citation_entry_changed(self, _entry: Gtk.Entry) -> None:
+        if self._case_completion_changing:
+            return
+        self._refresh_case_suggestion_index()
+        query = self.citation_entry.get_text().strip()
+        matches = matching_case_suggestions(query, self._case_suggestions)
+        self._show_case_completion(matches)
+
+    def _on_citation_entry_key_pressed(
+        self,
+        _controller: Gtk.EventControllerKey,
+        keyval: int,
+        _keycode: int,
+        _state: Gdk.ModifierType,
+    ) -> bool:
+        if (
+            self._case_completion_results_scroller is None
+            or not self._case_completion_results_scroller.get_visible()
+        ):
+            return False
+        if keyval == Gdk.KEY_Down:
+            self._move_case_completion_selection(1)
+            return True
+        if keyval == Gdk.KEY_Up:
+            self._move_case_completion_selection(-1)
+            return True
+        if keyval in {Gdk.KEY_Return, Gdk.KEY_KP_Enter, Gdk.KEY_Tab}:
+            return self._apply_case_completion_selection()
+        if keyval == Gdk.KEY_Escape:
+            self._hide_case_completion()
+            return True
+        return False
+
+    def _show_case_completion(self, matches: list[CaseSuggestion]) -> None:
+        entry_had_focus = self.citation_entry.has_focus()
+        self._case_completion_matches = matches
+        self._case_completion_selected_index = 0
+        if self._case_completion_results_scroller is None or self._case_completion_list_box is None:
+            return
+        while row := self._case_completion_list_box.get_row_at_index(0):
+            self._case_completion_list_box.remove(row)
+        if not matches:
+            self._hide_case_completion()
+            if entry_had_focus:
+                self.citation_entry.grab_focus()
+            return
+        for index, suggestion in enumerate(matches):
+            row = Gtk.ListBoxRow()
+            row.set_selectable(True)
+            row.set_activatable(True)
+            row._open_law_lens_case_suggestion_index = index
+
+            row_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            row_box.set_margin_top(6)
+            row_box.set_margin_bottom(6)
+            row_box.set_margin_start(8)
+            row_box.set_margin_end(8)
+
+            title = Gtk.Label(label=suggestion.label, xalign=0)
+            title.set_wrap(True)
+            title.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+            row_box.append(title)
+
+            if suggestion.source:
+                source = Gtk.Label(label=suggestion.source, xalign=0)
+                source.add_css_class("dim-label")
+                row_box.append(source)
+
+            row.set_child(row_box)
+            self._case_completion_list_box.append(row)
+        first_row = self._case_completion_list_box.get_row_at_index(0)
+        if first_row is not None:
+            self._case_completion_list_box.select_row(first_row)
+        self._case_completion_results_scroller.set_visible(True)
+        if entry_had_focus:
+            self.citation_entry.grab_focus()
+
+    def _hide_case_completion(self) -> None:
+        if self._case_completion_results_scroller is not None:
+            self._case_completion_results_scroller.set_visible(False)
+
+    def _move_case_completion_selection(self, direction: int) -> None:
+        if not self._case_completion_matches or self._case_completion_list_box is None:
+            return
+        count = len(self._case_completion_matches)
+        self._case_completion_selected_index = (self._case_completion_selected_index + direction) % count
+        row = self._case_completion_list_box.get_row_at_index(self._case_completion_selected_index)
+        if row is not None:
+            self._case_completion_list_box.select_row(row)
+
+    def _on_case_completion_row_activated(self, _list_box: Gtk.ListBox, row: Gtk.ListBoxRow) -> None:
+        index = getattr(row, "_open_law_lens_case_suggestion_index", None)
+        if isinstance(index, int):
+            self._case_completion_selected_index = index
+        self._apply_case_completion_selection()
+
+    def _apply_case_completion_selection(self) -> bool:
+        if not self._case_completion_matches:
+            return False
+        index = max(0, min(self._case_completion_selected_index, len(self._case_completion_matches) - 1))
+        suggestion = self._case_completion_matches[index]
+        self._case_completion_changing = True
+        try:
+            self.citation_entry.set_text(suggestion.label)
+            self.citation_entry.set_position(-1)
+        finally:
+            self._case_completion_changing = False
+        self._hide_case_completion()
+        self.citation_entry.grab_focus()
+        return True
+
+    def _lookup_text_from_entry(self, entry_text: str) -> str:
+        self._refresh_case_suggestion_index()
+        return resolve_case_lookup_text(entry_text, self._case_suggestions) or entry_text
 
     def _build_right_side(self) -> Gtk.Widget:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -451,6 +665,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def reload_settings(self) -> None:
         self.client = CourtListenerClient.default()
         self._load_cached_cases()
+        self._refresh_case_suggestion_index(force=True)
         self._set_status("Settings saved.")
 
     def _on_open_settings(self, _action: Gio.SimpleAction, _parameter: GLib.Variant | None) -> None:
@@ -470,11 +685,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_status("Research Cache cleared. Library preserved.")
 
     def _on_lookup_clicked(self, _widget: Gtk.Widget) -> None:
-        citation = self.citation_entry.get_text().strip()
-        if not citation:
+        entry_text = self.citation_entry.get_text().strip()
+        if not entry_text:
             self._set_status("Enter a citation.")
             return
-        self._set_status("Looking up citation...")
+        citation = self._lookup_text_from_entry(entry_text)
+        self._hide_case_completion()
+        self._set_status(f"Looking up {citation}...")
         self.reader_buffer.set_text("Loading...")
         thread = threading.Thread(target=self._lookup_worker, args=(citation,), daemon=True)
         thread.start()
@@ -559,6 +776,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _load_cached_cases(self) -> None:
         clusters = self.client.cached_clusters()
         self._set_sidebar_clusters(clusters)
+        self._refresh_case_suggestion_index(force=True)
         if clusters:
             self._set_status(f"{len(clusters)} Research Cache item(s).")
 
@@ -615,6 +833,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             select_first=bool(clusters),
         )
         self._set_status(status)
+        self._refresh_case_suggestion_index(force=True)
         if clusters:
             if self.case_list.get_selected_row() is None:
                 first = self.case_list.get_row_at_index(0)
