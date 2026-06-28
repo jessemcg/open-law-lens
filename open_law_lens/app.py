@@ -66,6 +66,7 @@ from .config import (
     save_config,
 )
 from .library import PageMarker
+from .text_search import literal_match_ranges
 
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -376,6 +377,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_click_gesture: Gtk.GestureClick | None = None
         self._reader_text = ""
         self._reader_highlight_tag: Gtk.TextTag | None = None
+        self._reader_find_tag: Gtk.TextTag | None = None
+        self._reader_find_current_tag: Gtk.TextTag | None = None
+        self._reader_find_bar: Gtk.Widget | None = None
+        self._reader_find_entry: Gtk.Entry | None = None
+        self._reader_find_count_label: Gtk.Label | None = None
+        self._reader_find_matches: list[tuple[int, int]] = []
+        self._reader_find_index = -1
         self._pending_quote_target: QuoteTarget | None = None
         self._settings_window: SettingsWindow | None = None
         self._case_suggestions: list[CaseSuggestion] = []
@@ -525,6 +533,21 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             .case-completion-row label {{
               font-size: 0.92rem;
             }}
+            box.reader-find-chip {{
+              background-color: alpha(@window_bg_color, 0.96);
+              border: 1px solid alpha(@window_fg_color, 0.14);
+              border-radius: 8px;
+              padding: 4px;
+              box-shadow: 0 2px 8px alpha(@window_fg_color, 0.16);
+            }}
+            entry.reader-find-entry {{
+              min-width: 220px;
+            }}
+            label.reader-find-count {{
+              min-width: 44px;
+              font-size: 0.86rem;
+              color: alpha(@window_fg_color, 0.72);
+            }}
             """.encode("utf-8")
         )
         if self._css_provider is None and (display := Gdk.Display.get_default()):
@@ -548,6 +571,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         root.set_margin_start(10)
         root.set_margin_end(10)
         self._install_case_completion_click_away(root)
+        self._install_reader_find_key_controller(root)
 
         main = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         main.set_hexpand(True)
@@ -822,6 +846,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             "agent-quote-highlight",
             background="#fff0a6",
         )
+        self._reader_find_tag = self.reader_buffer.create_tag(
+            "reader-find-match",
+            background="#fff3b0",
+        )
+        self._reader_find_current_tag = self.reader_buffer.create_tag(
+            "reader-find-current-match",
+            background="#ffd35a",
+            weight=Pango.Weight.BOLD,
+        )
         self.reader_view = Gtk.TextView(buffer=self.reader_buffer)
         self.reader_view.set_editable(False)
         self.reader_view.set_cursor_visible(False)
@@ -831,6 +864,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.reader_view.set_top_margin(18)
         self.reader_view.set_bottom_margin(18)
         self.reader_view.add_css_class("case-reader")
+        self._install_reader_find_key_controller(self.reader_view)
 
         reader_scroller = Gtk.ScrolledWindow()
         reader_scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
@@ -844,9 +878,62 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         frame.set_vexpand(True)
         frame.set_halign(Gtk.Align.FILL)
         frame.append(reader_scroller)
-        box.append(frame)
+        reader_overlay = Gtk.Overlay()
+        reader_overlay.set_hexpand(True)
+        reader_overlay.set_vexpand(True)
+        reader_overlay.set_child(frame)
+        reader_overlay.add_overlay(self._build_reader_find_bar())
+        box.append(reader_overlay)
         self.reader_buffer.set_text("")
         return box
+
+    def _build_reader_find_bar(self) -> Gtk.Widget:
+        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        bar.add_css_class("reader-find-chip")
+        bar.set_halign(Gtk.Align.END)
+        bar.set_valign(Gtk.Align.START)
+        bar.set_margin_top(10)
+        bar.set_margin_end(10)
+        bar.set_visible(False)
+
+        entry = Gtk.Entry()
+        entry.add_css_class("reader-find-entry")
+        entry.set_placeholder_text("Find in case")
+        entry.connect("changed", self._on_reader_find_entry_changed)
+        entry.connect("activate", self._on_reader_find_entry_activate)
+        key_controller = Gtk.EventControllerKey()
+        key_controller.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        key_controller.connect("key-pressed", self._on_reader_find_entry_key_pressed)
+        entry.add_controller(key_controller)
+        bar.append(entry)
+
+        count = Gtk.Label(label="0/0")
+        count.add_css_class("reader-find-count")
+        count.set_xalign(0.5)
+        bar.append(count)
+
+        previous_button = Gtk.Button(icon_name="go-up-symbolic")
+        previous_button.add_css_class("flat")
+        previous_button.set_tooltip_text("Previous match")
+        previous_button.connect("clicked", self._on_reader_find_previous_clicked)
+        bar.append(previous_button)
+
+        next_button = Gtk.Button(icon_name="go-down-symbolic")
+        next_button.add_css_class("flat")
+        next_button.set_tooltip_text("Next match")
+        next_button.connect("clicked", self._on_reader_find_next_clicked)
+        bar.append(next_button)
+
+        close_button = Gtk.Button(icon_name="window-close-symbolic")
+        close_button.add_css_class("flat")
+        close_button.set_tooltip_text("Close find")
+        close_button.connect("clicked", self._on_reader_find_close_clicked)
+        bar.append(close_button)
+
+        self._reader_find_bar = bar
+        self._reader_find_entry = entry
+        self._reader_find_count_label = count
+        return bar
 
     def _build_agent_box(self) -> Gtk.Widget:
         frame = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -990,6 +1077,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.toast_overlay.add_toast(Adw.Toast.new(text))
 
     def _set_reader_text(self, text: str, page_markers: list[PageMarker] | None = None) -> bool:
+        self._close_reader_find(clear_entry=True)
         self._reader_text = text
         self.reader_buffer.set_text(text)
         if page_markers:
@@ -1008,6 +1096,142 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._pending_quote_target = None
             self._highlight_reader_phrase(target.phrase)
         return False
+
+    def _install_reader_find_key_controller(self, widget: Gtk.Widget) -> None:
+        key_controller = Gtk.EventControllerKey()
+        key_controller.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        key_controller.connect("key-pressed", self._on_reader_find_key_pressed)
+        widget.add_controller(key_controller)
+
+    def _on_reader_find_key_pressed(
+        self,
+        _controller: Gtk.EventControllerKey,
+        keyval: int,
+        _keycode: int,
+        state: Gdk.ModifierType,
+    ) -> bool:
+        has_ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
+        has_shift = bool(state & Gdk.ModifierType.SHIFT_MASK)
+        if has_ctrl and keyval in {Gdk.KEY_f, Gdk.KEY_F}:
+            self._open_reader_find()
+            return True
+        if has_ctrl and keyval in {Gdk.KEY_g, Gdk.KEY_G}:
+            self._move_reader_find_match(-1 if has_shift else 1)
+            return True
+        if keyval == Gdk.KEY_Escape and self._reader_find_bar is not None and self._reader_find_bar.get_visible():
+            self._close_reader_find(clear_entry=False)
+            return True
+        return False
+
+    def _open_reader_find(self) -> None:
+        if self._reader_find_bar is None or self._reader_find_entry is None:
+            return
+        self._reader_find_bar.set_visible(True)
+        self._reader_find_entry.grab_focus()
+        self._reader_find_entry.select_region(0, -1)
+        self._refresh_reader_find_matches(scroll_to_match=True)
+
+    def _close_reader_find(self, *, clear_entry: bool) -> None:
+        if self._reader_find_bar is not None:
+            self._reader_find_bar.set_visible(False)
+        if clear_entry and self._reader_find_entry is not None:
+            self._reader_find_entry.set_text("")
+        self._reader_find_matches = []
+        self._reader_find_index = -1
+        self._update_reader_find_count()
+        self._clear_reader_find_tags()
+
+    def _on_reader_find_entry_changed(self, _entry: Gtk.Entry) -> None:
+        self._reader_find_index = 0
+        self._refresh_reader_find_matches(scroll_to_match=True)
+
+    def _on_reader_find_entry_activate(self, _entry: Gtk.Entry) -> None:
+        self._move_reader_find_match(1)
+
+    def _on_reader_find_entry_key_pressed(
+        self,
+        _controller: Gtk.EventControllerKey,
+        keyval: int,
+        _keycode: int,
+        state: Gdk.ModifierType,
+    ) -> bool:
+        if keyval == Gdk.KEY_Escape:
+            self._close_reader_find(clear_entry=False)
+            self.reader_view.grab_focus()
+            return True
+        if keyval in {Gdk.KEY_Return, Gdk.KEY_KP_Enter}:
+            direction = -1 if state & Gdk.ModifierType.SHIFT_MASK else 1
+            self._move_reader_find_match(direction)
+            return True
+        return False
+
+    def _on_reader_find_previous_clicked(self, _button: Gtk.Button) -> None:
+        self._move_reader_find_match(-1)
+
+    def _on_reader_find_next_clicked(self, _button: Gtk.Button) -> None:
+        self._move_reader_find_match(1)
+
+    def _on_reader_find_close_clicked(self, _button: Gtk.Button) -> None:
+        self._close_reader_find(clear_entry=False)
+        self.reader_view.grab_focus()
+
+    def _refresh_reader_find_matches(self, *, scroll_to_match: bool) -> None:
+        query = self._reader_find_entry.get_text() if self._reader_find_entry is not None else ""
+        self._reader_find_matches = literal_match_ranges(self._reader_text, query)
+        if not self._reader_find_matches:
+            self._reader_find_index = -1
+        elif self._reader_find_index < 0 or self._reader_find_index >= len(self._reader_find_matches):
+            self._reader_find_index = 0
+        self._apply_reader_find_tags(scroll_to_match=scroll_to_match)
+        self._update_reader_find_count()
+
+    def _move_reader_find_match(self, direction: int) -> None:
+        if self._reader_find_bar is None or not self._reader_find_bar.get_visible():
+            self._open_reader_find()
+            return
+        if not self._reader_find_matches:
+            self._set_status("No matches.")
+            return
+        self._reader_find_index = (self._reader_find_index + direction) % len(self._reader_find_matches)
+        self._apply_reader_find_tags(scroll_to_match=True)
+        self._update_reader_find_count()
+
+    def _clear_reader_find_tags(self) -> None:
+        start = self.reader_buffer.get_start_iter()
+        end = self.reader_buffer.get_end_iter()
+        if self._reader_find_tag is not None:
+            self.reader_buffer.remove_tag(self._reader_find_tag, start, end)
+        if self._reader_find_current_tag is not None:
+            self.reader_buffer.remove_tag(self._reader_find_current_tag, start, end)
+
+    def _apply_reader_find_tags(self, *, scroll_to_match: bool) -> None:
+        self._clear_reader_find_tags()
+        if self._reader_find_tag is None or self._reader_find_current_tag is None:
+            return
+        for start, end in self._reader_find_matches:
+            self.reader_buffer.apply_tag(
+                self._reader_find_tag,
+                self.reader_buffer.get_iter_at_offset(start),
+                self.reader_buffer.get_iter_at_offset(end),
+            )
+        if 0 <= self._reader_find_index < len(self._reader_find_matches):
+            start, end = self._reader_find_matches[self._reader_find_index]
+            start_iter = self.reader_buffer.get_iter_at_offset(start)
+            end_iter = self.reader_buffer.get_iter_at_offset(end)
+            self.reader_buffer.apply_tag(self._reader_find_current_tag, start_iter, end_iter)
+            self.reader_buffer.place_cursor(start_iter)
+            if scroll_to_match:
+                self.reader_view.scroll_to_iter(start_iter, 0.15, True, 0.0, 0.2)
+
+    def _update_reader_find_count(self) -> None:
+        if self._reader_find_count_label is None:
+            return
+        if not self._reader_find_matches:
+            self._reader_find_count_label.set_text("0/0")
+            return
+        self._reader_find_count_label.set_text(
+            f"{self._reader_find_index + 1}/{len(self._reader_find_matches)}"
+        )
 
     def _sync_agent_subviews(self) -> None:
         has_agent_output = self._agent_active or bool(self._agent_last_answer_text)
