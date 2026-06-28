@@ -84,6 +84,7 @@ AGENT_WRAPPER = PROJECT_DIR / "scripts" / "open-law-lens-codex-agent-vte.sh"
 DEFAULT_CODEX_BIN = "codex"
 READER_BG = "#ffffff"
 READER_FG = "#000000"
+CASE_HEADER_FONT_SIZE_DELTA_PT = 2
 AGENT_PANEL_MIN_HEIGHT = 260
 AGENT_HEIGHT_DIVISOR = 4
 AGENT_SUBVIEW_ANSWER = "answer"
@@ -458,6 +459,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         focus_cache_question = Gio.SimpleAction.new("focus_cache_question", None)
         focus_cache_question.connect("activate", self._on_focus_cache_question)
         self.add_action(focus_cache_question)
+        focus_search_question = Gio.SimpleAction.new("focus_search_question", None)
+        focus_search_question.connect("activate", self._on_focus_search_question)
+        self.add_action(focus_search_question)
         show_shortcuts = Gio.SimpleAction.new("show_shortcuts", None)
         show_shortcuts.connect("activate", self._on_show_shortcuts)
         self.add_action(show_shortcuts)
@@ -959,6 +963,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             background="#ffd35a",
             weight=Pango.Weight.BOLD,
         )
+        self._sync_case_header_font_size()
         self.reader_view = Gtk.TextView(buffer=self.reader_buffer)
         self.reader_view.set_editable(False)
         self.reader_view.set_cursor_visible(False)
@@ -1201,6 +1206,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         citation_header_end: int = 0,
     ) -> bool:
         self._close_reader_find(clear_entry=True)
+        self._sync_case_header_font_size()
         self._reader_text = text
         self.reader_buffer.set_text(text)
         header_end = text.find("\n\n")
@@ -1250,6 +1256,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._pending_quote_target = None
             self._highlight_reader_phrase(target.phrase)
         return False
+
+    def _sync_case_header_font_size(self) -> None:
+        config = load_config()
+        header_size = float(config.reader_font_size_pt + CASE_HEADER_FONT_SIZE_DELTA_PT)
+        self._case_header_tag.set_property("size-points", header_size)
 
     def _apply_reader_citation_links(self, text: str) -> None:
         table = self.reader_buffer.get_tag_table()
@@ -1694,6 +1705,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_agent_mode(AGENT_MODE_CASE)
         self._focus_entry_and_select_text(self.agent_question_entry)
 
+    def _on_focus_search_question(
+        self,
+        _action: Gio.SimpleAction,
+        _parameter: GLib.Variant | None,
+    ) -> None:
+        self._set_agent_mode(AGENT_MODE_SEARCH)
+        self._focus_entry_and_select_text(self.agent_question_entry)
+
     def _build_shortcuts_window(self) -> Gtk.ShortcutsWindow:
         if self._shortcuts_window is not None:
             return self._shortcuts_window
@@ -1719,6 +1738,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             Gtk.ShortcutsShortcut(
                 title="Focus marked-cache question",
                 accelerator="<Primary><Shift>Q",
+            )
+        )
+        navigation_group.append(
+            Gtk.ShortcutsShortcut(
+                title="Focus CourtListener search question",
+                accelerator="<Primary><Alt>Q",
             )
         )
         section.append(navigation_group)
@@ -1762,6 +1787,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def reload_settings(self) -> None:
         self.client = CourtListenerClient.default()
         self._install_css()
+        self._sync_case_header_font_size()
         self._load_cached_cases()
         self._refresh_case_suggestion_index(force=True)
         self._set_status("Settings saved.")
@@ -2582,7 +2608,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 None,
                 foreground_rgba=self._resolve_agent_quote_color(),
                 underline=Pango.Underline.NONE,
-                weight=Pango.Weight.BOLD,
+                weight=Pango.Weight.MEDIUM,
             )
             buffer.apply_tag(
                 tag,
@@ -3105,6 +3131,7 @@ class OpenLawLensApp(Adw.Application):
         self.set_accels_for_action("win.focus_citation", ["<Primary>l"])
         self.set_accels_for_action("win.focus_law_question", ["<Primary>q"])
         self.set_accels_for_action("win.focus_cache_question", ["<Primary><Shift>q"])
+        self.set_accels_for_action("win.focus_search_question", ["<Primary><Alt>q"])
         self.set_accels_for_action("win.show_shortcuts", ["F1"])
 
     def _on_activate(self, _app: Adw.Application) -> None:
