@@ -89,6 +89,16 @@ class ClientTests(unittest.TestCase):
 
         self.assertEqual(cluster_short_title(cluster), "Example v. State")
 
+    def test_cluster_short_title_prefers_case_name_over_non_dependency_short_name(self) -> None:
+        cluster = {
+            "case_name": "DKN Holdings LLC v. Faerber",
+            "case_name_full": "DKN HOLDINGS LLC, Plaintiff and Appellant, v. WADE FAERBER, Defendant and Respondent",
+            "case_name_short": "Faerber",
+        }
+
+        self.assertEqual(cluster_title(cluster), "DKN Holdings LLC v. Faerber")
+        self.assertEqual(cluster_short_title(cluster), "DKN Holdings LLC v. Faerber")
+
     def test_cluster_short_title_keeps_superior_court_writ_case_name(self) -> None:
         cluster = {
             "case_name": "Cesar V. v. Superior Court",
@@ -199,6 +209,24 @@ class ClientTests(unittest.TestCase):
         assert citation is not None
         self.assertEqual(citation.plain_text, "In re Emily D. (2015) 234 Cal.App.4th 438")
         self.assertEqual(official_california_reporter_citation(cluster), "234 Cal.App.4th 438")
+
+    def test_format_official_california_citation_uses_case_name_over_civil_short_name(self) -> None:
+        cluster = {
+            "case_name": "DKN Holdings LLC v. Faerber",
+            "case_name_full": "DKN HOLDINGS LLC, Plaintiff and Appellant, v. WADE FAERBER, Defendant and Respondent",
+            "case_name_short": "Faerber",
+            "date_filed": "2015-07-13",
+            "citations": [{"volume": "61", "reporter": "Cal. 4th", "page": "813"}],
+        }
+
+        citation = format_official_california_citation(cluster)
+
+        self.assertIsNotNone(citation)
+        assert citation is not None
+        self.assertEqual(
+            citation.plain_text,
+            "DKN Holdings LLC v. Faerber (2015) 61 Cal.4th 813",
+        )
 
     def test_format_official_california_citation_keeps_superior_court_writ_case_name(self) -> None:
         cluster = {
