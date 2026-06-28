@@ -318,14 +318,18 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_answer_view: Gtk.TextView | None = None
         self._agent_answer_button: Gtk.ToggleButton | None = None
         self._agent_session_button: Gtk.ToggleButton | None = None
+        self._agent_subview_strip: Gtk.Widget | None = None
         self._agent_subview_name = AGENT_SUBVIEW_SESSION
         self._agent_subview_toggle_guard = False
+        self._agent_mode_buttons: dict[str, Gtk.ToggleButton] = {}
+        self._agent_mode_toggle_guard = False
         self._agent_active = False
         self._agent_workspace_path: Path | None = None
         self._agent_session_log_path: Path | None = None
         self._agent_answer_poll_id: int | None = None
         self._agent_last_answer_text = ""
         self._agent_mode = AGENT_MODE_GENERAL
+        self._selected_agent_mode = AGENT_MODE_GENERAL
         self._case_agent_text_sources: list[CaseTextSource] = []
         self._agent_link_tags: list[Gtk.TextTag] = []
         self._agent_link_lookup: dict[Gtk.TextTag, QuoteTarget] = {}
@@ -406,8 +410,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             }}
             .ai-output-frame {{
               background-color: {AGENT_AI_PANEL_BG_COLOR};
-              border-radius: 16px;
-              padding: 10px;
+              border-radius: 8px;
+              padding: 8px;
+            }}
+            box.agent-ask-bar {{
+              min-height: 34px;
             }}
             .no-bold {{
               font-weight: normal;
@@ -744,18 +751,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         frame.set_vexpand(False)
         frame.set_halign(Gtk.Align.FILL)
 
-        general_row = self._build_agent_question_row(
-            "General California Law",
-            "Question about California law",
-            AGENT_MODE_GENERAL,
-        )
-        frame.append(general_row)
-        case_row = self._build_agent_question_row(
-            "Marked Research Cache Cases",
-            "Question about marked cache cases",
-            AGENT_MODE_CASE,
-        )
-        frame.append(case_row)
+        frame.append(self._build_agent_ask_bar())
 
         subview_strip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         subview_strip.add_css_class("focus-pill-group")
@@ -772,6 +768,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             "Show the embedded Agent terminal session",
         )
         subview_strip.append(self._agent_session_button)
+        self._agent_subview_strip = subview_strip
         frame.append(subview_strip)
 
         self._agent_answer_buffer = Gtk.TextBuffer()
@@ -832,32 +829,44 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_agent_subview(AGENT_SUBVIEW_SESSION)
         return frame
 
-    def _build_agent_question_row(
-        self,
-        label_text: str,
-        placeholder: str,
-        mode: str,
-    ) -> Gtk.Widget:
+    def _build_agent_ask_bar(self) -> Gtk.Widget:
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        row.add_css_class("agent-ask-bar")
         row.set_hexpand(True)
-        label = Gtk.Label(label=label_text, xalign=0)
-        label.set_size_request(190, -1)
-        label.add_css_class("dim-label")
-        row.append(label)
-        entry = Gtk.Entry()
-        entry.set_hexpand(True)
-        entry.set_placeholder_text(placeholder)
-        entry.connect("activate", self._on_agent_launch, mode)
-        row.append(entry)
+
+        mode_strip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        mode_strip.add_css_class("focus-pill-group")
+        mode_strip.append(self._build_agent_mode_button("Law", AGENT_MODE_GENERAL))
+        mode_strip.append(self._build_agent_mode_button("Cache", AGENT_MODE_CASE))
+        row.append(mode_strip)
+
+        self.agent_question_entry = Gtk.Entry()
+        self.agent_question_entry.set_hexpand(True)
+        self.agent_question_entry.set_placeholder_text("Ask a California law question")
+        self.agent_question_entry.connect("activate", self._on_agent_launch)
+        row.append(self.agent_question_entry)
+
         button = Gtk.Button(icon_name="media-playback-start-symbolic")
         button.set_tooltip_text("Start Agent")
-        button.connect("clicked", self._on_agent_launch, mode)
+        button.connect("clicked", self._on_agent_launch)
         row.append(button)
-        if mode == AGENT_MODE_GENERAL:
-            self.general_agent_entry = entry
-        else:
-            self.case_agent_entry = entry
+        self._set_agent_mode(AGENT_MODE_GENERAL)
         return row
+
+    def _build_agent_mode_button(self, label: str, mode: str) -> Gtk.ToggleButton:
+        button = Gtk.ToggleButton(label=label)
+        button.add_css_class("flat")
+        button.add_css_class("no-bold")
+        button.add_css_class("focus-pill-segment")
+        tooltip = (
+            "Ask from CourtListener legal authority"
+            if mode == AGENT_MODE_GENERAL
+            else "Ask from marked Research Cache cases"
+        )
+        button.set_tooltip_text(tooltip)
+        button.connect("toggled", self._on_agent_mode_button_toggled, mode)
+        self._agent_mode_buttons[mode] = button
+        return button
 
     def _build_agent_subview_button(
         self,
@@ -901,10 +910,17 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return False
 
     def _sync_agent_subviews(self) -> None:
+        has_agent_output = self._agent_active or bool(self._agent_last_answer_text)
+        if self._agent_subview_strip is not None:
+            self._agent_subview_strip.set_visible(has_agent_output)
         if self._agent_answer_scroller is not None:
-            self._agent_answer_scroller.set_visible(self._agent_subview_name == AGENT_SUBVIEW_ANSWER)
+            self._agent_answer_scroller.set_visible(
+                has_agent_output and self._agent_subview_name == AGENT_SUBVIEW_ANSWER
+            )
         if self._agent_session_widget is not None:
-            self._agent_session_widget.set_visible(self._agent_subview_name == AGENT_SUBVIEW_SESSION)
+            self._agent_session_widget.set_visible(
+                has_agent_output and self._agent_subview_name == AGENT_SUBVIEW_SESSION
+            )
             if self._agent_subview_name == AGENT_SUBVIEW_SESSION:
                 self._agent_session_widget.set_size_request(-1, AGENT_TERMINAL_MAX_HEIGHT)
             else:
@@ -946,6 +962,42 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 self._set_agent_subview(subview_name)
             return
         self._set_agent_subview(subview_name)
+
+    def _set_agent_mode(self, mode: str) -> None:
+        self._selected_agent_mode = (
+            mode if mode in {AGENT_MODE_GENERAL, AGENT_MODE_CASE} else AGENT_MODE_GENERAL
+        )
+        if hasattr(self, "agent_question_entry"):
+            placeholder = (
+                "Ask a California law question"
+                if self._selected_agent_mode == AGENT_MODE_GENERAL
+                else "Ask about marked Research Cache cases"
+            )
+            self.agent_question_entry.set_placeholder_text(placeholder)
+        self._agent_mode_toggle_guard = True
+        try:
+            for name, button in self._agent_mode_buttons.items():
+                active = name == self._selected_agent_mode
+                button.set_active(active)
+                if active:
+                    button.add_css_class("focus-ai-view-active")
+                else:
+                    button.remove_css_class("focus-ai-view-active")
+        finally:
+            self._agent_mode_toggle_guard = False
+
+    def _on_agent_mode_button_toggled(
+        self,
+        button: Gtk.ToggleButton,
+        mode: str,
+    ) -> None:
+        if self._agent_mode_toggle_guard:
+            return
+        if not button.get_active():
+            if self._selected_agent_mode == mode:
+                self._set_agent_mode(mode)
+            return
+        self._set_agent_mode(mode)
 
     def _on_window_tick(self, _widget: Gtk.Widget, _clock: Gdk.FrameClock) -> bool:
         return True
@@ -1252,12 +1304,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             if cluster_id_from_cluster(cluster) in selected_ids
         ]
 
-    def _on_agent_launch(self, widget: Gtk.Widget, mode: str) -> None:
+    def _on_agent_launch(self, _widget: Gtk.Widget) -> None:
         if Vte is None or self._agent_terminal is None:
             self._set_status("Embedded terminal is unavailable.")
             return
-        entry = self.general_agent_entry if mode == AGENT_MODE_GENERAL else self.case_agent_entry
-        question = entry.get_text().strip()
+        mode = self._selected_agent_mode
+        question = self.agent_question_entry.get_text().strip()
         if not question:
             self._set_status("Enter an agent question.")
             return
@@ -1333,7 +1385,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 "CODEX_BIN": os.environ.get("OPEN_LAW_LENS_CODEX_BIN", DEFAULT_CODEX_BIN),
             }
         )
-        profile = os.environ.get("OPEN_LAW_LENS_CODEX_PROFILE", "").strip()
+        profile = os.environ.get("OPEN_LAW_LENS_CODEX_PROFILE", "open-law-lens").strip()
         if profile:
             env["CODEX_PROFILE"] = profile
         else:
