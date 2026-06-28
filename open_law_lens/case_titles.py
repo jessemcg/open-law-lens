@@ -9,6 +9,7 @@ def normalize_case_title(title: str) -> str:
     normalized = re.sub(r"^in\s+re\b", "In re", normalized, count=1, flags=re.IGNORECASE)
     if not normalized.startswith("In re "):
         return normalized
+    normalized = _normalize_in_re_name_words(normalized)
     normalized = re.sub(r"\b([A-Z])\.\s+([A-Z])\.(?=$|[\s,)])", r"\1.\2.", normalized)
     normalized = re.sub(
         r"^(In re )([A-Z]{2})\.?(?=$|[\s,(])",
@@ -16,6 +17,21 @@ def normalize_case_title(title: str) -> str:
         normalized,
     )
     return re.sub(r"\s+CA\d+\s*$", "", normalized)
+
+
+def _normalize_in_re_name_words(title: str) -> str:
+    prefix = "In re "
+    body = title.removeprefix(prefix)
+
+    def replace(match: re.Match[str]) -> str:
+        word = match.group(0)
+        if len(word) <= 2:
+            return word
+        if re.fullmatch(r"[A-Z]\.[A-Z]\.", word):
+            return word
+        return word[0] + word[1:].lower()
+
+    return prefix + re.sub(r"\b[A-Z]{2,}\b", replace, body)
 
 
 def is_bare_initial_title(title: str) -> bool:

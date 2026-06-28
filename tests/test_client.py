@@ -61,6 +61,9 @@ class ClientTests(unittest.TestCase):
     def test_case_title_normalizes_leading_in_re_only(self) -> None:
         self.assertEqual(normalize_case_title(" In Re Emily D. "), "In re Emily D.")
         self.assertEqual(normalize_case_title("IN RE Malinda S."), "In re Malinda S.")
+        self.assertEqual(normalize_case_title("In re MADISON S."), "In re Madison S.")
+        self.assertEqual(normalize_case_title("In re MIGUEL S."), "In re Miguel S.")
+        self.assertEqual(normalize_case_title("In re D.H."), "In re D.H.")
         self.assertEqual(normalize_case_title("In re KC"), "In re K.C.")
         self.assertEqual(normalize_case_title("In re KC."), "In re K.C.")
         self.assertEqual(normalize_case_title("In re BG (1974)"), "In re B.G. (1974)")
@@ -456,7 +459,7 @@ class ClientTests(unittest.TestCase):
                 "cluster_id": 5592958,
                 "caseName": (
                     "Orange Cnty. Soc. Servs. Agency v. United States "
-                    "(In re Miguel S.)"
+                    "(In re MIGUEL S.)"
                 ),
                 "caseNameFull": (
                     "IN RE MIGUEL S., Persons Coming Under the Juvenile Court Law. "

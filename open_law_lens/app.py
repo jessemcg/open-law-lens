@@ -56,7 +56,12 @@ from .case_suggestions import (
     merge_case_suggestions,
     resolve_case_lookup_text,
 )
-from .citation_links import CitedCaseLink, cited_case_links, cluster_citation_texts
+from .citation_links import (
+    CitedCaseLink,
+    citation_italic_spans,
+    cited_case_links,
+    cluster_citation_texts,
+)
 from .config import (
     AppConfig,
     DEFAULT_CASE_AGENT_PROMPT_TEMPLATE,
@@ -407,6 +412,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_find_count_label: Gtk.Label | None = None
         self._reader_find_matches: list[tuple[int, int]] = []
         self._reader_find_index = -1
+        self._reader_citation_italic_tag: Gtk.TextTag | None = None
         self._reader_citation_link_tags: list[Gtk.TextTag] = []
         self._reader_citation_link_lookup: dict[Gtk.TextTag, CitedCaseLink] = {}
         self._reader_citation_motion_controller: Gtk.EventControllerMotion | None = None
@@ -924,6 +930,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._case_title_tag = self.reader_buffer.create_tag(
             "case-title",
             weight=Pango.Weight.BOLD,
+            style=Pango.Style.ITALIC,
+        )
+        self._reader_citation_italic_tag = self.reader_buffer.create_tag(
+            "reader-citation-italic",
+            style=Pango.Style.ITALIC,
         )
         self._reader_highlight_tag = self.reader_buffer.create_tag(
             "agent-quote-highlight",
@@ -1188,6 +1199,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                     self.reader_buffer.get_iter_at_offset(start),
                     self.reader_buffer.get_iter_at_offset(end),
                 )
+        self._apply_reader_citation_italics(text)
         self._apply_reader_citation_links(text)
         if self._pending_quote_target is not None:
             target = self._pending_quote_target
@@ -1220,6 +1232,20 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             )
             self._reader_citation_link_tags.append(tag)
             self._reader_citation_link_lookup[tag] = link
+
+    def _apply_reader_citation_italics(self, text: str) -> None:
+        if self._reader_citation_italic_tag is None:
+            return
+        for span in citation_italic_spans(text):
+            start = max(0, min(span.start_offset, len(text)))
+            end = max(start, min(span.end_offset, len(text)))
+            if start == end:
+                continue
+            self.reader_buffer.apply_tag(
+                self._reader_citation_italic_tag,
+                self.reader_buffer.get_iter_at_offset(start),
+                self.reader_buffer.get_iter_at_offset(end),
+            )
 
     def _install_reader_citation_link_controllers(self) -> None:
         if self._reader_citation_motion_controller is None:

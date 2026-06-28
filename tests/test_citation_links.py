@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import unittest
 
-from open_law_lens.citation_links import cited_case_links, cluster_citation_texts
+from open_law_lens.citation_links import (
+    citation_italic_spans,
+    cited_case_links,
+    cluster_citation_texts,
+)
 
 
 class CitationLinkTests(unittest.TestCase):
@@ -80,6 +84,60 @@ class CitationLinkTests(unittest.TestCase):
             text[links[0].start_offset:links[0].end_offset],
             "Cesar V. v. Superior Court (2001) 91 Cal.App.4th 1023",
         )
+
+    def test_citation_italic_spans_cover_case_names_in_full_citations(self) -> None:
+        text = (
+            "The rule follows In re Alexis E. (2009) 171 Cal.App.4th 438 "
+            "and Michael M. v. Giovanna F. (1992) 5 Cal.App.4th 1272."
+        )
+
+        spans = citation_italic_spans(text)
+
+        self.assertEqual(
+            [text[span.start_offset:span.end_offset] for span in spans],
+            ["In re Alexis E.", "Michael M. v. Giovanna F."],
+        )
+
+    def test_citation_italic_spans_exclude_signal_phrases(self) -> None:
+        text = (
+            "Relying on Michael M. v. Giovanna F. (1992) 5 Cal.App.4th 1272. "
+            "See also Lehr v. Robertson (1983) 463 U.S. 248."
+        )
+
+        spans = citation_italic_spans(text)
+
+        self.assertEqual(
+            [text[span.start_offset:span.end_offset] for span in spans],
+            ["Michael M. v. Giovanna F.", "Lehr v. Robertson"],
+        )
+
+    def test_citation_italic_spans_cover_case_names_before_supra(self) -> None:
+        text = (
+            "In re L. Y. L., supra, at p. 948; "
+            "County of Alameda v. Carleson, supra."
+        )
+
+        spans = citation_italic_spans(text)
+
+        self.assertEqual(
+            [text[span.start_offset:span.end_offset] for span in spans],
+            ["In re L. Y. L.", "supra", "County of Alameda v. Carleson", "supra"],
+        )
+
+    def test_citation_italic_spans_cover_shorthand_terms(self) -> None:
+        text = "Id. at p. 12; ibid.; supra; ID at p. 14."
+
+        spans = citation_italic_spans(text)
+
+        self.assertEqual(
+            [text[span.start_offset:span.end_offset] for span in spans],
+            ["Id.", "ibid.", "supra", "ID"],
+        )
+
+    def test_citation_italic_spans_ignore_reporter_only_citations(self) -> None:
+        text = "The later citation is 171 Cal.App.4th 438."
+
+        self.assertEqual(citation_italic_spans(text), [])
 
     def test_cluster_citation_texts_renders_lookup_citations(self) -> None:
         cluster = {

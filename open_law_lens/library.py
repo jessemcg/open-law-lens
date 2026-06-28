@@ -29,6 +29,9 @@ TEXT_FIELDS = (
     "html_anon_2020",
     "xml_harvard",
 )
+RAW_STAR_PAGE_MARKER_RE = re.compile(
+    r"(?<![\w\[])\*(?:Page\s+)?(?P<label>\d{2,5})(?!\d)"
+)
 
 CP1252_CONTROL_TRANSLATION = str.maketrans(
     {
@@ -272,6 +275,72 @@ def _page_marker_label(value: str) -> str:
     return label
 
 
+def _normalize_raw_star_page_markers(display: DisplayText) -> DisplayText:
+    if not display.text:
+        return display
+    existing_ranges = [
+        (marker.start_offset, marker.end_offset)
+        for marker in display.page_markers
+    ]
+    replacements: list[tuple[int, int, str, str]] = []
+    for match in RAW_STAR_PAGE_MARKER_RE.finditer(display.text):
+        start, end = match.span()
+        if any(range_start <= start < range_end for range_start, range_end in existing_ranges):
+            continue
+        label = _page_marker_label(match.group(0))
+        if not label:
+            continue
+        replacements.append((start, end, f"[*{label}]", label))
+    if not replacements:
+        return display
+
+    parts: list[str] = []
+    raw_markers: list[PageMarker] = []
+    position = 0
+    text_length = 0
+    for start, end, marker_text, label in replacements:
+        prefix = display.text[position:start]
+        parts.append(prefix)
+        text_length += len(prefix)
+        marker_start = text_length
+        parts.append(marker_text)
+        text_length += len(marker_text)
+        raw_markers.append(
+            PageMarker(
+                page_label=label,
+                marker_text=marker_text,
+                start_offset=marker_start,
+                end_offset=marker_start + len(marker_text),
+                source_field=display.source_field,
+            )
+        )
+        position = end
+    suffix = display.text[position:]
+    parts.append(suffix)
+    text = "".join(parts)
+
+    def translated_offset(offset: int) -> int:
+        translated = offset
+        for start, end, marker_text, _label in replacements:
+            if end <= offset:
+                translated += len(marker_text) - (end - start)
+        return translated
+
+    page_markers = [
+        PageMarker(
+            page_label=marker.page_label,
+            marker_text=marker.marker_text,
+            start_offset=translated_offset(marker.start_offset),
+            end_offset=translated_offset(marker.end_offset),
+            source_field=marker.source_field,
+        )
+        for marker in display.page_markers
+    ]
+    page_markers.extend(raw_markers)
+    page_markers.sort(key=lambda marker: marker.start_offset)
+    return DisplayText(text=text, source_field=display.source_field, page_markers=page_markers)
+
+
 def opinion_display_text(opinion: dict[str, Any]) -> DisplayText:
     for field in TEXT_FIELDS:
         value = opinion.get(field)
@@ -281,9 +350,11 @@ def opinion_display_text(opinion: dict[str, Any]) -> DisplayText:
             parser = _DisplayTextExtractor(field)
             parser.feed(value)
             parser.close()
-            return parser.display_text()
+            return _normalize_raw_star_page_markers(parser.display_text())
         text = decode_cp1252_control_chars(value).strip()
-        return DisplayText(text=text, source_field=field, page_markers=[])
+        return _normalize_raw_star_page_markers(
+            DisplayText(text=text, source_field=field, page_markers=[])
+        )
     return DisplayText(text="", source_field="", page_markers=[])
 
 

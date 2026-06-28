@@ -194,6 +194,64 @@ class LibraryTests(unittest.TestCase):
 
         self.assertEqual(display.text, "Alpha \u2014 beta.")
 
+    def test_plain_opinion_display_text_normalizes_raw_star_page_markers(self) -> None:
+        opinion = {
+            "id": 10,
+            "plain_text": (
+                "*513C.T. and D.A. appeal the juvenile court's order.\n\n"
+                "The Agency filed a petition under *514Welfare and Institutions Code section 300.\n\n"
+                "*323Once the Agency located D.R., it set a special hearing."
+            ),
+        }
+
+        display = opinion_display_text(opinion)
+
+        self.assertEqual(
+            display.text,
+            (
+                "[*513]C.T. and D.A. appeal the juvenile court's order.\n\n"
+                "The Agency filed a petition under [*514]Welfare and Institutions Code section 300.\n\n"
+                "[*323]Once the Agency located D.R., it set a special hearing."
+            ),
+        )
+        self.assertEqual(
+            [marker.page_label for marker in display.page_markers],
+            ["513", "514", "323"],
+        )
+        for marker in display.page_markers:
+            self.assertEqual(display.text[marker.start_offset:marker.end_offset], marker.marker_text)
+
+    def test_opinion_display_text_does_not_duplicate_normalized_star_page_markers(self) -> None:
+        opinion = {"id": 10, "plain_text": "Alpha [*513] beta *514Gamma."}
+
+        display = opinion_display_text(opinion)
+
+        self.assertEqual(display.text, "Alpha [*513] beta [*514]Gamma.")
+        self.assertEqual([marker.page_label for marker in display.page_markers], ["514"])
+
+    def test_html_opinion_display_text_normalizes_untagged_raw_star_page_markers(self) -> None:
+        opinion = {
+            "id": 10,
+            "html_with_citations": (
+                "<p>*513C.T. and D.A. appeal the juvenile court's order.</p>"
+                "<p>The Agency filed a petition under *514Welfare and Institutions Code section 300.</p>"
+            ),
+        }
+
+        display = opinion_display_text(opinion)
+
+        self.assertEqual(
+            display.text,
+            (
+                "[*513]C.T. and D.A. appeal the juvenile court's order.\n\n"
+                "The Agency filed a petition under [*514]Welfare and Institutions Code section 300."
+            ),
+        )
+        self.assertEqual(
+            [marker.page_label for marker in display.page_markers],
+            ["513", "514"],
+        )
+
     def test_opinion_display_text_preserves_reporter_header_lines(self) -> None:
         opinion = {
             "id": 10,
