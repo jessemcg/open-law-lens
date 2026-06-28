@@ -31,6 +31,14 @@ def leading_in_re_title(title: str) -> str:
     return normalize_case_title(leading)
 
 
+def parenthetical_in_re_title(title: str) -> str:
+    normalized = re.sub(r"\s+", " ", title.strip())
+    matches = re.findall(r"\((In re [^)]+)\)", normalized, flags=re.IGNORECASE)
+    if not matches:
+        return ""
+    return normalize_case_title(matches[-1])
+
+
 def is_superior_court_writ_title(title: str) -> bool:
     normalized = re.sub(r"\s+", " ", title.strip())
     return bool(re.search(r"\bv\.\s+Superior Court\b", normalized))

@@ -4,6 +4,7 @@ import html
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from html.parser import HTMLParser
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -15,6 +16,7 @@ from .case_titles import (
     cluster_short_title_value,
     cluster_title_value,
     normalize_case_title,
+    parenthetical_in_re_title,
 )
 from .config import courtlistener_token
 from .library import CaseLibrary, DisplayText, decode_cp1252_control_chars, opinion_display_text
@@ -70,6 +72,14 @@ class CourtListenerSearchResult:
     court_id: str
     date_filed: str
     status: str
+    snippet: str = ""
+
+
+@dataclass(frozen=True)
+class CourtListenerSearchPage:
+    results: list[CourtListenerSearchResult]
+    count: int
+    next_url: str
 
 
 class _TextExtractor(HTMLParser):
@@ -227,17 +237,129 @@ def courtlistener_search_query(query: str, *, include_unpublished: bool = False)
 def _search_citation_line(result: dict[str, Any]) -> str:
     citations = result.get("citation")
     if isinstance(citations, list):
-        rendered = [str(value).strip() for value in citations if str(value).strip()]
-        return "; ".join(rendered)
+        for value in citations:
+            citation = official_california_reporter_citation_from_text(str(value))
+            if citation:
+                return citation
     if isinstance(citations, str):
-        return citations.strip()
+        return official_california_reporter_citation_from_text(citations)
     return ""
+
+
+def official_california_reporter_citation_from_text(text: str) -> str:
+    match = re.search(
+        r"\b(?P<volume>\d+)\s+"
+        r"(?P<reporter>Cal\.?\s*(?:App\.?\s*)?(?:\d+d|[2-5]th)?)\s+"
+        r"(?P<page>\d+)\b",
+        text,
+        re.IGNORECASE,
+    )
+    if not match:
+        return ""
+    normalized_reporter = _normalized_reporter(match.group("reporter"))
+    display_reporter = OFFICIAL_CALIFORNIA_REPORTERS.get(normalized_reporter)
+    if display_reporter is None:
+        return ""
+    return f"{match.group('volume')} {display_reporter} {match.group('page')}"
+
+
+def search_result_full_citation(result: CourtListenerSearchResult) -> str:
+    year = result.date_filed[:4] if re.match(r"^\d{4}", result.date_filed) else ""
+    if result.citation and year:
+        return f"{result.case_name} ({year}) {result.citation}"
+    if result.citation:
+        return f"{result.case_name} {result.citation}"
+    if year:
+        return f"{result.case_name} ({year}) [official reporter unavailable]"
+    return result.case_name
+
+
+def us_long_date(value: str) -> str:
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        return value
+    return f"{parsed.strftime('%B')} {parsed.day}, {parsed.year}"
+
+
+def clean_search_snippet(value: str) -> str:
+    text = re.sub(r"\r\n?", "\n", value)
+    text = re.sub(r"[ \t\f\v]+", " ", text)
+    text = re.sub(r"\n[ \t]+", "\n", text).strip()
+    if not text:
+        return ""
+
+    opinion_match = re.search(r"(?im)^\s*Opinion\s*$", text)
+    candidates = [text[opinion_match.end() :]] if opinion_match else []
+    candidates.append(text)
+    for candidate in candidates:
+        trimmed = _trim_snippet_to_body(candidate)
+        if trimmed:
+            return re.sub(r"\s+", " ", trimmed).strip()
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _trim_snippet_to_body(text: str) -> str:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    for index, line in enumerate(lines):
+        candidate = _strip_leading_page_marker(line)
+        if _looks_like_opinion_body_line(candidate):
+            tail = [candidate, *lines[index + 1 :]]
+            return "\n".join(tail)
+    return ""
+
+
+def _strip_leading_page_marker(line: str) -> str:
+    return re.sub(r"^\*\d+\s*", "", line).strip()
+
+
+def _looks_like_opinion_body_line(line: str) -> bool:
+    if len(line) < 35 or not re.search(r"[a-z]", line):
+        return False
+    if _is_snippet_boilerplate_line(line):
+        return False
+    return bool(re.search(r"[.,;:?!]", line))
+
+
+def _is_snippet_boilerplate_line(line: str) -> bool:
+    normalized = re.sub(r"\s+", " ", line.strip())
+    upper = normalized.upper()
+    if re.fullmatch(r"\*?\d+", normalized):
+        return True
+    if re.search(r"\b\d+\s+Cal\.", normalized):
+        return True
+    boilerplate_patterns = (
+        r"^Filed\b",
+        r"^Certified for Publication\b",
+        r"^CERTIFIED FOR PUBLICATION$",
+        r"^IN THE COURT OF APPEAL\b",
+        r"^COURT OF APPEAL\b",
+        r"^STATE OF CALIFORNIA$",
+        r"^(FIRST|SECOND|THIRD|FOURTH|FIFTH|SIXTH)\s+APPELLATE DISTRICT\b",
+        r"^DIVISION\s+\w+\b",
+        r"^No\.\s+",
+        r"^B\d+|^C\d+|^D\d+|^E\d+|^F\d+|^G\d+|^H\d+",
+        r"^\(Super\. Ct\. No\.",
+        r"^\([A-Za-z ]+ County\)$",
+        r"^Opinion$",
+        r"^[A-Z][A-Z .,'-]+,\s*(Acting\s+)?(P\.\s*J\.|J\.)$",
+        r"^THE COURT\.$",
+        r"^v\.$",
+        r"^----$",
+        r"\b(Plaintiff|Defendant|Appellant|Respondent|Petitioner|Real Party)\b",
+        r"\b(Person|Persons) Coming Under the Juvenile Court Law\b",
+        r"^Court Law\.$",
+    )
+    return any(re.search(pattern, normalized, flags=re.IGNORECASE) for pattern in boilerplate_patterns) or upper == normalized
 
 
 def _search_case_name(result: dict[str, Any]) -> str:
     for key in ("caseName", "caseNameFull"):
         value = result.get(key)
         if isinstance(value, str) and value.strip():
+            parenthetical_title = parenthetical_in_re_title(value)
+            if parenthetical_title:
+                return parenthetical_title
             return normalize_case_title(value)
     cluster_id = str(result.get("cluster_id") or "").strip()
     return f"Cluster {cluster_id}" if cluster_id else "Untitled case"
@@ -254,6 +376,16 @@ def normalize_search_result(result: dict[str, Any]) -> CourtListenerSearchResult
         court_text = str(court.get("short_name") or court.get("full_name") or "").strip()
     else:
         court_text = ""
+    snippet = ""
+    opinions = result.get("opinions")
+    if isinstance(opinions, list):
+        for opinion in opinions:
+            if not isinstance(opinion, dict):
+                continue
+            value = opinion.get("snippet")
+            if isinstance(value, str) and value.strip():
+                snippet = clean_search_snippet(value)
+                break
     return CourtListenerSearchResult(
         cluster_id=cluster_id,
         case_name=_search_case_name(result),
@@ -262,7 +394,26 @@ def normalize_search_result(result: dict[str, Any]) -> CourtListenerSearchResult
         court_id=str(result.get("court_id") or "").strip(),
         date_filed=str(result.get("dateFiled") or "").strip(),
         status=str(result.get("status") or "").strip(),
+        snippet=snippet,
     )
+
+
+def dedupe_search_results(
+    results: list[CourtListenerSearchResult],
+) -> list[CourtListenerSearchResult]:
+    deduped: list[CourtListenerSearchResult] = []
+    index_by_key: dict[tuple[str, str], int] = {}
+    for result in results:
+        key = (result.case_name.casefold(), result.date_filed)
+        existing_index = index_by_key.get(key)
+        if existing_index is None:
+            index_by_key[key] = len(deduped)
+            deduped.append(result)
+            continue
+        existing = deduped[existing_index]
+        if not existing.citation and result.citation:
+            deduped[existing_index] = result
+    return deduped
 
 
 def _citation_count(cluster: dict[str, Any]) -> int:
@@ -411,13 +562,19 @@ class CourtListenerClient:
         query: str,
         *,
         include_unpublished: bool = False,
-    ) -> list[CourtListenerSearchResult]:
-        search_query = courtlistener_search_query(
-            query,
-            include_unpublished=include_unpublished,
-        )
-        url = f"{SEARCH_URL}?{urlencode({'q': search_query, 'type': 'o'})}"
-        request = Request(url, headers=self._headers(), method="GET")
+        url: str = "",
+    ) -> CourtListenerSearchPage:
+        if url:
+            full_url = url
+        else:
+            search_query = courtlistener_search_query(
+                query,
+                include_unpublished=include_unpublished,
+            )
+            full_url = f"{SEARCH_URL}?{urlencode({'q': search_query, 'type': 'o'})}"
+        if full_url.startswith("/"):
+            full_url = f"{BASE_URL}{full_url}"
+        request = Request(full_url, headers=self._headers(), method="GET")
         result = self._request_json(request)
         if not isinstance(result, dict):
             raise CourtListenerError("CourtListener search returned unexpected JSON.")
@@ -431,7 +588,17 @@ class CourtListenerClient:
             search_result = normalize_search_result(row)
             if search_result is not None:
                 normalized.append(search_result)
-        return normalized
+        count = result.get("count")
+        try:
+            count_value = int(count)
+        except (TypeError, ValueError):
+            count_value = len(normalized)
+        next_url = result.get("next")
+        return CourtListenerSearchPage(
+            results=dedupe_search_results(normalized),
+            count=count_value,
+            next_url=next_url if isinstance(next_url, str) else "",
+        )
 
     def fetch_url(self, url: str, *, kind: str, refresh: bool = False) -> dict[str, Any]:
         full_url = url if url.startswith("http") else f"{BASE_URL}{url}"

@@ -37,6 +37,7 @@ from .cache import cluster_id_from_cluster
 from .client import (
     CourtListenerClient,
     CourtListenerError,
+    CourtListenerSearchPage,
     CourtListenerSearchResult,
     FormattedCitation,
     cluster_short_title,
@@ -44,6 +45,8 @@ from .client import (
     cluster_title,
     dedupe_case_clusters,
     format_official_california_citation,
+    search_result_full_citation,
+    us_long_date,
 )
 from .case_suggestions import (
     CaseSuggestion,
@@ -83,7 +86,9 @@ AGENT_SUBVIEW_SESSION = "session"
 AGENT_MODE_GENERAL = "general"
 AGENT_MODE_CASE = "case"
 AGENT_MODE_SEARCH = "search"
+SEARCH_NEXT_PAGE_TARGET = "search-next-page"
 AGENT_ANSWER_FONT_SIZE_PT = 14
+SEARCH_RESULTS_FONT_SIZE_PT = 11
 AGENT_ANSWER_LINE_HEIGHT = 1.25
 AGENT_AI_PANEL_BG_COLOR = "alpha(@window_fg_color, 0.08)"
 AGENT_ANSWER_TEXT_COLOR = "alpha(@window_fg_color, 0.68)"
@@ -378,6 +383,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_answer_poll_id: int | None = None
         self._agent_last_answer_text = ""
         self._agent_search_output_visible = False
+        self._agent_search_query = ""
+        self._agent_search_include_unpublished = False
+        self._agent_search_results: list[CourtListenerSearchResult] = []
+        self._agent_search_next_url = ""
         self._agent_panel_height = AGENT_PANEL_MIN_HEIGHT
         self._agent_mode = AGENT_MODE_GENERAL
         self._selected_agent_mode = AGENT_MODE_GENERAL
@@ -385,6 +394,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_link_tags: list[Gtk.TextTag] = []
         self._agent_link_lookup: dict[Gtk.TextTag, QuoteTarget] = {}
         self._agent_search_link_lookup: dict[Gtk.TextTag, CourtListenerSearchResult] = {}
+        self._agent_search_next_link_tags: set[Gtk.TextTag] = set()
+        self._agent_search_highlight_tags: list[Gtk.TextTag] = []
         self._agent_motion_controller: Gtk.EventControllerMotion | None = None
         self._agent_click_gesture: Gtk.GestureClick | None = None
         self._reader_text = ""
@@ -1460,7 +1471,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             or self._agent_search_output_visible
         )
         if self._agent_subview_strip is not None:
-            self._agent_subview_strip.set_visible(has_agent_output)
+            self._agent_subview_strip.set_visible(
+                has_agent_output and self._agent_mode != AGENT_MODE_SEARCH
+            )
         if self._agent_answer_scroller is not None:
             self._agent_answer_scroller.set_visible(
                 has_agent_output and self._agent_subview_name == AGENT_SUBVIEW_ANSWER
@@ -2058,30 +2071,40 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._stop_agent_answer_polling()
         self._clear_agent_answer()
         self._agent_search_output_visible = True
+        self._agent_search_query = query
+        self._agent_search_include_unpublished = load_config().search_include_unpublished
+        self._agent_search_results = []
+        self._agent_search_next_url = ""
         self._agent_mode = AGENT_MODE_SEARCH
         self._set_agent_subview(AGENT_SUBVIEW_ANSWER)
         self._set_status(f"Searching CourtListener for {query}...")
         if self._agent_answer_buffer is not None:
             self._agent_answer_buffer.set_text("Searching...")
-        include_unpublished = load_config().search_include_unpublished
         thread = threading.Thread(
             target=self._courtlistener_search_worker,
-            args=(query, include_unpublished),
+            args=(query, self._agent_search_include_unpublished, ""),
             daemon=True,
         )
         thread.start()
 
-    def _courtlistener_search_worker(self, query: str, include_unpublished: bool) -> None:
+    def _courtlistener_search_worker(
+        self,
+        query: str,
+        include_unpublished: bool,
+        next_url: str,
+    ) -> None:
         try:
-            results = self.client.search_opinions(
+            page = self.client.search_opinions(
                 query,
                 include_unpublished=include_unpublished,
+                url=next_url,
             )
             GLib.idle_add(
                 self._finish_courtlistener_search,
                 query,
-                results,
+                page,
                 include_unpublished,
+                bool(next_url),
             )
         except (CourtListenerError, ValueError) as exc:
             GLib.idle_add(self._apply_search_error, str(exc))
@@ -2089,12 +2112,23 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _finish_courtlistener_search(
         self,
         query: str,
-        results: list[CourtListenerSearchResult],
+        page: CourtListenerSearchPage,
         include_unpublished: bool,
+        append: bool,
     ) -> bool:
-        self._render_search_results(query, results, include_unpublished)
-        noun = "result" if len(results) == 1 else "results"
-        self._set_status(f"CourtListener Search: {len(results)} {noun}.")
+        if not append:
+            self._agent_search_results = []
+        self._agent_search_results.extend(page.results)
+        self._agent_search_next_url = page.next_url
+        self._render_search_results(
+            query,
+            self._agent_search_results,
+            include_unpublished,
+            page.count,
+            page.next_url,
+        )
+        shown = len(self._agent_search_results)
+        self._set_status(f"CourtListener Search: showing {shown} of {page.count}.")
         return False
 
     def _apply_search_error(self, message: str) -> bool:
@@ -2203,8 +2237,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _clear_agent_answer(self) -> None:
         self._agent_last_answer_text = ""
         self._agent_search_output_visible = False
+        self._agent_search_query = ""
+        self._agent_search_include_unpublished = False
+        self._agent_search_results = []
+        self._agent_search_next_url = ""
         self._agent_link_lookup.clear()
         self._agent_search_link_lookup.clear()
+        self._agent_search_next_link_tags.clear()
+        self._agent_search_highlight_tags.clear()
         if self._agent_answer_buffer is not None:
             self._agent_answer_buffer.set_text("")
 
@@ -2377,6 +2417,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_link_tags.clear()
         self._agent_link_lookup.clear()
         self._agent_search_link_lookup.clear()
+        self._agent_search_next_link_tags.clear()
+        self._agent_search_highlight_tags.clear()
         clean_text, quote_spans = self._extract_agent_quote_spans(text)
         rendered, markdown_spans, offset_map = self._render_markdown_text(clean_text)
         buffer.set_text(rendered)
@@ -2409,6 +2451,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         query: str,
         results: list[CourtListenerSearchResult],
         include_unpublished: bool,
+        total_count: int,
+        next_url: str,
     ) -> None:
         if self._agent_answer_buffer is None:
             return
@@ -2420,25 +2464,36 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                     table.remove(tag)
                 except TypeError:
                     pass
+            for tag in self._agent_search_highlight_tags:
+                try:
+                    table.remove(tag)
+                except TypeError:
+                    pass
         self._agent_link_tags.clear()
         self._agent_link_lookup.clear()
         self._agent_search_link_lookup.clear()
+        self._agent_search_next_link_tags.clear()
+        self._agent_search_highlight_tags.clear()
 
         scope = (
             "California published and unpublished cases"
             if include_unpublished
             else "California published cases"
         )
-        lines = [f"CourtListener Search: {query}", scope, ""]
+        lines = [f"CourtListener Search: {query}", f"{scope} | Showing {len(results)} of {total_count}", ""]
         spans: list[tuple[int, int, CourtListenerSearchResult]] = []
+        meta_spans: list[tuple[int, int]] = []
+        highlight_spans: list[tuple[int, int]] = []
+        next_span: tuple[int, int] | None = None
         offset = sum(len(line) + 1 for line in lines)
         if not results:
             lines.append("No matching cases found.")
             buffer.set_text("\n".join(lines))
+            self._apply_search_text_tags(buffer, [])
             return
-        for index, result in enumerate(results, start=1):
-            title = f"{index}. {result.case_name}"
-            start = offset + len(f"{index}. ")
+        for result in results:
+            title = search_result_full_citation(result)
+            start = offset
             end = offset + len(title)
             lines.append(title)
             offset += len(title) + 1
@@ -2446,21 +2501,37 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             meta_parts = [
                 part
                 for part in (
-                    result.citation,
                     result.court or result.court_id,
-                    result.date_filed,
+                    us_long_date(result.date_filed),
                     result.status,
                 )
                 if part
             ]
             if meta_parts:
                 meta = " | ".join(meta_parts)
+                meta_start = offset
                 lines.append(meta)
                 offset += len(meta) + 1
+                meta_spans.append((meta_start, meta_start + len(meta)))
+            if result.snippet:
+                snippet = self._search_snippet_text(result.snippet)
+                snippet_start = offset
+                lines.append(snippet)
+                highlight_spans.extend(
+                    (snippet_start + start, snippet_start + end)
+                    for start, end in self._search_highlight_ranges(snippet, query)
+                )
+                offset += len(snippet) + 1
             lines.append("")
             offset += 1
+        if next_url:
+            next_text = "Next 20 results"
+            next_span = (offset, offset + len(next_text))
+            lines.append(next_text)
+            offset += len(next_text) + 1
 
         buffer.set_text("\n".join(lines))
+        self._apply_search_text_tags(buffer, highlight_spans, meta_spans)
         link_color = self._resolve_agent_quote_color()
         for start, end, result in spans:
             tag = buffer.create_tag(
@@ -2476,6 +2547,118 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             )
             self._agent_link_tags.append(tag)
             self._agent_search_link_lookup[tag] = result
+        if next_span is not None:
+            tag = buffer.create_tag(
+                None,
+                foreground_rgba=link_color,
+                underline=Pango.Underline.SINGLE,
+                weight=Pango.Weight.MEDIUM,
+            )
+            buffer.apply_tag(
+                tag,
+                buffer.get_iter_at_offset(next_span[0]),
+                buffer.get_iter_at_offset(next_span[1]),
+            )
+            self._agent_link_tags.append(tag)
+            self._agent_search_next_link_tags.add(tag)
+
+    def _apply_search_text_tags(
+        self,
+        buffer: Gtk.TextBuffer,
+        highlight_spans: list[tuple[int, int]],
+        meta_spans: list[tuple[int, int]] | None = None,
+    ) -> None:
+        search_text_tag = buffer.create_tag(None, size_points=SEARCH_RESULTS_FONT_SIZE_PT)
+        start_iter = buffer.get_start_iter()
+        end_iter = buffer.get_end_iter()
+        buffer.apply_tag(search_text_tag, start_iter, end_iter)
+        self._agent_search_highlight_tags.append(search_text_tag)
+        if meta_spans:
+            meta_color = self._resolve_search_metadata_color()
+            meta_tag = buffer.create_tag(None, foreground_rgba=meta_color)
+            for start, end in meta_spans:
+                if end <= start:
+                    continue
+                buffer.apply_tag(
+                    meta_tag,
+                    buffer.get_iter_at_offset(start),
+                    buffer.get_iter_at_offset(end),
+                )
+            self._agent_search_highlight_tags.append(meta_tag)
+        highlight_tag = buffer.create_tag(
+            None,
+            foreground_rgba=self._resolve_agent_quote_color(),
+            underline=Pango.Underline.NONE,
+            weight=Pango.Weight.BOLD,
+        )
+        applied_highlight = False
+        for start, end in highlight_spans:
+            if end <= start:
+                continue
+            buffer.apply_tag(
+                highlight_tag,
+                buffer.get_iter_at_offset(start),
+                buffer.get_iter_at_offset(end),
+            )
+            applied_highlight = True
+        if applied_highlight:
+            self._agent_search_highlight_tags.append(highlight_tag)
+        else:
+            try:
+                table = buffer.get_tag_table()
+                if table is not None:
+                    table.remove(highlight_tag)
+            except TypeError:
+                pass
+
+    def _search_snippet_text(self, snippet: str) -> str:
+        text = re.sub(r"\s+", " ", snippet).strip()
+        max_length = 650
+        if len(text) <= max_length:
+            return text
+        return f"{text[: max_length - 3].rstrip()}..."
+
+    def _search_highlight_ranges(self, text: str, query: str) -> list[tuple[int, int]]:
+        exact = re.sub(r"\s+", " ", query.strip())
+        ranges = self._literal_ranges_case_insensitive(text, exact) if exact else []
+        if ranges:
+            return ranges
+        terms = [
+            term
+            for term in re.findall(r"[A-Za-z0-9']+", query)
+            if len(term) >= 3 and term.casefold() not in {"and", "or", "the"}
+        ]
+        ranges = []
+        for term in terms:
+            ranges.extend(self._literal_ranges_case_insensitive(text, term))
+        return self._merge_ranges(ranges)
+
+    def _literal_ranges_case_insensitive(self, text: str, needle: str) -> list[tuple[int, int]]:
+        if not needle:
+            return []
+        ranges: list[tuple[int, int]] = []
+        folded_text = text.casefold()
+        folded_needle = needle.casefold()
+        start = 0
+        while True:
+            index = folded_text.find(folded_needle, start)
+            if index < 0:
+                break
+            end = index + len(folded_needle)
+            ranges.append((index, end))
+            start = end
+        return ranges
+
+    def _merge_ranges(self, ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        if not ranges:
+            return []
+        merged: list[tuple[int, int]] = []
+        for start, end in sorted(ranges):
+            if not merged or start > merged[-1][1]:
+                merged.append((start, end))
+                continue
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        return merged
 
     def _resolve_agent_quote_color(self) -> Gdk.RGBA:
         fallback = Gdk.RGBA()
@@ -2497,6 +2680,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         quote.blue = base.blue
         quote.alpha = 1.0
         return quote
+
+    def _resolve_search_metadata_color(self) -> Gdk.RGBA:
+        base = self._resolve_agent_quote_color()
+        luminance = (0.2126 * base.red) + (0.7152 * base.green) + (0.0722 * base.blue)
+        color = Gdk.RGBA()
+        color.parse("#4f6f8f" if luminance < 0.5 else "#86a6c4")
+        color.alpha = 1.0
+        return color
 
     def _apply_agent_markdown_spans(
         self,
@@ -2572,7 +2763,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self,
         x: float,
         y: float,
-    ) -> QuoteTarget | CourtListenerSearchResult | None:
+    ) -> QuoteTarget | CourtListenerSearchResult | str | None:
         view = self._agent_answer_view
         if view is None:
             return None
@@ -2587,6 +2778,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if iter_ is None:
             return None
         for tag in iter_.get_tags():
+            if tag in self._agent_search_next_link_tags:
+                return SEARCH_NEXT_PAGE_TARGET
             target = self._agent_link_lookup.get(tag)
             if target is not None:
                 return target
@@ -2623,10 +2816,29 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if button and button != Gdk.BUTTON_PRIMARY:
             return
         target = self._agent_link_at_coords(x, y)
-        if isinstance(target, CourtListenerSearchResult):
+        if target == SEARCH_NEXT_PAGE_TARGET:
+            self._load_next_search_results()
+        elif isinstance(target, CourtListenerSearchResult):
             self._open_search_result(target)
         elif target is not None:
             self._open_quote_target(target)
+
+    def _load_next_search_results(self) -> None:
+        if not self._agent_search_next_url:
+            return
+        next_url = self._agent_search_next_url
+        self._agent_search_next_url = ""
+        self._set_status("Loading next CourtListener results...")
+        thread = threading.Thread(
+            target=self._courtlistener_search_worker,
+            args=(
+                self._agent_search_query,
+                self._agent_search_include_unpublished,
+                next_url,
+            ),
+            daemon=True,
+        )
+        thread.start()
 
     def _open_search_result(self, result: CourtListenerSearchResult) -> None:
         self._set_status(f"Opening {result.case_name}...")
