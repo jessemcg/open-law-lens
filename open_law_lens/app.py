@@ -377,12 +377,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_answer_view: Gtk.TextView | None = None
         self._agent_answer_button: Gtk.ToggleButton | None = None
         self._agent_session_button: Gtk.ToggleButton | None = None
+        self._agent_output_toggle_button: Gtk.Button | None = None
         self._agent_subview_strip: Gtk.Widget | None = None
         self._agent_subview_name = AGENT_SUBVIEW_SESSION
         self._agent_subview_toggle_guard = False
         self._agent_mode_buttons: dict[str, Gtk.ToggleButton] = {}
         self._agent_mode_toggle_guard = False
         self._agent_active = False
+        self._agent_output_collapsed = False
         self._agent_workspace_path: Path | None = None
         self._agent_session_log_path: Path | None = None
         self._agent_answer_poll_id: int | None = None
@@ -1141,6 +1143,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.agent_question_entry.connect("activate", self._on_agent_launch)
         row.append(self.agent_question_entry)
 
+        collapse_button = Gtk.Button(icon_name="go-up-symbolic")
+        collapse_button.add_css_class("flat")
+        collapse_button.set_tooltip_text("Hide agent output")
+        collapse_button.set_visible(False)
+        collapse_button.connect("clicked", self._on_agent_output_toggle_clicked)
+        row.append(collapse_button)
+        self._agent_output_toggle_button = collapse_button
+
         self._set_agent_mode(AGENT_MODE_GENERAL)
         return row
 
@@ -1529,22 +1539,35 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             or bool(self._agent_last_answer_text)
             or self._agent_search_output_visible
         )
+        output_visible = has_agent_output and not self._agent_output_collapsed
+        if self._agent_output_toggle_button is not None:
+            self._agent_output_toggle_button.set_visible(has_agent_output)
+            self._agent_output_toggle_button.set_icon_name(
+                "go-down-symbolic" if self._agent_output_collapsed else "go-up-symbolic"
+            )
+            self._agent_output_toggle_button.set_tooltip_text(
+                "Show agent output" if self._agent_output_collapsed else "Hide agent output"
+            )
         if self._agent_subview_strip is not None:
             self._agent_subview_strip.set_visible(
-                has_agent_output and self._agent_mode != AGENT_MODE_SEARCH
+                output_visible and self._agent_mode != AGENT_MODE_SEARCH
             )
         if self._agent_answer_scroller is not None:
             self._agent_answer_scroller.set_visible(
-                has_agent_output and self._agent_subview_name == AGENT_SUBVIEW_ANSWER
+                output_visible and self._agent_subview_name == AGENT_SUBVIEW_ANSWER
             )
         if self._agent_session_widget is not None:
             self._agent_session_widget.set_visible(
-                has_agent_output and self._agent_subview_name == AGENT_SUBVIEW_SESSION
+                output_visible and self._agent_subview_name == AGENT_SUBVIEW_SESSION
             )
             if self._agent_subview_name == AGENT_SUBVIEW_SESSION:
                 self._agent_session_widget.set_size_request(-1, self._agent_panel_height)
             else:
                 self._agent_session_widget.set_size_request(-1, -1)
+
+    def _on_agent_output_toggle_clicked(self, _button: Gtk.Button) -> None:
+        self._agent_output_collapsed = not self._agent_output_collapsed
+        self._sync_agent_subviews()
 
     def _update_agent_panel_height(self) -> None:
         allocated_height = self.get_allocated_height()
@@ -2146,6 +2169,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._stop_agent()
         self._stop_agent_answer_polling()
         self._clear_agent_answer()
+        self._agent_output_collapsed = False
         self._agent_search_output_visible = True
         self._agent_search_query = query
         self._agent_search_include_unpublished = load_config().search_include_unpublished
@@ -2245,6 +2269,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._stop_agent()
         self._stop_agent_answer_polling()
         self._clear_agent_answer()
+        self._agent_output_collapsed = False
         if not AGENT_WRAPPER.is_file():
             self._set_status(f"Agent wrapper not found: {AGENT_WRAPPER}")
             return
@@ -2308,6 +2333,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_pid = None
         self._agent_active = False
         self._poll_agent_answer()
+        self._sync_agent_subviews()
         self._set_status("Embedded agent session ended.")
 
     def _clear_agent_answer(self) -> None:
