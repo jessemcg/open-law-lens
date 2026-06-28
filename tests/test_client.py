@@ -69,6 +69,11 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(normalize_case_title("In re BG (1974)"), "In re B.G. (1974)")
         self.assertEqual(normalize_case_title("In re B. G."), "In re B.G.")
         self.assertEqual(normalize_case_title("In re D.P. CA6"), "In re D.P.")
+        self.assertEqual(normalize_case_title("In re Abbigail A. Et Al."), "In re Abbigail A.")
+        self.assertEqual(
+            normalize_case_title("In re Abbigail A. Et Al. (2016)"),
+            "In re Abbigail A. (2016)",
+        )
         self.assertEqual(normalize_case_title("People v. In Re Holdings"), "People v. In Re Holdings")
         self.assertEqual(normalize_case_title("People v. KC Holdings"), "People v. KC Holdings")
         self.assertEqual(normalize_case_title("In re Marriage of Smith"), "In re Marriage of Smith")
@@ -128,6 +133,15 @@ class ClientTests(unittest.TestCase):
         }
 
         self.assertEqual(cluster_short_title(cluster), "In re D.P.")
+
+    def test_cluster_short_title_removes_et_al_from_in_re_title(self) -> None:
+        cluster = {
+            "case_name": "Sacramento County Department of Health & Human Services v. Joseph A.",
+            "case_name_full": "In re ABBIGAIL A. et al., Persons Coming Under the Juvenile Court Law.",
+            "case_name_short": "In re Abbigail A. Et Al.",
+        }
+
+        self.assertEqual(cluster_short_title(cluster), "In re Abbigail A.")
 
     def test_official_california_reporter_citation_prefers_official_reporter(self) -> None:
         cluster = {
@@ -232,6 +246,19 @@ class ClientTests(unittest.TestCase):
         self.assertIsNotNone(citation)
         assert citation is not None
         self.assertEqual(citation.plain_text, "In re D.P. (2015) 237 Cal.App.4th 911")
+
+    def test_format_official_california_citation_removes_et_al_from_title(self) -> None:
+        cluster = {
+            "case_name_short": "In re Abbigail A. Et Al.",
+            "date_filed": "2016-07-14",
+            "citations": [{"volume": "1", "reporter": "Cal. 5th", "page": "83"}],
+        }
+
+        citation = format_official_california_citation(cluster)
+
+        self.assertIsNotNone(citation)
+        assert citation is not None
+        self.assertEqual(citation.plain_text, "In re Abbigail A. (2016) 1 Cal.5th 83")
 
     def test_dedupe_case_clusters_prefers_cleaner_official_citation_match(self) -> None:
         duplicate_with_lexis = {

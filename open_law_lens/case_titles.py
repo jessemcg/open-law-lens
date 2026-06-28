@@ -6,6 +6,12 @@ from typing import Any
 
 def normalize_case_title(title: str) -> str:
     normalized = re.sub(r"\s+", " ", title.strip())
+    normalized = re.sub(
+        r"\s+et\s+al\.?(?=\s*(?:$|[,(]))",
+        "",
+        normalized,
+        flags=re.IGNORECASE,
+    )
     normalized = re.sub(r"^in\s+re\b", "In re", normalized, count=1, flags=re.IGNORECASE)
     if not normalized.startswith("In re "):
         return normalized

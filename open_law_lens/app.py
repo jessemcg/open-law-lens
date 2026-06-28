@@ -927,10 +927,17 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             "page-marker",
             weight=Pango.Weight.BOLD,
         )
-        self._case_title_tag = self.reader_buffer.create_tag(
-            "case-title",
+        self._case_header_tag = self.reader_buffer.create_tag(
+            "case-header",
+            justification=Gtk.Justification.CENTER,
+        )
+        self._case_citation_header_tag = self.reader_buffer.create_tag(
+            "case-citation-header",
             weight=Pango.Weight.BOLD,
-            style=Pango.Style.ITALIC,
+        )
+        self._reader_heading_tag = self.reader_buffer.create_tag(
+            "reader-heading",
+            weight=Pango.Weight.BOLD,
         )
         self._reader_citation_italic_tag = self.reader_buffer.create_tag(
             "reader-citation-italic",
@@ -1175,19 +1182,45 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return
         self.toast_overlay.add_toast(Adw.Toast.new(text))
 
-    def _set_reader_text(self, text: str, page_markers: list[PageMarker] | None = None) -> bool:
+    def _set_reader_text(
+        self,
+        text: str,
+        page_markers: list[PageMarker] | None = None,
+        heading_spans: list[tuple[int, int]] | None = None,
+        citation_header_end: int = 0,
+    ) -> bool:
         self._close_reader_find(clear_entry=True)
         self._reader_text = text
         self.reader_buffer.set_text(text)
-        title_end = text.find("\n")
-        if title_end < 0:
-            title_end = len(text)
-        if title_end > 0:
+        header_end = text.find("\n\n")
+        if header_end < 0:
+            header_end = text.find("\n")
+        if header_end < 0:
+            header_end = len(text)
+        if header_end > 0:
             self.reader_buffer.apply_tag(
-                self._case_title_tag,
+                self._case_header_tag,
                 self.reader_buffer.get_start_iter(),
-                self.reader_buffer.get_iter_at_offset(title_end),
+                self.reader_buffer.get_iter_at_offset(header_end),
             )
+        citation_header_end = max(0, min(citation_header_end, len(text), header_end))
+        if citation_header_end > 0:
+            self.reader_buffer.apply_tag(
+                self._case_citation_header_tag,
+                self.reader_buffer.get_start_iter(),
+                self.reader_buffer.get_iter_at_offset(citation_header_end),
+            )
+        if heading_spans:
+            for start, end in heading_spans:
+                start = max(0, min(start, len(text)))
+                end = max(start, min(end, len(text)))
+                if start == end:
+                    continue
+                self.reader_buffer.apply_tag(
+                    self._reader_heading_tag,
+                    self.reader_buffer.get_iter_at_offset(start),
+                    self.reader_buffer.get_iter_at_offset(end),
+                )
         if page_markers:
             for marker in page_markers:
                 start = max(0, min(marker.start_offset, len(text)))
@@ -1971,15 +2004,26 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             opinions = self.client.fetch_cluster_opinions(cluster)
             title = cluster_title(cluster)
             citation = cluster_citation_line(cluster)
-            header = title if not citation else f"{title}\n{citation}"
+            formatted_citation = format_official_california_citation(cluster)
+            if formatted_citation is not None:
+                header = formatted_citation.plain_text
+                citation_header_end = len(header)
+            else:
+                header = title if not citation else f"{title}\n{citation}"
+                citation_header_end = 0
             text = header
             page_markers: list[PageMarker] = []
+            heading_spans: list[tuple[int, int]] = []
             for opinion in opinions:
                 display = self.client.opinion_display(opinion)
                 if not display.text:
                     continue
                 base_offset = len(text) + 2
                 text = f"{text}\n\n{display.text}"
+                heading_spans.extend(
+                    (base_offset + start, base_offset + end)
+                    for start, end in display.heading_spans
+                )
                 page_markers.extend(
                     PageMarker(
                         page_label=marker.page_label,
@@ -1992,7 +2036,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 )
             if not text:
                 text = f"{header}\n\nNo opinion text found."
-            GLib.idle_add(self._set_reader_text, text, page_markers)
+            GLib.idle_add(
+                self._set_reader_text,
+                text,
+                page_markers,
+                heading_spans,
+                citation_header_end,
+            )
         except CourtListenerError as exc:
             GLib.idle_add(self._apply_error, str(exc))
 
