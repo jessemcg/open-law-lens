@@ -37,12 +37,12 @@ from .cache import cluster_id_from_cluster
 from .client import (
     CourtListenerClient,
     CourtListenerError,
+    FormattedCitation,
     cluster_short_title,
     cluster_citation_line,
     cluster_title,
     dedupe_case_clusters,
     format_official_california_citation,
-    official_california_reporter_citation,
 )
 from .case_suggestions import (
     CaseSuggestion,
@@ -415,6 +415,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             }}
             box.agent-ask-bar {{
               min-height: 34px;
+              margin-bottom: 6px;
             }}
             .no-bold {{
               font-weight: normal;
@@ -531,11 +532,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.citation_entry.add_controller(key_controller)
         input_row.append(self.citation_entry)
 
-        copy_citation_button = Gtk.Button(icon_name="edit-copy-symbolic")
-        copy_citation_button.add_css_class("flat")
-        copy_citation_button.set_tooltip_text("Copy official citation")
-        copy_citation_button.connect("clicked", self._on_copy_official_citation)
-        input_row.append(copy_citation_button)
         box.append(input_row)
         box.append(self._build_case_completion_results())
 
@@ -741,7 +737,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         frame.set_halign(Gtk.Align.FILL)
         frame.append(reader_scroller)
         box.append(frame)
-        self.reader_buffer.set_text("Enter a citation to load a CourtListener case.")
+        self.reader_buffer.set_text("")
         return box
 
     def _build_agent_box(self) -> Gtk.Widget:
@@ -834,7 +830,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         row.add_css_class("agent-ask-bar")
         row.set_hexpand(True)
 
-        mode_strip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        mode_strip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         mode_strip.add_css_class("focus-pill-group")
         mode_strip.append(self._build_agent_mode_button("Law", AGENT_MODE_GENERAL))
         mode_strip.append(self._build_agent_mode_button("Cache", AGENT_MODE_CASE))
@@ -846,10 +842,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.agent_question_entry.connect("activate", self._on_agent_launch)
         row.append(self.agent_question_entry)
 
-        button = Gtk.Button(icon_name="media-playback-start-symbolic")
-        button.set_tooltip_text("Start Agent")
-        button.connect("clicked", self._on_agent_launch)
-        row.append(button)
         self._set_agent_mode(AGENT_MODE_GENERAL)
         return row
 
@@ -1021,7 +1013,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _on_clear_cache(self, _action: Gio.SimpleAction, _parameter: GLib.Variant | None) -> None:
         self.client.cache.clear()
         self._load_cached_cases()
-        self.reader_buffer.set_text("Enter a citation to load a CourtListener case.")
+        self.reader_buffer.set_text("")
         self._set_status("Research Cache cleared. Library preserved.")
 
     def _on_lookup_clicked(self, _widget: Gtk.Widget) -> None:
@@ -1036,14 +1028,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         thread = threading.Thread(target=self._lookup_worker, args=(citation,), daemon=True)
         thread.start()
 
-    def _on_copy_official_citation(self, _button: Gtk.Button) -> None:
-        if self._selected_cluster is None:
-            self._set_status("Select a Research Cache case first.")
-            return
-        citation = format_official_california_citation(self._selected_cluster)
-        if citation is None:
-            self._set_status("No official California reporter citation found.")
-            return
+    def _copy_formatted_citation(self, citation: FormattedCitation) -> None:
         display = Gdk.Display.get_default()
         if display is None:
             self._set_status("Could not access clipboard.")
@@ -1061,6 +1046,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._set_status("Could not copy official citation.")
             return
         self._set_status("Official citation copied.")
+
+    def _on_copy_case_citation(
+        self,
+        _button: Gtk.Button,
+        citation: FormattedCitation,
+    ) -> None:
+        self._copy_formatted_citation(citation)
 
     def _lookup_worker(self, citation: str) -> None:
         try:
@@ -1142,24 +1134,40 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             row_box.set_margin_start(8)
             row_box.set_margin_end(8)
             cluster_id = cluster_id_from_cluster(cluster)
-            check = Gtk.CheckButton()
-            check.add_css_class("neutral-agent-check")
-            check.set_tooltip_text("Make case available to Case Agent")
-            check.set_active(self.client.cache.is_agent_selected(cluster_id))
-            check.connect("toggled", self._on_agent_case_toggled, cluster_id)
-            row_box.append(check)
             text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
             text_box.set_hexpand(True)
-            title = Gtk.Label(label=cluster_short_title(cluster), xalign=0)
+            title_text = cluster_short_title(cluster)
+            title = Gtk.Label(label=title_text, xalign=0)
             title.set_wrap(True)
             text_box.append(title)
-            official_citation = official_california_reporter_citation(cluster)
+            formatted_citation = format_official_california_citation(cluster)
+            official_citation = ""
+            if formatted_citation is not None:
+                title_prefix = f"{title_text} "
+                official_citation = formatted_citation.plain_text.removeprefix(title_prefix)
             if official_citation:
                 citation = Gtk.Label(label=official_citation, xalign=0)
                 citation.add_css_class("dim-label")
                 citation.set_wrap(True)
                 text_box.append(citation)
             row_box.append(text_box)
+            actions_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+            actions_box.set_valign(Gtk.Align.START)
+            if formatted_citation is not None:
+                copy_button = Gtk.Button(label="Cite")
+                copy_button.add_css_class("flat")
+                copy_button.add_css_class("no-bold")
+                copy_button.set_tooltip_text("Copy citation")
+                copy_button.connect("clicked", self._on_copy_case_citation, formatted_citation)
+                actions_box.append(copy_button)
+            check = Gtk.CheckButton()
+            check.add_css_class("neutral-agent-check")
+            check.set_valign(Gtk.Align.START)
+            check.set_tooltip_text("Make case available to Case Agent")
+            check.set_active(self.client.cache.is_agent_selected(cluster_id))
+            check.connect("toggled", self._on_agent_case_toggled, cluster_id)
+            actions_box.append(check)
+            row_box.append(actions_box)
             row.set_child(row_box)
             row._open_law_lens_cluster_index = index
             self.case_list.append(row)
