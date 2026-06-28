@@ -823,13 +823,29 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         suggestion = self._case_completion_matches[index]
         self._case_completion_changing = True
         try:
-            self.citation_entry.set_text(suggestion.label)
+            self.citation_entry.set_text("")
             self.citation_entry.set_position(-1)
         finally:
             self._case_completion_changing = False
         self._hide_case_completion()
         self.citation_entry.grab_focus()
+        self._open_case_suggestion(suggestion)
         return True
+
+    def _open_case_suggestion(self, suggestion: CaseSuggestion) -> None:
+        if suggestion.cluster_id:
+            cluster = self.client.library.read_cluster(suggestion.cluster_id)
+            if cluster is not None:
+                cluster_id = self.client.cache.upsert_cluster(cluster)
+                if cluster_id:
+                    self._set_sidebar_clusters(self.client.cached_clusters(), select_cluster_id=cluster_id)
+                    self._refresh_case_suggestion_index(force=True)
+                    if self.case_list.get_selected_row() is None:
+                        self._set_status(f"Library: cached {suggestion.lookup_text}, but could not select the case.")
+                    else:
+                        self._set_status(f"Library: opened {suggestion.lookup_text}.")
+                    return
+        self._start_lookup(suggestion.lookup_text)
 
     def _lookup_text_from_entry(self, entry_text: str) -> str:
         self._refresh_case_suggestion_index()
@@ -845,6 +861,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.reader_buffer = Gtk.TextBuffer()
         self.page_marker_tag = self.reader_buffer.create_tag(
             "page-marker",
+            weight=Pango.Weight.BOLD,
+        )
+        self._case_title_tag = self.reader_buffer.create_tag(
+            "case-title",
             weight=Pango.Weight.BOLD,
         )
         self._reader_highlight_tag = self.reader_buffer.create_tag(
@@ -1086,6 +1106,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._close_reader_find(clear_entry=True)
         self._reader_text = text
         self.reader_buffer.set_text(text)
+        title_end = text.find("\n")
+        if title_end < 0:
+            title_end = len(text)
+        if title_end > 0:
+            self.reader_buffer.apply_tag(
+                self._case_title_tag,
+                self.reader_buffer.get_start_iter(),
+                self.reader_buffer.get_iter_at_offset(title_end),
+            )
         if page_markers:
             for marker in page_markers:
                 start = max(0, min(marker.start_offset, len(text)))
@@ -1494,6 +1523,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._set_status("Enter a citation.")
             return
         citation = self._lookup_text_from_entry(entry_text)
+        self._start_lookup(citation)
+
+    def _start_lookup(self, citation: str) -> None:
         self._hide_case_completion()
         self._set_status(f"Looking up {citation}...")
         self.reader_buffer.set_text("Loading...")

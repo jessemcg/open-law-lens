@@ -70,6 +70,14 @@ class ClientTests(unittest.TestCase):
 
         self.assertEqual(cluster_short_title(cluster), "Example v. State")
 
+    def test_cluster_short_title_keeps_superior_court_writ_case_name(self) -> None:
+        cluster = {
+            "case_name": "Cesar V. v. Superior Court",
+            "case_name_short": "Cesar",
+        }
+
+        self.assertEqual(cluster_short_title(cluster), "Cesar V. v. Superior Court")
+
     def test_cluster_short_title_uses_full_in_re_title_for_bare_initial_short_name(self) -> None:
         cluster = {
             "case_name": "Kings County Human Services Agency v. J.C.",
@@ -163,6 +171,23 @@ class ClientTests(unittest.TestCase):
         assert citation is not None
         self.assertEqual(citation.plain_text, "In re Emily D. (2015) 234 Cal.App.4th 438")
         self.assertEqual(official_california_reporter_citation(cluster), "234 Cal.App.4th 438")
+
+    def test_format_official_california_citation_keeps_superior_court_writ_case_name(self) -> None:
+        cluster = {
+            "case_name": "Cesar V. v. Superior Court",
+            "case_name_short": "Cesar",
+            "date_filed": "2001-08-30",
+            "citations": [{"volume": "91", "reporter": "Cal. App. 4th", "page": "1023"}],
+        }
+
+        citation = format_official_california_citation(cluster)
+
+        self.assertIsNotNone(citation)
+        assert citation is not None
+        self.assertEqual(
+            citation.plain_text,
+            "Cesar V. v. Superior Court (2001) 91 Cal.App.4th 1023",
+        )
 
     def test_format_official_california_citation_uses_extracted_in_re_initial_title(self) -> None:
         cluster = {

@@ -39,6 +39,20 @@ class CitationLinkTests(unittest.TestCase):
     def test_cited_case_links_ignore_shorthand_only_references(self) -> None:
         self.assertEqual(cited_case_links("Id. at p. 12; ibid.; supra."), [])
 
+    def test_cited_case_links_do_not_cross_supra_separator(self) -> None:
+        text = (
+            "In re L. Y. L., supra, at p. 948; see County of Alameda v. "
+            "Carleson (1971) 5 Cal.3d 730"
+        )
+
+        links = cited_case_links(text)
+
+        self.assertEqual([link.lookup_text for link in links], ["5 Cal.3d 730"])
+        self.assertEqual(
+            text[links[0].start_offset:links[0].end_offset],
+            "County of Alameda v. Carleson (1971) 5 Cal.3d 730",
+        )
+
     def test_cluster_citation_texts_renders_lookup_citations(self) -> None:
         cluster = {
             "citations": [

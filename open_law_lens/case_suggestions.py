@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from .cache import cluster_id_from_cluster
 from .case_titles import cluster_short_title_value
 from .client import (
     OFFICIAL_CALIFORNIA_REPORTERS,
@@ -34,6 +35,7 @@ class CaseSuggestion:
     display_name: str
     search_terms: tuple[str, ...]
     source: str = ""
+    cluster_id: str = ""
 
 
 def normalize_lookup_text(text: str) -> str:
@@ -98,6 +100,7 @@ def make_case_suggestion(
     lookup_text: str = "",
     display_name: str = "",
     source: str = "",
+    cluster_id: str = "",
 ) -> CaseSuggestion | None:
     clean_label = re.sub(r"\s+", " ", label).strip()
     if not clean_label:
@@ -116,6 +119,7 @@ def make_case_suggestion(
         display_name=clean_display,
         search_terms=search_terms,
         source=source,
+        cluster_id=cluster_id.strip(),
     )
 
 
@@ -194,6 +198,7 @@ def case_suggestions_from_library(library: CaseLibrary) -> list[CaseSuggestion]:
             lookup_text=official_citation,
             display_name=cluster_short_title_value(cluster),
             source="Library",
+            cluster_id=cluster_id_from_cluster(cluster),
         )
         if suggestion is None:
             continue

@@ -19,14 +19,13 @@ REPORTER_CITATION_PATTERN = (
 FULL_OFFICIAL_CITATION_RE = re.compile(
     r"\b(?P<full>"
     r"(?P<name>"
-    r"In\s+re\s+[A-Z][^()\n]{1,100}?"
+    r"In\s+re\s+[A-Z][^();\n]{1,100}?"
     r"|[A-Z][A-Za-z0-9&.' -]{1,80}\s+v\.\s+"
     r"[A-Z][A-Za-z0-9&.' -]{1,80}(?:\s+\([A-Za-z][^)]+\))?"
     r")"
     r"\s+\(\d{4}\)\s+"
     rf"(?P<citation>{REPORTER_CITATION_PATTERN})"
     r")\b",
-    re.IGNORECASE,
 )
 
 

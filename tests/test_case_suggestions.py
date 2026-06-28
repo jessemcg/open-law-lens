@@ -92,6 +92,7 @@ class CaseSuggestionTests(unittest.TestCase):
         self.assertEqual(suggestions[0].display_name, "Example v. State")
         self.assertEqual(suggestions[0].label, "Example v. State (2024) 10 Cal.App.5th 25")
         self.assertEqual(suggestions[0].lookup_text, "10 Cal.App.5th 25")
+        self.assertEqual(suggestions[0].cluster_id, "123")
         self.assertEqual(resolve_case_lookup_text("Example v. State", suggestions), "10 Cal.App.5th 25")
 
     def test_library_cases_skip_unofficial_reporter_suggestions(self) -> None:

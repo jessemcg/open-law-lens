@@ -31,6 +31,11 @@ def leading_in_re_title(title: str) -> str:
     return normalize_case_title(leading)
 
 
+def is_superior_court_writ_title(title: str) -> bool:
+    normalized = re.sub(r"\s+", " ", title.strip())
+    return bool(re.search(r"\bv\.\s+Superior Court\b", normalized))
+
+
 def cluster_title_value(cluster: dict[str, Any]) -> str:
     for key in ("case_name", "case_name_full", "case_name_short"):
         value = cluster.get(key)
@@ -42,15 +47,21 @@ def cluster_title_value(cluster: dict[str, Any]) -> str:
 def cluster_short_title_value(cluster: dict[str, Any]) -> str:
     full_value = cluster.get("case_name_full")
     full_in_re = leading_in_re_title(full_value) if isinstance(full_value, str) else ""
+    case_value = cluster.get("case_name")
+    case_title = normalize_case_title(case_value) if isinstance(case_value, str) else ""
     short_value = cluster.get("case_name_short")
     if isinstance(short_value, str) and short_value.strip():
         short_title = normalize_case_title(short_value)
         if full_in_re and is_bare_initial_title(short_title):
             return full_in_re
+        if case_title and is_superior_court_writ_title(case_title) and not short_title.startswith("In re "):
+            return case_title
         return short_title
     if full_in_re:
         return full_in_re
-    for key in ("case_name", "case_name_full"):
+    if case_title:
+        return case_title
+    for key in ("case_name_full",):
         value = cluster.get(key)
         if isinstance(value, str) and value.strip():
             return normalize_case_title(value)
