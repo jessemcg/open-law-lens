@@ -346,6 +346,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._case_completion_results_scroller: Gtk.ScrolledWindow | None = None
         self._case_completion_list_box: Gtk.ListBox | None = None
         self._case_completion_changing = False
+        self._case_completion_click_gesture: Gtk.GestureClick | None = None
         self.toast_overlay: Adw.ToastOverlay | None = None
 
         self.set_title(APP_NAME)
@@ -465,6 +466,23 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             }}
             .case-completion-results {{
               background: transparent;
+              border: none;
+              box-shadow: none;
+            }}
+            .case-completion-results > viewport {{
+              background: transparent;
+            }}
+            list.case-completion-list {{
+              min-width: 260px;
+              padding: 2px;
+              background-color: transparent;
+            }}
+            .case-completion-row {{
+              border-radius: 4px;
+              padding: 3px 6px;
+            }}
+            .case-completion-row label {{
+              font-size: 0.92rem;
             }}
             """.encode("utf-8")
         )
@@ -479,7 +497,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _build_ui(self) -> Gtk.Widget:
         toolbar_view = Adw.ToolbarView()
         header = Adw.HeaderBar()
-        header.set_title_widget(Adw.WindowTitle(title=APP_NAME, subtitle="CourtListener citation lookup"))
+        header.set_title_widget(Adw.WindowTitle(title=APP_NAME))
         header.pack_end(self._build_menu_button())
         toolbar_view.add_top_bar(header)
 
@@ -488,6 +506,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         root.set_margin_bottom(10)
         root.set_margin_start(10)
         root.set_margin_end(10)
+        self._install_case_completion_click_away(root)
 
         main = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         main.set_hexpand(True)
@@ -530,6 +549,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         key_controller.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         key_controller.connect("key-pressed", self._on_citation_entry_key_pressed)
         self.citation_entry.add_controller(key_controller)
+        focus_controller = Gtk.EventControllerFocus()
+        focus_controller.connect("leave", self._on_case_completion_focus_leave)
+        self.citation_entry.add_controller(focus_controller)
         input_row.append(self.citation_entry)
 
         box.append(input_row)
@@ -562,8 +584,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         scroller.set_visible(False)
 
         list_box = Gtk.ListBox()
+        list_box.add_css_class("case-completion-list")
         list_box.set_selection_mode(Gtk.SelectionMode.SINGLE)
         list_box.connect("row-activated", self._on_case_completion_row_activated)
+        focus_controller = Gtk.EventControllerFocus()
+        focus_controller.connect("leave", self._on_case_completion_focus_leave)
+        list_box.add_controller(focus_controller)
         scroller.set_child(list_box)
 
         self._case_completion_results_scroller = scroller
@@ -631,25 +657,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             row = Gtk.ListBoxRow()
             row.set_selectable(True)
             row.set_activatable(True)
+            row.add_css_class("case-completion-row")
             row._open_law_lens_case_suggestion_index = index
 
-            row_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-            row_box.set_margin_top(6)
-            row_box.set_margin_bottom(6)
-            row_box.set_margin_start(8)
-            row_box.set_margin_end(8)
-
             title = Gtk.Label(label=suggestion.label, xalign=0)
-            title.set_wrap(True)
-            title.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
-            row_box.append(title)
-
-            if suggestion.source:
-                source = Gtk.Label(label=suggestion.source, xalign=0)
-                source.add_css_class("dim-label")
-                row_box.append(source)
-
-            row.set_child(row_box)
+            title.set_ellipsize(Pango.EllipsizeMode.END)
+            title.set_tooltip_text(suggestion.label)
+            row.set_child(title)
             self._case_completion_list_box.append(row)
         first_row = self._case_completion_list_box.get_row_at_index(0)
         if first_row is not None:
@@ -661,6 +675,61 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _hide_case_completion(self) -> None:
         if self._case_completion_results_scroller is not None:
             self._case_completion_results_scroller.set_visible(False)
+
+    def _on_case_completion_focus_leave(self, _controller: Gtk.EventControllerFocus) -> None:
+        GLib.idle_add(self._hide_case_completion_if_focus_outside)
+
+    def _hide_case_completion_if_focus_outside(self) -> bool:
+        if (
+            self._case_completion_results_scroller is None
+            or not self._case_completion_results_scroller.get_visible()
+        ):
+            return False
+        focused = self.get_focus()
+        if focused is not None and self._case_completion_contains_widget(focused):
+            return False
+        self._hide_case_completion()
+        return False
+
+    def _case_completion_contains_widget(self, widget: Gtk.Widget) -> bool:
+        candidates = [
+            self.citation_entry,
+            self._case_completion_results_scroller,
+            self._case_completion_list_box,
+        ]
+        current: Gtk.Widget | None = widget
+        while current is not None:
+            if any(current is candidate for candidate in candidates if candidate is not None):
+                return True
+            current = current.get_parent()
+        return False
+
+    def _install_case_completion_click_away(self, widget: Gtk.Widget) -> None:
+        click = Gtk.GestureClick()
+        click.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        click.connect("pressed", self._on_case_completion_root_pressed)
+        widget.add_controller(click)
+        self._case_completion_click_gesture = click
+
+    def _on_case_completion_root_pressed(
+        self,
+        gesture: Gtk.GestureClick,
+        _n_press: int,
+        x: float,
+        y: float,
+    ) -> None:
+        if (
+            self._case_completion_results_scroller is None
+            or not self._case_completion_results_scroller.get_visible()
+        ):
+            return
+        widget = gesture.get_widget()
+        if widget is None:
+            return
+        picked = widget.pick(x, y, Gtk.PickFlags.DEFAULT)
+        if picked is not None and self._case_completion_contains_widget(picked):
+            return
+        self._hide_case_completion()
 
     def _move_case_completion_selection(self, direction: int) -> None:
         if not self._case_completion_matches or self._case_completion_list_box is None:

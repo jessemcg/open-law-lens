@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Iterable
 
 from .case_titles import cluster_short_title_value
+from .client import (
+    OFFICIAL_CALIFORNIA_REPORTERS,
+    format_official_california_citation,
+    official_california_reporter_citation,
+)
 from .library import CaseLibrary
 
 
@@ -42,16 +47,31 @@ def compact_lookup_text(text: str) -> str:
 def case_name_from_citation(citation: str) -> str:
     match = re.search(r"\s+\(\d{4}\)", citation)
     if match:
-        return citation[:match.start()].strip()
-    return citation.strip()
+        return citation[:match.start()].strip(" ,")
+    reporter_match = CALIFORNIA_REPORTER_PATTERN.search(citation)
+    if reporter_match:
+        return citation[:reporter_match.start()].strip(" ,")
+    return citation.strip(" ,")
 
 
-def reporter_citation_from_text(text: str) -> str:
+def year_from_citation(citation: str) -> str:
+    match = re.search(r"\((\d{4})\)", citation)
+    return match.group(1) if match else ""
+
+
+def normalized_official_reporter_citation_from_text(text: str) -> str:
     match = CALIFORNIA_REPORTER_PATTERN.search(text)
     if not match:
         return ""
-    reporter = re.sub(r"\s+", " ", match.group("reporter")).strip()
-    return f"{match.group('volume')} {reporter} {match.group('page')}"
+    reporter_key = re.sub(r"\s+", "", match.group("reporter").strip()).casefold()
+    display_reporter = OFFICIAL_CALIFORNIA_REPORTERS.get(reporter_key)
+    if display_reporter is None:
+        return ""
+    return f"{match.group('volume')} {display_reporter} {match.group('page')}"
+
+
+def reporter_citation_from_text(text: str) -> str:
+    return normalized_official_reporter_citation_from_text(text)
 
 
 def is_slip_or_placeholder_case(term: str, citation: str) -> bool:
@@ -82,8 +102,11 @@ def make_case_suggestion(
     clean_label = re.sub(r"\s+", " ", label).strip()
     if not clean_label:
         return None
-    clean_lookup = re.sub(r"\s+", " ", lookup_text or reporter_citation_from_text(clean_label) or clean_label).strip()
+    clean_lookup = re.sub(r"\s+", " ", lookup_text or reporter_citation_from_text(clean_label)).strip()
+    if not clean_lookup:
+        return None
     clean_display = re.sub(r"\s+", " ", display_name or case_name_from_citation(clean_label)).strip()
+    clean_display = cluster_short_title_value({"case_name": clean_display}) if clean_display else ""
     search_terms = case_search_terms(clean_label, clean_lookup, clean_display)
     if not search_terms:
         return None
@@ -92,6 +115,23 @@ def make_case_suggestion(
         lookup_text=clean_lookup,
         display_name=clean_display,
         search_terms=search_terms,
+        source=source,
+    )
+
+
+def make_official_case_suggestion(text: str, *, source: str = "") -> CaseSuggestion | None:
+    official_citation = normalized_official_reporter_citation_from_text(text)
+    if not official_citation:
+        return None
+    display_name = cluster_short_title_value({"case_name": case_name_from_citation(text)})
+    if not display_name:
+        return None
+    year = year_from_citation(text)
+    year_part = f" ({year})" if year else ""
+    return make_case_suggestion(
+        f"{display_name}{year_part} {official_citation}",
+        lookup_text=official_citation,
+        display_name=display_name,
         source=source,
     )
 
@@ -113,10 +153,12 @@ def load_concordance_case_suggestions(path: Path) -> list[CaseSuggestion]:
                 continue
             if citation in seen_labels:
                 continue
-            suggestion = make_case_suggestion(citation, source="Concordance")
+            suggestion = make_official_case_suggestion(citation, source="Concordance")
             if suggestion is None:
                 continue
-            seen_labels.add(citation)
+            if suggestion.label in seen_labels:
+                continue
+            seen_labels.add(suggestion.label)
             suggestions.append(suggestion)
     return sorted(suggestions, key=lambda item: item.display_name.casefold())
 
@@ -143,26 +185,21 @@ def case_suggestions_from_library(library: CaseLibrary) -> list[CaseSuggestion]:
     suggestions: list[CaseSuggestion] = []
     seen_labels: set[str] = set()
     for cluster in library.saved_clusters():
-        title = cluster_short_title_value(cluster)
-        if not title:
-            continue
-        citations = _cluster_citations(cluster)
-        if not citations:
-            continue
-        date_filed = str(cluster.get("date_filed") or "")
-        year = date_filed[:4] if re.fullmatch(r"\d{4}.*", date_filed) else ""
-        label = f"{title} ({year}) {citations[0]}" if year else f"{title} {citations[0]}"
-        if label in seen_labels:
+        formatted = format_official_california_citation(cluster)
+        official_citation = official_california_reporter_citation(cluster)
+        if formatted is None or not official_citation:
             continue
         suggestion = make_case_suggestion(
-            label,
-            lookup_text=citations[0],
-            display_name=title,
+            formatted.plain_text,
+            lookup_text=official_citation,
+            display_name=cluster_short_title_value(cluster),
             source="Library",
         )
         if suggestion is None:
             continue
-        seen_labels.add(label)
+        if suggestion.label in seen_labels:
+            continue
+        seen_labels.add(suggestion.label)
         suggestions.append(suggestion)
     return sorted(suggestions, key=lambda item: item.display_name.casefold())
 
@@ -171,7 +208,7 @@ def merge_case_suggestions(*groups: Iterable[CaseSuggestion]) -> list[CaseSugges
     merged: dict[str, CaseSuggestion] = {}
     for group in groups:
         for suggestion in group:
-            key = normalize_lookup_text(suggestion.label)
+            key = normalize_lookup_text(suggestion.lookup_text) or normalize_lookup_text(suggestion.label)
             if key not in merged:
                 merged[key] = suggestion
     return sorted(merged.values(), key=lambda item: item.display_name.casefold())
