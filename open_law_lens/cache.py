@@ -137,6 +137,7 @@ class JsonCache:
             "citations": citations if isinstance(citations, list) else [],
             "cluster_path": str(self.cluster_path(cluster_id)),
             "opinion_ids": existing_opinion_ids if isinstance(existing_opinion_ids, list) else [],
+            "agent_selected": bool(existing.get("agent_selected", False)),
             "added_at": existing.get("added_at", now),
             "last_accessed": now,
         }
@@ -184,6 +185,29 @@ class JsonCache:
     def read_cached_cluster(self, cluster_id: str) -> dict[str, Any] | None:
         data = self.read_resource("clusters", cluster_id)
         return data if isinstance(data, dict) else None
+
+    def is_agent_selected(self, cluster_id: str) -> bool:
+        entry = self.read_case_index().get(cluster_id)
+        return bool(entry.get("agent_selected")) if isinstance(entry, dict) else False
+
+    def set_agent_selected(self, cluster_id: str, selected: bool) -> None:
+        if not cluster_id:
+            return
+        index = self.read_case_index()
+        entry = index.get(cluster_id)
+        if not isinstance(entry, dict):
+            return
+        entry["agent_selected"] = bool(selected)
+        entry["last_accessed"] = _utc_now()
+        index[cluster_id] = entry
+        self.write_case_index(index)
+
+    def selected_case_entries(self) -> list[dict[str, Any]]:
+        return [
+            entry
+            for entry in self.list_case_entries()
+            if bool(entry.get("agent_selected"))
+        ]
 
     def clear(self) -> None:
         for name in ("lookups", "clusters", "opinions"):

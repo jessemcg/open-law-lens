@@ -6,7 +6,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from open_law_lens.config import AppConfig, load_config, save_config
+from open_law_lens.config import (
+    AppConfig,
+    DEFAULT_CASE_AGENT_PROMPT_TEMPLATE,
+    DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE,
+    load_config,
+    save_config,
+)
 
 
 class ConfigTests(unittest.TestCase):
@@ -15,6 +21,8 @@ class ConfigTests(unittest.TestCase):
             config = load_config(Path(temp_dir) / "config.json")
             self.assertEqual(config.courtlistener_token, "")
             self.assertEqual(config.concordance_file_path, "")
+            self.assertEqual(config.general_agent_prompt_template, DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE)
+            self.assertEqual(config.case_agent_prompt_template, DEFAULT_CASE_AGENT_PROMPT_TEMPLATE)
 
     def test_save_and_load_settings(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -23,12 +31,16 @@ class ConfigTests(unittest.TestCase):
                 AppConfig(
                     courtlistener_token=" token-value ",
                     concordance_file_path=" /tmp/Concordance_File.sdi ",
+                    general_agent_prompt_template=" General {question} ",
+                    case_agent_prompt_template=" Case {question} ",
                 ),
                 path,
             )
             config = load_config(path)
             self.assertEqual(config.courtlistener_token, "token-value")
             self.assertEqual(config.concordance_file_path, "/tmp/Concordance_File.sdi")
+            self.assertEqual(config.general_agent_prompt_template, "General {question}")
+            self.assertEqual(config.case_agent_prompt_template, "Case {question}")
 
     def test_environment_concordance_path_overrides_config(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

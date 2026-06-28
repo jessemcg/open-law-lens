@@ -69,6 +69,16 @@ class CacheTests(unittest.TestCase):
             cache.update_case_opinions(cluster, ["11", "12"])
             self.assertEqual(cache.list_case_entries()[0]["opinion_ids"], ["10", "11", "12"])
 
+    def test_agent_selected_persists_in_case_index(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cluster = {"id": 42, "case_name": "Example v. State"}
+            cache.upsert_cluster(cluster)
+            cache.set_agent_selected("42", True)
+            cache.upsert_cluster(cluster)
+            self.assertTrue(cache.is_agent_selected("42"))
+            self.assertEqual(cache.selected_case_entries()[0]["cluster_id"], "42")
+
     def test_clear_removes_resources_and_recreates_directories(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = JsonCache(Path(temp_dir))
@@ -78,6 +88,7 @@ class CacheTests(unittest.TestCase):
             cache.clear()
             self.assertEqual(cache.list_lookups(), [])
             self.assertEqual(cache.list_case_entries(), [])
+            self.assertFalse(cache.selected_case_entries())
             self.assertTrue((Path(temp_dir) / "lookups").is_dir())
             self.assertTrue((Path(temp_dir) / "clusters").is_dir())
             self.assertTrue((Path(temp_dir) / "opinions").is_dir())
