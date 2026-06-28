@@ -57,8 +57,12 @@ from .config import (
     DEFAULT_CASE_AGENT_PROMPT_TEMPLATE,
     DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE,
     concordance_file_path,
+    coerce_reader_font_size,
     courtlistener_token,
     load_config,
+    reader_font_css,
+    normalize_reader_font_family,
+    READER_FONT_FAMILY_OPTIONS,
     save_config,
 )
 from .library import PageMarker
@@ -159,6 +163,32 @@ class SettingsWindow(Adw.ApplicationWindow):
         group.add(self.token_row)
         outer.append(group)
 
+        display_group = Adw.PreferencesGroup(title="Display")
+        reader_font_adjustment = Gtk.Adjustment(
+            value=config.reader_font_size_pt,
+            lower=8,
+            upper=48,
+            step_increment=1,
+            page_increment=2,
+        )
+        self.reader_font_size_row = Adw.SpinRow(
+            title="Case View Font Size (pt)",
+            adjustment=reader_font_adjustment,
+        )
+        self.reader_font_size_row.set_digits(0)
+        display_group.add(self.reader_font_size_row)
+
+        self.reader_font_family_values = [name for name, _css in READER_FONT_FAMILY_OPTIONS]
+        self.reader_font_family_row = Adw.ComboRow(title="Case View Font")
+        self.reader_font_family_row.set_model(Gtk.StringList.new(self.reader_font_family_values))
+        try:
+            selected_index = self.reader_font_family_values.index(config.reader_font_family)
+        except ValueError:
+            selected_index = 0
+        self.reader_font_family_row.set_selected(selected_index)
+        display_group.add(self.reader_font_family_row)
+        outer.append(display_group)
+
         concordance_group = Adw.PreferencesGroup(title="Concordance")
         self.concordance_row = Adw.EntryRow(title="Concordance file")
         self.concordance_row.set_text(config.concordance_file_path)
@@ -248,6 +278,11 @@ class SettingsWindow(Adw.ApplicationWindow):
     def _on_save_clicked(self, _button: Gtk.Button) -> None:
         token = self.token_row.get_text().strip()
         concordance_path = self.concordance_row.get_text().strip()
+        selected_font_family_index = int(self.reader_font_family_row.get_selected())
+        if 0 <= selected_font_family_index < len(self.reader_font_family_values):
+            reader_font_family = self.reader_font_family_values[selected_font_family_index]
+        else:
+            reader_font_family = load_config().reader_font_family
         save_config(
             AppConfig(
                 courtlistener_token=token,
@@ -260,6 +295,10 @@ class SettingsWindow(Adw.ApplicationWindow):
                     self._prompt_text(self.case_agent_prompt_buffer).strip()
                     or DEFAULT_CASE_AGENT_PROMPT_TEMPLATE
                 ),
+                reader_font_size_pt=coerce_reader_font_size(
+                    int(round(self.reader_font_size_row.get_value()))
+                ),
+                reader_font_family=normalize_reader_font_family(reader_font_family),
             )
         )
         self.parent_window.reload_settings()
@@ -347,6 +386,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._case_completion_list_box: Gtk.ListBox | None = None
         self._case_completion_changing = False
         self._case_completion_click_gesture: Gtk.GestureClick | None = None
+        self._css_provider: Gtk.CssProvider | None = None
         self.toast_overlay: Adw.ToastOverlay | None = None
 
         self.set_title(APP_NAME)
@@ -366,7 +406,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.add_action(clear_cache)
 
     def _install_css(self) -> None:
-        provider = Gtk.CssProvider()
+        provider = self._css_provider or Gtk.CssProvider()
+        config = load_config()
         provider.load_from_data(
             f"""
             .case-reader-frame {{
@@ -381,8 +422,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             textview.case-reader {{
               color: {READER_FG};
               background-color: {READER_BG};
-              font-family: "Noto Serif", "Liberation Serif", "DejaVu Serif", serif;
-              font-size: 12pt;
+              font-family: {reader_font_css(config.reader_font_family)};
+              font-size: {config.reader_font_size_pt}pt;
               line-height: 1.25;
             }}
             textview.case-reader text {{
@@ -486,13 +527,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             }}
             """.encode("utf-8")
         )
-        display = Gdk.Display.get_default()
-        if display:
+        if self._css_provider is None and (display := Gdk.Display.get_default()):
             Gtk.StyleContext.add_provider_for_display(
                 display,
                 provider,
                 Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
             )
+        self._css_provider = provider
 
     def _build_ui(self) -> Gtk.Widget:
         toolbar_view = Adw.ToolbarView()
@@ -776,8 +817,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.page_marker_tag = self.reader_buffer.create_tag(
             "page-marker",
             weight=Pango.Weight.BOLD,
-            foreground="#6f2f00",
-            background="#fff0a6",
         )
         self._reader_highlight_tag = self.reader_buffer.create_tag(
             "agent-quote-highlight",
@@ -1065,6 +1104,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def reload_settings(self) -> None:
         self.client = CourtListenerClient.default()
+        self._install_css()
         self._load_cached_cases()
         self._refresh_case_suggestion_index(force=True)
         self._set_status("Settings saved.")

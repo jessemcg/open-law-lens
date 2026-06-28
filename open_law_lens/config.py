@@ -13,7 +13,25 @@ CONFIG_KEY_COURTLISTENER_TOKEN = "courtlistener_token"
 CONFIG_KEY_CONCORDANCE_FILE_PATH = "concordance_file_path"
 CONFIG_KEY_GENERAL_AGENT_PROMPT_TEMPLATE = "general_agent_prompt_template"
 CONFIG_KEY_CASE_AGENT_PROMPT_TEMPLATE = "case_agent_prompt_template"
+CONFIG_KEY_READER_FONT_SIZE_PT = "reader_font_size_pt"
+CONFIG_KEY_READER_FONT_FAMILY = "reader_font_family"
 ENV_CONCORDANCE_FILE = "OPEN_LAW_LENS_CONCORDANCE_FILE"
+DEFAULT_READER_FONT_SIZE_PT = 11
+READER_FONT_FAMILY_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("Noto Serif", '"Noto Serif", "Liberation Serif", "DejaVu Serif", serif'),
+    ("Georgia", 'Georgia, "Times New Roman", "Liberation Serif", serif'),
+    ("Merriweather", '"Merriweather", "Noto Serif", "Liberation Serif", serif'),
+    ("Source Sans 3", '"Source Sans 3", "Noto Sans", "Liberation Sans", sans-serif'),
+    (
+        "TeX Gyre Schola",
+        '"TeX Gyre Schola", "New Century Schoolbook", '
+        '"Century Schoolbook L", "URW Schoolbook L", serif',
+    ),
+)
+DEFAULT_READER_FONT_FAMILY = READER_FONT_FAMILY_OPTIONS[0][0]
+LEGACY_READER_FONT_FAMILY_ALIASES = {
+    "Century Schoolbook": "TeX Gyre Schola",
+}
 
 DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens General California Law Agent.
 
@@ -48,6 +66,33 @@ class AppConfig:
     concordance_file_path: str = ""
     general_agent_prompt_template: str = DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE
     case_agent_prompt_template: str = DEFAULT_CASE_AGENT_PROMPT_TEMPLATE
+    reader_font_size_pt: int = DEFAULT_READER_FONT_SIZE_PT
+    reader_font_family: str = DEFAULT_READER_FONT_FAMILY
+
+
+def coerce_reader_font_size(value: Any, default: int = DEFAULT_READER_FONT_SIZE_PT) -> int:
+    try:
+        size = int(value)
+    except (TypeError, ValueError):
+        return default
+    return min(48, max(8, size))
+
+
+def normalize_reader_font_family(value: Any) -> str:
+    normalized = str(value or "").strip()
+    normalized = LEGACY_READER_FONT_FAMILY_ALIASES.get(normalized, normalized)
+    for name, _css in READER_FONT_FAMILY_OPTIONS:
+        if normalized == name:
+            return name
+    return DEFAULT_READER_FONT_FAMILY
+
+
+def reader_font_css(font_family: str) -> str:
+    normalized = normalize_reader_font_family(font_family)
+    for name, css in READER_FONT_FAMILY_OPTIONS:
+        if normalized == name:
+            return css
+    return READER_FONT_FAMILY_OPTIONS[0][1]
 
 
 def load_config(path: Path = CONFIG_PATH) -> AppConfig:
@@ -78,6 +123,8 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
         case_agent_prompt_template=(
             str(case_agent_prompt).strip() or DEFAULT_CASE_AGENT_PROMPT_TEMPLATE
         ),
+        reader_font_size_pt=coerce_reader_font_size(raw.get(CONFIG_KEY_READER_FONT_SIZE_PT)),
+        reader_font_family=normalize_reader_font_family(raw.get(CONFIG_KEY_READER_FONT_FAMILY)),
     )
 
 
@@ -91,6 +138,8 @@ def save_config(config: AppConfig, path: Path = CONFIG_PATH) -> None:
         CONFIG_KEY_CASE_AGENT_PROMPT_TEMPLATE: (
             config.case_agent_prompt_template.strip() or DEFAULT_CASE_AGENT_PROMPT_TEMPLATE
         ),
+        CONFIG_KEY_READER_FONT_SIZE_PT: coerce_reader_font_size(config.reader_font_size_pt),
+        CONFIG_KEY_READER_FONT_FAMILY: normalize_reader_font_family(config.reader_font_family),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
