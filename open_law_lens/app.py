@@ -52,6 +52,7 @@ from .case_suggestions import (
     merge_case_suggestions,
     resolve_case_lookup_text,
 )
+from .citation_links import CitedCaseLink, cited_case_links, cluster_citation_texts
 from .config import (
     AppConfig,
     DEFAULT_CASE_AGENT_PROMPT_TEMPLATE,
@@ -384,6 +385,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_find_count_label: Gtk.Label | None = None
         self._reader_find_matches: list[tuple[int, int]] = []
         self._reader_find_index = -1
+        self._reader_citation_link_tags: list[Gtk.TextTag] = []
+        self._reader_citation_link_lookup: dict[Gtk.TextTag, CitedCaseLink] = {}
+        self._reader_citation_motion_controller: Gtk.EventControllerMotion | None = None
+        self._reader_citation_click_gesture: Gtk.GestureClick | None = None
         self._pending_quote_target: QuoteTarget | None = None
         self._settings_window: SettingsWindow | None = None
         self._case_suggestions: list[CaseSuggestion] = []
@@ -865,6 +870,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.reader_view.set_bottom_margin(18)
         self.reader_view.add_css_class("case-reader")
         self._install_reader_find_key_controller(self.reader_view)
+        self._install_reader_citation_link_controllers()
 
         reader_scroller = Gtk.ScrolledWindow()
         reader_scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
@@ -1091,10 +1097,143 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                     self.reader_buffer.get_iter_at_offset(start),
                     self.reader_buffer.get_iter_at_offset(end),
                 )
+        self._apply_reader_citation_links(text)
         if self._pending_quote_target is not None:
             target = self._pending_quote_target
             self._pending_quote_target = None
             self._highlight_reader_phrase(target.phrase)
+        return False
+
+    def _apply_reader_citation_links(self, text: str) -> None:
+        table = self.reader_buffer.get_tag_table()
+        if table is not None:
+            for tag in self._reader_citation_link_tags:
+                table.remove(tag)
+        self._reader_citation_link_tags.clear()
+        self._reader_citation_link_lookup.clear()
+        excluded = cluster_citation_texts(self._selected_cluster)
+        for index, link in enumerate(cited_case_links(text, excluded_citations=excluded)):
+            start = max(0, min(link.start_offset, len(text)))
+            end = max(start, min(link.end_offset, len(text)))
+            if start == end:
+                continue
+            tag = self.reader_buffer.create_tag(
+                f"reader-citation-link-{index}",
+                underline=Pango.Underline.SINGLE,
+                foreground="#1a5fb4",
+            )
+            self.reader_buffer.apply_tag(
+                tag,
+                self.reader_buffer.get_iter_at_offset(start),
+                self.reader_buffer.get_iter_at_offset(end),
+            )
+            self._reader_citation_link_tags.append(tag)
+            self._reader_citation_link_lookup[tag] = link
+
+    def _install_reader_citation_link_controllers(self) -> None:
+        if self._reader_citation_motion_controller is None:
+            motion = Gtk.EventControllerMotion()
+            motion.connect("motion", self._on_reader_citation_motion)
+            motion.connect("enter", self._on_reader_citation_motion)
+            motion.connect("leave", self._on_reader_citation_leave)
+            self.reader_view.add_controller(motion)
+            self._reader_citation_motion_controller = motion
+        if self._reader_citation_click_gesture is None:
+            click = Gtk.GestureClick.new()
+            click.set_button(Gdk.BUTTON_PRIMARY)
+            click.connect("released", self._on_reader_citation_click)
+            self.reader_view.add_controller(click)
+            self._reader_citation_click_gesture = click
+
+    def _reader_citation_link_at_coords(self, x: float, y: float) -> CitedCaseLink | None:
+        bx, by = self.reader_view.window_to_buffer_coords(Gtk.TextWindowType.WIDGET, int(x), int(y))
+        iter_result = self.reader_view.get_iter_at_location(int(bx), int(by))
+        if isinstance(iter_result, tuple):
+            success, iter_ = iter_result
+            if not success:
+                return None
+        else:
+            iter_ = iter_result
+        if iter_ is None:
+            return None
+        for tag in iter_.get_tags():
+            link = self._reader_citation_link_lookup.get(tag)
+            if link is not None:
+                return link
+        return None
+
+    def _on_reader_citation_motion(
+        self,
+        _controller: Gtk.EventControllerMotion,
+        x: float,
+        y: float,
+    ) -> None:
+        if self._reader_citation_link_at_coords(x, y):
+            self.reader_view.set_cursor_from_name("pointer")
+        else:
+            self.reader_view.set_cursor_from_name(None)
+
+    def _on_reader_citation_leave(self, _controller: Gtk.EventControllerMotion) -> None:
+        self.reader_view.set_cursor_from_name(None)
+
+    def _on_reader_citation_click(
+        self,
+        gesture: Gtk.GestureClick,
+        _n_press: int,
+        x: float,
+        y: float,
+    ) -> None:
+        button = gesture.get_current_button()
+        if button and button != Gdk.BUTTON_PRIMARY:
+            return
+        link = self._reader_citation_link_at_coords(x, y)
+        if link is None:
+            return
+        self._open_cited_case_link(link)
+
+    def _open_cited_case_link(self, link: CitedCaseLink) -> None:
+        current_cluster_id = cluster_id_from_cluster(self._selected_cluster or {})
+        self._set_status(f"Opening {link.lookup_text}...")
+        thread = threading.Thread(
+            target=self._cited_case_lookup_worker,
+            args=(link.lookup_text, current_cluster_id),
+            daemon=True,
+        )
+        thread.start()
+
+    def _cited_case_lookup_worker(self, citation: str, current_cluster_id: str) -> None:
+        try:
+            result = self.client.lookup_citation(citation)
+            clusters = dedupe_case_clusters(self.client.clusters_from_lookup(result))
+            cluster = next(
+                (
+                    candidate
+                    for candidate in clusters
+                    if cluster_id_from_cluster(candidate) != current_cluster_id
+                ),
+                clusters[0] if clusters else None,
+            )
+            if cluster is None:
+                GLib.idle_add(self._set_status, f"No case found for {citation}.")
+                return
+            cluster_id = cluster_id_from_cluster(cluster)
+            if not cluster_id:
+                GLib.idle_add(self._set_status, f"No cached case id found for {citation}.")
+                return
+            self.client.fetch_cluster_opinions(cluster)
+            source = self.client.last_lookup_source or "Lookup"
+            GLib.idle_add(self._finish_cited_case_lookup, citation, cluster_id, source)
+        except (CourtListenerError, ValueError) as exc:
+            GLib.idle_add(self._set_status, f"Unable to open {citation}: {exc}")
+
+    def _finish_cited_case_lookup(self, citation: str, cluster_id: str, source: str) -> bool:
+        clusters = self.client.cached_clusters()
+        self._set_sidebar_clusters(clusters, select_cluster_id=cluster_id)
+        self._refresh_case_suggestion_index(force=True)
+        if self.case_list.get_selected_row() is None:
+            self._set_status(f"Cached {citation}, but could not select the case.")
+        else:
+            self._set_status(f"{source}: opened {citation}.")
         return False
 
     def _install_reader_find_key_controller(self, widget: Gtk.Widget) -> None:
