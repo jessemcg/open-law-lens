@@ -85,6 +85,23 @@ class CitationLinkTests(unittest.TestCase):
             "Cesar V. v. Superior Court (2001) 91 Cal.App.4th 1023",
         )
 
+    def test_cited_case_links_find_california_supreme_court_cal5th_citations(self) -> None:
+        text = (
+            "A Law answer may cite In re Caden C. (2021) 11 Cal.5th 614 "
+            "and In re N.R. (2023) 15 Cal.5th 520."
+        )
+
+        links = cited_case_links(text)
+
+        self.assertEqual([link.lookup_text for link in links], ["11 Cal.5th 614", "15 Cal.5th 520"])
+        self.assertEqual(
+            [text[link.start_offset:link.end_offset] for link in links],
+            [
+                "In re Caden C. (2021) 11 Cal.5th 614",
+                "In re N.R. (2023) 15 Cal.5th 520",
+            ],
+        )
+
     def test_citation_italic_spans_cover_case_names_in_full_citations(self) -> None:
         text = (
             "The rule follows In re Alexis E. (2009) 171 Cal.App.4th 438 "
@@ -96,6 +113,16 @@ class CitationLinkTests(unittest.TestCase):
         self.assertEqual(
             [text[span.start_offset:span.end_offset] for span in spans],
             ["In re Alexis E.", "Michael M. v. Giovanna F."],
+        )
+
+    def test_citation_italic_spans_cover_cal5th_case_names(self) -> None:
+        text = "The rule follows In re Caden C. (2021) 11 Cal.5th 614."
+
+        spans = citation_italic_spans(text)
+
+        self.assertEqual(
+            [text[span.start_offset:span.end_offset] for span in spans],
+            ["In re Caden C."],
         )
 
     def test_citation_italic_spans_exclude_signal_phrases(self) -> None:

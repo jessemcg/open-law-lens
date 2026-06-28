@@ -400,6 +400,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._case_agent_text_sources: list[CaseTextSource] = []
         self._agent_link_tags: list[Gtk.TextTag] = []
         self._agent_link_lookup: dict[Gtk.TextTag, QuoteTarget] = {}
+        self._agent_citation_link_lookup: dict[Gtk.TextTag, CitedCaseLink] = {}
         self._agent_search_link_lookup: dict[Gtk.TextTag, CourtListenerSearchResult] = {}
         self._agent_search_next_link_tags: set[Gtk.TextTag] = set()
         self._agent_search_highlight_tags: list[Gtk.TextTag] = []
@@ -2344,6 +2345,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_search_results = []
         self._agent_search_next_url = ""
         self._agent_link_lookup.clear()
+        self._agent_citation_link_lookup.clear()
         self._agent_search_link_lookup.clear()
         self._agent_search_next_link_tags.clear()
         self._agent_search_highlight_tags.clear()
@@ -2518,6 +2520,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                     pass
         self._agent_link_tags.clear()
         self._agent_link_lookup.clear()
+        self._agent_citation_link_lookup.clear()
         self._agent_search_link_lookup.clear()
         self._agent_search_next_link_tags.clear()
         self._agent_search_highlight_tags.clear()
@@ -2525,6 +2528,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         rendered, markdown_spans, offset_map = self._render_markdown_text(clean_text)
         buffer.set_text(rendered)
         self._apply_agent_markdown_spans(buffer, markdown_spans)
+        self._apply_agent_citation_italics(buffer, rendered)
         quote_color = self._resolve_agent_quote_color()
         for start, end, phrase in quote_spans:
             mapped_start = self._map_offset(start, offset_map)
@@ -2547,6 +2551,46 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 target = resolve_quote_target(phrase, self._case_agent_text_sources)
                 if target is not None:
                     self._agent_link_lookup[tag] = target
+        if self._agent_mode == AGENT_MODE_GENERAL:
+            self._apply_agent_citation_links(buffer, rendered)
+
+    def _apply_agent_citation_italics(self, buffer: Gtk.TextBuffer, text: str) -> None:
+        table = buffer.get_tag_table()
+        if table is None:
+            return
+        italic_tag = table.lookup("agent-citation-italic")
+        if italic_tag is None:
+            italic_tag = buffer.create_tag("agent-citation-italic", style=Pango.Style.ITALIC)
+        for span in citation_italic_spans(text):
+            start = max(0, min(span.start_offset, len(text)))
+            end = max(start, min(span.end_offset, len(text)))
+            if start == end:
+                continue
+            buffer.apply_tag(
+                italic_tag,
+                buffer.get_iter_at_offset(start),
+                buffer.get_iter_at_offset(end),
+            )
+
+    def _apply_agent_citation_links(self, buffer: Gtk.TextBuffer, text: str) -> None:
+        for link in cited_case_links(text):
+            start = max(0, min(link.start_offset, len(text)))
+            end = max(start, min(link.end_offset, len(text)))
+            if start == end:
+                continue
+            tag = buffer.create_tag(
+                None,
+                foreground_rgba=self._resolve_agent_quote_color(),
+                underline=Pango.Underline.NONE,
+                weight=Pango.Weight.BOLD,
+            )
+            buffer.apply_tag(
+                tag,
+                buffer.get_iter_at_offset(start),
+                buffer.get_iter_at_offset(end),
+            )
+            self._agent_link_tags.append(tag)
+            self._agent_citation_link_lookup[tag] = link
 
     def _render_search_results(
         self,
@@ -2573,6 +2617,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                     pass
         self._agent_link_tags.clear()
         self._agent_link_lookup.clear()
+        self._agent_citation_link_lookup.clear()
         self._agent_search_link_lookup.clear()
         self._agent_search_next_link_tags.clear()
         self._agent_search_highlight_tags.clear()
@@ -2865,7 +2910,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self,
         x: float,
         y: float,
-    ) -> QuoteTarget | CourtListenerSearchResult | str | None:
+    ) -> CitedCaseLink | QuoteTarget | CourtListenerSearchResult | str | None:
         view = self._agent_answer_view
         if view is None:
             return None
@@ -2885,6 +2930,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             target = self._agent_link_lookup.get(tag)
             if target is not None:
                 return target
+            citation_link = self._agent_citation_link_lookup.get(tag)
+            if citation_link is not None:
+                return citation_link
             search_result = self._agent_search_link_lookup.get(tag)
             if search_result is not None:
                 return search_result
@@ -2922,6 +2970,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._load_next_search_results()
         elif isinstance(target, CourtListenerSearchResult):
             self._open_search_result(target)
+        elif isinstance(target, CitedCaseLink):
+            self._open_cited_case_link(target)
         elif target is not None:
             self._open_quote_target(target)
 
