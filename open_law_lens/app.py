@@ -75,7 +75,9 @@ from .config import (
     READER_FONT_FAMILY_OPTIONS,
     save_config,
 )
+from .dbus_commands import DBUS_COMMAND_GROUPS, DbusCommand, dbus_action_command
 from .library import PageMarker
+from .speech import DEFAULT_SPEECH_QUESTION_FILE, normalize_speech_question_text
 from .text_search import literal_match_ranges
 
 
@@ -149,6 +151,91 @@ def _apply_terminal_theme(terminal: Any) -> None:
     terminal.set_color_background(background)
     terminal.set_color_foreground(foreground)
     terminal.set_clear_background(True)
+
+
+class DbusCommandsWindow(Adw.ApplicationWindow):
+    def __init__(self, parent: "OpenLawLensWindow") -> None:
+        super().__init__(application=parent.get_application(), title="D-Bus Commands")
+        self.parent_window = parent
+        self.set_transient_for(parent)
+        self.set_default_size(900, 560)
+        self.set_resizable(True)
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        view = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        header.add_css_class("flat")
+        header.set_title_widget(
+            Adw.WindowTitle(title="D-Bus Commands", subtitle="Run or copy Open Law Lens actions")
+        )
+        view.add_top_bar(header)
+
+        page = Adw.PreferencesPage()
+        intro = Adw.PreferencesGroup(
+            title="How to use",
+            description=(
+                "Use Run to trigger an action inside Open Law Lens. "
+                "Use Copy Command to place the GApplication call on your clipboard."
+            ),
+        )
+        page.add(intro)
+
+        for group_title, commands in DBUS_COMMAND_GROUPS:
+            group = Adw.PreferencesGroup(title=group_title)
+            group.add_css_class("list-stack")
+            page.add(group)
+            for command in commands:
+                group.add(self._build_command_row(command))
+
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_child(page)
+        view.set_content(scroller)
+        self.set_content(view)
+
+    def _build_command_row(self, command: DbusCommand) -> Adw.ActionRow:
+        row = Adw.ActionRow(
+            title=command.title,
+            subtitle=f"{command.action_name} - {command.description}",
+        )
+        row.set_activatable(False)
+
+        suffix = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+
+        run_button = Gtk.Button(label="Run")
+        run_button.add_css_class("suggested-action")
+        run_button.add_css_class("flat")
+        run_button.connect("clicked", self._on_run_clicked, command.action_name)
+        suffix.append(run_button)
+
+        copy_button = Gtk.Button(label="Copy Command")
+        copy_button.add_css_class("flat")
+        copy_button.add_css_class("link")
+        copy_button.connect("clicked", self._on_copy_clicked, command.action_name)
+        suffix.append(copy_button)
+
+        row.add_suffix(suffix)
+        return row
+
+    def _on_run_clicked(self, _button: Gtk.Button, action_name: str) -> None:
+        app = self.get_application()
+        if app is None or app.lookup_action(action_name) is None:
+            self.parent_window._set_status(f"Action not available: {action_name}")
+            return
+        app.activate_action(action_name, None)
+
+    def _on_copy_clicked(self, _button: Gtk.Button, action_name: str) -> None:
+        app = self.get_application()
+        object_path = app.get_dbus_object_path() if app else None
+        if object_path:
+            command = dbus_action_command(action_name, object_path=object_path)
+        else:
+            command = dbus_action_command(action_name)
+        display = Gdk.Display.get_default()
+        if display:
+            display.get_clipboard().set(command)
+            self.parent_window._set_status("D-Bus command copied to clipboard.")
 
 
 class SettingsWindow(Adw.ApplicationWindow):
@@ -423,6 +510,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_citation_click_gesture: Gtk.GestureClick | None = None
         self._pending_quote_target: QuoteTarget | None = None
         self._settings_window: SettingsWindow | None = None
+        self._dbus_commands_window: DbusCommandsWindow | None = None
         self._shortcuts_window: Gtk.ShortcutsWindow | None = None
         self._case_suggestions: list[CaseSuggestion] = []
         self._case_suggestions_loaded = False
@@ -450,6 +538,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         clear_cache = Gio.SimpleAction.new("clear_cache", None)
         clear_cache.connect("activate", self._on_clear_cache)
         self.add_action(clear_cache)
+        show_dbus_commands = Gio.SimpleAction.new("show_dbus_commands", None)
+        show_dbus_commands.connect("activate", self._on_show_dbus_commands)
+        self.add_action(show_dbus_commands)
         focus_citation = Gio.SimpleAction.new("focus_citation", None)
         focus_citation.connect("activate", self._on_focus_citation)
         self.add_action(focus_citation)
@@ -663,6 +754,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _build_menu_button(self) -> Gtk.MenuButton:
         menu = Gio.Menu()
         menu.append("Keyboard Shortcuts", "win.show_shortcuts")
+        menu.append("D-Bus Commands", "win.show_dbus_commands")
         menu.append("Settings", "win.settings")
         menu.append("Clear Research Cache", "win.clear_cache")
         button = Gtk.MenuButton(icon_name="open-menu-symbolic")
@@ -1780,6 +1872,20 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         window.set_transient_for(self)
         window.present()
 
+    def _on_show_dbus_commands(
+        self,
+        _action: Gio.SimpleAction,
+        _parameter: GLib.Variant | None,
+    ) -> None:
+        if self._dbus_commands_window is None:
+            self._dbus_commands_window = DbusCommandsWindow(self)
+            self._dbus_commands_window.connect("close-request", self._on_dbus_commands_closed)
+        self._dbus_commands_window.present()
+
+    def _on_dbus_commands_closed(self, _window: Gtk.Window) -> bool:
+        self._dbus_commands_window = None
+        return False
+
     def _on_window_tick(self, _widget: Gtk.Widget, _clock: Gdk.FrameClock) -> bool:
         self._update_agent_panel_height()
         return True
@@ -2191,6 +2297,27 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._set_status(f"Unable to create agent workspace: {exc}")
             return
         self._launch_agent_with_prompt(prompt_path, workspace, AGENT_MODE_GENERAL)
+
+    def submit_speech_question(self, mode: str) -> None:
+        try:
+            raw_question = DEFAULT_SPEECH_QUESTION_FILE.read_text(
+                encoding="utf-8",
+                errors="ignore",
+            )
+        except FileNotFoundError:
+            self._set_status(f"Speech question file not found: {DEFAULT_SPEECH_QUESTION_FILE}")
+            return
+        except OSError as exc:
+            self._set_status(f"Could not read speech question file: {exc}")
+            return
+        question = normalize_speech_question_text(raw_question)
+        if not question:
+            self._set_status("Speech question file is empty.")
+            return
+        self._set_agent_mode(mode)
+        self.agent_question_entry.set_text(question)
+        self.agent_question_entry.set_position(-1)
+        self._on_agent_launch(self.agent_question_entry)
 
     def _start_courtlistener_search(self, query: str) -> None:
         self._stop_agent()
@@ -3128,15 +3255,57 @@ class OpenLawLensApp(Adw.Application):
     def __init__(self) -> None:
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
         self.connect("activate", self._on_activate)
+        self._install_actions()
         self.set_accels_for_action("win.focus_citation", ["<Primary>l"])
         self.set_accels_for_action("win.focus_law_question", ["<Primary>q"])
         self.set_accels_for_action("win.focus_cache_question", ["<Primary><Shift>q"])
         self.set_accels_for_action("win.focus_search_question", ["<Primary><Alt>q"])
         self.set_accels_for_action("win.show_shortcuts", ["F1"])
 
+    def _install_actions(self) -> None:
+        submit_speech_law_question = Gio.SimpleAction.new("submit_speech_law_question", None)
+        submit_speech_law_question.connect(
+            "activate",
+            self._on_submit_speech_law_question,
+        )
+        self.add_action(submit_speech_law_question)
+
+        submit_speech_cache_question = Gio.SimpleAction.new("submit_speech_cache_question", None)
+        submit_speech_cache_question.connect(
+            "activate",
+            self._on_submit_speech_cache_question,
+        )
+        self.add_action(submit_speech_cache_question)
+
     def _on_activate(self, _app: Adw.Application) -> None:
         window = OpenLawLensWindow(self)
         window.present()
+
+    def _main_window(self) -> OpenLawLensWindow:
+        active = self.get_active_window()
+        if isinstance(active, OpenLawLensWindow):
+            return active
+        for window in self.get_windows():
+            if isinstance(window, OpenLawLensWindow):
+                window.present()
+                return window
+        window = OpenLawLensWindow(self)
+        window.present()
+        return window
+
+    def _on_submit_speech_law_question(
+        self,
+        _action: Gio.SimpleAction,
+        _parameter: GLib.Variant | None,
+    ) -> None:
+        self._main_window().submit_speech_question(AGENT_MODE_GENERAL)
+
+    def _on_submit_speech_cache_question(
+        self,
+        _action: Gio.SimpleAction,
+        _parameter: GLib.Variant | None,
+    ) -> None:
+        self._main_window().submit_speech_question(AGENT_MODE_CASE)
 
 
 def main() -> int:
