@@ -79,6 +79,45 @@ class CacheTests(unittest.TestCase):
             self.assertTrue(cache.is_agent_selected("42"))
             self.assertEqual(cache.selected_case_entries()[0]["cluster_id"], "42")
 
+    def test_remove_case_removes_index_cluster_and_unshared_opinions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cluster = {"id": 42, "case_name": "Example v. State"}
+            cache.update_case_opinions(cluster, ["10", "11"])
+            cache.write_resource("opinions", "10", {"id": 10})
+            cache.write_resource("opinions", "11", {"id": 11})
+
+            self.assertTrue(cache.remove_case("42"))
+
+            self.assertEqual(cache.list_case_entries(), [])
+            self.assertIsNone(cache.read_cached_cluster("42"))
+            self.assertFalse(cache.opinion_path("10").exists())
+            self.assertFalse(cache.opinion_path("11").exists())
+
+    def test_remove_case_preserves_shared_opinions_and_lookup_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cache.write_lookup("1 Cal. 2", [{"status": 200}])
+            cache.update_case_opinions({"id": 42, "case_name": "First"}, ["10", "11"])
+            cache.update_case_opinions({"id": 43, "case_name": "Second"}, ["11", "12"])
+            cache.write_resource("opinions", "10", {"id": 10})
+            cache.write_resource("opinions", "11", {"id": 11})
+            cache.write_resource("opinions", "12", {"id": 12})
+
+            self.assertTrue(cache.remove_case("42"))
+
+            self.assertEqual([entry["cluster_id"] for entry in cache.list_case_entries()], ["43"])
+            self.assertFalse(cache.opinion_path("10").exists())
+            self.assertTrue(cache.opinion_path("11").exists())
+            self.assertTrue(cache.opinion_path("12").exists())
+            self.assertEqual(cache.read_lookup("1 Cal. 2"), [{"status": 200}])
+
+    def test_remove_case_returns_false_for_missing_case(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+
+            self.assertFalse(cache.remove_case("missing"))
+
     def test_clear_removes_resources_and_recreates_directories(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = JsonCache(Path(temp_dir))

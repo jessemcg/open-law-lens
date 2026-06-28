@@ -202,6 +202,31 @@ class JsonCache:
         index[cluster_id] = entry
         self.write_case_index(index)
 
+    def remove_case(self, cluster_id: str) -> bool:
+        if not cluster_id:
+            return False
+        index = self.read_case_index()
+        entry = index.pop(cluster_id, None)
+        if not isinstance(entry, dict):
+            return False
+        removed_opinion_ids = {
+            str(value).strip()
+            for value in entry.get("opinion_ids", [])
+            if str(value).strip()
+        } if isinstance(entry.get("opinion_ids"), list) else set()
+        shared_opinion_ids = {
+            str(value).strip()
+            for other in index.values()
+            if isinstance(other.get("opinion_ids"), list)
+            for value in other.get("opinion_ids", [])
+            if str(value).strip()
+        }
+        for opinion_id in removed_opinion_ids - shared_opinion_ids:
+            self.opinion_path(opinion_id).unlink(missing_ok=True)
+        self.cluster_path(cluster_id).unlink(missing_ok=True)
+        self.write_case_index(index)
+        return True
+
     def selected_case_entries(self) -> list[dict[str, Any]]:
         return [
             entry

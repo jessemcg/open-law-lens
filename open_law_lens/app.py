@@ -391,6 +391,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_citation_click_gesture: Gtk.GestureClick | None = None
         self._pending_quote_target: QuoteTarget | None = None
         self._settings_window: SettingsWindow | None = None
+        self._shortcuts_window: Gtk.ShortcutsWindow | None = None
         self._case_suggestions: list[CaseSuggestion] = []
         self._case_suggestions_loaded = False
         self._case_completion_matches: list[CaseSuggestion] = []
@@ -417,6 +418,18 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         clear_cache = Gio.SimpleAction.new("clear_cache", None)
         clear_cache.connect("activate", self._on_clear_cache)
         self.add_action(clear_cache)
+        focus_citation = Gio.SimpleAction.new("focus_citation", None)
+        focus_citation.connect("activate", self._on_focus_citation)
+        self.add_action(focus_citation)
+        focus_law_question = Gio.SimpleAction.new("focus_law_question", None)
+        focus_law_question.connect("activate", self._on_focus_law_question)
+        self.add_action(focus_law_question)
+        focus_cache_question = Gio.SimpleAction.new("focus_cache_question", None)
+        focus_cache_question.connect("activate", self._on_focus_cache_question)
+        self.add_action(focus_cache_question)
+        show_shortcuts = Gio.SimpleAction.new("show_shortcuts", None)
+        show_shortcuts.connect("activate", self._on_show_shortcuts)
+        self.add_action(show_shortcuts)
 
     def _install_css(self) -> None:
         provider = self._css_provider or Gtk.CssProvider()
@@ -506,12 +519,34 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
               background-color: @window_bg_color;
               border-radius: 8px;
             }}
+            list.case-list row.case-cache-row {{
+              border-radius: 8px;
+              margin: 3px 4px;
+              background-color: alpha(@window_fg_color, 0.03);
+            }}
+            list.case-list row.case-cache-row > box {{
+              border-radius: 8px;
+            }}
+            list.case-list row.case-cache-row:hover {{
+              background-color: alpha(@window_fg_color, 0.06);
+            }}
             list.case-list row:selected {{
               background-color: alpha(@window_fg_color, 0.08);
               color: @window_fg_color;
             }}
             list.case-list row:selected label {{
               color: @window_fg_color;
+            }}
+            button.case-row-icon-button {{
+              min-width: 24px;
+              min-height: 24px;
+              padding: 2px;
+              border-radius: 6px;
+              color: alpha(@window_fg_color, 0.45);
+            }}
+            button.case-row-icon-button:hover {{
+              background-color: alpha(@window_fg_color, 0.08);
+              color: alpha(@window_fg_color, 0.75);
             }}
             checkbutton.neutral-agent-check check:checked {{
               background-color: alpha(@window_fg_color, 0.18);
@@ -592,6 +627,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def _build_menu_button(self) -> Gtk.MenuButton:
         menu = Gio.Menu()
+        menu.append("Keyboard Shortcuts", "win.show_shortcuts")
         menu.append("Settings", "win.settings")
         menu.append("Clear Research Cache", "win.clear_cache")
         button = Gtk.MenuButton(icon_name="open-menu-symbolic")
@@ -1491,6 +1527,94 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return
         self._set_agent_mode(mode)
 
+    def _focus_entry_and_select_text(self, entry: Gtk.Entry) -> None:
+        entry.grab_focus()
+        entry.select_region(0, -1)
+
+    def _on_focus_citation(
+        self,
+        _action: Gio.SimpleAction,
+        _parameter: GLib.Variant | None,
+    ) -> None:
+        self._focus_entry_and_select_text(self.citation_entry)
+
+    def _on_focus_law_question(
+        self,
+        _action: Gio.SimpleAction,
+        _parameter: GLib.Variant | None,
+    ) -> None:
+        self._set_agent_mode(AGENT_MODE_GENERAL)
+        self._focus_entry_and_select_text(self.agent_question_entry)
+
+    def _on_focus_cache_question(
+        self,
+        _action: Gio.SimpleAction,
+        _parameter: GLib.Variant | None,
+    ) -> None:
+        self._set_agent_mode(AGENT_MODE_CASE)
+        self._focus_entry_and_select_text(self.agent_question_entry)
+
+    def _build_shortcuts_window(self) -> Gtk.ShortcutsWindow:
+        if self._shortcuts_window is not None:
+            return self._shortcuts_window
+
+        window = Gtk.ShortcutsWindow(
+            transient_for=self,
+            modal=False,
+            hide_on_close=True,
+            title=f"{APP_NAME} Keyboard Shortcuts",
+        )
+        window.set_default_size(640, 420)
+
+        section = Gtk.ShortcutsSection(title="Keyboard Shortcuts")
+
+        navigation_group = Gtk.ShortcutsGroup(title="Navigation")
+        navigation_group.append(
+            Gtk.ShortcutsShortcut(title="Focus citation field", accelerator="<Primary>L")
+        )
+        navigation_group.append(
+            Gtk.ShortcutsShortcut(title="Focus California law question", accelerator="<Primary>Q")
+        )
+        navigation_group.append(
+            Gtk.ShortcutsShortcut(
+                title="Focus marked-cache question",
+                accelerator="<Primary><Shift>Q",
+            )
+        )
+        section.append(navigation_group)
+
+        search_group = Gtk.ShortcutsGroup(title="Case Text Search")
+        search_group.append(
+            Gtk.ShortcutsShortcut(title="Open find", accelerator="<Primary>F")
+        )
+        search_group.append(
+            Gtk.ShortcutsShortcut(title="Next find result", accelerator="<Primary>G")
+        )
+        search_group.append(
+            Gtk.ShortcutsShortcut(
+                title="Previous find result",
+                accelerator="<Primary><Shift>G",
+            )
+        )
+        section.append(search_group)
+
+        help_group = Gtk.ShortcutsGroup(title="Reference")
+        help_group.append(Gtk.ShortcutsShortcut(title="Show keyboard shortcuts", accelerator="F1"))
+        section.append(help_group)
+
+        window.add_section(section)
+        self._shortcuts_window = window
+        return window
+
+    def _on_show_shortcuts(
+        self,
+        _action: Gio.SimpleAction,
+        _parameter: GLib.Variant | None,
+    ) -> None:
+        window = self._build_shortcuts_window()
+        window.set_transient_for(self)
+        window.present()
+
     def _on_window_tick(self, _widget: Gtk.Widget, _clock: Gdk.FrameClock) -> bool:
         return True
 
@@ -1632,19 +1756,37 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             row = Gtk.ListBoxRow()
             row.set_selectable(True)
             row.set_activatable(True)
+            row.add_css_class("case-cache-row")
             row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
             row_box.set_margin_top(8)
             row_box.set_margin_bottom(8)
             row_box.set_margin_start(8)
             row_box.set_margin_end(8)
             cluster_id = cluster_id_from_cluster(cluster)
+            formatted_citation = format_official_california_citation(cluster)
+            actions_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+            actions_box.set_valign(Gtk.Align.START)
+            if formatted_citation is not None:
+                copy_button = Gtk.Button(icon_name="edit-copy-symbolic")
+                copy_button.add_css_class("flat")
+                copy_button.add_css_class("case-row-icon-button")
+                copy_button.set_tooltip_text("Copy citation")
+                copy_button.connect("clicked", self._on_copy_case_citation, formatted_citation)
+                actions_box.append(copy_button)
+            remove_button = Gtk.Button(icon_name="user-trash-symbolic")
+            remove_button.add_css_class("flat")
+            remove_button.add_css_class("case-row-icon-button")
+            remove_button.set_tooltip_text("Remove from Research Cache")
+            remove_button.set_sensitive(bool(cluster_id))
+            remove_button.connect("clicked", self._on_remove_cached_case_clicked, cluster_id, cluster)
+            actions_box.append(remove_button)
+            row_box.append(actions_box)
             text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
             text_box.set_hexpand(True)
             title_text = cluster_short_title(cluster)
             title = Gtk.Label(label=title_text, xalign=0)
             title.set_wrap(True)
             text_box.append(title)
-            formatted_citation = format_official_california_citation(cluster)
             official_citation = ""
             if formatted_citation is not None:
                 title_prefix = f"{title_text} "
@@ -1655,23 +1797,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 citation.set_wrap(True)
                 text_box.append(citation)
             row_box.append(text_box)
-            actions_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-            actions_box.set_valign(Gtk.Align.START)
-            if formatted_citation is not None:
-                copy_button = Gtk.Button(label="Cite")
-                copy_button.add_css_class("flat")
-                copy_button.add_css_class("no-bold")
-                copy_button.set_tooltip_text("Copy citation")
-                copy_button.connect("clicked", self._on_copy_case_citation, formatted_citation)
-                actions_box.append(copy_button)
             check = Gtk.CheckButton()
             check.add_css_class("neutral-agent-check")
             check.set_valign(Gtk.Align.START)
             check.set_tooltip_text("Make case available to Case Agent")
             check.set_active(self.client.cache.is_agent_selected(cluster_id))
             check.connect("toggled", self._on_agent_case_toggled, cluster_id)
-            actions_box.append(check)
-            row_box.append(actions_box)
+            row_box.append(check)
             row.set_child(row_box)
             row._open_law_lens_cluster_index = index
             self.case_list.append(row)
@@ -1684,6 +1816,31 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def _on_agent_case_toggled(self, button: Gtk.CheckButton, cluster_id: str) -> None:
         self.client.cache.set_agent_selected(cluster_id, button.get_active())
+
+    def _on_remove_cached_case_clicked(
+        self,
+        _button: Gtk.Button,
+        cluster_id: str,
+        cluster: dict[str, Any],
+    ) -> None:
+        if not cluster_id:
+            self._set_status("Could not remove case from Research Cache.")
+            return
+        current_cluster_id = cluster_id_from_cluster(self._selected_cluster or {})
+        removed_selected = current_cluster_id == cluster_id
+        title = cluster_short_title(cluster)
+        if not self.client.cache.remove_case(cluster_id):
+            self._set_status("Case was not found in Research Cache.")
+            return
+        if removed_selected:
+            self._selected_cluster = None
+            self.reader_buffer.set_text("")
+        self._set_sidebar_clusters(
+            self.client.cached_clusters(),
+            select_cluster_id="" if removed_selected else current_cluster_id,
+        )
+        self._refresh_case_suggestion_index(force=True)
+        self._set_status(f"Removed {title} from Research Cache. Library preserved.")
 
     def _apply_lookup_result(
         self,
@@ -2365,6 +2522,10 @@ class OpenLawLensApp(Adw.Application):
     def __init__(self) -> None:
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
         self.connect("activate", self._on_activate)
+        self.set_accels_for_action("win.focus_citation", ["<Primary>l"])
+        self.set_accels_for_action("win.focus_law_question", ["<Primary>q"])
+        self.set_accels_for_action("win.focus_cache_question", ["<Primary><Shift>q"])
+        self.set_accels_for_action("win.show_shortcuts", ["F1"])
 
     def _on_activate(self, _app: Adw.Application) -> None:
         window = OpenLawLensWindow(self)
