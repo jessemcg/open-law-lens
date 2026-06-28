@@ -23,6 +23,8 @@ from .library import CaseLibrary, DisplayText, decode_cp1252_control_chars, opin
 BASE_URL = "https://www.courtlistener.com"
 API_BASE = f"{BASE_URL}/api/rest/v4"
 CITATION_LOOKUP_URL = f"{API_BASE}/citation-lookup/"
+SEARCH_URL = f"{API_BASE}/search/"
+CALIFORNIA_COURT_FILTER = "court_id:(cal OR calctapp OR calappdeptsuper)"
 TEXT_FIELDS = (
     "html_with_citations",
     "plain_text",
@@ -57,6 +59,17 @@ class CourtListenerError(RuntimeError):
 class FormattedCitation:
     plain_text: str
     html_text: str
+
+
+@dataclass(frozen=True)
+class CourtListenerSearchResult:
+    cluster_id: str
+    case_name: str
+    citation: str
+    court: str
+    court_id: str
+    date_filed: str
+    status: str
 
 
 class _TextExtractor(HTMLParser):
@@ -201,6 +214,57 @@ def format_official_california_citation(cluster: dict[str, Any]) -> FormattedCit
     return FormattedCitation(plain_text=plain, html_text=html_text)
 
 
+def courtlistener_search_query(query: str, *, include_unpublished: bool = False) -> str:
+    cleaned = re.sub(r"\s+", " ", query.strip())
+    if not cleaned:
+        raise ValueError("Search query is required.")
+    pieces = [cleaned, CALIFORNIA_COURT_FILTER]
+    if not include_unpublished:
+        pieces.append("status:Published")
+    return " ".join(pieces)
+
+
+def _search_citation_line(result: dict[str, Any]) -> str:
+    citations = result.get("citation")
+    if isinstance(citations, list):
+        rendered = [str(value).strip() for value in citations if str(value).strip()]
+        return "; ".join(rendered)
+    if isinstance(citations, str):
+        return citations.strip()
+    return ""
+
+
+def _search_case_name(result: dict[str, Any]) -> str:
+    for key in ("caseName", "caseNameFull"):
+        value = result.get(key)
+        if isinstance(value, str) and value.strip():
+            return normalize_case_title(value)
+    cluster_id = str(result.get("cluster_id") or "").strip()
+    return f"Cluster {cluster_id}" if cluster_id else "Untitled case"
+
+
+def normalize_search_result(result: dict[str, Any]) -> CourtListenerSearchResult | None:
+    cluster_id = str(result.get("cluster_id") or "").strip()
+    if not cluster_id:
+        return None
+    court = result.get("court")
+    if isinstance(court, str):
+        court_text = court.strip()
+    elif isinstance(court, dict):
+        court_text = str(court.get("short_name") or court.get("full_name") or "").strip()
+    else:
+        court_text = ""
+    return CourtListenerSearchResult(
+        cluster_id=cluster_id,
+        case_name=_search_case_name(result),
+        citation=_search_citation_line(result),
+        court=court_text,
+        court_id=str(result.get("court_id") or "").strip(),
+        date_filed=str(result.get("dateFiled") or "").strip(),
+        status=str(result.get("status") or "").strip(),
+    )
+
+
 def _citation_count(cluster: dict[str, Any]) -> int:
     value = cluster.get("citation_count")
     try:
@@ -341,6 +405,33 @@ class CourtListenerClient:
         self.library.upsert_lookup(normalized, result)
         self.last_lookup_source = "CourtListener API"
         return result
+
+    def search_opinions(
+        self,
+        query: str,
+        *,
+        include_unpublished: bool = False,
+    ) -> list[CourtListenerSearchResult]:
+        search_query = courtlistener_search_query(
+            query,
+            include_unpublished=include_unpublished,
+        )
+        url = f"{SEARCH_URL}?{urlencode({'q': search_query, 'type': 'o'})}"
+        request = Request(url, headers=self._headers(), method="GET")
+        result = self._request_json(request)
+        if not isinstance(result, dict):
+            raise CourtListenerError("CourtListener search returned unexpected JSON.")
+        rows = result.get("results")
+        if not isinstance(rows, list):
+            raise CourtListenerError("CourtListener search returned unexpected results.")
+        normalized: list[CourtListenerSearchResult] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            search_result = normalize_search_result(row)
+            if search_result is not None:
+                normalized.append(search_result)
+        return normalized
 
     def fetch_url(self, url: str, *, kind: str, refresh: bool = False) -> dict[str, Any]:
         full_url = url if url.startswith("http") else f"{BASE_URL}{url}"

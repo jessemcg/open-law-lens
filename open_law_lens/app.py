@@ -37,6 +37,7 @@ from .cache import cluster_id_from_cluster
 from .client import (
     CourtListenerClient,
     CourtListenerError,
+    CourtListenerSearchResult,
     FormattedCitation,
     cluster_short_title,
     cluster_citation_line,
@@ -75,12 +76,13 @@ AGENT_WRAPPER = PROJECT_DIR / "scripts" / "open-law-lens-codex-agent-vte.sh"
 DEFAULT_CODEX_BIN = "codex"
 READER_BG = "#ffffff"
 READER_FG = "#000000"
-AGENT_TERMINAL_MAX_HEIGHT = 260
+AGENT_PANEL_MIN_HEIGHT = 260
 AGENT_HEIGHT_DIVISOR = 4
 AGENT_SUBVIEW_ANSWER = "answer"
 AGENT_SUBVIEW_SESSION = "session"
 AGENT_MODE_GENERAL = "general"
 AGENT_MODE_CASE = "case"
+AGENT_MODE_SEARCH = "search"
 AGENT_ANSWER_FONT_SIZE_PT = 14
 AGENT_ANSWER_LINE_HEIGHT = 1.25
 AGENT_AI_PANEL_BG_COLOR = "alpha(@window_fg_color, 0.08)"
@@ -163,6 +165,11 @@ class SettingsWindow(Adw.ApplicationWindow):
         config = load_config()
         self.token_row.set_text(config.courtlistener_token)
         group.add(self.token_row)
+        self.search_include_unpublished_row = Adw.SwitchRow(
+            title="Include Unpublished California Cases in Search",
+        )
+        self.search_include_unpublished_row.set_active(config.search_include_unpublished)
+        group.add(self.search_include_unpublished_row)
         outer.append(group)
 
         display_group = Adw.PreferencesGroup(title="Display")
@@ -301,6 +308,7 @@ class SettingsWindow(Adw.ApplicationWindow):
                     int(round(self.reader_font_size_row.get_value()))
                 ),
                 reader_font_family=normalize_reader_font_family(reader_font_family),
+                search_include_unpublished=self.search_include_unpublished_row.get_active(),
             )
         )
         self.parent_window.reload_settings()
@@ -369,11 +377,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_session_log_path: Path | None = None
         self._agent_answer_poll_id: int | None = None
         self._agent_last_answer_text = ""
+        self._agent_search_output_visible = False
+        self._agent_panel_height = AGENT_PANEL_MIN_HEIGHT
         self._agent_mode = AGENT_MODE_GENERAL
         self._selected_agent_mode = AGENT_MODE_GENERAL
         self._case_agent_text_sources: list[CaseTextSource] = []
         self._agent_link_tags: list[Gtk.TextTag] = []
         self._agent_link_lookup: dict[Gtk.TextTag, QuoteTarget] = {}
+        self._agent_search_link_lookup: dict[Gtk.TextTag, CourtListenerSearchResult] = {}
         self._agent_motion_controller: Gtk.EventControllerMotion | None = None
         self._agent_click_gesture: Gtk.GestureClick | None = None
         self._reader_text = ""
@@ -1037,8 +1048,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._install_agent_answer_link_controllers()
         answer_scroller = Gtk.ScrolledWindow()
         answer_scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        answer_scroller.set_min_content_height(AGENT_TERMINAL_MAX_HEIGHT)
-        answer_scroller.set_max_content_height(AGENT_TERMINAL_MAX_HEIGHT)
+        answer_scroller.set_min_content_height(self._agent_panel_height)
+        answer_scroller.set_max_content_height(self._agent_panel_height)
+        answer_scroller.set_size_request(-1, self._agent_panel_height)
         answer_scroller.set_child(self._agent_answer_view)
         self._agent_answer_scroller = answer_scroller
         frame.append(answer_scroller)
@@ -1091,6 +1103,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         mode_strip.add_css_class("focus-pill-group")
         mode_strip.append(self._build_agent_mode_button("Law", AGENT_MODE_GENERAL))
         mode_strip.append(self._build_agent_mode_button("Cache", AGENT_MODE_CASE))
+        mode_strip.append(self._build_agent_mode_button("Search", AGENT_MODE_SEARCH))
         row.append(mode_strip)
 
         self.agent_question_entry = Gtk.Entry()
@@ -1111,6 +1124,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             "Ask from CourtListener legal authority"
             if mode == AGENT_MODE_GENERAL
             else "Ask from marked Research Cache cases"
+            if mode == AGENT_MODE_CASE
+            else "Search CourtListener opinions"
         )
         button.set_tooltip_text(tooltip)
         button.connect("toggled", self._on_agent_mode_button_toggled, mode)
@@ -1438,7 +1453,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         )
 
     def _sync_agent_subviews(self) -> None:
-        has_agent_output = self._agent_active or bool(self._agent_last_answer_text)
+        self._update_agent_panel_height()
+        has_agent_output = (
+            self._agent_active
+            or bool(self._agent_last_answer_text)
+            or self._agent_search_output_visible
+        )
         if self._agent_subview_strip is not None:
             self._agent_subview_strip.set_visible(has_agent_output)
         if self._agent_answer_scroller is not None:
@@ -1450,9 +1470,30 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 has_agent_output and self._agent_subview_name == AGENT_SUBVIEW_SESSION
             )
             if self._agent_subview_name == AGENT_SUBVIEW_SESSION:
-                self._agent_session_widget.set_size_request(-1, AGENT_TERMINAL_MAX_HEIGHT)
+                self._agent_session_widget.set_size_request(-1, self._agent_panel_height)
             else:
                 self._agent_session_widget.set_size_request(-1, -1)
+
+    def _update_agent_panel_height(self) -> None:
+        allocated_height = self.get_allocated_height()
+        proportional_height = (
+            allocated_height // AGENT_HEIGHT_DIVISOR
+            if allocated_height > 0
+            else AGENT_PANEL_MIN_HEIGHT
+        )
+        height = max(AGENT_PANEL_MIN_HEIGHT, proportional_height)
+        if height == self._agent_panel_height:
+            return
+        self._agent_panel_height = height
+        if self._agent_answer_scroller is not None:
+            self._agent_answer_scroller.set_min_content_height(height)
+            self._agent_answer_scroller.set_max_content_height(height)
+            self._agent_answer_scroller.set_size_request(-1, height)
+        if (
+            self._agent_session_widget is not None
+            and self._agent_subview_name == AGENT_SUBVIEW_SESSION
+        ):
+            self._agent_session_widget.set_size_request(-1, height)
 
     def _set_agent_subview(self, subview_name: str) -> None:
         self._agent_subview_name = (
@@ -1493,14 +1534,17 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def _set_agent_mode(self, mode: str) -> None:
         self._selected_agent_mode = (
-            mode if mode in {AGENT_MODE_GENERAL, AGENT_MODE_CASE} else AGENT_MODE_GENERAL
+            mode
+            if mode in {AGENT_MODE_GENERAL, AGENT_MODE_CASE, AGENT_MODE_SEARCH}
+            else AGENT_MODE_GENERAL
         )
         if hasattr(self, "agent_question_entry"):
-            placeholder = (
-                "Ask a California law question"
-                if self._selected_agent_mode == AGENT_MODE_GENERAL
-                else "Ask about marked Research Cache cases"
-            )
+            if self._selected_agent_mode == AGENT_MODE_GENERAL:
+                placeholder = "Ask a California law question"
+            elif self._selected_agent_mode == AGENT_MODE_CASE:
+                placeholder = "Ask about marked Research Cache cases"
+            else:
+                placeholder = "Search CourtListener opinions"
             self.agent_question_entry.set_placeholder_text(placeholder)
         self._agent_mode_toggle_guard = True
         try:
@@ -1616,6 +1660,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         window.present()
 
     def _on_window_tick(self, _widget: Gtk.Widget, _clock: Gdk.FrameClock) -> bool:
+        self._update_agent_panel_height()
         return True
 
     def reload_settings(self) -> None:
@@ -1974,13 +2019,16 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         ]
 
     def _on_agent_launch(self, _widget: Gtk.Widget) -> None:
-        if Vte is None or self._agent_terminal is None:
-            self._set_status("Embedded terminal is unavailable.")
-            return
         mode = self._selected_agent_mode
         question = self.agent_question_entry.get_text().strip()
         if not question:
-            self._set_status("Enter an agent question.")
+            self._set_status("Enter a search or agent question.")
+            return
+        if mode == AGENT_MODE_SEARCH:
+            self._start_courtlistener_search(question)
+            return
+        if Vte is None or self._agent_terminal is None:
+            self._set_status("Embedded terminal is unavailable.")
             return
         if mode == AGENT_MODE_CASE:
             clusters = self._selected_agent_clusters()
@@ -2004,6 +2052,56 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._set_status(f"Unable to create agent workspace: {exc}")
             return
         self._launch_agent_with_prompt(prompt_path, workspace, AGENT_MODE_GENERAL)
+
+    def _start_courtlistener_search(self, query: str) -> None:
+        self._stop_agent()
+        self._stop_agent_answer_polling()
+        self._clear_agent_answer()
+        self._agent_search_output_visible = True
+        self._agent_mode = AGENT_MODE_SEARCH
+        self._set_agent_subview(AGENT_SUBVIEW_ANSWER)
+        self._set_status(f"Searching CourtListener for {query}...")
+        if self._agent_answer_buffer is not None:
+            self._agent_answer_buffer.set_text("Searching...")
+        include_unpublished = load_config().search_include_unpublished
+        thread = threading.Thread(
+            target=self._courtlistener_search_worker,
+            args=(query, include_unpublished),
+            daemon=True,
+        )
+        thread.start()
+
+    def _courtlistener_search_worker(self, query: str, include_unpublished: bool) -> None:
+        try:
+            results = self.client.search_opinions(
+                query,
+                include_unpublished=include_unpublished,
+            )
+            GLib.idle_add(
+                self._finish_courtlistener_search,
+                query,
+                results,
+                include_unpublished,
+            )
+        except (CourtListenerError, ValueError) as exc:
+            GLib.idle_add(self._apply_search_error, str(exc))
+
+    def _finish_courtlistener_search(
+        self,
+        query: str,
+        results: list[CourtListenerSearchResult],
+        include_unpublished: bool,
+    ) -> bool:
+        self._render_search_results(query, results, include_unpublished)
+        noun = "result" if len(results) == 1 else "results"
+        self._set_status(f"CourtListener Search: {len(results)} {noun}.")
+        return False
+
+    def _apply_search_error(self, message: str) -> bool:
+        self._set_status(message)
+        if self._agent_answer_buffer is not None:
+            self._agent_answer_buffer.set_text(message)
+        return False
 
     def _prepare_case_agent_worker(self, question: str, clusters: list[dict[str, Any]]) -> None:
         try:
@@ -2041,10 +2139,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._set_status(f"Agent wrapper not found: {AGENT_WRAPPER}")
             return
         env = os.environ.copy()
-        if not env.get("COURTLISTENER_TOKEN"):
-            token = courtlistener_token()
-            if token:
-                env["COURTLISTENER_TOKEN"] = token
         env.update(
             {
                 "OPEN_LAW_LENS_AGENT_PROMPT_FILE": str(prompt_path),
@@ -2054,7 +2148,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 "CODEX_BIN": os.environ.get("OPEN_LAW_LENS_CODEX_BIN", DEFAULT_CODEX_BIN),
             }
         )
-        profile = os.environ.get("OPEN_LAW_LENS_CODEX_PROFILE", "open-law-lens").strip()
+        profile = os.environ.get("OPEN_LAW_LENS_CODEX_PROFILE", "").strip()
         if profile:
             env["CODEX_PROFILE"] = profile
         else:
@@ -2108,7 +2202,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def _clear_agent_answer(self) -> None:
         self._agent_last_answer_text = ""
+        self._agent_search_output_visible = False
         self._agent_link_lookup.clear()
+        self._agent_search_link_lookup.clear()
         if self._agent_answer_buffer is not None:
             self._agent_answer_buffer.set_text("")
 
@@ -2280,6 +2376,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                     pass
         self._agent_link_tags.clear()
         self._agent_link_lookup.clear()
+        self._agent_search_link_lookup.clear()
         clean_text, quote_spans = self._extract_agent_quote_spans(text)
         rendered, markdown_spans, offset_map = self._render_markdown_text(clean_text)
         buffer.set_text(rendered)
@@ -2306,6 +2403,79 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 target = resolve_quote_target(phrase, self._case_agent_text_sources)
                 if target is not None:
                     self._agent_link_lookup[tag] = target
+
+    def _render_search_results(
+        self,
+        query: str,
+        results: list[CourtListenerSearchResult],
+        include_unpublished: bool,
+    ) -> None:
+        if self._agent_answer_buffer is None:
+            return
+        buffer = self._agent_answer_buffer
+        table = buffer.get_tag_table()
+        if table is not None:
+            for tag in self._agent_link_tags:
+                try:
+                    table.remove(tag)
+                except TypeError:
+                    pass
+        self._agent_link_tags.clear()
+        self._agent_link_lookup.clear()
+        self._agent_search_link_lookup.clear()
+
+        scope = (
+            "California published and unpublished cases"
+            if include_unpublished
+            else "California published cases"
+        )
+        lines = [f"CourtListener Search: {query}", scope, ""]
+        spans: list[tuple[int, int, CourtListenerSearchResult]] = []
+        offset = sum(len(line) + 1 for line in lines)
+        if not results:
+            lines.append("No matching cases found.")
+            buffer.set_text("\n".join(lines))
+            return
+        for index, result in enumerate(results, start=1):
+            title = f"{index}. {result.case_name}"
+            start = offset + len(f"{index}. ")
+            end = offset + len(title)
+            lines.append(title)
+            offset += len(title) + 1
+            spans.append((start, end, result))
+            meta_parts = [
+                part
+                for part in (
+                    result.citation,
+                    result.court or result.court_id,
+                    result.date_filed,
+                    result.status,
+                )
+                if part
+            ]
+            if meta_parts:
+                meta = " | ".join(meta_parts)
+                lines.append(meta)
+                offset += len(meta) + 1
+            lines.append("")
+            offset += 1
+
+        buffer.set_text("\n".join(lines))
+        link_color = self._resolve_agent_quote_color()
+        for start, end, result in spans:
+            tag = buffer.create_tag(
+                None,
+                foreground_rgba=link_color,
+                underline=Pango.Underline.SINGLE,
+                weight=Pango.Weight.MEDIUM,
+            )
+            buffer.apply_tag(
+                tag,
+                buffer.get_iter_at_offset(start),
+                buffer.get_iter_at_offset(end),
+            )
+            self._agent_link_tags.append(tag)
+            self._agent_search_link_lookup[tag] = result
 
     def _resolve_agent_quote_color(self) -> Gdk.RGBA:
         fallback = Gdk.RGBA()
@@ -2398,7 +2568,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             view.add_controller(click)
             self._agent_click_gesture = click
 
-    def _agent_link_at_coords(self, x: float, y: float) -> QuoteTarget | None:
+    def _agent_link_at_coords(
+        self,
+        x: float,
+        y: float,
+    ) -> QuoteTarget | CourtListenerSearchResult | None:
         view = self._agent_answer_view
         if view is None:
             return None
@@ -2416,6 +2590,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             target = self._agent_link_lookup.get(tag)
             if target is not None:
                 return target
+            search_result = self._agent_search_link_lookup.get(tag)
+            if search_result is not None:
+                return search_result
         return None
 
     def _on_agent_answer_motion(
@@ -2446,8 +2623,47 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if button and button != Gdk.BUTTON_PRIMARY:
             return
         target = self._agent_link_at_coords(x, y)
-        if target is not None:
+        if isinstance(target, CourtListenerSearchResult):
+            self._open_search_result(target)
+        elif target is not None:
             self._open_quote_target(target)
+
+    def _open_search_result(self, result: CourtListenerSearchResult) -> None:
+        self._set_status(f"Opening {result.case_name}...")
+        thread = threading.Thread(
+            target=self._search_result_open_worker,
+            args=(result,),
+            daemon=True,
+        )
+        thread.start()
+
+    def _search_result_open_worker(self, result: CourtListenerSearchResult) -> None:
+        try:
+            cluster = self.client.fetch_url(
+                f"/api/rest/v4/clusters/{result.cluster_id}/",
+                kind="clusters",
+            )
+            cluster_id = self.client.cache.upsert_cluster(cluster)
+            self.client.library.upsert_cluster(cluster)
+            GLib.idle_add(
+                self._finish_search_result_open,
+                cluster_id or result.cluster_id,
+                result.case_name,
+            )
+        except CourtListenerError as exc:
+            GLib.idle_add(self._set_status, f"Unable to open {result.case_name}: {exc}")
+
+    def _finish_search_result_open(self, cluster_id: str, title: str) -> bool:
+        self._set_sidebar_clusters(
+            self.client.cached_clusters(),
+            select_cluster_id=cluster_id,
+        )
+        self._refresh_case_suggestion_index(force=True)
+        if self.case_list.get_selected_row() is None:
+            self._set_status(f"Cached {title}, but could not select the case.")
+        else:
+            self._set_status(f"Opened {title}.")
+        return False
 
     def _open_quote_target(self, target: QuoteTarget) -> None:
         for index, cluster in enumerate(self._clusters):

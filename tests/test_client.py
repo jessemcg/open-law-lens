@@ -10,10 +10,12 @@ from open_law_lens.client import (
     cluster_short_title,
     cluster_citation_line,
     cluster_title,
+    courtlistener_search_query,
     dedupe_case_clusters,
     format_official_california_citation,
     html_to_text,
     normalize_case_title,
+    normalize_search_result,
     official_california_reporter_citation,
     opinion_text,
 )
@@ -279,6 +281,45 @@ class ClientTests(unittest.TestCase):
         self.assertIsNotNone(citation)
         assert citation is not None
         self.assertEqual(citation.plain_text, "Example v. State 1 Cal.App.5th 2")
+
+    def test_courtlistener_search_query_defaults_to_published_california_cases(self) -> None:
+        query = courtlistener_search_query(" third parent   exception ")
+
+        self.assertEqual(
+            query,
+            "third parent exception court_id:(cal OR calctapp OR calappdeptsuper) status:Published",
+        )
+
+    def test_courtlistener_search_query_can_include_unpublished_cases(self) -> None:
+        query = courtlistener_search_query("third parent", include_unpublished=True)
+
+        self.assertEqual(query, "third parent court_id:(cal OR calctapp OR calappdeptsuper)")
+
+    def test_normalize_search_result_extracts_clickable_case_metadata(self) -> None:
+        result = normalize_search_result(
+            {
+                "cluster_id": 4378636,
+                "caseName": "In Re Example",
+                "citation": ["10 Cal. App. 5th 130", "215 Cal. Rptr. 3d 858"],
+                "court": "California Court of Appeal",
+                "court_id": "calctapp",
+                "dateFiled": "2017-03-27",
+                "status": "Published",
+            }
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.cluster_id, "4378636")
+        self.assertEqual(result.case_name, "In re Example")
+        self.assertEqual(result.citation, "10 Cal. App. 5th 130; 215 Cal. Rptr. 3d 858")
+        self.assertEqual(result.court, "California Court of Appeal")
+        self.assertEqual(result.court_id, "calctapp")
+        self.assertEqual(result.date_filed, "2017-03-27")
+        self.assertEqual(result.status, "Published")
+
+    def test_normalize_search_result_skips_missing_cluster_id(self) -> None:
+        self.assertIsNone(normalize_search_result({"caseName": "Example v. State"}))
 
     def test_lookup_uses_cache_without_network(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
