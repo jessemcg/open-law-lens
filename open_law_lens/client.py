@@ -17,7 +17,7 @@ from .case_titles import (
     normalize_case_title,
 )
 from .config import courtlistener_token
-from .library import CaseLibrary, DisplayText, opinion_display_text
+from .library import CaseLibrary, DisplayText, decode_cp1252_control_chars, opinion_display_text
 
 
 BASE_URL = "https://www.courtlistener.com"
@@ -77,6 +77,7 @@ class _TextExtractor(HTMLParser):
 
     def text(self) -> str:
         text = html.unescape("".join(self.parts))
+        text = decode_cp1252_control_chars(text)
         text = re.sub(r"[ \t\r\f\v]+", " ", text)
         text = re.sub(r"\n{3,}", "\n\n", text)
         return text.strip()
@@ -96,7 +97,7 @@ def opinion_text(opinion: dict[str, Any]) -> str:
             continue
         if field.startswith("html") or field.startswith("xml"):
             return html_to_text(value)
-        return value.strip()
+        return decode_cp1252_control_chars(value).strip()
     return ""
 
 

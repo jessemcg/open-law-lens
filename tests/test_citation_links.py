@@ -53,6 +53,34 @@ class CitationLinkTests(unittest.TestCase):
             "County of Alameda v. Carleson (1971) 5 Cal.3d 730",
         )
 
+    def test_cited_case_links_exclude_prefatory_signal_phrases(self) -> None:
+        text = (
+            "Relying on Michael M. v. Giovanna F. (1992) 5 Cal.App.4th 1272. "
+            "See also Lehr v. Robertson (1983) 463 U.S. 248."
+        )
+
+        links = cited_case_links(text)
+
+        self.assertEqual([link.lookup_text for link in links], ["5 Cal.App.4th 1272", "463 U.S. 248"])
+        self.assertEqual(
+            [text[link.start_offset:link.end_offset] for link in links],
+            [
+                "Michael M. v. Giovanna F. (1992) 5 Cal.App.4th 1272",
+                "Lehr v. Robertson (1983) 463 U.S. 248",
+            ],
+        )
+
+    def test_cited_case_links_exclude_prefatory_decision_phrase(self) -> None:
+        text = "The decision in Cesar V. v. Superior Court (2001) 91 Cal.App.4th 1023"
+
+        links = cited_case_links(text)
+
+        self.assertEqual([link.lookup_text for link in links], ["91 Cal.App.4th 1023"])
+        self.assertEqual(
+            text[links[0].start_offset:links[0].end_offset],
+            "Cesar V. v. Superior Court (2001) 91 Cal.App.4th 1023",
+        )
+
     def test_cluster_citation_texts_renders_lookup_citations(self) -> None:
         cluster = {
             "citations": [

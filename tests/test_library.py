@@ -180,6 +180,20 @@ class LibraryTests(unittest.TestCase):
         self.assertEqual(marker.page_label, "1566")
         self.assertEqual(display.text[marker.start_offset:marker.end_offset], "[*1566]")
 
+    def test_opinion_display_text_decodes_cp1252_em_dash_control(self) -> None:
+        opinion = {"id": 10, "html_with_citations": "<p>Alpha \u0097 beta.</p>"}
+
+        display = opinion_display_text(opinion)
+
+        self.assertEqual(display.text, "Alpha \u2014 beta.")
+
+    def test_plain_opinion_display_text_decodes_cp1252_em_dash_control(self) -> None:
+        opinion = {"id": 10, "plain_text": "Alpha \u0097 beta."}
+
+        display = opinion_display_text(opinion)
+
+        self.assertEqual(display.text, "Alpha \u2014 beta.")
+
     def test_opinion_display_text_preserves_reporter_header_lines(self) -> None:
         opinion = {
             "id": 10,

@@ -28,6 +28,19 @@ FULL_OFFICIAL_CITATION_RE = re.compile(
     r")\b",
 )
 
+CITATION_SIGNAL_PREFIX_RE = re.compile(
+    r"^(?:"
+    r"Accord|"
+    r"But\s+see|"
+    r"Compare|"
+    r"Citing|"
+    r"Following|"
+    r"Relying\s+(?:on|upon)|"
+    r"See(?:\s+also)?|"
+    r"The\s+(?:case|court|decision|holding|opinion)\s+in"
+    r")\s+"
+)
+
 
 @dataclass(frozen=True)
 class CitedCaseLink:
@@ -52,7 +65,7 @@ def cited_case_links(
         citation = normalize_citation(match.group("citation"))
         if not citation or _citation_key(citation) in excluded:
             continue
-        span = match.span("full")
+        span = _link_span_without_signal_prefix(match)
         if span in seen_spans:
             continue
         seen_spans.add(span)
@@ -64,6 +77,15 @@ def cited_case_links(
             )
         )
     return links
+
+
+def _link_span_without_signal_prefix(match: re.Match[str]) -> tuple[int, int]:
+    start, end = match.span("full")
+    name = match.group("name")
+    prefix = CITATION_SIGNAL_PREFIX_RE.match(name)
+    if prefix is not None:
+        start += prefix.end()
+    return start, end
 
 
 def _citation_key(value: str) -> str:

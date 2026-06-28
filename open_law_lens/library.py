@@ -30,6 +30,38 @@ TEXT_FIELDS = (
     "xml_harvard",
 )
 
+CP1252_CONTROL_TRANSLATION = str.maketrans(
+    {
+        "\u0080": "\u20ac",
+        "\u0082": "\u201a",
+        "\u0083": "\u0192",
+        "\u0084": "\u201e",
+        "\u0085": "\u2026",
+        "\u0086": "\u2020",
+        "\u0087": "\u2021",
+        "\u0088": "\u02c6",
+        "\u0089": "\u2030",
+        "\u008a": "\u0160",
+        "\u008b": "\u2039",
+        "\u008c": "\u0152",
+        "\u008e": "\u017d",
+        "\u0091": "\u2018",
+        "\u0092": "\u2019",
+        "\u0093": "\u201c",
+        "\u0094": "\u201d",
+        "\u0095": "\u2022",
+        "\u0096": "\u2013",
+        "\u0097": "\u2014",
+        "\u0098": "\u02dc",
+        "\u0099": "\u2122",
+        "\u009a": "\u0161",
+        "\u009b": "\u203a",
+        "\u009c": "\u0153",
+        "\u009e": "\u017e",
+        "\u009f": "\u0178",
+    }
+)
+
 
 def library_db_path() -> Path:
     path = os.environ.get("OPEN_LAW_LENS_LIBRARY_DB")
@@ -48,6 +80,10 @@ def _json_dumps(value: Any) -> str:
 
 def _json_loads(value: str) -> Any:
     return json.loads(value)
+
+
+def decode_cp1252_control_chars(value: str) -> str:
+    return value.translate(CP1252_CONTROL_TRANSLATION)
 
 
 def _cluster_title(cluster: dict[str, Any]) -> str:
@@ -136,6 +172,7 @@ class _DisplayTextExtractor(HTMLParser):
     def _append_data(self, data: str) -> None:
         if not data:
             return
+        data = decode_cp1252_control_chars(data)
         has_leading_space = data[:1].isspace()
         has_trailing_space = data[-1:].isspace()
         text = re.sub(r"\s+", " ", data.strip())
@@ -164,7 +201,7 @@ class _DisplayTextExtractor(HTMLParser):
         self._page_text_parts = []
 
     def _finish_page_marker(self) -> None:
-        raw_text = html.unescape("".join(self._page_text_parts)).strip()
+        raw_text = decode_cp1252_control_chars(html.unescape("".join(self._page_text_parts))).strip()
         label = _page_marker_label(self._page_label or raw_text)
         if label:
             marker_text = f"[*{label}]"
@@ -245,7 +282,7 @@ def opinion_display_text(opinion: dict[str, Any]) -> DisplayText:
             parser.feed(value)
             parser.close()
             return parser.display_text()
-        text = value.strip()
+        text = decode_cp1252_control_chars(value).strip()
         return DisplayText(text=text, source_field=field, page_markers=[])
     return DisplayText(text="", source_field="", page_markers=[])
 

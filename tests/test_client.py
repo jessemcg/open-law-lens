@@ -24,6 +24,9 @@ class ClientTests(unittest.TestCase):
     def test_html_to_text_keeps_paragraph_breaks(self) -> None:
         self.assertEqual(html_to_text("<p>First</p><p>Second <b>line</b></p>"), "First\n\nSecond line")
 
+    def test_html_to_text_decodes_cp1252_em_dash_control(self) -> None:
+        self.assertEqual(html_to_text("<p>Alpha \u0097 beta.</p>"), "Alpha \u2014 beta.")
+
     def test_opinion_text_prefers_html_with_citations(self) -> None:
         opinion = {
             "html_with_citations": "<p>Preferred</p>",
