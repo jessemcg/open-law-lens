@@ -57,6 +57,42 @@ class LibraryTests(unittest.TestCase):
 
             self.assertEqual(cache.list_case_entries()[0]["title"], "In re K.C.")
 
+    def test_library_case_index_uses_extracted_adoption_title(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            library.upsert_cluster(
+                {
+                    "id": 2607287,
+                    "case_name": "Steven A. v. Rickie M.",
+                    "case_name_full": (
+                        "Adoption of KELSEY S., STEVEN A., Petitioner and Appellant, "
+                        "v. RICKIE M., Objector and Respondent."
+                    ),
+                    "case_name_short": "Kelsey S.",
+                }
+            )
+
+            self.assertEqual(library.list_case_entries()[0]["title"], "Adoption of Kelsey S.")
+
+    def test_json_cache_case_index_uses_extracted_adoption_title(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cache.ensure()
+            cache.upsert_cluster(
+                {
+                    "id": 2607287,
+                    "case_name": "Steven A. v. Rickie M.",
+                    "case_name_full": (
+                        "Adoption of KELSEY S., STEVEN A., Petitioner and Appellant, "
+                        "v. RICKIE M., Objector and Respondent."
+                    ),
+                    "case_name_short": "Kelsey S.",
+                }
+            )
+
+            self.assertEqual(cache.list_case_entries()[0]["title"], "Adoption of Kelsey S.")
+
     def test_json_cache_case_index_normalizes_stale_title_from_cluster_json(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = JsonCache(Path(temp_dir))

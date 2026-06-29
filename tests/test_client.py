@@ -78,6 +78,15 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(normalize_case_title("People v. KC Holdings"), "People v. KC Holdings")
         self.assertEqual(normalize_case_title("In re Marriage of Smith"), "In re Marriage of Smith")
 
+    def test_case_title_normalizes_leading_adoption_of_title(self) -> None:
+        self.assertEqual(normalize_case_title(" ADOPTION OF KELSEY S. "), "Adoption of Kelsey S.")
+        self.assertEqual(normalize_case_title("Adoption of AB"), "Adoption of A.B.")
+        self.assertEqual(normalize_case_title("Adoption of A. B."), "Adoption of A.B.")
+        self.assertEqual(
+            normalize_case_title("Steven A. v. Adoption of Kelsey S."),
+            "Steven A. v. Adoption of Kelsey S.",
+        )
+
     def test_cluster_title_normalizes_in_re_casing(self) -> None:
         cluster = {"case_name": "In Re Emily D.", "case_name_short": "In Re Emily D."}
 
@@ -165,6 +174,18 @@ class ClientTests(unittest.TestCase):
         }
 
         self.assertEqual(cluster_short_title(cluster), "In re Abbigail A.")
+
+    def test_cluster_short_title_extracts_full_adoption_title(self) -> None:
+        cluster = {
+            "case_name": "Steven A. v. Rickie M.",
+            "case_name_full": (
+                "Adoption of KELSEY S., STEVEN A., Petitioner and Appellant, "
+                "v. RICKIE M., Objector and Respondent."
+            ),
+            "case_name_short": "Kelsey S.",
+        }
+
+        self.assertEqual(cluster_short_title(cluster), "Adoption of Kelsey S.")
 
     def test_official_california_reporter_citation_prefers_official_reporter(self) -> None:
         cluster = {
@@ -319,6 +340,24 @@ class ClientTests(unittest.TestCase):
         self.assertIsNotNone(citation)
         assert citation is not None
         self.assertEqual(citation.plain_text, "In re Abbigail A. (2016) 1 Cal.5th 83")
+
+    def test_format_official_california_citation_uses_extracted_adoption_title(self) -> None:
+        cluster = {
+            "case_name": "Steven A. v. Rickie M.",
+            "case_name_full": (
+                "Adoption of KELSEY S., STEVEN A., Petitioner and Appellant, "
+                "v. RICKIE M., Objector and Respondent."
+            ),
+            "case_name_short": "Kelsey S.",
+            "date_filed": "1992-05-14",
+            "citations": [{"volume": "1", "reporter": "Cal. 4th", "page": "816"}],
+        }
+
+        citation = format_official_california_citation(cluster)
+
+        self.assertIsNotNone(citation)
+        assert citation is not None
+        self.assertEqual(citation.plain_text, "Adoption of Kelsey S. (1992) 1 Cal.4th 816")
 
     def test_dedupe_case_clusters_prefers_cleaner_official_citation_match(self) -> None:
         duplicate_with_lexis = {
@@ -563,6 +602,28 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(
             search_result_full_citation(result),
             "In re Miguel S. (2016) 248 Cal.App.4th 164",
+        )
+
+    def test_search_result_full_citation_shortens_parenthetical_adoption_title(self) -> None:
+        result = normalize_search_result(
+            {
+                "cluster_id": 2607287,
+                "caseName": "Steven A. v. Rickie M. (Adoption of KELSEY S.)",
+                "caseNameFull": (
+                    "Adoption of KELSEY S., STEVEN A., Petitioner and Appellant, "
+                    "v. RICKIE M., Objector and Respondent."
+                ),
+                "citation": ["1 Cal. 4th 816"],
+                "dateFiled": "1992-05-14",
+            }
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.case_name, "Adoption of Kelsey S.")
+        self.assertEqual(
+            search_result_full_citation(result),
+            "Adoption of Kelsey S. (1992) 1 Cal.4th 816",
         )
 
     def test_dedupe_search_results_prefers_official_citation_duplicate(self) -> None:

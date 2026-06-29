@@ -13,20 +13,29 @@ def normalize_case_title(title: str) -> str:
         flags=re.IGNORECASE,
     )
     normalized = re.sub(r"^in\s+re\b", "In re", normalized, count=1, flags=re.IGNORECASE)
-    if not normalized.startswith("In re "):
-        return normalized
-    normalized = _normalize_in_re_name_words(normalized)
-    normalized = re.sub(r"\b([A-Z])\.\s+([A-Z])\.(?=$|[\s,)])", r"\1.\2.", normalized)
     normalized = re.sub(
-        r"^(In re )([A-Z]{2})\.?(?=$|[\s,(])",
+        r"^adoption\s+of\b",
+        "Adoption of",
+        normalized,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    if normalized.startswith("In re "):
+        normalized = _normalize_leading_name_words(normalized, "In re ")
+    elif normalized.startswith("Adoption of "):
+        normalized = _normalize_leading_name_words(normalized, "Adoption of ")
+    else:
+        return normalized
+    normalized = _normalize_initial_spacing(normalized)
+    normalized = re.sub(
+        r"^((?:In re|Adoption of) )([A-Z]{2})\.?(?=$|[\s,(])",
         lambda match: f"{match.group(1)}{'.'.join(match.group(2))}.",
         normalized,
     )
     return re.sub(r"\s+CA\d+\s*$", "", normalized)
 
 
-def _normalize_in_re_name_words(title: str) -> str:
-    prefix = "In re "
+def _normalize_leading_name_words(title: str, prefix: str) -> str:
     body = title.removeprefix(prefix)
 
     def replace(match: re.Match[str]) -> str:
@@ -38,6 +47,10 @@ def _normalize_in_re_name_words(title: str) -> str:
         return word[0] + word[1:].lower()
 
     return prefix + re.sub(r"\b[A-Z]{2,}\b", replace, body)
+
+
+def _normalize_initial_spacing(title: str) -> str:
+    return re.sub(r"\b([A-Z])\.\s+([A-Z])\.(?=$|[\s,)])", r"\1.\2.", title)
 
 
 def is_bare_initial_title(title: str) -> bool:
@@ -66,9 +79,25 @@ def leading_in_re_title(title: str) -> str:
     return normalize_case_title(leading)
 
 
+def leading_adoption_title(title: str) -> str:
+    normalized = re.sub(r"\s+", " ", title.strip())
+    if not re.match(r"^adoption\s+of\s+", normalized, flags=re.IGNORECASE):
+        return ""
+    leading = re.split(r",", normalized, maxsplit=1)[0]
+    return normalize_case_title(leading)
+
+
 def parenthetical_in_re_title(title: str) -> str:
     normalized = re.sub(r"\s+", " ", title.strip())
     matches = re.findall(r"\((In re [^)]+)\)", normalized, flags=re.IGNORECASE)
+    if not matches:
+        return ""
+    return normalize_case_title(matches[-1])
+
+
+def parenthetical_adoption_title(title: str) -> str:
+    normalized = re.sub(r"\s+", " ", title.strip())
+    matches = re.findall(r"\((Adoption of [^)]+)\)", normalized, flags=re.IGNORECASE)
     if not matches:
         return ""
     return normalize_case_title(matches[-1])
@@ -82,14 +111,17 @@ def is_superior_court_writ_title(title: str) -> bool:
 def cluster_display_title_value(cluster: dict[str, Any]) -> str:
     full_value = cluster.get("case_name_full")
     full_in_re = leading_in_re_title(full_value) if isinstance(full_value, str) else ""
+    full_adoption = leading_adoption_title(full_value) if isinstance(full_value, str) else ""
     short_value = cluster.get("case_name_short")
     short_title = normalize_case_title(short_value) if isinstance(short_value, str) else ""
     case_value = cluster.get("case_name")
     case_title = normalize_case_title(case_value) if isinstance(case_value, str) else ""
 
+    if full_adoption:
+        return full_adoption
     if full_in_re:
         return full_in_re
-    if short_title.startswith("In re "):
+    if short_title.startswith(("In re ", "Adoption of ")):
         return short_title
     if case_title:
         return case_title

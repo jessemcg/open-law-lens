@@ -16,6 +16,7 @@ from .case_titles import (
     cluster_short_title_value,
     cluster_title_value,
     normalize_case_title,
+    parenthetical_adoption_title,
     parenthetical_in_re_title,
 )
 from .config import courtlistener_token
@@ -357,7 +358,9 @@ def _search_case_name(result: dict[str, Any]) -> str:
     for key in ("caseName", "caseNameFull"):
         value = result.get(key)
         if isinstance(value, str) and value.strip():
-            parenthetical_title = parenthetical_in_re_title(value)
+            parenthetical_title = parenthetical_in_re_title(value) or parenthetical_adoption_title(
+                value
+            )
             if parenthetical_title:
                 return parenthetical_title
             return normalize_case_title(value)
