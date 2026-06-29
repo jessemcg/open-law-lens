@@ -507,6 +507,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_citation_link_lookup: dict[Gtk.TextTag, CitedCaseLink] = {}
         self._reader_citation_motion_controller: Gtk.EventControllerMotion | None = None
         self._reader_citation_click_gesture: Gtk.GestureClick | None = None
+        self._reader_header_citation: FormattedCitation | None = None
         self._pending_quote_target: QuoteTarget | None = None
         self._settings_window: SettingsWindow | None = None
         self._dbus_commands_window: DbusCommandsWindow | None = None
@@ -570,13 +571,32 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             .case-reader-frame > scrolledwindow > viewport {{
               background-color: {READER_BG};
             }}
+            box.case-reader-fixed-header {{
+              background-color: {READER_BG};
+              padding: 4px 12px 8px 12px;
+            }}
             label.case-reader-fixed-header {{
               color: {READER_FG};
               background-color: {READER_BG};
               font-family: {reader_font_css(config.reader_font_family)};
               font-size: {config.reader_font_size_pt}pt;
               font-weight: bold;
-              padding: 4px 12px 8px 12px;
+            }}
+            button.case-reader-copy-button {{
+              color: {READER_FG};
+              background-color: {READER_BG};
+              background-image: none;
+              border: none;
+              box-shadow: none;
+              padding: 4px;
+              min-width: 28px;
+              min-height: 28px;
+            }}
+            button.case-reader-copy-button:hover {{
+              background-color: #eeeeee;
+            }}
+            button.case-reader-copy-button:active {{
+              background-color: #dddddd;
             }}
             textview.case-reader {{
               color: {READER_FG};
@@ -1050,12 +1070,25 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             background="#ffd35a",
             weight=Pango.Weight.BOLD,
         )
+        self.reader_header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.reader_header_box.add_css_class("case-reader-fixed-header")
+        self.reader_header_box.set_hexpand(True)
+        self.reader_header_box.set_visible(False)
+
         self.reader_header_label = Gtk.Label(label="", xalign=0.5)
         self.reader_header_label.add_css_class("case-reader-fixed-header")
         self.reader_header_label.set_wrap(True)
         self.reader_header_label.set_justify(Gtk.Justification.CENTER)
         self.reader_header_label.set_selectable(True)
-        self.reader_header_label.set_visible(False)
+        self.reader_header_label.set_hexpand(True)
+        self.reader_header_box.append(self.reader_header_label)
+
+        self.reader_header_copy_button = Gtk.Button(icon_name="edit-copy-symbolic")
+        self.reader_header_copy_button.add_css_class("case-reader-copy-button")
+        self.reader_header_copy_button.set_tooltip_text("Copy citation")
+        self.reader_header_copy_button.set_valign(Gtk.Align.CENTER)
+        self.reader_header_copy_button.connect("clicked", self._on_copy_reader_citation_clicked)
+        self.reader_header_box.append(self.reader_header_copy_button)
 
         self.reader_view = Gtk.TextView(buffer=self.reader_buffer)
         self.reader_view.set_editable(False)
@@ -1080,7 +1113,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         frame.set_hexpand(True)
         frame.set_vexpand(True)
         frame.set_halign(Gtk.Align.FILL)
-        frame.append(self.reader_header_label)
+        frame.append(self.reader_header_box)
         frame.append(reader_scroller)
         reader_overlay = Gtk.Overlay()
         reader_overlay.set_hexpand(True)
@@ -1319,10 +1352,16 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._highlight_reader_phrase(target.phrase)
         return False
 
-    def _set_reader_header(self, text: str) -> None:
+    def _set_reader_header(
+        self,
+        text: str,
+        citation: FormattedCitation | None = None,
+    ) -> None:
         header = text.strip()
+        self._reader_header_citation = citation
         self.reader_header_label.set_text(header)
-        self.reader_header_label.set_visible(bool(header))
+        self.reader_header_copy_button.set_visible(citation is not None)
+        self.reader_header_box.set_visible(bool(header))
 
     def _case_header_text(self, cluster: dict[str, Any]) -> str:
         formatted_citation = format_official_california_citation(cluster)
@@ -1331,6 +1370,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         title = cluster_title(cluster)
         citation = cluster_citation_line(cluster)
         return title if not citation else f"{title}\n{citation}"
+
+    def _case_header_citation(self, cluster: dict[str, Any]) -> FormattedCitation | None:
+        return format_official_california_citation(cluster)
+
+    def _on_copy_reader_citation_clicked(self, _button: Gtk.Button) -> None:
+        if self._reader_header_citation is None:
+            self._set_status("No citation available to copy.")
+            return
+        self._copy_formatted_citation(self._reader_header_citation)
 
     def _apply_reader_citation_links(self, text: str) -> None:
         table = self.reader_buffer.get_tag_table()
@@ -1927,13 +1975,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return
         self._set_status("Official citation copied.")
 
-    def _on_copy_case_citation(
-        self,
-        _button: Gtk.Button,
-        citation: FormattedCitation,
-    ) -> None:
-        self._copy_formatted_citation(citation)
-
     def _lookup_worker(self, citation: str) -> None:
         try:
             result = self.client.lookup_citation(citation)
@@ -2020,13 +2061,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             formatted_citation = format_official_california_citation(cluster)
             actions_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
             actions_box.set_valign(Gtk.Align.START)
-            if formatted_citation is not None:
-                copy_button = Gtk.Button(icon_name="edit-copy-symbolic")
-                copy_button.add_css_class("flat")
-                copy_button.add_css_class("case-row-icon-button")
-                copy_button.set_tooltip_text("Copy citation")
-                copy_button.connect("clicked", self._on_copy_case_citation, formatted_citation)
-                actions_box.append(copy_button)
             remove_button = Gtk.Button(icon_name="user-trash-symbolic")
             remove_button.add_css_class("flat")
             remove_button.add_css_class("case-row-icon-button")
@@ -2135,7 +2169,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return
         cluster = self._clusters[index]
         self._selected_cluster = cluster
-        self._set_reader_header(self._case_header_text(cluster))
+        self._set_reader_header(
+            self._case_header_text(cluster),
+            self._case_header_citation(cluster),
+        )
         self.reader_buffer.set_text(f"Loading {cluster_title(cluster)}...")
         thread = threading.Thread(target=self._case_worker, args=(cluster,), daemon=True)
         thread.start()
