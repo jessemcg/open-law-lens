@@ -94,6 +94,8 @@ AGENT_MODE_GENERAL = "general"
 AGENT_MODE_CASE = "case"
 AGENT_MODE_SEARCH = "search"
 SEARCH_NEXT_PAGE_TARGET = "search-next-page"
+CITED_BY_INCLUDE_UNPUBLISHED_TARGET = "cited-by-include-unpublished"
+CITED_BY_PUBLISHED_ONLY_TARGET = "cited-by-published-only"
 AGENT_ANSWER_FONT_SIZE_PT = 14
 SEARCH_RESULTS_FONT_SIZE_PT = 11
 AGENT_ANSWER_LINE_HEIGHT = 1.25
@@ -481,6 +483,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_search_include_unpublished = False
         self._agent_search_results: list[CourtListenerSearchResult] = []
         self._agent_search_next_url = ""
+        self._agent_search_heading = ""
+        self._agent_search_scope_text = ""
+        self._agent_cited_by_published_only = True
+        self._agent_cited_by_total_count = 0
         self._agent_panel_height = AGENT_PANEL_MIN_HEIGHT
         self._agent_mode = AGENT_MODE_GENERAL
         self._selected_agent_mode = AGENT_MODE_GENERAL
@@ -490,6 +496,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_citation_link_lookup: dict[Gtk.TextTag, CitedCaseLink] = {}
         self._agent_search_link_lookup: dict[Gtk.TextTag, CourtListenerSearchResult] = {}
         self._agent_search_next_link_tags: set[Gtk.TextTag] = set()
+        self._agent_search_action_link_lookup: dict[Gtk.TextTag, str] = {}
         self._agent_search_highlight_tags: list[Gtk.TextTag] = []
         self._agent_motion_controller: Gtk.EventControllerMotion | None = None
         self._agent_click_gesture: Gtk.GestureClick | None = None
@@ -1090,6 +1097,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.reader_header_copy_button.connect("clicked", self._on_copy_reader_citation_clicked)
         self.reader_header_box.append(self.reader_header_copy_button)
 
+        self.reader_header_cited_by_button = Gtk.Button(icon_name="edit-find-symbolic")
+        self.reader_header_cited_by_button.add_css_class("case-reader-copy-button")
+        self.reader_header_cited_by_button.set_tooltip_text("Show later citing cases")
+        self.reader_header_cited_by_button.set_valign(Gtk.Align.CENTER)
+        self.reader_header_cited_by_button.connect("clicked", self._on_cited_by_clicked)
+        self.reader_header_box.append(self.reader_header_cited_by_button)
+
         self.reader_view = Gtk.TextView(buffer=self.reader_buffer)
         self.reader_view.set_editable(False)
         self.reader_view.set_cursor_visible(False)
@@ -1361,6 +1375,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_header_citation = citation
         self.reader_header_label.set_text(header)
         self.reader_header_copy_button.set_visible(citation is not None)
+        self.reader_header_cited_by_button.set_visible(
+            bool(header and self._selected_cluster)
+        )
         self.reader_header_box.set_visible(bool(header))
 
     def _case_header_text(self, cluster: dict[str, Any]) -> str:
@@ -1379,6 +1396,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._set_status("No citation available to copy.")
             return
         self._copy_formatted_citation(self._reader_header_citation)
+
+    def _on_cited_by_clicked(self, _button: Gtk.Button) -> None:
+        cluster = self._selected_cluster
+        if cluster is None:
+            self._set_status("Select a case first.")
+            return
+        self._start_cited_by_lookup(cluster)
 
     def _apply_reader_citation_links(self, text: str) -> None:
         table = self.reader_buffer.get_tag_table()
@@ -2341,6 +2365,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_search_include_unpublished = load_config().search_include_unpublished
         self._agent_search_results = []
         self._agent_search_next_url = ""
+        self._agent_search_heading = ""
+        self._agent_search_scope_text = ""
         self._agent_mode = AGENT_MODE_SEARCH
         self._set_agent_subview(AGENT_SUBVIEW_ANSWER)
         self._set_status(f"Searching CourtListener for {query}...")
@@ -2352,6 +2378,115 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             daemon=True,
         )
         thread.start()
+
+    def _start_cited_by_lookup(self, cluster: dict[str, Any]) -> None:
+        self._stop_agent()
+        self._stop_agent_answer_polling()
+        self._clear_agent_answer()
+        title = cluster_short_title(cluster)
+        self._agent_output_collapsed = False
+        self._agent_search_output_visible = True
+        self._agent_search_query = title
+        self._agent_search_include_unpublished = True
+        self._agent_search_results = []
+        self._agent_search_next_url = ""
+        self._agent_cited_by_published_only = True
+        self._agent_cited_by_total_count = 0
+        self._agent_search_heading = f"Cited By: {title}"
+        self._agent_search_scope_text = (
+            "CourtListener Citation Graph | Later citing cases, not legal-treatment signals"
+        )
+        self._agent_mode = AGENT_MODE_SEARCH
+        self._set_agent_subview(AGENT_SUBVIEW_ANSWER)
+        self._set_status(f"Finding cases that cite {title}...")
+        if self._agent_answer_buffer is not None:
+            self._agent_answer_buffer.set_text("Finding later citing cases...")
+        thread = threading.Thread(
+            target=self._cited_by_worker,
+            args=(cluster, ""),
+            daemon=True,
+        )
+        thread.start()
+
+    def _cited_by_worker(self, cluster: dict[str, Any], next_url: str) -> None:
+        try:
+            page = self.client.citing_opinions(cluster, url=next_url)
+            GLib.idle_add(
+                self._finish_cited_by_lookup,
+                cluster_short_title(cluster),
+                page,
+                bool(next_url),
+            )
+        except (CourtListenerError, ValueError) as exc:
+            GLib.idle_add(self._apply_search_error, str(exc))
+
+    def _finish_cited_by_lookup(
+        self,
+        title: str,
+        page: CourtListenerSearchPage,
+        append: bool,
+    ) -> bool:
+        if not append:
+            self._agent_search_results = []
+        self._agent_search_results.extend(page.results)
+        self._agent_search_next_url = page.next_url
+        self._agent_cited_by_total_count = max(
+            self._agent_cited_by_total_count,
+            page.count,
+            len(self._agent_search_results),
+        )
+        self._agent_search_heading = f"Cited By: {title}"
+        self._agent_search_scope_text = (
+            "CourtListener Citation Graph | Later citing cases, not legal-treatment signals"
+        )
+        self._render_cited_by_results(title)
+        return False
+
+    def _published_cited_by_results(self) -> list[CourtListenerSearchResult]:
+        return [
+            result
+            for result in self._agent_search_results
+            if result.status == "Published"
+        ]
+
+    def _render_cited_by_results(self, title: str) -> None:
+        published_results = self._published_cited_by_results()
+        unpublished_count = len(self._agent_search_results) - len(published_results)
+        if self._agent_cited_by_published_only:
+            rendered_results = published_results
+            mode_text = "Published citing cases"
+            action_text = "Include unpublished" if unpublished_count else ""
+            action_target = (
+                CITED_BY_INCLUDE_UNPUBLISHED_TARGET if unpublished_count else ""
+            )
+        else:
+            rendered_results = self._agent_search_results
+            mode_text = "Published and unpublished citing cases"
+            action_text = "Show published only" if unpublished_count else ""
+            action_target = CITED_BY_PUBLISHED_ONLY_TARGET if unpublished_count else ""
+        loaded_count = len(self._agent_search_results)
+        summary_text = (
+            f"{mode_text} | Showing {len(rendered_results)} of "
+            f"{loaded_count} loaded"
+        )
+        self._render_search_results(
+            title,
+            rendered_results,
+            True,
+            self._agent_cited_by_total_count or loaded_count,
+            self._agent_search_next_url,
+            heading=self._agent_search_heading,
+            summary_text=summary_text,
+            action_text=action_text,
+            action_target=action_target,
+        )
+        if self._agent_cited_by_published_only:
+            self._set_status(
+                f"Cited By: showing {len(rendered_results)} published citing case(s), "
+                f"{loaded_count} loaded."
+            )
+        else:
+            self._set_status(f"Cited By: showing {loaded_count} citing case(s).")
 
     def _courtlistener_search_worker(
         self,
@@ -2509,10 +2644,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_search_include_unpublished = False
         self._agent_search_results = []
         self._agent_search_next_url = ""
+        self._agent_search_heading = ""
+        self._agent_search_scope_text = ""
+        self._agent_cited_by_published_only = True
+        self._agent_cited_by_total_count = 0
         self._agent_link_lookup.clear()
         self._agent_citation_link_lookup.clear()
         self._agent_search_link_lookup.clear()
         self._agent_search_next_link_tags.clear()
+        self._agent_search_action_link_lookup.clear()
         self._agent_search_highlight_tags.clear()
         if self._agent_answer_buffer is not None:
             self._agent_answer_buffer.set_text("")
@@ -2764,6 +2904,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         include_unpublished: bool,
         total_count: int,
         next_url: str,
+        *,
+        heading: str = "",
+        scope_text: str = "",
+        summary_text: str = "",
+        action_text: str = "",
+        action_target: str = "",
     ) -> None:
         if self._agent_answer_buffer is None:
             return
@@ -2785,59 +2931,73 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_citation_link_lookup.clear()
         self._agent_search_link_lookup.clear()
         self._agent_search_next_link_tags.clear()
+        self._agent_search_action_link_lookup.clear()
         self._agent_search_highlight_tags.clear()
 
-        scope = (
+        scope = scope_text or (
             "California published and unpublished cases"
             if include_unpublished
             else "California published cases"
         )
-        lines = [f"CourtListener Search: {query}", f"{scope} | Showing {len(results)} of {total_count}", ""]
+        title_line = heading or f"CourtListener Search: {query}"
+        lines = [
+            title_line,
+            summary_text or f"{scope} | Showing {len(results)} of {total_count}",
+        ]
+        action_span: tuple[int, int] | None = None
+        offset = sum(len(line) + 1 for line in lines)
+        if action_text and action_target:
+            action_span = (offset, offset + len(action_text))
+            lines.append(action_text)
+            offset += len(action_text) + 1
+        lines.append("")
+        offset += 1
         spans: list[tuple[int, int, CourtListenerSearchResult]] = []
         meta_spans: list[tuple[int, int]] = []
         highlight_spans: list[tuple[int, int]] = []
         next_span: tuple[int, int] | None = None
-        offset = sum(len(line) + 1 for line in lines)
         if not results:
-            lines.append("No matching cases found.")
-            buffer.set_text("\n".join(lines))
-            self._apply_search_text_tags(buffer, [])
-            return
-        for result in results:
-            title = search_result_full_citation(result)
-            start = offset
-            end = offset + len(title)
-            lines.append(title)
-            offset += len(title) + 1
-            spans.append((start, end, result))
-            meta_parts = [
-                part
-                for part in (
-                    result.court or result.court_id,
-                    us_long_date(result.date_filed),
-                    result.status,
-                )
-                if part
-            ]
-            if meta_parts:
-                meta = " | ".join(meta_parts)
-                meta_start = offset
-                lines.append(meta)
-                offset += len(meta) + 1
-                meta_spans.append((meta_start, meta_start + len(meta)))
-            if result.snippet:
-                snippet = self._search_snippet_text(result.snippet)
-                snippet_start = offset
-                lines.append(snippet)
-                highlight_spans.extend(
-                    (snippet_start + start, snippet_start + end)
-                    for start, end in self._search_highlight_ranges(snippet, query)
-                )
-                offset += len(snippet) + 1
+            no_matches = "No matching cases found."
+            lines.append(no_matches)
+            offset += len(no_matches) + 1
             lines.append("")
             offset += 1
+        else:
+            for result in results:
+                title = search_result_full_citation(result)
+                start = offset
+                end = offset + len(title)
+                lines.append(title)
+                offset += len(title) + 1
+                spans.append((start, end, result))
+                meta_parts = [
+                    part
+                    for part in (
+                        result.court or result.court_id,
+                        us_long_date(result.date_filed),
+                        result.status,
+                    )
+                    if part
+                ]
+                if meta_parts:
+                    meta = " | ".join(meta_parts)
+                    meta_start = offset
+                    lines.append(meta)
+                    offset += len(meta) + 1
+                    meta_spans.append((meta_start, meta_start + len(meta)))
+                if result.snippet:
+                    snippet = self._search_snippet_text(result.snippet)
+                    snippet_start = offset
+                    lines.append(snippet)
+                    highlight_spans.extend(
+                        (snippet_start + start, snippet_start + end)
+                        for start, end in self._search_highlight_ranges(snippet, query)
+                    )
+                    offset += len(snippet) + 1
+                lines.append("")
+                offset += 1
         if next_url:
-            next_text = "Next 20 results"
+            next_text = "Next results"
             next_span = (offset, offset + len(next_text))
             lines.append(next_text)
             offset += len(next_text) + 1
@@ -2859,6 +3019,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             )
             self._agent_link_tags.append(tag)
             self._agent_search_link_lookup[tag] = result
+        self._apply_search_action_tag(buffer, action_span, action_target)
         if next_span is not None:
             tag = buffer.create_tag(
                 None,
@@ -2873,6 +3034,29 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             )
             self._agent_link_tags.append(tag)
             self._agent_search_next_link_tags.add(tag)
+
+    def _apply_search_action_tag(
+        self,
+        buffer: Gtk.TextBuffer,
+        action_span: tuple[int, int] | None,
+        action_target: str,
+    ) -> None:
+        if action_span is None or not action_target:
+            return
+        link_color = self._resolve_agent_quote_color()
+        tag = buffer.create_tag(
+            None,
+            foreground_rgba=link_color,
+            underline=Pango.Underline.SINGLE,
+            weight=Pango.Weight.MEDIUM,
+        )
+        buffer.apply_tag(
+            tag,
+            buffer.get_iter_at_offset(action_span[0]),
+            buffer.get_iter_at_offset(action_span[1]),
+        )
+        self._agent_link_tags.append(tag)
+        self._agent_search_action_link_lookup[tag] = action_target
 
     def _apply_search_text_tags(
         self,
@@ -3092,6 +3276,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         for tag in iter_.get_tags():
             if tag in self._agent_search_next_link_tags:
                 return SEARCH_NEXT_PAGE_TARGET
+            action_target = self._agent_search_action_link_lookup.get(tag)
+            if action_target is not None:
+                return action_target
             target = self._agent_link_lookup.get(tag)
             if target is not None:
                 return target
@@ -3133,6 +3320,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         target = self._agent_link_at_coords(x, y)
         if target == SEARCH_NEXT_PAGE_TARGET:
             self._load_next_search_results()
+        elif target in {
+            CITED_BY_INCLUDE_UNPUBLISHED_TARGET,
+            CITED_BY_PUBLISHED_ONLY_TARGET,
+        }:
+            self._toggle_cited_by_publication_filter(str(target))
         elif isinstance(target, CourtListenerSearchResult):
             self._open_search_result(target)
         elif isinstance(target, CitedCaseLink):
@@ -3140,21 +3332,41 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         elif target is not None:
             self._open_quote_target(target)
 
+    def _toggle_cited_by_publication_filter(self, target: str) -> None:
+        if not self._agent_search_heading.startswith("Cited By:"):
+            return
+        self._agent_cited_by_published_only = (
+            target == CITED_BY_PUBLISHED_ONLY_TARGET
+        )
+        title = self._agent_search_heading.removeprefix("Cited By:").strip()
+        self._render_cited_by_results(title)
+
     def _load_next_search_results(self) -> None:
         if not self._agent_search_next_url:
             return
         next_url = self._agent_search_next_url
         self._agent_search_next_url = ""
-        self._set_status("Loading next CourtListener results...")
-        thread = threading.Thread(
-            target=self._courtlistener_search_worker,
-            args=(
-                self._agent_search_query,
-                self._agent_search_include_unpublished,
-                next_url,
-            ),
-            daemon=True,
-        )
+        if (
+            self._agent_search_heading.startswith("Cited By:")
+            and self._selected_cluster is not None
+        ):
+            self._set_status("Loading more citing cases...")
+            thread = threading.Thread(
+                target=self._cited_by_worker,
+                args=(self._selected_cluster, next_url),
+                daemon=True,
+            )
+        else:
+            self._set_status("Loading next CourtListener results...")
+            thread = threading.Thread(
+                target=self._courtlistener_search_worker,
+                args=(
+                    self._agent_search_query,
+                    self._agent_search_include_unpublished,
+                    next_url,
+                ),
+                daemon=True,
+            )
         thread.start()
 
     def _open_search_result(self, result: CourtListenerSearchResult) -> None:

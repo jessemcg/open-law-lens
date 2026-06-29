@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from html.parser import HTMLParser
@@ -27,6 +28,11 @@ BASE_URL = "https://www.courtlistener.com"
 API_BASE = f"{BASE_URL}/api/rest/v4"
 CITATION_LOOKUP_URL = f"{API_BASE}/citation-lookup/"
 SEARCH_URL = f"{API_BASE}/search/"
+OPINIONS_CITED_URL = f"{API_BASE}/opinions-cited/"
+RATE_LIMIT_RETRY_ATTEMPTS = 3
+RATE_LIMIT_RETRY_BUFFER_SECONDS = 1.0
+RATE_LIMIT_RETRY_MAX_SECONDS = 90.0
+CITED_BY_PAGE_SIZE = 8
 CALIFORNIA_COURT_FILTER = "court_id:(cal OR calctapp OR calappdeptsuper)"
 TEXT_FIELDS = (
     "html_with_citations",
@@ -401,6 +407,36 @@ def normalize_search_result(result: dict[str, Any]) -> CourtListenerSearchResult
     )
 
 
+def normalize_cluster_search_result(
+    cluster: dict[str, Any],
+    *,
+    snippet: str = "",
+) -> CourtListenerSearchResult | None:
+    cluster_id = cluster_id_from_cluster(cluster)
+    if not cluster_id:
+        return None
+    docket = cluster.get("docket")
+    court = ""
+    court_id = ""
+    if isinstance(docket, dict):
+        court_value = docket.get("court")
+        if isinstance(court_value, dict):
+            court = str(
+                court_value.get("short_name") or court_value.get("full_name") or ""
+            ).strip()
+            court_id = str(court_value.get("id") or "").strip()
+    return CourtListenerSearchResult(
+        cluster_id=cluster_id,
+        case_name=cluster_short_title(cluster),
+        citation=official_california_reporter_citation(cluster),
+        court=court,
+        court_id=court_id,
+        date_filed=str(cluster.get("date_filed") or "").strip(),
+        status=str(cluster.get("precedential_status") or "").strip(),
+        snippet=snippet,
+    )
+
+
 def dedupe_search_results(
     results: list[CourtListenerSearchResult],
 ) -> list[CourtListenerSearchResult]:
@@ -474,6 +510,50 @@ def dedupe_case_clusters(clusters: list[dict[str, Any]]) -> list[dict[str, Any]]
     return [cluster for _, cluster in sorted(keep, key=lambda item: item[0])]
 
 
+def _api_resource_url(value: object, kind: str) -> str:
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped:
+            return stripped
+    if isinstance(value, int):
+        return f"/api/rest/v4/{kind}/{value}/"
+    return ""
+
+
+def _opinions_cited_url(opinion_id: str, page_size: int) -> str:
+    query = urlencode(
+        {
+            "cited_opinion": opinion_id,
+            "page_size": page_size,
+        }
+    )
+    return f"{OPINIONS_CITED_URL}?{query}"
+
+
+def _rate_limit_wait_seconds(body: str) -> float | None:
+    detail = body
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, dict):
+        value = (
+            parsed.get("detail")
+            or parsed.get("error")
+            or parsed.get("wait_until")
+        )
+        if value:
+            detail = str(value)
+    match = re.search(r"Expected available in ([0-9]+(?:\.[0-9]+)?) seconds?", detail)
+    if not match:
+        return None
+    try:
+        wait_seconds = float(match.group(1)) + RATE_LIMIT_RETRY_BUFFER_SECONDS
+    except ValueError:
+        return None
+    return min(wait_seconds, RATE_LIMIT_RETRY_MAX_SECONDS)
+
+
 @dataclass
 class CourtListenerClient:
     cache: JsonCache
@@ -503,25 +583,39 @@ class CourtListenerClient:
         return headers
 
     def _request_json(self, request: Request) -> Any:
-        try:
-            with urlopen(request, timeout=self.timeout) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            message = f"CourtListener returned HTTP {exc.code}"
+        for attempt in range(RATE_LIMIT_RETRY_ATTEMPTS):
             try:
-                parsed = json.loads(body)
-            except json.JSONDecodeError:
-                parsed = None
-            if isinstance(parsed, dict):
-                detail = parsed.get("detail") or parsed.get("error") or parsed.get("wait_until")
-                if detail:
-                    message = f"{message}: {detail}"
-            raise CourtListenerError(message, status=exc.code, body=body) from exc
-        except URLError as exc:
-            raise CourtListenerError(f"Unable to reach CourtListener: {exc.reason}") from exc
-        except json.JSONDecodeError as exc:
-            raise CourtListenerError("CourtListener returned invalid JSON") from exc
+                with urlopen(request, timeout=self.timeout) as response:
+                    return json.loads(response.read().decode("utf-8"))
+            except HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="replace")
+                wait_seconds = _rate_limit_wait_seconds(body)
+                if (
+                    exc.code == 429
+                    and wait_seconds is not None
+                    and attempt < RATE_LIMIT_RETRY_ATTEMPTS - 1
+                ):
+                    time.sleep(wait_seconds)
+                    continue
+                message = f"CourtListener returned HTTP {exc.code}"
+                try:
+                    parsed = json.loads(body)
+                except json.JSONDecodeError:
+                    parsed = None
+                if isinstance(parsed, dict):
+                    detail = (
+                        parsed.get("detail")
+                        or parsed.get("error")
+                        or parsed.get("wait_until")
+                    )
+                    if detail:
+                        message = f"{message}: {detail}"
+                raise CourtListenerError(message, status=exc.code, body=body) from exc
+            except URLError as exc:
+                raise CourtListenerError(f"Unable to reach CourtListener: {exc.reason}") from exc
+            except json.JSONDecodeError as exc:
+                raise CourtListenerError("CourtListener returned invalid JSON") from exc
+        raise CourtListenerError("CourtListener request failed.")
 
     def lookup_citation(self, citation: str, *, refresh: bool = False) -> list[dict[str, Any]]:
         normalized = normalize_citation(citation)
@@ -601,6 +695,94 @@ class CourtListenerClient:
             results=dedupe_search_results(normalized),
             count=count_value,
             next_url=next_url if isinstance(next_url, str) else "",
+        )
+
+    def citing_opinions(
+        self,
+        cluster: dict[str, Any],
+        *,
+        url: str = "",
+        page_size: int = CITED_BY_PAGE_SIZE,
+    ) -> CourtListenerSearchPage:
+        if url:
+            full_url = url if url.startswith("http") else f"{BASE_URL}{url}"
+            opinion_ids: list[str] = []
+        else:
+            opinions = self.fetch_cluster_opinions(cluster)
+            opinion_ids = [
+                str(opinion.get("id") or "").strip()
+                for opinion in opinions
+                if str(opinion.get("id") or "").strip()
+            ]
+            if not opinion_ids:
+                return CourtListenerSearchPage(results=[], count=0, next_url="")
+            full_url = _opinions_cited_url(opinion_ids[0], page_size)
+
+        rows: list[dict[str, Any]] = []
+        next_url = ""
+        count_value = 0
+        pending_urls = [full_url]
+        if not url:
+            pending_urls.extend(
+                _opinions_cited_url(opinion_id, page_size)
+                for opinion_id in opinion_ids[1:]
+            )
+        for current_url in pending_urls:
+            request = Request(current_url, headers=self._headers(), method="GET")
+            result = self._request_json(request)
+            if not isinstance(result, dict):
+                raise CourtListenerError("CourtListener cited-by lookup returned unexpected JSON.")
+            values = result.get("results")
+            if not isinstance(values, list):
+                raise CourtListenerError("CourtListener cited-by lookup returned unexpected results.")
+            rows.extend(value for value in values if isinstance(value, dict))
+            count = result.get("count")
+            try:
+                count_value += int(count)
+            except (TypeError, ValueError):
+                count_value += len(values)
+            if len(pending_urls) == 1:
+                next_value = result.get("next")
+                next_url = next_value if isinstance(next_value, str) else ""
+
+        normalized: list[CourtListenerSearchResult] = []
+        seen_cluster_ids: set[str] = set()
+        for row in rows:
+            citing_opinion = row.get("citing_opinion")
+            if isinstance(citing_opinion, dict):
+                opinion = citing_opinion
+            else:
+                citing_url = _api_resource_url(citing_opinion, "opinions")
+                if not citing_url:
+                    continue
+                opinion = self.fetch_url(citing_url, kind="opinions")
+            cluster_url = _api_resource_url(opinion.get("cluster"), "clusters")
+            if cluster_url:
+                citing_cluster = self.fetch_url(cluster_url, kind="clusters")
+            else:
+                cluster_id = str(opinion.get("cluster_id") or "").strip()
+                if not cluster_id:
+                    continue
+                citing_cluster = self.fetch_url(
+                    f"/api/rest/v4/clusters/{cluster_id}/",
+                    kind="clusters",
+                )
+            if not isinstance(citing_cluster, dict):
+                continue
+            result = normalize_cluster_search_result(
+                citing_cluster,
+                snippet=f"Citation depth: {row.get('depth')}",
+            )
+            if result is None or result.cluster_id in seen_cluster_ids:
+                continue
+            seen_cluster_ids.add(result.cluster_id)
+            normalized.append(result)
+        normalized.sort(key=lambda item: item.date_filed, reverse=True)
+        normalized.sort(key=lambda item: item.status != "Published")
+        return CourtListenerSearchPage(
+            results=normalized,
+            count=count_value if count_value else len(normalized),
+            next_url=next_url,
         )
 
     def fetch_url(self, url: str, *, kind: str, refresh: bool = False) -> dict[str, Any]:

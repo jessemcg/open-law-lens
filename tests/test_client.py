@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
+from unittest.mock import patch
+from urllib.error import HTTPError
+from urllib.request import Request
 
 from open_law_lens.cache import JsonCache
 from open_law_lens.client import (
     CourtListenerClient,
+    RATE_LIMIT_RETRY_BUFFER_SECONDS,
     CourtListenerSearchResult,
     clean_search_snippet,
     cluster_short_title,
@@ -29,6 +34,54 @@ from open_law_lens.library import CaseLibrary
 
 
 class ClientTests(unittest.TestCase):
+    def test_request_json_retries_courtlistener_rate_limit(self) -> None:
+        class FakeResponse:
+            def __init__(self, payload: bytes) -> None:
+                self.payload = payload
+
+            def __enter__(self):  # type: ignore[no-untyped-def]
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):  # type: ignore[no-untyped-def]
+                return False
+
+            def read(self) -> bytes:
+                return self.payload
+
+        rate_limit_error = HTTPError(
+            "https://example.test/api/",
+            429,
+            "Too Many Requests",
+            {},
+            BytesIO(
+                b'{"detail": "Request was throttled. Rate limit exceeded: '
+                b'20/min. Expected available in 2 seconds."}'
+            ),
+        )
+        responses = [rate_limit_error, FakeResponse(b'{"ok": true}')]
+
+        def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+            response = responses.pop(0)
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            client = CourtListenerClient(
+                cache=JsonCache(temp_path / "cache"),
+                library=CaseLibrary(temp_path / "library.sqlite3"),
+            )
+
+            with (
+                patch("open_law_lens.client.urlopen", fake_urlopen),
+                patch("open_law_lens.client.time.sleep") as sleep_mock,
+            ):
+                result = client._request_json(Request("https://example.test/api/"))
+
+        self.assertEqual(result, {"ok": True})
+        sleep_mock.assert_called_once_with(2 + RATE_LIMIT_RETRY_BUFFER_SECONDS)
+
     def test_html_to_text_keeps_paragraph_breaks(self) -> None:
         self.assertEqual(html_to_text("<p>First</p><p>Second <b>line</b></p>"), "First\n\nSecond line")
 
@@ -582,6 +635,133 @@ class ClientTests(unittest.TestCase):
         )
         self.assertEqual(len(page.results), 1)
         self.assertEqual(page.results[0].citation, "10 Cal.App.5th 130")
+
+    def test_citing_opinions_returns_later_case_metadata(self) -> None:
+        class FakeCitingClient(CourtListenerClient):
+            def __init__(self) -> None:
+                self.request_urls: list[str] = []
+
+            def _headers(self) -> dict[str, str]:
+                return {}
+
+            def fetch_cluster_opinions(self, cluster, *, refresh=False):  # type: ignore[no-untyped-def]
+                return [{"id": 10}]
+
+            def fetch_url(self, url, *, kind, refresh=False):  # type: ignore[no-untyped-def]
+                if kind == "opinions":
+                    return {"id": 20, "cluster": "/api/rest/v4/clusters/200/"}
+                return {
+                    "id": 200,
+                    "case_name": "Later v. Case",
+                    "date_filed": "2024-01-02",
+                    "precedential_status": "Published",
+                    "citations": [{"volume": "1", "reporter": "Cal. 5th", "page": "2"}],
+                }
+
+            def _request_json(self, request):  # type: ignore[no-untyped-def]
+                self.request_urls.append(request.full_url)
+                return {
+                    "count": (
+                        "https://www.courtlistener.com/api/rest/v4/"
+                        "opinions-cited/?count=on"
+                    ),
+                    "next": "",
+                    "results": [
+                        {
+                            "citing_opinion": "/api/rest/v4/opinions/20/",
+                            "cited_opinion": "/api/rest/v4/opinions/10/",
+                            "depth": 2,
+                        }
+                    ],
+                }
+
+        client = FakeCitingClient()
+
+        page = client.citing_opinions(
+            {"id": 100, "sub_opinions": ["/api/rest/v4/opinions/10/"]}
+        )
+
+        self.assertEqual(len(page.results), 1)
+        self.assertEqual(page.count, 1)
+        self.assertIn("cited_opinion=10", client.request_urls[0])
+        self.assertEqual(len(client.request_urls), 1)
+        self.assertEqual(page.results[0].case_name, "Later v. Case")
+        self.assertEqual(page.results[0].citation, "1 Cal.5th 2")
+        self.assertEqual(page.results[0].date_filed, "2024-01-02")
+        self.assertEqual(page.results[0].status, "Published")
+        self.assertEqual(page.results[0].snippet, "Citation depth: 2")
+
+    def test_citing_opinions_merges_sub_opinions_and_dedupes_clusters(self) -> None:
+        class FakeCitingClient(CourtListenerClient):
+            def __init__(self) -> None:
+                self.request_urls: list[str] = []
+
+            def _headers(self) -> dict[str, str]:
+                return {}
+
+            def fetch_cluster_opinions(self, cluster, *, refresh=False):  # type: ignore[no-untyped-def]
+                return [{"id": 10}, {"id": 11}]
+
+            def fetch_url(self, url, *, kind, refresh=False):  # type: ignore[no-untyped-def]
+                if kind == "opinions":
+                    opinion_id = "20" if str(url).endswith("/20/") else "21"
+                    return {
+                        "id": int(opinion_id),
+                        "cluster": f"/api/rest/v4/clusters/{opinion_id}0/",
+                    }
+                cluster_id = "200" if str(url).endswith("/200/") else "210"
+                return {
+                    "id": int(cluster_id),
+                    "case_name": f"Later {cluster_id}",
+                    "date_filed": (
+                        "2024-01-02" if cluster_id == "200" else "2025-01-02"
+                    ),
+                    "precedential_status": (
+                        "Published" if cluster_id == "200" else "Unpublished"
+                    ),
+                }
+
+            def _request_json(self, request):  # type: ignore[no-untyped-def]
+                self.request_urls.append(request.full_url)
+                if "cited_opinion=10" in request.full_url:
+                    rows = [
+                        {"citing_opinion": "/api/rest/v4/opinions/20/", "depth": 1},
+                        {"citing_opinion": "/api/rest/v4/opinions/20/", "depth": 3},
+                    ]
+                else:
+                    rows = [{"citing_opinion": "/api/rest/v4/opinions/21/", "depth": 1}]
+                return {"count": len(rows), "next": "", "results": rows}
+
+        page = FakeCitingClient().citing_opinions({"id": 100})
+
+        self.assertEqual(
+            [result.cluster_id for result in page.results],
+            ["200", "210"],
+        )
+        self.assertEqual(
+            [result.status for result in page.results],
+            ["Published", "Unpublished"],
+        )
+        self.assertEqual(page.count, 3)
+
+    def test_citing_opinions_returns_empty_page_without_sub_opinions(self) -> None:
+        class FakeCitingClient(CourtListenerClient):
+            def __init__(self) -> None:
+                pass
+
+            def fetch_cluster_opinions(  # type: ignore[no-untyped-def]
+                self,
+                cluster,
+                *,
+                refresh=False,
+            ):
+                return []
+
+        page = FakeCitingClient().citing_opinions({"id": 100})
+
+        self.assertEqual(page.results, [])
+        self.assertEqual(page.count, 0)
+        self.assertEqual(page.next_url, "")
 
     def test_search_result_full_citation_uses_year_and_official_reporter(self) -> None:
         result = CourtListenerSearchResult(
