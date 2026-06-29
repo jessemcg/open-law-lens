@@ -119,6 +119,19 @@ class ClientTests(unittest.TestCase):
 
         self.assertEqual(cluster_short_title(cluster), "In re K.C.")
 
+    def test_cluster_short_title_trims_malformed_dependency_boilerplate(self) -> None:
+        cluster = {
+            "case_name": "In Re Baby Boy",
+            "case_name_full": (
+                "In Re Baby Boy v. a Person Coming Under the Juvenile Court Law. "
+                "Los Angeles County Department of Children and Family Services, "
+                "and v. Jesus H., And"
+            ),
+            "case_name_short": "In Re Baby Boy",
+        }
+
+        self.assertEqual(cluster_short_title(cluster), "In re Baby Boy V.")
+
     def test_cluster_short_title_extracts_full_in_re_title_when_short_name_missing(self) -> None:
         cluster = {
             "case_name": "Vlasta Z. v. San Bernardino County Welfare Department",
@@ -259,6 +272,25 @@ class ClientTests(unittest.TestCase):
         self.assertIsNotNone(citation)
         assert citation is not None
         self.assertEqual(citation.plain_text, "In re K.C. (2011) 52 Cal.4th 231")
+
+    def test_format_official_california_citation_trims_malformed_dependency_title(self) -> None:
+        cluster = {
+            "case_name": "In Re Baby Boy",
+            "case_name_full": (
+                "In Re Baby Boy v. a Person Coming Under the Juvenile Court Law. "
+                "Los Angeles County Department of Children and Family Services, "
+                "and v. Jesus H., And"
+            ),
+            "case_name_short": "In Re Baby Boy",
+            "date_filed": "2006-06-28",
+            "citations": [{"volume": "140", "reporter": "Cal. App. 4th", "page": "1108"}],
+        }
+
+        citation = format_official_california_citation(cluster)
+
+        self.assertIsNotNone(citation)
+        assert citation is not None
+        self.assertEqual(citation.plain_text, "In re Baby Boy V. (2006) 140 Cal.App.4th 1108")
 
     def test_format_official_california_citation_removes_appellate_district_marker(self) -> None:
         cluster = {

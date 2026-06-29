@@ -49,7 +49,20 @@ def leading_in_re_title(title: str) -> str:
     normalized = re.sub(r"\s+", " ", title.strip())
     if not re.match(r"^in\s+re\s+", normalized, flags=re.IGNORECASE):
         return ""
-    leading = normalized.split(",", 1)[0]
+    malformed_dependency_match = re.search(
+        r"\s+v\.\s+a\s+Person\s+Coming\s+Under\b",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if malformed_dependency_match is not None:
+        leading = f"{normalized[:malformed_dependency_match.start()].rstrip()} V."
+        return normalize_case_title(leading)
+    leading = re.split(
+        r"\s*,?\s*a\s+Person\s+Coming\s+Under\b|,",
+        normalized,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
     return normalize_case_title(leading)
 
 

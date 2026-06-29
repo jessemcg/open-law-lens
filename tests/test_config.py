@@ -65,7 +65,14 @@ class ConfigTests(unittest.TestCase):
             )
             config = load_config(path)
             self.assertEqual(config.reader_font_size_pt, 48)
-            self.assertEqual(config.reader_font_family, "TeX Gyre Schola")
+            self.assertEqual(config.reader_font_family, "Century Schoolbook")
+
+    def test_century_schoolbook_reader_font_is_supported(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            save_config(AppConfig(reader_font_family="Century Schoolbook"), path)
+
+            self.assertEqual(load_config(path).reader_font_family, "Century Schoolbook")
 
     def test_environment_concordance_path_overrides_config(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

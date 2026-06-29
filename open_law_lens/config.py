@@ -22,6 +22,7 @@ READER_FONT_FAMILY_OPTIONS: tuple[tuple[str, str], ...] = (
     ("Noto Serif", '"Noto Serif", "Liberation Serif", "DejaVu Serif", serif'),
     ("Georgia", 'Georgia, "Times New Roman", "Liberation Serif", serif'),
     ("Merriweather", '"Merriweather", "Noto Serif", "Liberation Serif", serif'),
+    ("Century Schoolbook", '"Century Schoolbook", "C059", "TeX Gyre Schola", serif'),
     ("Source Sans 3", '"Source Sans 3", "Noto Sans", "Liberation Sans", sans-serif'),
     (
         "TeX Gyre Schola",
@@ -30,9 +31,7 @@ READER_FONT_FAMILY_OPTIONS: tuple[tuple[str, str], ...] = (
     ),
 )
 DEFAULT_READER_FONT_FAMILY = READER_FONT_FAMILY_OPTIONS[0][0]
-LEGACY_READER_FONT_FAMILY_ALIASES = {
-    "Century Schoolbook": "TeX Gyre Schola",
-}
+LEGACY_READER_FONT_FAMILY_ALIASES: dict[str, str] = {}
 
 DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens General California Law Agent.
 
