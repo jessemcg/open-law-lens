@@ -78,6 +78,18 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(normalize_case_title("People v. KC Holdings"), "People v. KC Holdings")
         self.assertEqual(normalize_case_title("In re Marriage of Smith"), "In re Marriage of Smith")
 
+    def test_case_title_normalizes_habeas_title_to_last_name(self) -> None:
+        self.assertEqual(normalize_case_title("In re Jesse Barber on Habeas Corpus."), "In re Barber")
+        self.assertEqual(normalize_case_title("IN RE Jesse BARBER on Habeas Corpus."), "In re Barber")
+        self.assertEqual(
+            normalize_case_title("In Re Gregory Dwayne Reed on Habeas Corpus."),
+            "In re Reed",
+        )
+        self.assertEqual(
+            normalize_case_title("In re Stephenson on Habeas Corpus"),
+            "In re Stephenson",
+        )
+
     def test_case_title_normalizes_leading_adoption_of_title(self) -> None:
         self.assertEqual(normalize_case_title(" ADOPTION OF KELSEY S. "), "Adoption of Kelsey S.")
         self.assertEqual(normalize_case_title("Adoption of AB"), "Adoption of A.B.")
@@ -186,6 +198,15 @@ class ClientTests(unittest.TestCase):
         }
 
         self.assertEqual(cluster_short_title(cluster), "Adoption of Kelsey S.")
+
+    def test_cluster_short_title_normalizes_habeas_title(self) -> None:
+        cluster = {
+            "case_name": "In re Jesse Barber On Habeas Corpus",
+            "case_name_full": "IN RE Jesse BARBER on Habeas Corpus.",
+            "case_name_short": "",
+        }
+
+        self.assertEqual(cluster_short_title(cluster), "In re Barber")
 
     def test_official_california_reporter_citation_prefers_official_reporter(self) -> None:
         cluster = {
@@ -358,6 +379,21 @@ class ClientTests(unittest.TestCase):
         self.assertIsNotNone(citation)
         assert citation is not None
         self.assertEqual(citation.plain_text, "Adoption of Kelsey S. (1992) 1 Cal.4th 816")
+
+    def test_format_official_california_citation_normalizes_habeas_title(self) -> None:
+        cluster = {
+            "case_name": "In re Jesse Barber On Habeas Corpus",
+            "case_name_full": "IN RE Jesse BARBER on Habeas Corpus.",
+            "case_name_short": "",
+            "date_filed": "2017-09-14",
+            "citations": [{"volume": "15", "reporter": "Cal. App. 5th", "page": "368"}],
+        }
+
+        citation = format_official_california_citation(cluster)
+
+        self.assertIsNotNone(citation)
+        assert citation is not None
+        self.assertEqual(citation.plain_text, "In re Barber (2017) 15 Cal.App.5th 368")
 
     def test_dedupe_case_clusters_prefers_cleaner_official_citation_match(self) -> None:
         duplicate_with_lexis = {
@@ -624,6 +660,28 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(
             search_result_full_citation(result),
             "Adoption of Kelsey S. (1992) 1 Cal.4th 816",
+        )
+
+    def test_search_result_full_citation_normalizes_habeas_title(self) -> None:
+        result = normalize_search_result(
+            {
+                "cluster_id": 6239044,
+                "caseName": (
+                    "Los Angeles County Sheriff v. Barber "
+                    "(In re Jesse Barber On Habeas Corpus)"
+                ),
+                "caseNameFull": "IN RE Jesse BARBER on Habeas Corpus.",
+                "citation": ["223 Cal. Rptr. 3d 197", "15 Cal. App. 5th 368"],
+                "dateFiled": "2017-09-14",
+            }
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.case_name, "In re Barber")
+        self.assertEqual(
+            search_result_full_citation(result),
+            "In re Barber (2017) 15 Cal.App.5th 368",
         )
 
     def test_dedupe_search_results_prefers_official_citation_duplicate(self) -> None:

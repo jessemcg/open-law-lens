@@ -93,6 +93,62 @@ class LibraryTests(unittest.TestCase):
 
             self.assertEqual(cache.list_case_entries()[0]["title"], "Adoption of Kelsey S.")
 
+    def test_library_case_index_normalizes_habeas_title(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            library.upsert_cluster(
+                {
+                    "id": 6239044,
+                    "case_name": "In re Jesse Barber On Habeas Corpus",
+                    "case_name_full": "IN RE Jesse BARBER on Habeas Corpus.",
+                    "case_name_short": "",
+                }
+            )
+
+            self.assertEqual(library.list_case_entries()[0]["title"], "In re Barber")
+
+    def test_json_cache_case_index_normalizes_habeas_title(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cache.ensure()
+            cache.upsert_cluster(
+                {
+                    "id": 6239044,
+                    "case_name": "In re Jesse Barber On Habeas Corpus",
+                    "case_name_full": "IN RE Jesse BARBER on Habeas Corpus.",
+                    "case_name_short": "",
+                }
+            )
+
+            self.assertEqual(cache.list_case_entries()[0]["title"], "In re Barber")
+
+    def test_json_cache_case_index_normalizes_stale_habeas_title(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cache.ensure()
+            cache.write_resource(
+                "clusters",
+                "6239044",
+                {
+                    "id": 6239044,
+                    "case_name": "In re Jesse Barber On Habeas Corpus",
+                    "case_name_full": "IN RE Jesse BARBER on Habeas Corpus.",
+                    "case_name_short": "",
+                },
+            )
+            cache.write_case_index(
+                {
+                    "6239044": {
+                        "cluster_id": "6239044",
+                        "title": "In re Jesse Barber on Habeas Corpus.",
+                        "citation_text": "15 Cal. App. 5th 368",
+                    }
+                }
+            )
+
+            self.assertEqual(cache.list_case_entries()[0]["title"], "In re Barber")
+
     def test_json_cache_case_index_normalizes_stale_title_from_cluster_json(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = JsonCache(Path(temp_dir))

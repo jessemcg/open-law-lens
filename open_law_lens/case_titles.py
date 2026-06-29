@@ -32,6 +32,7 @@ def normalize_case_title(title: str) -> str:
         lambda match: f"{match.group(1)}{'.'.join(match.group(2))}.",
         normalized,
     )
+    normalized = _normalize_habeas_title(normalized)
     return re.sub(r"\s+CA\d+\s*$", "", normalized)
 
 
@@ -51,6 +52,20 @@ def _normalize_leading_name_words(title: str, prefix: str) -> str:
 
 def _normalize_initial_spacing(title: str) -> str:
     return re.sub(r"\b([A-Z])\.\s+([A-Z])\.(?=$|[\s,)])", r"\1.\2.", title)
+
+
+def _normalize_habeas_title(title: str) -> str:
+    match = re.match(
+        r"^(In re )(?P<name>.+?)\s+on\s+habeas\s+corpus\.?(?=$|[\s,)])",
+        title,
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return title
+    name_words = re.findall(r"[A-Za-z][A-Za-z.'-]*", match.group("name"))
+    if not name_words:
+        return title
+    return f"{match.group(1)}{name_words[-1].strip('.').strip()}"
 
 
 def is_bare_initial_title(title: str) -> bool:
