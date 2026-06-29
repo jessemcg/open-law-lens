@@ -14,6 +14,7 @@ from typing import Any, Iterator
 
 from .cache import JsonCache, cluster_id_from_cluster, normalize_citation, resource_id_from_url
 from .case_titles import cluster_short_title_value
+from .import_text import clean_imported_opinion_text
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -114,6 +115,65 @@ def _cluster_citation_line(cluster: dict[str, Any]) -> str:
         if pieces:
             rendered.append(" ".join(pieces))
     return "; ".join(rendered)
+
+
+def _citation_text_from_dict(citation: dict[str, Any]) -> str:
+    pieces = [
+        str(piece).strip()
+        for piece in (citation.get("volume"), citation.get("reporter"), citation.get("page"))
+        if str(piece).strip()
+    ]
+    return " ".join(pieces)
+
+
+def _citation_lookup_key(citation: str) -> str:
+    return re.sub(r"\s+", "", normalize_citation(citation)).casefold()
+
+
+def _external_import_primary_citation_key(cluster: dict[str, Any]) -> str:
+    if cluster.get("source_type") != "user_imported_external_case":
+        return ""
+    citations = cluster.get("citations")
+    if not isinstance(citations, list):
+        return ""
+    for citation in citations:
+        if not isinstance(citation, dict):
+            continue
+        text = _citation_text_from_dict(citation)
+        if text:
+            return _citation_lookup_key(text)
+    return ""
+
+
+def _external_import_matches_lookup(cluster: dict[str, Any], normalized_citation: str) -> bool:
+    primary = _external_import_primary_citation_key(cluster)
+    return not primary or primary == _citation_lookup_key(normalized_citation)
+
+
+def _filter_lookup_result_for_citation(
+    result: list[dict[str, Any]],
+    normalized_citation: str,
+) -> list[dict[str, Any]]:
+    filtered: list[dict[str, Any]] = []
+    for item in result:
+        if not isinstance(item, dict):
+            continue
+        clusters = item.get("clusters")
+        if not isinstance(clusters, list):
+            filtered.append(item)
+            continue
+        kept = [
+            cluster
+            for cluster in clusters
+            if isinstance(cluster, dict) and _external_import_matches_lookup(cluster, normalized_citation)
+        ]
+        if kept:
+            filtered.append({**item, "clusters": kept})
+    return filtered
+
+
+def _lookup_result_had_clusters(result: list[dict[str, Any]]) -> bool:
+    return any(isinstance(item.get("clusters"), list) and bool(item.get("clusters")) for item in result)
 
 
 @dataclass(frozen=True)
@@ -356,6 +416,8 @@ def opinion_display_text(opinion: dict[str, Any]) -> DisplayText:
         value = opinion.get(field)
         if not isinstance(value, str) or not value.strip():
             continue
+        if opinion.get("source_type") == "user_imported_official_text":
+            value = clean_imported_opinion_text(value)
         if field.startswith("html") or field.startswith("xml"):
             parser = _DisplayTextExtractor(field)
             parser.feed(value)
@@ -376,7 +438,6 @@ class CaseLibrary:
     def default(cls) -> "CaseLibrary":
         library = cls(library_db_path())
         library.ensure()
-        library.import_json_cache_once(JsonCache.default())
         return library
 
     def connect(self) -> sqlite3.Connection:
@@ -538,7 +599,10 @@ class CaseLibrary:
                     (_utc_now(), normalized),
                 )
                 data = _json_loads(str(row["result_json"]))
-                return data if isinstance(data, list) else None
+                if isinstance(data, list):
+                    filtered = _filter_lookup_result_for_citation(data, normalized)
+                    if filtered or not _lookup_result_had_clusters(data):
+                        return filtered
             alias_rows = conn.execute(
                 """
                 SELECT cases.cluster_json
@@ -552,7 +616,7 @@ class CaseLibrary:
         clusters = []
         for alias_row in alias_rows:
             data = _json_loads(str(alias_row["cluster_json"]))
-            if isinstance(data, dict):
+            if isinstance(data, dict) and _external_import_matches_lookup(data, normalized):
                 clusters.append(data)
         if not clusters:
             return None
@@ -588,16 +652,14 @@ class CaseLibrary:
             )
         citations = cluster.get("citations")
         if isinstance(citations, list):
-            for citation in citations:
+            for index, citation in enumerate(citations):
                 if not isinstance(citation, dict):
                     continue
-                pieces = [
-                    str(piece).strip()
-                    for piece in (citation.get("volume"), citation.get("reporter"), citation.get("page"))
-                    if str(piece).strip()
-                ]
-                if pieces:
-                    self.add_citation_alias(" ".join(pieces), cluster_id)
+                if cluster.get("source_type") == "user_imported_external_case" and index > 0:
+                    continue
+                text = _citation_text_from_dict(citation)
+                if text:
+                    self.add_citation_alias(text, cluster_id)
         return cluster_id
 
     def add_citation_alias(self, citation: str, cluster_id: str) -> None:
@@ -774,6 +836,24 @@ class CaseLibrary:
                 "UPDATE cases SET opinion_ids_json = ?, last_accessed = ? WHERE cluster_id = ?",
                 (_json_dumps(merged), _utc_now(), cluster_id),
             )
+
+    def read_case_opinion_ids(self, cluster_id: str) -> list[str]:
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT opinion_ids_json FROM cases WHERE cluster_id = ?",
+                (cluster_id,),
+            ).fetchone()
+            if row is not None:
+                conn.execute(
+                    "UPDATE cases SET last_accessed = ? WHERE cluster_id = ?",
+                    (_utc_now(), cluster_id),
+                )
+        if row is None:
+            return []
+        data = _json_loads(str(row["opinion_ids_json"]))
+        if not isinstance(data, list):
+            return []
+        return [str(value).strip() for value in data if str(value).strip()]
 
     def list_case_entries(self) -> list[dict[str, Any]]:
         with self.connection() as conn:

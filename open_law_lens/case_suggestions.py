@@ -14,6 +14,7 @@ from .client import (
     official_california_reporter_citation,
 )
 from .library import CaseLibrary
+from .quality import official_pagination_quality
 
 
 CALIFORNIA_REPORTER_PATTERN = re.compile(
@@ -189,6 +190,13 @@ def case_suggestions_from_library(library: CaseLibrary) -> list[CaseSuggestion]:
     suggestions: list[CaseSuggestion] = []
     seen_labels: set[str] = set()
     for cluster in library.saved_clusters():
+        displays = [
+            display
+            for opinion_id in library.read_case_opinion_ids(cluster_id_from_cluster(cluster))
+            if (display := library.read_opinion_display(opinion_id)) is not None
+        ]
+        if not official_pagination_quality(cluster, displays).eligible:
+            continue
         formatted = format_official_california_citation(cluster)
         official_citation = official_california_reporter_citation(cluster)
         if formatted is None or not official_citation:

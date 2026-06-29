@@ -7,6 +7,7 @@ import tempfile
 import threading
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote_plus
 
 import gi
 
@@ -76,9 +77,17 @@ from .config import (
     save_config,
 )
 from .dbus_commands import DBUS_COMMAND_GROUPS, DbusCommand, dbus_action_command
-from .library import PageMarker
+from .external_import import (
+    build_external_import_cluster,
+    clean_imported_opinion_text,
+    imported_case_name_from_text,
+    normalize_official_citation,
+)
+from .library import PageMarker, opinion_display_text
+from .quality import official_pagination_quality
 from .speech import DEFAULT_SPEECH_QUESTION_FILE, normalize_speech_question_text
 from .text_search import literal_match_ranges
+from .web_import import ExtractedWebpage, extract_webpage_text
 
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -92,6 +101,7 @@ AGENT_SUBVIEW_ANSWER = "answer"
 AGENT_SUBVIEW_SESSION = "session"
 AGENT_MODE_GENERAL = "general"
 AGENT_MODE_CASE = "case"
+GOOGLE_SCHOLAR_CASE_SEARCH_TEMPLATE = "https://scholar.google.com/scholar?hl=en&as_sdt=6,33&q={query}"
 AGENT_MODE_RESULTS = "results"
 SEARCH_NEXT_PAGE_TARGET = "search-next-page"
 CITED_BY_INCLUDE_UNPUBLISHED_TARGET = "cited-by-include-unpublished"
@@ -508,6 +518,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_citation_motion_controller: Gtk.EventControllerMotion | None = None
         self._reader_citation_click_gesture: Gtk.GestureClick | None = None
         self._reader_header_citation: FormattedCitation | None = None
+        self._reader_has_official_pagination = False
+        self._last_lookup_text = ""
+        self._external_lookup_window: Gtk.Window | None = None
         self._pending_quote_target: QuoteTarget | None = None
         self._settings_window: SettingsWindow | None = None
         self._dbus_commands_window: DbusCommandsWindow | None = None
@@ -553,6 +566,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         show_shortcuts = Gio.SimpleAction.new("show_shortcuts", None)
         show_shortcuts.connect("activate", self._on_show_shortcuts)
         self.add_action(show_shortcuts)
+        open_official_search = Gio.SimpleAction.new("open_official_search", None)
+        open_official_search.connect("activate", self._on_open_official_search)
+        self.add_action(open_official_search)
+        import_official_text = Gio.SimpleAction.new("import_official_text", None)
+        import_official_text.connect("activate", self._on_import_official_text)
+        self.add_action(import_official_text)
 
     def _install_css(self) -> None:
         provider = self._css_provider or Gtk.CssProvider()
@@ -779,6 +798,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         menu = Gio.Menu()
         menu.append("Keyboard Shortcuts", "win.show_shortcuts")
         menu.append("D-Bus Commands", "win.show_dbus_commands")
+        menu.append("Find Official Text", "win.open_official_search")
+        menu.append("Import Official Text", "win.import_official_text")
         menu.append("Settings", "win.settings")
         menu.append("Clear Research Cache", "win.clear_cache")
         button = Gtk.MenuButton(icon_name="open-menu-symbolic")
@@ -1935,6 +1956,378 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.reader_buffer.set_text("")
         self._set_status("Research Cache cleared. Library preserved.")
 
+    def _on_open_official_search(
+        self,
+        _action: Gio.SimpleAction,
+        _parameter: GLib.Variant | None,
+    ) -> None:
+        query = self._official_search_query()
+        if not query.strip():
+            self._set_status("Enter or select a case before searching for official text.")
+            return
+        self._show_external_lookup_window(query)
+
+    def _official_search_query(self) -> str:
+        cluster = self._selected_cluster
+        if cluster is not None:
+            citation = cluster_citation_line(cluster)
+            formatted = format_official_california_citation(cluster)
+            query = formatted.plain_text if formatted is not None else f"{cluster_short_title(cluster)} {citation}"
+            return query.strip()
+        entry_text = self.citation_entry.get_text().strip()
+        if entry_text:
+            return entry_text
+        return self._last_lookup_text.strip()
+
+    def _external_search_urls(self, query: str) -> list[tuple[str, str]]:
+        encoded = quote_plus(query)
+        return [("Google Scholar Case Law", GOOGLE_SCHOLAR_CASE_SEARCH_TEMPLATE.format(query=encoded))]
+
+    def _launch_external_url(self, url: str) -> bool:
+        try:
+            Gio.AppInfo.launch_default_for_uri(url, None)
+        except GLib.Error as exc:
+            self._set_status(f"Could not open browser: {exc.message}")
+            return False
+        return True
+
+    def _show_external_lookup_window(self, query: str) -> None:
+        clean_query = re.sub(r"\s+", " ", query).strip()
+        if not clean_query:
+            return
+        if self._external_lookup_window is not None:
+            self._close_external_lookup_window()
+        window = Gtk.Window(title="Find Case Online")
+        window.set_transient_for(self)
+        window.set_modal(False)
+        window.set_default_size(520, 300)
+        window.connect("close-request", self._on_external_lookup_closed)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_top(12)
+        box.set_margin_bottom(12)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+
+        heading = Gtk.Label(label=clean_query, xalign=0)
+        heading.set_wrap(True)
+        heading.add_css_class("heading")
+        box.append(heading)
+
+        for label, url in self._external_search_urls(clean_query):
+            button = Gtk.Button(label=label)
+            button.set_halign(Gtk.Align.FILL)
+            button.set_hexpand(True)
+            button.connect("clicked", self._on_external_lookup_button_clicked, url)
+            box.append(button)
+
+        source_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        source_entry = Gtk.Entry()
+        source_entry.set_hexpand(True)
+        source_entry.set_placeholder_text("Google Scholar case URL")
+        source_row.append(source_entry)
+        fetch_button = Gtk.Button(label="Fetch URL")
+        fetch_button.connect("clicked", self._on_external_lookup_fetch_clicked, source_entry)
+        source_row.append(fetch_button)
+        box.append(source_row)
+
+        import_button = Gtk.Button(label="Import Official Text")
+        import_button.connect(
+            "clicked",
+            self._on_external_lookup_import_clicked,
+        )
+        box.append(import_button)
+
+        window.set_child(box)
+        self._external_lookup_window = window
+        window.present()
+
+    def _on_external_lookup_closed(self, _window: Gtk.Window) -> bool:
+        self._external_lookup_window = None
+        return False
+
+    def _close_external_lookup_window(self) -> None:
+        window = self._external_lookup_window
+        self._external_lookup_window = None
+        if window is not None:
+            window.close()
+
+    def _on_external_lookup_button_clicked(self, _button: Gtk.Button, url: str) -> None:
+        if self._launch_external_url(url):
+            self._set_status("Opened Google Scholar case search in browser.")
+
+    def _on_external_lookup_import_clicked(self, _button: Gtk.Button) -> None:
+        self._on_import_official_text(None, None)
+
+    def _on_external_lookup_fetch_clicked(self, _button: Gtk.Button, source_entry: Gtk.Entry) -> None:
+        self._on_import_official_text(
+            None,
+            None,
+            initial_source_url=source_entry.get_text().strip(),
+            fetch_on_present=True,
+        )
+
+    def _default_import_case_name(self) -> str:
+        if self._selected_cluster is not None:
+            title = cluster_short_title(self._selected_cluster)
+            citation = normalize_official_citation(title)
+            return "" if citation and citation == title else title
+        return ""
+
+    def _default_import_official_citation(self) -> str:
+        cluster = self._selected_cluster
+        if cluster is not None:
+            formatted = format_official_california_citation(cluster)
+            if formatted is not None:
+                citation = normalize_official_citation(formatted.plain_text)
+                if citation:
+                    return citation
+            citation = normalize_official_citation(cluster_citation_line(cluster))
+            if citation:
+                return citation
+        return normalize_official_citation(self._official_search_query())
+
+    def _on_import_official_text(
+        self,
+        _action: Gio.SimpleAction | None,
+        _parameter: GLib.Variant | None,
+        *,
+        initial_source_url: str = "",
+        fetch_on_present: bool = False,
+    ) -> bool:
+        default_citation = self._default_import_official_citation()
+        if not default_citation:
+            self._set_status("Select a case or enter an official California citation before importing.")
+            return False
+        window = Gtk.Window(title="Import Official Text")
+        window.set_transient_for(self)
+        window.set_modal(True)
+        window.set_default_size(720, 560)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_top(12)
+        box.set_margin_bottom(12)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+
+        case_name_entry = Gtk.Entry()
+        case_name_entry.set_placeholder_text("Case name")
+        case_name_entry.set_text(self._default_import_case_name())
+        box.append(case_name_entry)
+
+        citation_entry = Gtk.Entry()
+        citation_entry.set_placeholder_text("Official citation")
+        citation_entry.set_text(default_citation)
+        box.append(citation_entry)
+
+        text_buffer = Gtk.TextBuffer()
+
+        source_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        source_entry = Gtk.Entry()
+        source_entry.set_hexpand(True)
+        source_entry.set_placeholder_text("Source URL")
+        source_entry.set_text(initial_source_url)
+        source_row.append(source_entry)
+        fetch_button = Gtk.Button(label="Fetch URL")
+        fetch_button.connect(
+            "clicked",
+            self._on_import_fetch_url_clicked,
+            case_name_entry,
+            citation_entry,
+            source_entry,
+            text_buffer,
+        )
+        source_row.append(fetch_button)
+        box.append(source_row)
+
+        text_view = Gtk.TextView(buffer=text_buffer)
+        text_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        text_view.set_left_margin(8)
+        text_view.set_right_margin(8)
+        text_view.set_top_margin(8)
+        text_view.set_bottom_margin(8)
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_vexpand(True)
+        scroller.set_child(text_view)
+        box.append(scroller)
+
+        buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        buttons.set_halign(Gtk.Align.END)
+        cancel_button = Gtk.Button(label="Cancel")
+        cancel_button.connect("clicked", lambda _button: window.close())
+        buttons.append(cancel_button)
+        import_button = Gtk.Button(label="Import")
+        import_button.connect(
+            "clicked",
+            self._on_import_official_text_confirmed,
+            window,
+            case_name_entry,
+            citation_entry,
+            source_entry,
+            text_buffer,
+        )
+        buttons.append(import_button)
+        box.append(buttons)
+
+        window.set_child(box)
+        window.present()
+        if fetch_on_present:
+            self._on_import_fetch_url_clicked(
+                fetch_button,
+                case_name_entry,
+                citation_entry,
+                source_entry,
+                text_buffer,
+            )
+        return True
+
+    def _on_import_fetch_url_clicked(
+        self,
+        button: Gtk.Button,
+        case_name_entry: Gtk.Entry,
+        citation_entry: Gtk.Entry,
+        source_entry: Gtk.Entry,
+        text_buffer: Gtk.TextBuffer,
+    ) -> None:
+        url = source_entry.get_text().strip()
+        button.set_sensitive(False)
+        self._set_status("Fetching URL...")
+        thread = threading.Thread(
+            target=self._import_fetch_url_worker,
+            args=(url, button, case_name_entry, citation_entry, source_entry, text_buffer),
+            daemon=True,
+        )
+        thread.start()
+
+    def _import_fetch_url_worker(
+        self,
+        url: str,
+        button: Gtk.Button,
+        case_name_entry: Gtk.Entry,
+        citation_entry: Gtk.Entry,
+        source_entry: Gtk.Entry,
+        text_buffer: Gtk.TextBuffer,
+    ) -> None:
+        try:
+            webpage = extract_webpage_text(url)
+        except RuntimeError as exc:
+            GLib.idle_add(self._finish_import_fetch_url_error, button, str(exc))
+            return
+        GLib.idle_add(
+            self._finish_import_fetch_url,
+            webpage,
+            button,
+            case_name_entry,
+            citation_entry,
+            source_entry,
+            text_buffer,
+        )
+
+    def _finish_import_fetch_url_error(self, button: Gtk.Button, message: str) -> bool:
+        button.set_sensitive(True)
+        self._set_status(message)
+        return False
+
+    def _finish_import_fetch_url(
+        self,
+        webpage: ExtractedWebpage,
+        button: Gtk.Button,
+        case_name_entry: Gtk.Entry,
+        citation_entry: Gtk.Entry,
+        source_entry: Gtk.Entry,
+        text_buffer: Gtk.TextBuffer,
+    ) -> bool:
+        button.set_sensitive(True)
+        source_entry.set_text(webpage.url)
+        cleaned_text = clean_imported_opinion_text(webpage.text) or webpage.text
+        text_buffer.set_text(cleaned_text)
+        case_source = "\n".join(part for part in (webpage.title, cleaned_text) if part)
+        if not case_name_entry.get_text().strip():
+            case_name_entry.set_text(imported_case_name_from_text(case_source))
+        if not normalize_official_citation(citation_entry.get_text()):
+            citation_entry.set_text(normalize_official_citation(case_source))
+        self._set_status("Fetched URL text. Review it, then import.")
+        return False
+
+    def _on_import_official_text_confirmed(
+        self,
+        _button: Gtk.Button,
+        window: Gtk.Window,
+        case_name_entry: Gtk.Entry,
+        citation_entry: Gtk.Entry,
+        source_entry: Gtk.Entry,
+        text_buffer: Gtk.TextBuffer,
+    ) -> None:
+        start = text_buffer.get_start_iter()
+        end = text_buffer.get_end_iter()
+        pasted_text = text_buffer.get_text(start, end, True).strip()
+        if not pasted_text:
+            self._set_status("Paste official text before importing.")
+            return
+        imported_text = clean_imported_opinion_text(pasted_text)
+        if not imported_text:
+            self._set_status("Imported text was empty after cleanup.")
+            return
+        official_citation = (
+            normalize_official_citation(citation_entry.get_text())
+            or normalize_official_citation(pasted_text)
+            or self._default_import_official_citation()
+        )
+        case_name = case_name_entry.get_text().strip() or imported_case_name_from_text(pasted_text)
+        try:
+            cluster = build_external_import_cluster(
+                case_name=case_name,
+                official_citation=official_citation,
+                imported_text=pasted_text,
+                source_url=source_entry.get_text().strip(),
+            )
+        except ValueError as exc:
+            self._set_status(str(exc))
+            return
+        cluster_id = cluster_id_from_cluster(cluster)
+        if not cluster_id:
+            self._set_status("Selected case has no cluster id.")
+            return
+        text_field = "html_with_citations" if re.search(r"<[a-zA-Z][^>]*>", imported_text) else "plain_text"
+        opinion = {
+            "id": f"official-import-{cluster_id}",
+            "cluster_id": cluster_id,
+            text_field: imported_text,
+            "source_url": source_entry.get_text().strip(),
+            "source_type": "user_imported_official_text",
+        }
+        display = opinion_display_text(opinion)
+        quality = official_pagination_quality(cluster, [display])
+        if not quality.eligible:
+            self._set_status(f"Import not saved: {quality.reason}")
+            return
+        self.client.library.upsert_cluster(cluster)
+        self.client.library.upsert_opinion(opinion)
+        self.client.library.update_case_opinion_ids(cluster_id, [str(opinion["id"])])
+        self.client.library.upsert_lookup(
+            quality.official_citation,
+            [{"status": 200, "clusters": [cluster]}],
+        )
+        self.client.cache.upsert_cluster(cluster)
+        self.client.cache.write_resource("opinions", str(opinion["id"]), opinion)
+        self.client.cache.update_case_opinions(cluster, [str(opinion["id"])])
+        self.client.cache.write_lookup(
+            quality.official_citation,
+            [{"status": 200, "clusters": [cluster]}],
+        )
+        self._set_sidebar_clusters(self.client.cached_clusters(), select_cluster_id=cluster_id)
+        self._refresh_case_suggestion_index(force=True)
+        self._reader_has_official_pagination = True
+        self._set_reader_header(
+            self._case_header_text(cluster),
+            self._case_header_citation(cluster),
+        )
+        self._set_reader_text(display.text, display.page_markers)
+        self._set_status("Imported official reporter text, saved to Library, and added to Research Cache.")
+        self._close_external_lookup_window()
+        window.close()
+
     def _on_lookup_clicked(self, _widget: Gtk.Widget) -> None:
         entry_text = self.citation_entry.get_text().strip()
         if not entry_text:
@@ -1944,6 +2337,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._start_lookup(citation)
 
     def _start_lookup(self, citation: str) -> None:
+        self._last_lookup_text = citation.strip()
         self._hide_case_completion()
         self._set_status(f"Looking up {citation}...")
         self._set_reader_header("")
@@ -1976,7 +2370,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             raw_clusters = self.client.clusters_from_lookup(result)
             shown_clusters = dedupe_case_clusters(raw_clusters)
             status = self._lookup_status_text(result, raw_clusters, shown_clusters)
-            GLib.idle_add(self._apply_lookup_result, result, shown_clusters, status)
+            GLib.idle_add(self._apply_lookup_result, result, shown_clusters, status, citation)
         except (CourtListenerError, ValueError) as exc:
             GLib.idle_add(self._apply_error, str(exc))
 
@@ -2131,6 +2525,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         _result: list[dict[str, Any]],
         clusters: list[dict[str, Any]],
         status: str,
+        citation: str = "",
     ) -> bool:
         select_cluster_id = cluster_id_from_cluster(clusters[0]) if clusters else ""
         self._set_sidebar_clusters(
@@ -2148,6 +2543,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         else:
             self._set_reader_header("")
             self.reader_buffer.set_text(status)
+            if citation.strip():
+                self._show_external_lookup_window(citation)
+                self._set_status(f"{status}. External search options opened.")
         return False
 
     def _apply_error(self, message: str) -> bool:
@@ -2201,13 +2599,26 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             text = "".join(text_parts)
             if not text:
                 text = "No opinion text found."
+            quality = official_pagination_quality(
+                cluster,
+                [opinion_display_text(opinion) for opinion in opinions],
+            )
             GLib.idle_add(
                 self._set_reader_text,
                 text,
                 page_markers,
             )
+            GLib.idle_add(self._finish_case_quality_status, quality.eligible, quality.reason)
         except CourtListenerError as exc:
             GLib.idle_add(self._apply_error, str(exc))
+
+    def _finish_case_quality_status(self, eligible: bool, reason: str) -> bool:
+        self._reader_has_official_pagination = eligible
+        if eligible:
+            self._set_status("Saved to Library with official reporter pagination.")
+        elif reason:
+            self._set_status(f"Transient view only: {reason} Use Find Official Text or Import Official Text.")
+        return False
 
     def _format_agent_prompt(
         self,
@@ -3274,7 +3685,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 kind="clusters",
             )
             cluster_id = self.client.cache.upsert_cluster(cluster)
-            self.client.library.upsert_cluster(cluster)
             GLib.idle_add(
                 self._finish_search_result_open,
                 cluster_id or result.cluster_id,

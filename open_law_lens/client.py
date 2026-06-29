@@ -16,6 +16,15 @@ from .cache import JsonCache, cluster_id_from_cluster, normalize_citation, resou
 from .case_titles import cluster_short_title_value, cluster_title_value
 from .config import courtlistener_token
 from .library import CaseLibrary, DisplayText, decode_cp1252_control_chars, opinion_display_text
+from .quality import (
+    OFFICIAL_CALIFORNIA_REPORTERS,
+    OfficialPaginationQuality,
+    normalized_reporter,
+    official_california_reporter_citation as quality_official_california_reporter_citation,
+    official_california_reporter_citation_from_text as quality_official_california_reporter_citation_from_text,
+    official_california_reporter_key,
+    official_pagination_quality,
+)
 
 
 BASE_URL = "https://www.courtlistener.com"
@@ -35,18 +44,6 @@ TEXT_FIELDS = (
     "html_anon_2020",
     "xml_harvard",
 )
-OFFICIAL_CALIFORNIA_REPORTERS = {
-    "cal.": "Cal.",
-    "cal.2d": "Cal.2d",
-    "cal.3d": "Cal.3d",
-    "cal.4th": "Cal.4th",
-    "cal.5th": "Cal.5th",
-    "cal.app.": "Cal.App.",
-    "cal.app.2d": "Cal.App.2d",
-    "cal.app.3d": "Cal.App.3d",
-    "cal.app.4th": "Cal.App.4th",
-    "cal.app.5th": "Cal.App.5th",
-}
 
 
 class CourtListenerError(RuntimeError):
@@ -157,51 +154,15 @@ def cluster_citation_line(cluster: dict[str, Any]) -> str:
 
 
 def _normalized_reporter(value: str) -> str:
-    return re.sub(r"\s+", "", value.strip()).casefold()
+    return normalized_reporter(value)
 
 
 def official_california_reporter_citation(cluster: dict[str, Any]) -> str:
-    citations = cluster.get("citations")
-    if not isinstance(citations, list):
-        return ""
-    for citation in citations:
-        if not isinstance(citation, dict):
-            continue
-        reporter = citation.get("reporter")
-        if not isinstance(reporter, str):
-            continue
-        normalized_reporter = _normalized_reporter(reporter)
-        display_reporter = OFFICIAL_CALIFORNIA_REPORTERS.get(normalized_reporter)
-        if display_reporter is None:
-            continue
-        pieces = [
-            str(piece).strip()
-            for piece in (citation.get("volume"), display_reporter, citation.get("page"))
-            if str(piece).strip()
-        ]
-        if len(pieces) == 3:
-            return " ".join(pieces)
-    return ""
+    return quality_official_california_reporter_citation(cluster)
 
 
 def _official_california_reporter_key(cluster: dict[str, Any]) -> tuple[str, str, str] | None:
-    citations = cluster.get("citations")
-    if not isinstance(citations, list):
-        return None
-    for citation in citations:
-        if not isinstance(citation, dict):
-            continue
-        reporter = citation.get("reporter")
-        if not isinstance(reporter, str):
-            continue
-        normalized_reporter = _normalized_reporter(reporter)
-        if normalized_reporter not in OFFICIAL_CALIFORNIA_REPORTERS:
-            continue
-        volume = str(citation.get("volume") or "").strip()
-        page = str(citation.get("page") or "").strip()
-        if volume and page:
-            return (volume.casefold(), normalized_reporter, page.casefold())
-    return None
+    return official_california_reporter_key(cluster)
 
 
 def cluster_year(cluster: dict[str, Any]) -> str:
@@ -224,20 +185,7 @@ def format_official_california_citation(cluster: dict[str, Any]) -> FormattedCit
 
 
 def official_california_reporter_citation_from_text(text: str) -> str:
-    match = re.search(
-        r"\b(?P<volume>\d+)\s+"
-        r"(?P<reporter>Cal\.?\s*(?:App\.?\s*)?(?:\d+d|[2-5]th)?)\s+"
-        r"(?P<page>\d+)\b",
-        text,
-        re.IGNORECASE,
-    )
-    if not match:
-        return ""
-    normalized_reporter = _normalized_reporter(match.group("reporter"))
-    display_reporter = OFFICIAL_CALIFORNIA_REPORTERS.get(normalized_reporter)
-    if display_reporter is None:
-        return ""
-    return f"{match.group('volume')} {display_reporter} {match.group('page')}"
+    return quality_official_california_reporter_citation_from_text(text)
 
 
 def search_result_full_citation(result: CourtListenerSearchResult) -> str:
@@ -459,16 +407,20 @@ class CourtListenerClient:
         if not refresh:
             library_result = self.library.read_lookup(normalized)
             if isinstance(library_result, list):
+                library_result = self._filter_lookup_result_for_citation(normalized, library_result)
                 self.cache.write_lookup(normalized, library_result)
                 self._cache_lookup_clusters(library_result)
                 self.last_lookup_source = "Library"
                 return library_result
             cached = self.cache.read_lookup(normalized)
             if isinstance(cached, list):
-                self._cache_lookup_clusters(cached)
-                self.library.upsert_lookup(normalized, cached)
-                self.last_lookup_source = "Research Cache"
-                return cached
+                filtered_cached = self._filter_lookup_result_for_citation(normalized, cached)
+                if filtered_cached or not self._lookup_result_had_clusters(cached):
+                    self.cache.write_lookup(normalized, filtered_cached)
+                    self._cache_lookup_clusters(filtered_cached)
+                    self._upsert_eligible_lookup(normalized, filtered_cached)
+                    self.last_lookup_source = "Research Cache"
+                    return filtered_cached
         data = urlencode({"text": normalized}).encode("utf-8")
         request = Request(
             CITATION_LOOKUP_URL,
@@ -484,7 +436,7 @@ class CourtListenerClient:
             raise CourtListenerError("CourtListener citation lookup returned unexpected JSON.")
         self.cache.write_lookup(normalized, result)
         self._cache_lookup_clusters(result)
-        self.library.upsert_lookup(normalized, result)
+        self._upsert_eligible_lookup(normalized, result)
         self.last_lookup_source = "CourtListener API"
         return result
 
@@ -590,29 +542,30 @@ class CourtListenerClient:
                     return library_cluster
             cached = self.cache.read_resource(kind, resource_id)
             if isinstance(cached, dict):
-                if kind == "opinions":
-                    self.library.upsert_opinion(cached)
-                elif kind == "clusters":
-                    self.library.upsert_cluster(cached)
                 return cached
         request = Request(full_url, headers=self._headers(), method="GET")
         result = self._request_json(request)
         if not isinstance(result, dict):
             raise CourtListenerError(f"CourtListener {kind} endpoint returned unexpected JSON.")
         self.cache.write_resource(kind, resource_id, result)
-        if kind == "opinions":
-            self.library.upsert_opinion(result)
-        elif kind == "clusters":
-            self.library.upsert_cluster(result)
         return result
 
     def fetch_cluster_opinions(
         self, cluster: dict[str, Any], *, refresh: bool = False
     ) -> list[dict[str, Any]]:
+        cluster_id = cluster_id_from_cluster(cluster)
+        if not refresh and cluster_id:
+            library_opinions = [
+                opinion
+                for opinion_id in self.library.read_case_opinion_ids(cluster_id)
+                if (opinion := self.library.read_opinion(opinion_id)) is not None
+            ]
+            if library_opinions:
+                return library_opinions
         urls = cluster.get("sub_opinions")
         if not isinstance(urls, list):
             self.cache.upsert_cluster(cluster)
-            self.library.upsert_cluster(cluster)
+            self.save_case_if_official_paginated(cluster, [])
             return []
         opinions: list[dict[str, Any]] = []
         opinion_ids: list[str] = []
@@ -623,9 +576,8 @@ class CourtListenerClient:
                 opinion_id = str(opinion.get("id") or resource_id_from_url(url)).strip()
                 if opinion_id:
                     opinion_ids.append(opinion_id)
-                    self.library.upsert_opinion(opinion, cluster=cluster)
         self.cache.update_case_opinions(cluster, opinion_ids)
-        self.library.update_case_opinions(cluster, opinion_ids)
+        self.save_case_if_official_paginated(cluster, opinions)
         return opinions
 
     def first_opinion_text(self, cluster: dict[str, Any], *, refresh: bool = False) -> str:
@@ -652,6 +604,48 @@ class CourtListenerClient:
                 clusters.extend(cluster for cluster in values if isinstance(cluster, dict))
         return clusters
 
+    @staticmethod
+    def _lookup_result_had_clusters(result: list[dict[str, Any]]) -> bool:
+        return any(isinstance(item.get("clusters"), list) and bool(item.get("clusters")) for item in result)
+
+    @staticmethod
+    def _citation_lookup_key(citation: str) -> str:
+        return re.sub(r"\s+", "", normalize_citation(citation)).casefold()
+
+    @classmethod
+    def _external_import_matches_lookup(cls, cluster: dict[str, Any], normalized_citation: str) -> bool:
+        if cluster.get("source_type") != "user_imported_external_case":
+            return True
+        citation = quality_official_california_reporter_citation(cluster)
+        if not citation:
+            return True
+        return cls._citation_lookup_key(citation) == cls._citation_lookup_key(normalized_citation)
+
+    @classmethod
+    def _filter_lookup_result_for_citation(
+        cls,
+        normalized_citation: str,
+        result: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        filtered: list[dict[str, Any]] = []
+        for item in result:
+            if not isinstance(item, dict):
+                continue
+            clusters = item.get("clusters")
+            if not isinstance(clusters, list):
+                filtered.append(item)
+                continue
+            kept = [
+                cluster
+                for cluster in clusters
+                if isinstance(cluster, dict) and cls._external_import_matches_lookup(cluster, normalized_citation)
+            ]
+            if kept:
+                filtered.append({**item, "clusters": kept})
+        if filtered or not cls._lookup_result_had_clusters(result):
+            return filtered
+        return []
+
     def cached_clusters(self) -> list[dict[str, Any]]:
         clusters: list[dict[str, Any]] = []
         for entry in self.cache.list_case_entries():
@@ -667,3 +661,38 @@ class CourtListenerClient:
         for cluster in dedupe_case_clusters(self.clusters_from_lookup(result)):
             if cluster_id_from_cluster(cluster):
                 self.cache.upsert_cluster(cluster)
+
+    def _upsert_eligible_lookup(self, citation: str, result: list[dict[str, Any]]) -> None:
+        eligible_clusters: list[dict[str, Any]] = []
+        for cluster in self.clusters_from_lookup(result):
+            cluster_id = cluster_id_from_cluster(cluster)
+            if not cluster_id:
+                continue
+            saved = self.save_case_if_official_paginated(cluster)
+            if saved.eligible:
+                eligible_clusters.append(cluster)
+        if eligible_clusters:
+            self.library.upsert_lookup(
+                citation,
+                [{"status": 200, "clusters": eligible_clusters}],
+                normalized_already=True,
+            )
+
+    def save_case_if_official_paginated(
+        self,
+        cluster: dict[str, Any],
+        opinions: list[dict[str, Any]] | None = None,
+    ) -> OfficialPaginationQuality:
+        displays = [opinion_display_text(opinion) for opinion in (opinions or [])]
+        quality = official_pagination_quality(cluster, displays)
+        if not quality.eligible:
+            return quality
+        opinion_ids: list[str] = []
+        self.library.upsert_cluster(cluster)
+        for opinion in opinions or []:
+            opinion_id = self.library.upsert_opinion(opinion)
+            if opinion_id:
+                opinion_ids.append(opinion_id)
+        if opinion_ids:
+            self.library.update_case_opinion_ids(cluster_id_from_cluster(cluster), opinion_ids)
+        return quality

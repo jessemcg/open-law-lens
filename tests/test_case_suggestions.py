@@ -85,6 +85,14 @@ class CaseSuggestionTests(unittest.TestCase):
                     ],
                 }
             )
+            library.upsert_opinion(
+                {
+                    "id": 10,
+                    "cluster_id": 123,
+                    "plain_text": "[*25]Example begins.\n\n[*26]Example continues.",
+                }
+            )
+            library.update_case_opinion_ids("123", ["10"])
 
             suggestions = case_suggestions_from_library(library)
 
@@ -135,6 +143,14 @@ class CaseSuggestionTests(unittest.TestCase):
                     ],
                 }
             )
+            library.upsert_opinion(
+                {
+                    "id": 10,
+                    "cluster_id": 123,
+                    "plain_text": "[*368]The case begins.\n\n[*369]The case continues.",
+                }
+            )
+            library.update_case_opinion_ids("123", ["10"])
             library_suggestions = case_suggestions_from_library(library)
 
             suggestions = merge_case_suggestions(concordance, library_suggestions)

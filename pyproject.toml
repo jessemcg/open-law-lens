@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "pygobject>=3.54.5",
+    "trafilatura>=2.0.0",
 ]
 
 [project.scripts]

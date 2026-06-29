@@ -697,6 +697,7 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(client.lookup_citation("576   U.S. 644"), cached_lookup)
             self.assertEqual(client.last_lookup_source, "Research Cache")
             self.assertEqual(client.cached_clusters()[0]["case_name"], "Example v. State")
+            self.assertEqual(library.saved_clusters(), [])
 
     def test_cached_clusters_hides_existing_duplicate_official_citation_entries(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -748,6 +749,51 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(opinions, [{"id": 10, "plain_text": "Opinion text"}])
             self.assertEqual(cache.list_case_entries()[0]["opinion_ids"], ["10"])
 
+    def test_fetch_cluster_opinions_saves_eligible_official_paginated_case_to_library(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir) / "cache")
+            cache.write_resource(
+                "opinions",
+                "10",
+                {"id": 10, "cluster_id": 42, "plain_text": "[*25]Opening.\n\n[*26]Next."},
+            )
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            client = CourtListenerClient(cache=cache, library=library)
+            cluster = {
+                "id": 42,
+                "case_name": "Example v. State",
+                "citations": [{"volume": "10", "reporter": "Cal.App.5th", "page": "25"}],
+                "sub_opinions": ["/api/rest/v4/opinions/10/"],
+            }
+
+            client.fetch_cluster_opinions(cluster)
+
+            self.assertEqual(library.saved_clusters()[0]["case_name"], "Example v. State")
+            self.assertEqual(library.read_case_opinion_ids("42"), ["10"])
+
+    def test_fetch_cluster_opinions_keeps_ineligible_case_out_of_library(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir) / "cache")
+            cache.write_resource(
+                "opinions",
+                "10",
+                {"id": 10, "cluster_id": 42, "plain_text": "Opening without reporter markers."},
+            )
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            client = CourtListenerClient(cache=cache, library=library)
+            cluster = {
+                "id": 42,
+                "case_name": "Example v. State",
+                "citations": [{"volume": "10", "reporter": "Cal.App.5th", "page": "25"}],
+                "sub_opinions": ["/api/rest/v4/opinions/10/"],
+            }
+
+            client.fetch_cluster_opinions(cluster)
+
+            self.assertEqual(library.saved_clusters(), [])
+
     def test_lookup_rejects_empty_citation(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
@@ -779,6 +825,50 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(client.lookup_citation("1 Cal. 2"), lookup)
             self.assertEqual(client.last_lookup_source, "Library")
             self.assertEqual(client.cached_clusters()[0]["case_name"], "Example v. State")
+
+    def test_lookup_ignores_stale_external_import_body_citation_alias(self) -> None:
+        class FakeClient(CourtListenerClient):
+            def _request_json(self, _request: Request):  # type: ignore[override]
+                return [
+                    {
+                        "status": 200,
+                        "clusters": [
+                            {
+                                "id": 76,
+                                "case_name": "In re Antonio R.",
+                                "citations": [
+                                    {"volume": "76", "reporter": "Cal.App.5th", "page": "421"},
+                                ],
+                            }
+                        ],
+                    }
+                ]
+
+        stale_cluster = {
+            "id": "external-claudia",
+            "case_name": "In re Claudia R.",
+            "source_type": "user_imported_external_case",
+            "citations": [
+                {"volume": "115", "reporter": "Cal.App.5th", "page": "76"},
+                {"volume": "76", "reporter": "Cal.App.5th", "page": "421"},
+            ],
+        }
+        stale_lookup = [{"status": 200, "clusters": [stale_cluster]}]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir) / "cache")
+            cache.write_lookup("76 Cal.App.5th 421", stale_lookup)
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            client = FakeClient(cache=cache, library=library)
+
+            result = client.lookup_citation("76 Cal.App.5th 421")
+
+            self.assertEqual(client.last_lookup_source, "CourtListener API")
+            self.assertEqual(result[0]["clusters"][0]["case_name"], "In re Antonio R.")
+            self.assertEqual(
+                cache.read_lookup("76 Cal.App.5th 421")[0]["clusters"][0]["case_name"],
+                "In re Antonio R.",
+            )
 
     def test_clear_cache_hides_research_cache_and_preserves_library_cases(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
