@@ -61,6 +61,94 @@ class CacheTests(unittest.TestCase):
             self.assertEqual(entries[0]["title"], "Example v. State")
             self.assertEqual(entries[0]["citation_text"], "1 Cal. 2")
 
+    def test_case_entries_sort_newest_added_first(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cache.ensure()
+            cache.write_case_index(
+                {
+                    "1": {
+                        "cluster_id": "1",
+                        "title": "Zeta v. State",
+                        "citation_text": "1 Cal. 1",
+                        "added_at": "2026-06-01T12:00:00+00:00",
+                    },
+                    "2": {
+                        "cluster_id": "2",
+                        "title": "Alpha v. State",
+                        "citation_text": "2 Cal. 2",
+                        "added_at": "2026-06-02T12:00:00+00:00",
+                    },
+                    "3": {
+                        "cluster_id": "3",
+                        "title": "Missing Date v. State",
+                        "citation_text": "3 Cal. 3",
+                    },
+                }
+            )
+
+            self.assertEqual(
+                [entry["cluster_id"] for entry in cache.list_case_entries()],
+                ["2", "1", "3"],
+            )
+
+    def test_case_entries_sort_same_added_time_by_title(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cache.ensure()
+            added_at = "2026-06-01T12:00:00+00:00"
+            cache.write_case_index(
+                {
+                    "1": {
+                        "cluster_id": "1",
+                        "title": "Zeta v. State",
+                        "citation_text": "1 Cal. 1",
+                        "added_at": added_at,
+                    },
+                    "2": {
+                        "cluster_id": "2",
+                        "title": "Alpha v. State",
+                        "citation_text": "2 Cal. 2",
+                        "added_at": added_at,
+                    },
+                }
+            )
+
+            self.assertEqual(
+                [entry["cluster_id"] for entry in cache.list_case_entries()],
+                ["2", "1"],
+            )
+
+    def test_reupsert_preserves_added_at_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cache.ensure()
+            cache.write_case_index(
+                {
+                    "1": {
+                        "cluster_id": "1",
+                        "title": "First v. State",
+                        "citation_text": "1 Cal. 1",
+                        "added_at": "2026-06-01T12:00:00+00:00",
+                        "last_accessed": "2026-06-01T12:00:00+00:00",
+                    },
+                    "2": {
+                        "cluster_id": "2",
+                        "title": "Second v. State",
+                        "citation_text": "2 Cal. 2",
+                        "added_at": "2026-06-02T12:00:00+00:00",
+                        "last_accessed": "2026-06-02T12:00:00+00:00",
+                    },
+                }
+            )
+
+            cache.upsert_cluster({"id": 1, "case_name": "First v. State"})
+
+            entries = cache.list_case_entries()
+            self.assertEqual([entry["cluster_id"] for entry in entries], ["2", "1"])
+            self.assertEqual(entries[1]["added_at"], "2026-06-01T12:00:00+00:00")
+            self.assertNotEqual(entries[1]["last_accessed"], entries[1]["added_at"])
+
     def test_update_case_opinions_merges_ids(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = JsonCache(Path(temp_dir))

@@ -6,7 +6,7 @@ import os
 import re
 import sqlite3
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from html.parser import HTMLParser
 from pathlib import Path
@@ -33,23 +33,6 @@ RAW_STAR_PAGE_MARKER_RE = re.compile(
     r"(?<![\w\[])\*(?:Page\s+)?(?P<label>\d{2,5})(?!\d)"
 )
 BRACKETED_STAR_PAGE_MARKER_RE = re.compile(r"\[\*(?P<label>\d{1,5})\]")
-DISPLAY_PAGE_MARKER_PREFIX_RE = re.compile(r"^(?:\[\*\d{1,5}\])\s*")
-OUTLINE_HEADING_RE = re.compile(r"(?:[IVXLCDM]+|[A-Z]|\d+)\.?")
-OUTLINE_TITLED_HEADING_RE = re.compile(
-    r"(?P<marker>(?:[IVXLCDM]+|[A-Z]|\d+))\.\s*(?P<title>\S.+)"
-)
-JUDGE_LINE_RE = re.compile(r"[A-Z][A-Z.' -]+,\s*(?:[A-Z]\.){1,4}")
-SHORT_HEADING_WORDS = {
-    "ANALYSIS",
-    "BACKGROUND",
-    "CONCLUSION",
-    "DISCUSSION",
-    "DISPOSITION",
-    "FACTS",
-    "INTRODUCTION",
-    "OPINION",
-    "ORDER",
-}
 
 CP1252_CONTROL_TRANSLATION = str.maketrans(
     {
@@ -147,7 +130,6 @@ class DisplayText:
     text: str
     source_field: str
     page_markers: list[PageMarker]
-    heading_spans: list[tuple[int, int]] = field(default_factory=list)
 
 
 class _DisplayTextExtractor(HTMLParser):
@@ -294,104 +276,6 @@ def _page_marker_label(value: str) -> str:
     return label
 
 
-def _opinion_heading_spans(text: str) -> list[tuple[int, int]]:
-    spans: list[tuple[int, int]] = []
-    for match in re.finditer(r"[^\n]+", text):
-        line = match.group(0)
-        stripped = line.strip()
-        if not stripped or not _looks_like_opinion_heading_line(stripped):
-            continue
-        start = match.start() + len(line) - len(line.lstrip())
-        end = match.end() - (len(line) - len(line.rstrip()))
-        if start < end:
-            spans.append((start, end))
-    return spans
-
-
-def _looks_like_opinion_heading_line(line: str) -> bool:
-    candidate = DISPLAY_PAGE_MARKER_PREFIX_RE.sub("", line).strip()
-    if not candidate or len(candidate) > 220:
-        return False
-    if JUDGE_LINE_RE.fullmatch(candidate):
-        return False
-    if OUTLINE_HEADING_RE.fullmatch(candidate):
-        return True
-    if _looks_like_outline_titled_heading(candidate):
-        return True
-    letters = [char for char in candidate if char.isalpha()]
-    if len(letters) < 3:
-        return False
-    if any(char.islower() for char in letters):
-        return False
-    words = re.findall(r"[A-Z][A-Z.'-]*", candidate)
-    if 1 <= len(words) <= 3 and candidate not in SHORT_HEADING_WORDS:
-        return False
-    return True
-
-
-def _looks_like_outline_titled_heading(candidate: str) -> bool:
-    match = OUTLINE_TITLED_HEADING_RE.fullmatch(candidate)
-    if match is None:
-        return False
-    title = match.group("title").strip()
-    if len(title) > 140:
-        return False
-    words = re.findall(r"[A-Za-z0-9][A-Za-z0-9.'’()§-]*", title)
-    if not 1 <= len(words) <= 24:
-        return False
-    return _has_title_heading_shape(title)
-
-
-def _has_title_heading_shape(title: str) -> bool:
-    letters = [char for char in title if char.isalpha()]
-    if not letters:
-        return False
-    if not any(char.islower() for char in letters):
-        return True
-    words = re.findall(r"[A-Za-z][A-Za-z.'’-]*", title)
-    meaningful_words = [
-        word
-        for word in words
-        if word.casefold()
-        not in {
-            "a",
-            "an",
-            "and",
-            "as",
-            "at",
-            "by",
-            "for",
-            "from",
-            "in",
-            "is",
-            "of",
-            "on",
-            "or",
-            "the",
-            "to",
-            "v",
-            "with",
-        }
-    ]
-    if not meaningful_words:
-        return False
-    capitalized = sum(
-        1
-        for word in meaningful_words
-        if word[:1].isupper() or word.isupper() or any(char.isdigit() for char in word)
-    )
-    return capitalized / len(meaningful_words) >= 0.5
-
-
-def _with_heading_spans(display: DisplayText) -> DisplayText:
-    return DisplayText(
-        text=display.text,
-        source_field=display.source_field,
-        page_markers=display.page_markers,
-        heading_spans=_opinion_heading_spans(display.text),
-    )
-
-
 def _normalize_raw_star_page_markers(display: DisplayText) -> DisplayText:
     if not display.text:
         return display
@@ -418,7 +302,7 @@ def _normalize_raw_star_page_markers(display: DisplayText) -> DisplayText:
         replacements.append((start, end, f"[*{label}]", label))
     replacements.sort(key=lambda replacement: replacement[0])
     if not replacements:
-        return _with_heading_spans(display)
+        return display
 
     parts: list[str] = []
     raw_markers: list[PageMarker] = []
@@ -464,9 +348,7 @@ def _normalize_raw_star_page_markers(display: DisplayText) -> DisplayText:
     ]
     page_markers.extend(raw_markers)
     page_markers.sort(key=lambda marker: marker.start_offset)
-    return _with_heading_spans(
-        DisplayText(text=text, source_field=display.source_field, page_markers=page_markers)
-    )
+    return DisplayText(text=text, source_field=display.source_field, page_markers=page_markers)
 
 
 def opinion_display_text(opinion: dict[str, Any]) -> DisplayText:
@@ -854,21 +736,19 @@ class CaseLibrary:
             display = opinion_display_text(opinion)
             if display.text:
                 return display
-        return _with_heading_spans(
-            DisplayText(
-                text=str(row["display_text"]),
-                source_field=str(row["source_field"]),
-                page_markers=[
-                    PageMarker(
-                        page_label=str(marker["page_label"]),
-                        marker_text=str(marker["marker_text"]),
-                        start_offset=int(marker["start_offset"]),
-                        end_offset=int(marker["end_offset"]),
-                        source_field=str(marker["source_field"]),
-                    )
-                    for marker in marker_rows
-                ],
-            )
+        return DisplayText(
+            text=str(row["display_text"]),
+            source_field=str(row["source_field"]),
+            page_markers=[
+                PageMarker(
+                    page_label=str(marker["page_label"]),
+                    marker_text=str(marker["marker_text"]),
+                    start_offset=int(marker["start_offset"]),
+                    end_offset=int(marker["end_offset"]),
+                    source_field=str(marker["source_field"]),
+                )
+                for marker in marker_rows
+            ],
         )
 
     def update_case_opinions(self, cluster: dict[str, Any], opinion_ids: list[str]) -> None:

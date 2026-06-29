@@ -1034,10 +1034,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             "case-citation-header",
             weight=Pango.Weight.BOLD,
         )
-        self._reader_heading_tag = self.reader_buffer.create_tag(
-            "reader-heading",
-            weight=Pango.Weight.BOLD,
-        )
         self._reader_citation_italic_tag = self.reader_buffer.create_tag(
             "reader-citation-italic",
             style=Pango.Style.ITALIC,
@@ -1294,7 +1290,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self,
         text: str,
         page_markers: list[PageMarker] | None = None,
-        heading_spans: list[tuple[int, int]] | None = None,
         citation_header_end: int = 0,
     ) -> bool:
         self._close_reader_find(clear_entry=True)
@@ -1319,17 +1314,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 self.reader_buffer.get_start_iter(),
                 self.reader_buffer.get_iter_at_offset(citation_header_end),
             )
-        if heading_spans:
-            for start, end in heading_spans:
-                start = max(0, min(start, len(text)))
-                end = max(start, min(end, len(text)))
-                if start == end:
-                    continue
-                self.reader_buffer.apply_tag(
-                    self._reader_heading_tag,
-                    self.reader_buffer.get_iter_at_offset(start),
-                    self.reader_buffer.get_iter_at_offset(end),
-                )
         if page_markers:
             for marker in page_markers:
                 start = max(0, min(marker.start_offset, len(text)))
@@ -2169,17 +2153,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 citation_header_end = 0
             text = header
             page_markers: list[PageMarker] = []
-            heading_spans: list[tuple[int, int]] = []
             for opinion in opinions:
                 display = self.client.opinion_display(opinion)
                 if not display.text:
                     continue
                 base_offset = len(text) + 2
                 text = f"{text}\n\n{display.text}"
-                heading_spans.extend(
-                    (base_offset + start, base_offset + end)
-                    for start, end in display.heading_spans
-                )
                 page_markers.extend(
                     PageMarker(
                         page_label=marker.page_label,
@@ -2196,7 +2175,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 self._set_reader_text,
                 text,
                 page_markers,
-                heading_spans,
                 citation_header_end,
             )
         except CourtListenerError as exc:

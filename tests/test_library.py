@@ -279,7 +279,6 @@ class LibraryTests(unittest.TestCase):
                 "RUSSELL S."
             ),
         )
-        self.assertEqual(display.heading_spans, [])
 
     def test_opinion_display_text_does_not_infer_paragraph_page_ids(self) -> None:
         opinion = {
@@ -291,91 +290,6 @@ class LibraryTests(unittest.TestCase):
 
         self.assertEqual(display.page_markers, [])
         self.assertNotIn("[*368]", display.text)
-
-    def test_opinion_display_text_marks_conservative_heading_spans(self) -> None:
-        opinion = {
-            "id": 10,
-            "html_with_citations": (
-                "<author>FYBEL, J.</author>"
-                "<p>INTRODUCTION</p>"
-                "<p>This paragraph explains the appeal.</p>"
-                "<p>I.</p>"
-                "<p>THE AMENDED JUVENILE DEPENDENCY PETITIONS</p>"
-                '<p><span class="star-pagination" label="315">*315</span>II.</p>'
-                "<p>II. Discussion</p>"
-                "<p>A. <em>Is Rule 5.482(c) Valid?</em></p>"
-                "<p>III. Disposition</p>"
-                "<p>1. The Juvenile Court Did Not Violate Elizabeth’s Due Process Rights "
-                "by Directing the Department to Supplement Its Evidence</p>"
-                "<p>2. The Juvenile Court Did Not Abuse Its Discretion in Continuing the Hearing</p>"
-                "<p>The next ordinary paragraph is not a heading.</p>"
-            ),
-        }
-
-        display = opinion_display_text(opinion)
-
-        self.assertEqual(
-            [display.text[start:end] for start, end in display.heading_spans],
-            [
-                "INTRODUCTION",
-                "I.",
-                "THE AMENDED JUVENILE DEPENDENCY PETITIONS",
-                "[*315]II.",
-                "II. Discussion",
-                "A. Is Rule 5.482(c) Valid?",
-                "III. Disposition",
-                (
-                    "1. The Juvenile Court Did Not Violate Elizabeth’s Due Process Rights "
-                    "by Directing the Department to Supplement Its Evidence"
-                ),
-                "2. The Juvenile Court Did Not Abuse Its Discretion in Continuing the Hearing",
-            ],
-        )
-
-    def test_opinion_display_text_marks_plain_text_headings_after_page_normalization(self) -> None:
-        opinion = {
-            "id": 10,
-            "plain_text": (
-                "BACKGROUND\n\n"
-                "The court ordered services.\n\n"
-                "*315II.\n\n"
-                "DISPOSITION"
-            ),
-        }
-
-        display = opinion_display_text(opinion)
-
-        self.assertEqual(
-            [display.text[start:end] for start, end in display.heading_spans],
-            ["BACKGROUND", "[*315]II.", "DISPOSITION"],
-        )
-
-    def test_opinion_display_text_does_not_mark_normal_paragraphs_as_headings(self) -> None:
-        opinion = {
-            "id": 10,
-            "plain_text": (
-                "Id.\n\n"
-                "This ordinary paragraph mentions DISCUSSION but is not a standalone heading.\n\n"
-                "FYBEL, J."
-            ),
-        }
-
-        display = opinion_display_text(opinion)
-
-        self.assertEqual(display.heading_spans, [])
-
-    def test_opinion_display_text_does_not_mark_outline_paragraphs_as_headings(self) -> None:
-        opinion = {
-            "id": 10,
-            "plain_text": (
-                "A. the court ordered services and found the agency had complied with the case plan.\n\n"
-                "Id., § 1911(c)."
-            ),
-        }
-
-        display = opinion_display_text(opinion)
-
-        self.assertEqual(display.heading_spans, [])
 
     def test_opinion_storage_keeps_page_marker_offsets(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

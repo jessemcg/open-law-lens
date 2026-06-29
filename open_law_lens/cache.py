@@ -173,14 +173,15 @@ class JsonCache:
             if cluster is not None:
                 entry = {**entry, "title": _cluster_title(cluster)}
             normalized_entries.append(entry)
-        return sorted(
-            normalized_entries,
+        normalized_entries.sort(
             key=lambda item: (
                 str(item.get("title", "")).casefold(),
                 str(item.get("citation_text", "")).casefold(),
                 str(item.get("cluster_id", "")),
-            ),
+            )
         )
+        normalized_entries.sort(key=lambda item: str(item.get("added_at", "")), reverse=True)
+        return normalized_entries
 
     def read_cached_cluster(self, cluster_id: str) -> dict[str, Any] | None:
         data = self.read_resource("clusters", cluster_id)
