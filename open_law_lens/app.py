@@ -86,7 +86,6 @@ AGENT_WRAPPER = PROJECT_DIR / "scripts" / "open-law-lens-codex-agent-vte.sh"
 DEFAULT_CODEX_BIN = "codex"
 READER_BG = "#ffffff"
 READER_FG = "#000000"
-CASE_HEADER_FONT_SIZE_DELTA_PT = 2
 AGENT_PANEL_MIN_HEIGHT = 260
 AGENT_HEIGHT_DIVISOR = 4
 AGENT_SUBVIEW_ANSWER = "answer"
@@ -571,6 +570,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             .case-reader-frame > scrolledwindow > viewport {{
               background-color: {READER_BG};
             }}
+            label.case-reader-fixed-header {{
+              color: {READER_FG};
+              background-color: {READER_BG};
+              font-family: {reader_font_css(config.reader_font_family)};
+              font-size: {config.reader_font_size_pt}pt;
+              font-weight: bold;
+              padding: 4px 12px 8px 12px;
+            }}
             textview.case-reader {{
               color: {READER_FG};
               background-color: {READER_BG};
@@ -1026,14 +1033,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             "page-marker",
             weight=Pango.Weight.BOLD,
         )
-        self._case_header_tag = self.reader_buffer.create_tag(
-            "case-header",
-            justification=Gtk.Justification.CENTER,
-        )
-        self._case_citation_header_tag = self.reader_buffer.create_tag(
-            "case-citation-header",
-            weight=Pango.Weight.BOLD,
-        )
         self._reader_citation_italic_tag = self.reader_buffer.create_tag(
             "reader-citation-italic",
             style=Pango.Style.ITALIC,
@@ -1051,7 +1050,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             background="#ffd35a",
             weight=Pango.Weight.BOLD,
         )
-        self._sync_case_header_font_size()
+        self.reader_header_label = Gtk.Label(label="", xalign=0.5)
+        self.reader_header_label.add_css_class("case-reader-fixed-header")
+        self.reader_header_label.set_wrap(True)
+        self.reader_header_label.set_justify(Gtk.Justification.CENTER)
+        self.reader_header_label.set_selectable(True)
+        self.reader_header_label.set_visible(False)
+
         self.reader_view = Gtk.TextView(buffer=self.reader_buffer)
         self.reader_view.set_editable(False)
         self.reader_view.set_cursor_visible(False)
@@ -1075,6 +1080,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         frame.set_hexpand(True)
         frame.set_vexpand(True)
         frame.set_halign(Gtk.Align.FILL)
+        frame.append(self.reader_header_label)
         frame.append(reader_scroller)
         reader_overlay = Gtk.Overlay()
         reader_overlay.set_hexpand(True)
@@ -1290,30 +1296,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self,
         text: str,
         page_markers: list[PageMarker] | None = None,
-        citation_header_end: int = 0,
     ) -> bool:
         self._close_reader_find(clear_entry=True)
-        self._sync_case_header_font_size()
         self._reader_text = text
         self.reader_buffer.set_text(text)
-        header_end = text.find("\n\n")
-        if header_end < 0:
-            header_end = text.find("\n")
-        if header_end < 0:
-            header_end = len(text)
-        if header_end > 0:
-            self.reader_buffer.apply_tag(
-                self._case_header_tag,
-                self.reader_buffer.get_start_iter(),
-                self.reader_buffer.get_iter_at_offset(header_end),
-            )
-        citation_header_end = max(0, min(citation_header_end, len(text), header_end))
-        if citation_header_end > 0:
-            self.reader_buffer.apply_tag(
-                self._case_citation_header_tag,
-                self.reader_buffer.get_start_iter(),
-                self.reader_buffer.get_iter_at_offset(citation_header_end),
-            )
         if page_markers:
             for marker in page_markers:
                 start = max(0, min(marker.start_offset, len(text)))
@@ -1333,10 +1319,18 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._highlight_reader_phrase(target.phrase)
         return False
 
-    def _sync_case_header_font_size(self) -> None:
-        config = load_config()
-        header_size = float(config.reader_font_size_pt + CASE_HEADER_FONT_SIZE_DELTA_PT)
-        self._case_header_tag.set_property("size-points", header_size)
+    def _set_reader_header(self, text: str) -> None:
+        header = text.strip()
+        self.reader_header_label.set_text(header)
+        self.reader_header_label.set_visible(bool(header))
+
+    def _case_header_text(self, cluster: dict[str, Any]) -> str:
+        formatted_citation = format_official_california_citation(cluster)
+        if formatted_citation is not None:
+            return formatted_citation.plain_text
+        title = cluster_title(cluster)
+        citation = cluster_citation_line(cluster)
+        return title if not citation else f"{title}\n{citation}"
 
     def _apply_reader_citation_links(self, text: str) -> None:
         table = self.reader_buffer.get_tag_table()
@@ -1877,7 +1871,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def reload_settings(self) -> None:
         self.client = CourtListenerClient.default()
         self._install_css()
-        self._sync_case_header_font_size()
         self._load_cached_cases()
         self._refresh_case_suggestion_index(force=True)
         self._set_status("Settings saved.")
@@ -1895,6 +1888,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _on_clear_cache(self, _action: Gio.SimpleAction, _parameter: GLib.Variant | None) -> None:
         self.client.cache.clear()
         self._load_cached_cases()
+        self._set_reader_header("")
         self.reader_buffer.set_text("")
         self._set_status("Research Cache cleared. Library preserved.")
 
@@ -1909,6 +1903,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _start_lookup(self, citation: str) -> None:
         self._hide_case_completion()
         self._set_status(f"Looking up {citation}...")
+        self._set_reader_header("")
         self.reader_buffer.set_text("Loading...")
         thread = threading.Thread(target=self._lookup_worker, args=(citation,), daemon=True)
         thread.start()
@@ -1996,6 +1991,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._refresh_case_suggestion_index(force=True)
         if clusters:
             self._set_status(f"{len(clusters)} Research Cache item(s).")
+        else:
+            self._set_reader_header("")
 
     def _set_sidebar_clusters(
         self,
@@ -2091,6 +2088,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return
         if removed_selected:
             self._selected_cluster = None
+            self._set_reader_header("")
             self.reader_buffer.set_text("")
         self._set_sidebar_clusters(
             self.client.cached_clusters(),
@@ -2119,11 +2117,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 if first:
                     self.case_list.select_row(first)
         else:
+            self._set_reader_header("")
             self.reader_buffer.set_text(status)
         return False
 
     def _apply_error(self, message: str) -> bool:
         self._set_status(message)
+        self._set_reader_header("")
         self.reader_buffer.set_text(message)
         return False
 
@@ -2135,6 +2135,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return
         cluster = self._clusters[index]
         self._selected_cluster = cluster
+        self._set_reader_header(self._case_header_text(cluster))
         self.reader_buffer.set_text(f"Loading {cluster_title(cluster)}...")
         thread = threading.Thread(target=self._case_worker, args=(cluster,), daemon=True)
         thread.start()
@@ -2142,23 +2143,19 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _case_worker(self, cluster: dict[str, Any]) -> None:
         try:
             opinions = self.client.fetch_cluster_opinions(cluster)
-            title = cluster_title(cluster)
-            citation = cluster_citation_line(cluster)
-            formatted_citation = format_official_california_citation(cluster)
-            if formatted_citation is not None:
-                header = formatted_citation.plain_text
-                citation_header_end = len(header)
-            else:
-                header = title if not citation else f"{title}\n{citation}"
-                citation_header_end = 0
-            text = header
+            text_parts: list[str] = []
             page_markers: list[PageMarker] = []
+            text_length = 0
             for opinion in opinions:
                 display = self.client.opinion_display(opinion)
                 if not display.text:
                     continue
-                base_offset = len(text) + 2
-                text = f"{text}\n\n{display.text}"
+                if text_parts:
+                    text_parts.append("\n\n")
+                    text_length += 2
+                base_offset = text_length
+                text_parts.append(display.text)
+                text_length += len(display.text)
                 page_markers.extend(
                     PageMarker(
                         page_label=marker.page_label,
@@ -2169,13 +2166,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                     )
                     for marker in display.page_markers
                 )
+            text = "".join(text_parts)
             if not text:
-                text = f"{header}\n\nNo opinion text found."
+                text = "No opinion text found."
             GLib.idle_add(
                 self._set_reader_text,
                 text,
                 page_markers,
-                citation_header_end,
             )
         except CourtListenerError as exc:
             GLib.idle_add(self._apply_error, str(exc))
