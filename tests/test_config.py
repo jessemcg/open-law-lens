@@ -27,7 +27,6 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.case_agent_prompt_template, DEFAULT_CASE_AGENT_PROMPT_TEMPLATE)
             self.assertEqual(config.reader_font_size_pt, DEFAULT_READER_FONT_SIZE_PT)
             self.assertEqual(config.reader_font_family, DEFAULT_READER_FONT_FAMILY)
-            self.assertFalse(config.search_include_unpublished)
 
     def test_save_and_load_settings(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -40,7 +39,6 @@ class ConfigTests(unittest.TestCase):
                     case_agent_prompt_template=" Case {question} ",
                     reader_font_size_pt=14,
                     reader_font_family="Georgia",
-                    search_include_unpublished=True,
                 ),
                 path,
             )
@@ -51,7 +49,6 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.case_agent_prompt_template, "Case {question}")
             self.assertEqual(config.reader_font_size_pt, 14)
             self.assertEqual(config.reader_font_family, "Georgia")
-            self.assertTrue(config.search_include_unpublished)
 
     def test_reader_font_settings_are_coerced(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

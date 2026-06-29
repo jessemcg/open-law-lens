@@ -92,7 +92,7 @@ AGENT_SUBVIEW_ANSWER = "answer"
 AGENT_SUBVIEW_SESSION = "session"
 AGENT_MODE_GENERAL = "general"
 AGENT_MODE_CASE = "case"
-AGENT_MODE_SEARCH = "search"
+AGENT_MODE_RESULTS = "results"
 SEARCH_NEXT_PAGE_TARGET = "search-next-page"
 CITED_BY_INCLUDE_UNPUBLISHED_TARGET = "cited-by-include-unpublished"
 CITED_BY_PUBLISHED_ONLY_TARGET = "cited-by-published-only"
@@ -264,11 +264,6 @@ class SettingsWindow(Adw.ApplicationWindow):
         config = load_config()
         self.token_row.set_text(config.courtlistener_token)
         group.add(self.token_row)
-        self.search_include_unpublished_row = Adw.SwitchRow(
-            title="Include Unpublished California Cases in Search",
-        )
-        self.search_include_unpublished_row.set_active(config.search_include_unpublished)
-        group.add(self.search_include_unpublished_row)
         outer.append(group)
 
         display_group = Adw.PreferencesGroup(title="Display")
@@ -407,7 +402,6 @@ class SettingsWindow(Adw.ApplicationWindow):
                     int(round(self.reader_font_size_row.get_value()))
                 ),
                 reader_font_family=normalize_reader_font_family(reader_font_family),
-                search_include_unpublished=self.search_include_unpublished_row.get_active(),
             )
         )
         self.parent_window.reload_settings()
@@ -480,7 +474,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_last_answer_text = ""
         self._agent_search_output_visible = False
         self._agent_search_query = ""
-        self._agent_search_include_unpublished = False
         self._agent_search_results: list[CourtListenerSearchResult] = []
         self._agent_search_next_url = ""
         self._agent_search_heading = ""
@@ -557,9 +550,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         focus_cache_question = Gio.SimpleAction.new("focus_cache_question", None)
         focus_cache_question.connect("activate", self._on_focus_cache_question)
         self.add_action(focus_cache_question)
-        focus_search_question = Gio.SimpleAction.new("focus_search_question", None)
-        focus_search_question.connect("activate", self._on_focus_search_question)
-        self.add_action(focus_search_question)
         show_shortcuts = Gio.SimpleAction.new("show_shortcuts", None)
         show_shortcuts.connect("activate", self._on_show_shortcuts)
         self.add_action(show_shortcuts)
@@ -1281,7 +1271,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         mode_strip.add_css_class("focus-pill-group")
         mode_strip.append(self._build_agent_mode_button("Law", AGENT_MODE_GENERAL))
         mode_strip.append(self._build_agent_mode_button("Cache", AGENT_MODE_CASE))
-        mode_strip.append(self._build_agent_mode_button("Search", AGENT_MODE_SEARCH))
         row.append(mode_strip)
 
         self.agent_question_entry = Gtk.Entry()
@@ -1310,8 +1299,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             "Ask from CourtListener legal authority"
             if mode == AGENT_MODE_GENERAL
             else "Ask from marked Research Cache cases"
-            if mode == AGENT_MODE_CASE
-            else "Search CourtListener opinions"
         )
         button.set_tooltip_text(tooltip)
         button.connect("toggled", self._on_agent_mode_button_toggled, mode)
@@ -1704,7 +1691,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             )
         if self._agent_subview_strip is not None:
             self._agent_subview_strip.set_visible(
-                output_visible and self._agent_mode != AGENT_MODE_SEARCH
+                output_visible and self._agent_mode != AGENT_MODE_RESULTS
             )
         if self._agent_answer_scroller is not None:
             self._agent_answer_scroller.set_visible(
@@ -1784,16 +1771,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _set_agent_mode(self, mode: str) -> None:
         self._selected_agent_mode = (
             mode
-            if mode in {AGENT_MODE_GENERAL, AGENT_MODE_CASE, AGENT_MODE_SEARCH}
+            if mode in {AGENT_MODE_GENERAL, AGENT_MODE_CASE}
             else AGENT_MODE_GENERAL
         )
         if hasattr(self, "agent_question_entry"):
             if self._selected_agent_mode == AGENT_MODE_GENERAL:
                 placeholder = "Ask a California law question"
-            elif self._selected_agent_mode == AGENT_MODE_CASE:
-                placeholder = "Ask about marked Research Cache cases"
             else:
-                placeholder = "Search CourtListener opinions"
+                placeholder = "Ask about marked Research Cache cases"
             self.agent_question_entry.set_placeholder_text(placeholder)
         self._agent_mode_toggle_guard = True
         try:
@@ -1847,14 +1832,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_agent_mode(AGENT_MODE_CASE)
         self._focus_entry_and_select_text(self.agent_question_entry)
 
-    def _on_focus_search_question(
-        self,
-        _action: Gio.SimpleAction,
-        _parameter: GLib.Variant | None,
-    ) -> None:
-        self._set_agent_mode(AGENT_MODE_SEARCH)
-        self._focus_entry_and_select_text(self.agent_question_entry)
-
     def _build_shortcuts_window(self) -> Gtk.ShortcutsWindow:
         if self._shortcuts_window is not None:
             return self._shortcuts_window
@@ -1882,15 +1859,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 accelerator="<Primary><Shift>Q",
             )
         )
-        navigation_group.append(
-            Gtk.ShortcutsShortcut(
-                title="Focus CourtListener search question",
-                accelerator="<Primary><Alt>Q",
-            )
-        )
         section.append(navigation_group)
 
-        search_group = Gtk.ShortcutsGroup(title="Case Text Search")
+        search_group = Gtk.ShortcutsGroup(title="Case Text Find")
         search_group.append(
             Gtk.ShortcutsShortcut(title="Open find", accelerator="<Primary>F")
         )
@@ -2303,10 +2274,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         mode = self._selected_agent_mode
         question = self.agent_question_entry.get_text().strip()
         if not question:
-            self._set_status("Enter a search or agent question.")
-            return
-        if mode == AGENT_MODE_SEARCH:
-            self._start_courtlistener_search(question)
+            self._set_status("Enter an agent question.")
             return
         if Vte is None or self._agent_terminal is None:
             self._set_status("Embedded terminal is unavailable.")
@@ -2355,30 +2323,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.agent_question_entry.set_position(-1)
         self._on_agent_launch(self.agent_question_entry)
 
-    def _start_courtlistener_search(self, query: str) -> None:
-        self._stop_agent()
-        self._stop_agent_answer_polling()
-        self._clear_agent_answer()
-        self._agent_output_collapsed = False
-        self._agent_search_output_visible = True
-        self._agent_search_query = query
-        self._agent_search_include_unpublished = load_config().search_include_unpublished
-        self._agent_search_results = []
-        self._agent_search_next_url = ""
-        self._agent_search_heading = ""
-        self._agent_search_scope_text = ""
-        self._agent_mode = AGENT_MODE_SEARCH
-        self._set_agent_subview(AGENT_SUBVIEW_ANSWER)
-        self._set_status(f"Searching CourtListener for {query}...")
-        if self._agent_answer_buffer is not None:
-            self._agent_answer_buffer.set_text("Searching...")
-        thread = threading.Thread(
-            target=self._courtlistener_search_worker,
-            args=(query, self._agent_search_include_unpublished, ""),
-            daemon=True,
-        )
-        thread.start()
-
     def _start_cited_by_lookup(self, cluster: dict[str, Any]) -> None:
         self._stop_agent()
         self._stop_agent_answer_polling()
@@ -2387,7 +2331,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_output_collapsed = False
         self._agent_search_output_visible = True
         self._agent_search_query = title
-        self._agent_search_include_unpublished = True
         self._agent_search_results = []
         self._agent_search_next_url = ""
         self._agent_cited_by_published_only = True
@@ -2396,7 +2339,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_search_scope_text = (
             "CourtListener Citation Graph | Later citing cases, not legal-treatment signals"
         )
-        self._agent_mode = AGENT_MODE_SEARCH
+        self._agent_mode = AGENT_MODE_RESULTS
         self._set_agent_subview(AGENT_SUBVIEW_ANSWER)
         self._set_status(f"Finding cases that cite {title}...")
         if self._agent_answer_buffer is not None:
@@ -2487,50 +2430,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             )
         else:
             self._set_status(f"Cited By: showing {loaded_count} citing case(s).")
-
-    def _courtlistener_search_worker(
-        self,
-        query: str,
-        include_unpublished: bool,
-        next_url: str,
-    ) -> None:
-        try:
-            page = self.client.search_opinions(
-                query,
-                include_unpublished=include_unpublished,
-                url=next_url,
-            )
-            GLib.idle_add(
-                self._finish_courtlistener_search,
-                query,
-                page,
-                include_unpublished,
-                bool(next_url),
-            )
-        except (CourtListenerError, ValueError) as exc:
-            GLib.idle_add(self._apply_search_error, str(exc))
-
-    def _finish_courtlistener_search(
-        self,
-        query: str,
-        page: CourtListenerSearchPage,
-        include_unpublished: bool,
-        append: bool,
-    ) -> bool:
-        if not append:
-            self._agent_search_results = []
-        self._agent_search_results.extend(page.results)
-        self._agent_search_next_url = page.next_url
-        self._render_search_results(
-            query,
-            self._agent_search_results,
-            include_unpublished,
-            page.count,
-            page.next_url,
-        )
-        shown = len(self._agent_search_results)
-        self._set_status(f"CourtListener Search: showing {shown} of {page.count}.")
-        return False
 
     def _apply_search_error(self, message: str) -> bool:
         self._set_status(message)
@@ -2641,7 +2540,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_last_answer_text = ""
         self._agent_search_output_visible = False
         self._agent_search_query = ""
-        self._agent_search_include_unpublished = False
         self._agent_search_results = []
         self._agent_search_next_url = ""
         self._agent_search_heading = ""
@@ -2939,7 +2837,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             if include_unpublished
             else "California published cases"
         )
-        title_line = heading or f"CourtListener Search: {query}"
+        title_line = heading or f"CourtListener Results: {query}"
         lines = [
             title_line,
             summary_text or f"{scope} | Showing {len(results)} of {total_count}",
@@ -3357,16 +3255,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 daemon=True,
             )
         else:
-            self._set_status("Loading next CourtListener results...")
-            thread = threading.Thread(
-                target=self._courtlistener_search_worker,
-                args=(
-                    self._agent_search_query,
-                    self._agent_search_include_unpublished,
-                    next_url,
-                ),
-                daemon=True,
-            )
+            return
         thread.start()
 
     def _open_search_result(self, result: CourtListenerSearchResult) -> None:
@@ -3483,7 +3372,6 @@ class OpenLawLensApp(Adw.Application):
         self.set_accels_for_action("win.focus_citation", ["<Primary>l"])
         self.set_accels_for_action("win.focus_law_question", ["<Primary>q"])
         self.set_accels_for_action("win.focus_cache_question", ["<Primary><Shift>q"])
-        self.set_accels_for_action("win.focus_search_question", ["<Primary><Alt>q"])
         self.set_accels_for_action("win.show_shortcuts", ["F1"])
 
     def _install_actions(self) -> None:

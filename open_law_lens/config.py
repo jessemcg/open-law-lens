@@ -15,7 +15,6 @@ CONFIG_KEY_GENERAL_AGENT_PROMPT_TEMPLATE = "general_agent_prompt_template"
 CONFIG_KEY_CASE_AGENT_PROMPT_TEMPLATE = "case_agent_prompt_template"
 CONFIG_KEY_READER_FONT_SIZE_PT = "reader_font_size_pt"
 CONFIG_KEY_READER_FONT_FAMILY = "reader_font_family"
-CONFIG_KEY_SEARCH_INCLUDE_UNPUBLISHED = "search_include_unpublished"
 ENV_CONCORDANCE_FILE = "OPEN_LAW_LENS_CONCORDANCE_FILE"
 DEFAULT_READER_FONT_SIZE_PT = 11
 READER_FONT_FAMILY_OPTIONS: tuple[tuple[str, str], ...] = (
@@ -68,7 +67,6 @@ class AppConfig:
     case_agent_prompt_template: str = DEFAULT_CASE_AGENT_PROMPT_TEMPLATE
     reader_font_size_pt: int = DEFAULT_READER_FONT_SIZE_PT
     reader_font_family: str = DEFAULT_READER_FONT_FAMILY
-    search_include_unpublished: bool = False
 
 
 def coerce_reader_font_size(value: Any, default: int = DEFAULT_READER_FONT_SIZE_PT) -> int:
@@ -126,7 +124,6 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
         ),
         reader_font_size_pt=coerce_reader_font_size(raw.get(CONFIG_KEY_READER_FONT_SIZE_PT)),
         reader_font_family=normalize_reader_font_family(raw.get(CONFIG_KEY_READER_FONT_FAMILY)),
-        search_include_unpublished=bool(raw.get(CONFIG_KEY_SEARCH_INCLUDE_UNPUBLISHED, False)),
     )
 
 
@@ -142,7 +139,6 @@ def save_config(config: AppConfig, path: Path = CONFIG_PATH) -> None:
         ),
         CONFIG_KEY_READER_FONT_SIZE_PT: coerce_reader_font_size(config.reader_font_size_pt),
         CONFIG_KEY_READER_FONT_FAMILY: normalize_reader_font_family(config.reader_font_family),
-        CONFIG_KEY_SEARCH_INCLUDE_UNPUBLISHED: bool(config.search_include_unpublished),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(

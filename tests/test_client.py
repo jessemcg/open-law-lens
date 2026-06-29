@@ -13,23 +13,19 @@ from open_law_lens.client import (
     CourtListenerClient,
     RATE_LIMIT_RETRY_BUFFER_SECONDS,
     CourtListenerSearchResult,
-    clean_search_snippet,
     cluster_short_title,
     cluster_citation_line,
     cluster_title,
-    courtlistener_search_query,
-    dedupe_search_results,
     dedupe_case_clusters,
     format_official_california_citation,
     html_to_text,
-    normalize_case_title,
-    normalize_search_result,
     official_california_reporter_citation_from_text,
     official_california_reporter_citation,
     opinion_text,
     search_result_full_citation,
     us_long_date,
 )
+from open_law_lens.case_titles import normalize_case_title
 from open_law_lens.library import CaseLibrary
 
 
@@ -506,95 +502,6 @@ class ClientTests(unittest.TestCase):
         assert citation is not None
         self.assertEqual(citation.plain_text, "Example v. State 1 Cal.App.5th 2")
 
-    def test_courtlistener_search_query_defaults_to_published_california_cases(self) -> None:
-        query = courtlistener_search_query(" third parent   exception ")
-
-        self.assertEqual(
-            query,
-            "third parent exception court_id:(cal OR calctapp OR calappdeptsuper) status:Published",
-        )
-
-    def test_courtlistener_search_query_can_include_unpublished_cases(self) -> None:
-        query = courtlistener_search_query("third parent", include_unpublished=True)
-
-        self.assertEqual(query, "third parent court_id:(cal OR calctapp OR calappdeptsuper)")
-
-    def test_normalize_search_result_extracts_clickable_case_metadata(self) -> None:
-        result = normalize_search_result(
-            {
-                "cluster_id": 4378636,
-                "caseName": "In Re Example",
-                "citation": [
-                    "215 Cal. Rptr. 3d 858",
-                    "10 Cal. App. 5th 130",
-                    "2017 Cal. App. LEXIS 273",
-                ],
-                "court": "California Court of Appeal",
-                "court_id": "calctapp",
-                "dateFiled": "2017-03-27",
-                "status": "Published",
-                "opinions": [{"snippet": "The beneficial relationship exception applies."}],
-            }
-        )
-
-        self.assertIsNotNone(result)
-        assert result is not None
-        self.assertEqual(result.cluster_id, "4378636")
-        self.assertEqual(result.case_name, "In re Example")
-        self.assertEqual(result.citation, "10 Cal.App.5th 130")
-        self.assertEqual(result.court, "California Court of Appeal")
-        self.assertEqual(result.court_id, "calctapp")
-        self.assertEqual(result.date_filed, "2017-03-27")
-        self.assertEqual(result.status, "Published")
-        self.assertEqual(result.snippet, "The beneficial relationship exception applies.")
-
-    def test_clean_search_snippet_starts_after_opinion_and_judge_line(self) -> None:
-        snippet = """
-        *1001
-
-        Opinion
-
-        HUFFMAN, Acting P. J.
-
-        In this dependency proceeding concerning the infant Emma B. (Emma),
-        Michael B. (Michael), a presumed father, appeals a juvenile court order
-        denying his motion for paternity testing.
-        """
-
-        self.assertTrue(
-            clean_search_snippet(snippet).startswith(
-                "In this dependency proceeding concerning the infant Emma B."
-            )
-        )
-
-    def test_clean_search_snippet_trims_caption_to_body_paragraph(self) -> None:
-        snippet = """
-        Filed 11/26/24
-        CERTIFIED FOR PUBLICATION
-        IN THE COURT OF APPEAL OF THE STATE OF CALIFORNIA
-        SECOND APPELLATE DISTRICT
-        DIVISION SIX
-        C.C., 2d Civ. No. B331558
-        Plaintiff and Appellant,
-        v.
-        L.B. et al.,
-        Respondents.
-
-        More than a decade after consenting to terminate his parental rights,
-        father sought relief from the judgment.
-        """
-
-        self.assertTrue(
-            clean_search_snippet(snippet).startswith(
-                "More than a decade after consenting to terminate his parental rights"
-            )
-        )
-
-    def test_clean_search_snippet_preserves_existing_body_snippet(self) -> None:
-        snippet = "Mother makes no progress on her case plan for a whole year, then starts complying."
-
-        self.assertEqual(clean_search_snippet(snippet), snippet)
-
     def test_official_california_reporter_citation_from_text_filters_unofficial(self) -> None:
         self.assertEqual(
             official_california_reporter_citation_from_text("215 Cal. Rptr. 3d 858"),
@@ -604,37 +511,6 @@ class ClientTests(unittest.TestCase):
             official_california_reporter_citation_from_text("10 Cal. App. 5th 130"),
             "10 Cal.App.5th 130",
         )
-
-    def test_search_opinions_returns_page_metadata(self) -> None:
-        class FakeSearchClient(CourtListenerClient):
-            def __init__(self) -> None:
-                pass
-
-            def _headers(self) -> dict[str, str]:
-                return {}
-
-            def _request_json(self, request):  # type: ignore[no-untyped-def]
-                return {
-                    "count": 21,
-                    "next": "https://www.courtlistener.com/api/rest/v4/search/?cursor=abc",
-                    "results": [
-                        {
-                            "cluster_id": 4378636,
-                            "caseName": "In Re Example",
-                            "citation": ["215 Cal. Rptr. 3d 858", "10 Cal. App. 5th 130"],
-                        }
-                    ],
-                }
-
-        page = FakeSearchClient().search_opinions("beneficial relationship")
-
-        self.assertEqual(page.count, 21)
-        self.assertEqual(
-            page.next_url,
-            "https://www.courtlistener.com/api/rest/v4/search/?cursor=abc",
-        )
-        self.assertEqual(len(page.results), 1)
-        self.assertEqual(page.results[0].citation, "10 Cal.App.5th 130")
 
     def test_citing_opinions_returns_later_case_metadata(self) -> None:
         class FakeCitingClient(CourtListenerClient):
@@ -795,105 +671,9 @@ class ClientTests(unittest.TestCase):
             "C.C. v. L.B. (2024) [official reporter unavailable]",
         )
 
-    def test_search_result_full_citation_shortens_parenthetical_in_re_title(self) -> None:
-        result = normalize_search_result(
-            {
-                "cluster_id": 5592958,
-                "caseName": (
-                    "Orange Cnty. Soc. Servs. Agency v. United States "
-                    "(In re MIGUEL S.)"
-                ),
-                "caseNameFull": (
-                    "IN RE MIGUEL S., Persons Coming Under the Juvenile Court Law. "
-                    "Orange County Social Services Agency, and v. U.S., and"
-                ),
-                "citation": ["203 Cal. Rptr. 3d 312", "248 Cal. App. 4th 164"],
-                "dateFiled": "2016-06-07",
-            }
-        )
-
-        self.assertIsNotNone(result)
-        assert result is not None
-        self.assertEqual(result.case_name, "In re Miguel S.")
-        self.assertEqual(
-            search_result_full_citation(result),
-            "In re Miguel S. (2016) 248 Cal.App.4th 164",
-        )
-
-    def test_search_result_full_citation_shortens_parenthetical_adoption_title(self) -> None:
-        result = normalize_search_result(
-            {
-                "cluster_id": 2607287,
-                "caseName": "Steven A. v. Rickie M. (Adoption of KELSEY S.)",
-                "caseNameFull": (
-                    "Adoption of KELSEY S., STEVEN A., Petitioner and Appellant, "
-                    "v. RICKIE M., Objector and Respondent."
-                ),
-                "citation": ["1 Cal. 4th 816"],
-                "dateFiled": "1992-05-14",
-            }
-        )
-
-        self.assertIsNotNone(result)
-        assert result is not None
-        self.assertEqual(result.case_name, "Adoption of Kelsey S.")
-        self.assertEqual(
-            search_result_full_citation(result),
-            "Adoption of Kelsey S. (1992) 1 Cal.4th 816",
-        )
-
-    def test_search_result_full_citation_normalizes_habeas_title(self) -> None:
-        result = normalize_search_result(
-            {
-                "cluster_id": 6239044,
-                "caseName": (
-                    "Los Angeles County Sheriff v. Barber "
-                    "(In re Jesse Barber On Habeas Corpus)"
-                ),
-                "caseNameFull": "IN RE Jesse BARBER on Habeas Corpus.",
-                "citation": ["223 Cal. Rptr. 3d 197", "15 Cal. App. 5th 368"],
-                "dateFiled": "2017-09-14",
-            }
-        )
-
-        self.assertIsNotNone(result)
-        assert result is not None
-        self.assertEqual(result.case_name, "In re Barber")
-        self.assertEqual(
-            search_result_full_citation(result),
-            "In re Barber (2017) 15 Cal.App.5th 368",
-        )
-
-    def test_dedupe_search_results_prefers_official_citation_duplicate(self) -> None:
-        without_citation = CourtListenerSearchResult(
-            cluster_id="1",
-            case_name="In re Destiny D.",
-            citation="",
-            court="California Court of Appeal",
-            court_id="calctapp",
-            date_filed="2017-09-11",
-            status="Published",
-        )
-        with_citation = CourtListenerSearchResult(
-            cluster_id="2",
-            case_name="In re Destiny D.",
-            citation="15 Cal.App.5th 197",
-            court="California Court of Appeal",
-            court_id="calctapp",
-            date_filed="2017-09-11",
-            status="Published",
-        )
-
-        results = dedupe_search_results([without_citation, with_citation])
-
-        self.assertEqual(results, [with_citation])
-
     def test_us_long_date_formats_iso_date(self) -> None:
         self.assertEqual(us_long_date("2017-03-27"), "March 27, 2017")
         self.assertEqual(us_long_date("not-a-date"), "not-a-date")
-
-    def test_normalize_search_result_skips_missing_cluster_id(self) -> None:
-        self.assertIsNone(normalize_search_result({"caseName": "Example v. State"}))
 
     def test_lookup_uses_cache_without_network(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
