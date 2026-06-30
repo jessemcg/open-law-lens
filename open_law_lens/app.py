@@ -548,7 +548,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._case_completion_changing = False
         self._case_completion_click_gesture: Gtk.GestureClick | None = None
         self._css_provider: Gtk.CssProvider | None = None
-        self.toast_overlay: Adw.ToastOverlay | None = None
+        self._status_label: Gtk.Label | None = None
 
         self.set_title(APP_NAME)
         self.set_default_size(1260, 860)
@@ -771,6 +771,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
               font-size: 0.86rem;
               color: alpha(@window_fg_color, 0.72);
             }}
+            label.app-status-strip {{
+              min-height: 18px;
+              font-size: 0.88rem;
+              color: alpha(@window_fg_color, 0.52);
+            }}
             """.encode("utf-8")
         )
         if self._css_provider is None and (display := Gdk.Display.get_default()):
@@ -796,6 +801,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._install_case_completion_click_away(root)
         self._install_reader_find_key_controller(root)
 
+        status_label = Gtk.Label(label="", xalign=0)
+        status_label.add_css_class("app-status-strip")
+        status_label.set_ellipsize(Pango.EllipsizeMode.END)
+        status_label.set_single_line_mode(True)
+        status_label.set_hexpand(True)
+        root.append(status_label)
+        self._status_label = status_label
+
         main = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         main.set_hexpand(True)
         main.set_vexpand(True)
@@ -803,9 +816,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         main.append(self._build_right_side())
         root.append(main)
 
-        self.toast_overlay = Adw.ToastOverlay()
-        self.toast_overlay.set_child(root)
-        toolbar_view.set_content(self.toast_overlay)
+        toolbar_view.set_content(root)
         return toolbar_view
 
     def _build_menu_button(self) -> Gtk.MenuButton:
@@ -1357,9 +1368,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _set_status(self, text: str) -> None:
         if not text:
             return
-        if self.toast_overlay is None:
+        if self._status_label is None:
             return
-        self.toast_overlay.add_toast(Adw.Toast.new(text))
+        self._status_label.set_text(text)
 
     def _set_reader_text(
         self,
