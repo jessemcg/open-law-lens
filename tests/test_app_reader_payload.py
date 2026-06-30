@@ -77,6 +77,28 @@ class AppReaderPayloadTests(unittest.TestCase):
 
         self.assertEqual(window.opened, ["11 Cal.5th 614", "11 Cal.5th 614"])
 
+    def test_research_cache_clear_action_lives_in_sidebar_header_not_menu(self) -> None:
+        class DummyWindow:
+            pass
+
+        header = OpenLawLensWindow._build_research_cache_header(DummyWindow())  # type: ignore[arg-type]
+        heading = header.get_first_child()
+        clear_button = header.get_last_child()
+
+        self.assertEqual(heading.get_text(), "Research Cache")
+        self.assertEqual(clear_button.get_action_name(), "win.clear_cache")
+        self.assertEqual(clear_button.get_tooltip_text(), "Clear Research Cache")
+
+        menu_button = OpenLawLensWindow._build_menu_button(DummyWindow())  # type: ignore[arg-type]
+        menu = menu_button.get_menu_model()
+        labels = [
+            menu.get_item_attribute_value(index, "label").get_string()
+            for index in range(menu.get_n_items())
+        ]
+        self.assertNotIn("Clear Research Cache", labels)
+        self.assertNotIn("Find Official Text", labels)
+        self.assertNotIn("Import Official Text", labels)
+
 
 if __name__ == "__main__":
     unittest.main()

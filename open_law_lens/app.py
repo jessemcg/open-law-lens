@@ -908,10 +908,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         menu = Gio.Menu()
         menu.append("Keyboard Shortcuts", "win.show_shortcuts")
         menu.append("D-Bus Commands", "win.show_dbus_commands")
-        menu.append("Find Official Text", "win.open_official_search")
-        menu.append("Import Official Text", "win.import_official_text")
         menu.append("Settings", "win.settings")
-        menu.append("Clear Research Cache", "win.clear_cache")
         button = Gtk.MenuButton(icon_name="open-menu-symbolic")
         button.set_tooltip_text("Menu")
         button.set_menu_model(menu)
@@ -945,9 +942,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         box.append(input_row)
         box.append(self._build_case_completion_results())
 
-        heading = Gtk.Label(label="Research Cache", xalign=0)
-        heading.add_css_class("heading")
-        box.append(heading)
+        box.append(self._build_research_cache_header())
 
         self.case_list = Gtk.ListBox()
         self.case_list.add_css_class("case-list")
@@ -962,6 +957,24 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         scroller.set_vexpand(True)
         box.append(scroller)
         return box
+
+    def _build_research_cache_header(self) -> Gtk.Widget:
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        header.set_hexpand(True)
+
+        heading = Gtk.Label(label="Research Cache", xalign=0)
+        heading.add_css_class("heading")
+        heading.set_hexpand(True)
+        header.append(heading)
+
+        clear_button = Gtk.Button(icon_name="user-trash-symbolic")
+        clear_button.add_css_class("flat")
+        clear_button.add_css_class("case-row-icon-button")
+        clear_button.set_action_name("win.clear_cache")
+        clear_button.set_tooltip_text("Clear Research Cache")
+        clear_button.set_valign(Gtk.Align.CENTER)
+        header.append(clear_button)
+        return header
 
     def _build_case_completion_results(self) -> Gtk.Widget:
         scroller = Gtk.ScrolledWindow()
