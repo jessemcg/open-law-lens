@@ -14,6 +14,12 @@ from typing import Any, Iterator
 
 from .cache import JsonCache, cluster_id_from_cluster, normalize_citation, resource_id_from_url
 from .case_titles import cluster_short_title_value
+from .citation_model import (
+    canonicalize_cluster_citations,
+    canonicalize_lookup_result,
+    official_citation_from_cluster,
+    official_citation_parts_from_text,
+)
 from .import_text import clean_imported_opinion_text
 
 
@@ -21,6 +27,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PROJECT_LIBRARY_DIR = PROJECT_ROOT / "library"
 DEFAULT_LIBRARY_DB = PROJECT_LIBRARY_DIR / "open_law_lens.sqlite3"
 SCHEMA_VERSION = "1"
+OFFICIAL_CITATION_ONLY_NORMALIZED_KEY = "official_citation_only_normalized_v2"
 TEXT_FIELDS = (
     "html_with_citations",
     "plain_text",
@@ -100,21 +107,7 @@ def _cluster_title(cluster: dict[str, Any]) -> str:
 
 
 def _cluster_citation_line(cluster: dict[str, Any]) -> str:
-    citations = cluster.get("citations")
-    if not isinstance(citations, list):
-        return ""
-    rendered: list[str] = []
-    for citation in citations:
-        if not isinstance(citation, dict):
-            continue
-        pieces = [
-            str(piece).strip()
-            for piece in (citation.get("volume"), citation.get("reporter"), citation.get("page"))
-            if str(piece).strip()
-        ]
-        if pieces:
-            rendered.append(" ".join(pieces))
-    return "; ".join(rendered)
+    return official_citation_from_cluster(cluster)
 
 
 def _citation_text_from_dict(citation: dict[str, Any]) -> str:
@@ -133,16 +126,8 @@ def _citation_lookup_key(citation: str) -> str:
 def _external_import_primary_citation_key(cluster: dict[str, Any]) -> str:
     if cluster.get("source_type") != "user_imported_external_case":
         return ""
-    citations = cluster.get("citations")
-    if not isinstance(citations, list):
-        return ""
-    for citation in citations:
-        if not isinstance(citation, dict):
-            continue
-        text = _citation_text_from_dict(citation)
-        if text:
-            return _citation_lookup_key(text)
-    return ""
+    official = official_citation_from_cluster(cluster)
+    return _citation_lookup_key(official) if official else ""
 
 
 def _external_import_matches_lookup(cluster: dict[str, Any], normalized_citation: str) -> bool:
@@ -166,6 +151,32 @@ def _filter_lookup_result_for_citation(
             cluster
             for cluster in clusters
             if isinstance(cluster, dict) and _external_import_matches_lookup(cluster, normalized_citation)
+        ]
+        if kept:
+            filtered.append({**item, "clusters": kept})
+    return filtered
+
+
+def _filter_lookup_result_to_official_citation(
+    result: list[dict[str, Any]],
+    normalized_citation: str,
+) -> list[dict[str, Any]]:
+    filtered: list[dict[str, Any]] = []
+    normalized_key = _citation_lookup_key(normalized_citation)
+    for item in result:
+        if not isinstance(item, dict):
+            continue
+        clusters = item.get("clusters")
+        if not isinstance(clusters, list):
+            filtered.append(item)
+            continue
+        kept = [
+            cluster
+            for cluster in clusters
+            if (
+                isinstance(cluster, dict)
+                and _citation_lookup_key(official_citation_from_cluster(cluster)) == normalized_key
+            )
         ]
         if kept:
             filtered.append({**item, "clusters": kept})
@@ -540,6 +551,84 @@ class CaseLibrary:
                 "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
                 ("schema_version", SCHEMA_VERSION),
             )
+            self._normalize_official_citation_only(conn)
+
+    def _normalize_official_citation_only(self, conn: sqlite3.Connection) -> None:
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key = ?",
+            (OFFICIAL_CITATION_ONLY_NORMALIZED_KEY,),
+        ).fetchone()
+        if row is not None:
+            return
+        rows = conn.execute("SELECT cluster_id, cluster_json FROM cases").fetchall()
+        conn.execute("DELETE FROM citation_aliases")
+        for row in rows:
+            cluster_id = str(row["cluster_id"])
+            try:
+                cluster = _json_loads(str(row["cluster_json"]))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(cluster, dict):
+                continue
+            canonical = canonicalize_cluster_citations(cluster)
+            citation_text = _cluster_citation_line(canonical)
+            conn.execute(
+                """
+                UPDATE cases
+                SET citation_text = ?, cluster_json = ?
+                WHERE cluster_id = ?
+                """,
+                (citation_text, _json_dumps(canonical), cluster_id),
+            )
+            if citation_text:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO citation_aliases(normalized_citation, cluster_id, citation_text)
+                    VALUES (?, ?, ?)
+                    """,
+                    (normalize_citation(citation_text).casefold(), cluster_id, citation_text),
+                )
+        lookup_rows = conn.execute(
+            "SELECT normalized_citation, result_json FROM lookup_results"
+        ).fetchall()
+        for row in lookup_rows:
+            normalized = str(row["normalized_citation"])
+            if official_citation_parts_from_text(normalized) is None:
+                conn.execute(
+                    "DELETE FROM lookup_results WHERE normalized_citation = ?",
+                    (normalized,),
+                )
+                continue
+            try:
+                result = _json_loads(str(row["result_json"]))
+            except json.JSONDecodeError:
+                continue
+            canonical_lookup = canonicalize_lookup_result(result)
+            if not isinstance(canonical_lookup, list):
+                conn.execute(
+                    "DELETE FROM lookup_results WHERE normalized_citation = ?",
+                    (normalized,),
+                )
+                continue
+            canonical_result = _filter_lookup_result_to_official_citation(canonical_lookup, normalized)
+            if canonical_result:
+                conn.execute(
+                    """
+                    UPDATE lookup_results
+                    SET result_json = ?
+                    WHERE normalized_citation = ?
+                    """,
+                    (_json_dumps(canonical_result), normalized),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM lookup_results WHERE normalized_citation = ?",
+                    (normalized,),
+                )
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+            (OFFICIAL_CITATION_ONLY_NORMALIZED_KEY, _utc_now()),
+        )
 
     def import_json_cache_once(self, cache: JsonCache) -> None:
         with self.connection() as conn:
@@ -578,30 +667,36 @@ class CaseLibrary:
         normalized = citation if normalized_already else normalize_citation(citation)
         if not normalized:
             return
+        result = canonicalize_lookup_result(result)
         now = _utc_now()
-        with self.connection() as conn:
-            existing = conn.execute(
-                "SELECT added_at FROM lookup_results WHERE normalized_citation = ?",
-                (normalized.casefold(),),
-            ).fetchone()
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO lookup_results(
-                    normalized_citation, result_json, added_at, last_accessed
-                ) VALUES (?, ?, ?, ?)
-                """,
-                (
-                    normalized.casefold(),
-                    _json_dumps(result),
-                    existing["added_at"] if existing else now,
-                    now,
-                ),
-            )
+        if official_citation_parts_from_text(normalized) is not None:
+            result_for_lookup = _filter_lookup_result_to_official_citation(result, normalized)
+            with self.connection() as conn:
+                existing = conn.execute(
+                    "SELECT added_at FROM lookup_results WHERE normalized_citation = ?",
+                    (normalized.casefold(),),
+                ).fetchone()
+                if result_for_lookup:
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO lookup_results(
+                            normalized_citation, result_json, added_at, last_accessed
+                        ) VALUES (?, ?, ?, ?)
+                        """,
+                        (
+                            normalized.casefold(),
+                            _json_dumps(result_for_lookup),
+                            existing["added_at"] if existing else now,
+                            now,
+                        ),
+                    )
+                else:
+                    conn.execute(
+                        "DELETE FROM lookup_results WHERE normalized_citation = ?",
+                        (normalized.casefold(),),
+                    )
         for cluster in self.clusters_from_lookup(result):
             self.upsert_cluster(cluster)
-            cluster_id = cluster_id_from_cluster(cluster)
-            if cluster_id:
-                self.add_citation_alias(normalized, cluster_id)
 
     def read_lookup(self, citation: str) -> list[dict[str, Any]] | None:
         normalized = normalize_citation(citation).casefold()
@@ -619,6 +714,9 @@ class CaseLibrary:
                 )
                 data = _json_loads(str(row["result_json"]))
                 if isinstance(data, list):
+                    data = canonicalize_lookup_result(data)
+                    if official_citation_parts_from_text(normalized) is not None:
+                        data = _filter_lookup_result_to_official_citation(data, normalized)
                     filtered = _filter_lookup_result_for_citation(data, normalized)
                     if filtered or not _lookup_result_had_clusters(data):
                         return filtered
@@ -642,6 +740,7 @@ class CaseLibrary:
         return [{"status": 200, "clusters": clusters}]
 
     def upsert_cluster(self, cluster: dict[str, Any]) -> str:
+        cluster = canonicalize_cluster_citations(cluster)
         cluster_id = cluster_id_from_cluster(cluster)
         if not cluster_id:
             return ""
@@ -669,16 +768,8 @@ class CaseLibrary:
                     now,
                 ),
             )
-        citations = cluster.get("citations")
-        if isinstance(citations, list):
-            for index, citation in enumerate(citations):
-                if not isinstance(citation, dict):
-                    continue
-                if cluster.get("source_type") == "user_imported_external_case" and index > 0:
-                    continue
-                text = _citation_text_from_dict(citation)
-                if text:
-                    self.add_citation_alias(text, cluster_id)
+        if citation_text:
+            self.add_citation_alias(citation_text, cluster_id)
         return cluster_id
 
     def add_citation_alias(self, citation: str, cluster_id: str) -> None:

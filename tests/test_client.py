@@ -97,7 +97,7 @@ class ClientTests(unittest.TestCase):
             "citations": [{"volume": 576, "reporter": "U.S.", "page": "644"}],
         }
         self.assertEqual(cluster_title(cluster), "Obergefell v. Hodges")
-        self.assertEqual(cluster_citation_line(cluster), "576 U.S. 644")
+        self.assertEqual(cluster_citation_line(cluster), "")
 
     def test_cluster_short_title_prefers_case_name_short(self) -> None:
         cluster = {
@@ -690,11 +690,24 @@ class ClientTests(unittest.TestCase):
                     ],
                 }
             ]
+            expected_lookup = [
+                {
+                    "status": 200,
+                    "clusters": [
+                        {
+                            "id": 42,
+                            "case_name": "Example v. State",
+                            "official_citation": "1 Cal. 2",
+                            "citations": [{"volume": "1", "reporter": "Cal.", "page": "2"}],
+                        }
+                    ],
+                }
+            ]
             cache.write_lookup("576 U.S. 644", cached_lookup)
             library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
             library.ensure()
             client = CourtListenerClient(cache=cache, library=library)
-            self.assertEqual(client.lookup_citation("576   U.S. 644"), cached_lookup)
+            self.assertEqual(client.lookup_citation("576   U.S. 644"), expected_lookup)
             self.assertEqual(client.last_lookup_source, "Research Cache")
             self.assertEqual(client.cached_clusters()[0]["case_name"], "Example v. State")
             self.assertEqual(library.saved_clusters(), [])
@@ -842,10 +855,23 @@ class ClientTests(unittest.TestCase):
                     ],
                 }
             ]
+            expected_lookup = [
+                {
+                    "status": 200,
+                    "clusters": [
+                        {
+                            "id": 42,
+                            "case_name": "Example v. State",
+                            "official_citation": "1 Cal. 2",
+                            "citations": [{"volume": "1", "reporter": "Cal.", "page": "2"}],
+                        }
+                    ],
+                }
+            ]
             library.upsert_lookup("1 Cal. 2", lookup)
             client = CourtListenerClient(cache=cache, library=library)
 
-            self.assertEqual(client.lookup_citation("1 Cal. 2"), lookup)
+            self.assertEqual(client.lookup_citation("1 Cal. 2"), expected_lookup)
             self.assertEqual(client.last_lookup_source, "Library")
             self.assertEqual(client.cached_clusters()[0]["case_name"], "Example v. State")
 

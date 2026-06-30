@@ -4,21 +4,17 @@ import re
 from dataclasses import dataclass
 from typing import Iterable
 
+from .citation_model import (
+    OFFICIAL_CALIFORNIA_REPORTERS,
+    normalized_reporter,
+    official_citation_from_cluster,
+    official_citation_from_parts,
+    official_citation_parts_from_cluster,
+    official_citation_parts_from_text,
+)
 from .library import DisplayText, PageMarker
 
 
-OFFICIAL_CALIFORNIA_REPORTERS = {
-    "cal.": "Cal.",
-    "cal.2d": "Cal.2d",
-    "cal.3d": "Cal.3d",
-    "cal.4th": "Cal.4th",
-    "cal.5th": "Cal.5th",
-    "cal.app.": "Cal.App.",
-    "cal.app.2d": "Cal.App.2d",
-    "cal.app.3d": "Cal.App.3d",
-    "cal.app.4th": "Cal.App.4th",
-    "cal.app.5th": "Cal.App.5th",
-}
 MAX_REASONABLE_CASE_PAGES = 1000
 FIRST_MARKER_TOLERANCE_PAGES = 25
 
@@ -31,38 +27,14 @@ class OfficialPaginationQuality:
     marker_count: int = 0
 
 
-def normalized_reporter(value: str) -> str:
-    return re.sub(r"\s+", "", value.strip()).casefold()
-
-
 def official_california_reporter_citation(cluster: dict[str, object]) -> str:
-    parsed = official_california_reporter_parts(cluster)
-    if parsed is None:
-        return ""
-    volume, reporter, page = parsed
-    return f"{volume} {reporter} {page}"
+    return official_citation_from_cluster(cluster)
 
 
 def official_california_reporter_parts(
     cluster: dict[str, object],
 ) -> tuple[str, str, str] | None:
-    citations = cluster.get("citations")
-    if not isinstance(citations, list):
-        return None
-    for citation in citations:
-        if not isinstance(citation, dict):
-            continue
-        reporter = citation.get("reporter")
-        if not isinstance(reporter, str):
-            continue
-        display_reporter = OFFICIAL_CALIFORNIA_REPORTERS.get(normalized_reporter(reporter))
-        if display_reporter is None:
-            continue
-        volume = str(citation.get("volume") or "").strip()
-        page = str(citation.get("page") or "").strip()
-        if volume and page:
-            return (volume, display_reporter, page)
-    return None
+    return official_citation_parts_from_cluster(cluster)
 
 
 def official_california_reporter_key(
@@ -76,19 +48,8 @@ def official_california_reporter_key(
 
 
 def official_california_reporter_citation_from_text(text: str) -> str:
-    match = re.search(
-        r"\b(?P<volume>\d+)\s+"
-        r"(?P<reporter>Cal\.?\s*(?:App\.?\s*)?(?:\d+d|[2-5]th)?)\s+"
-        r"(?P<page>\d+)\b",
-        text,
-        re.IGNORECASE,
-    )
-    if not match:
-        return ""
-    display_reporter = OFFICIAL_CALIFORNIA_REPORTERS.get(normalized_reporter(match.group("reporter")))
-    if display_reporter is None:
-        return ""
-    return f"{match.group('volume')} {display_reporter} {match.group('page')}"
+    parsed = official_citation_parts_from_text(text)
+    return official_citation_from_parts(parsed) if parsed is not None else ""
 
 
 def official_pagination_quality(

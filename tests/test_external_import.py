@@ -97,9 +97,8 @@ class ExternalImportTests(unittest.TestCase):
         self.assertEqual(cluster["case_name"], "In re Caden C.")
         self.assertEqual(cluster["case_name_short"], "In re Caden C.")
         self.assertEqual(cluster["date_filed"], "2021")
-        self.assertEqual(cluster["citations"][0], {"volume": "11", "reporter": "Cal.5th", "page": "614"})
-        self.assertIn({"volume": "278", "reporter": "Cal.Rptr.3d", "page": "872"}, cluster["citations"])
-        self.assertIn({"volume": "486", "reporter": "P.3d", "page": "1096"}, cluster["citations"])
+        self.assertEqual(cluster["official_citation"], "11 Cal.5th 614")
+        self.assertEqual(cluster["citations"], [{"volume": "11", "reporter": "Cal.5th", "page": "614"}])
 
     def test_imported_citations_ignore_body_citations(self) -> None:
         citations = imported_citations_from_text(CLAUDIA_TEXT, "115 Cal.App.5th 76")

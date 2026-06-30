@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from .cache import normalize_citation
+from .citation_model import official_citation_from_cluster
 
 
 REPORTER_CITATION_PATTERN = (
@@ -143,18 +144,5 @@ def _citation_key(value: str) -> str:
 def cluster_citation_texts(cluster: dict[str, object] | None) -> list[str]:
     if cluster is None:
         return []
-    citations = cluster.get("citations")
-    if not isinstance(citations, list):
-        return []
-    texts: list[str] = []
-    for citation in citations:
-        if not isinstance(citation, dict):
-            continue
-        pieces = [
-            str(piece).strip()
-            for piece in (citation.get("volume"), citation.get("reporter"), citation.get("page"))
-            if str(piece).strip()
-        ]
-        if pieces:
-            texts.append(" ".join(pieces))
-    return texts
+    official = official_citation_from_cluster(cluster)
+    return [official] if official else []

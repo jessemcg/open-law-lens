@@ -174,7 +174,7 @@ class LibraryTests(unittest.TestCase):
 
             self.assertEqual(cache.list_case_entries()[0]["title"], "In re D.P.")
 
-    def test_upsert_lookup_preserves_raw_lookup_json(self) -> None:
+    def test_upsert_lookup_canonicalizes_cluster_citations(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
             library.ensure()
@@ -185,7 +185,23 @@ class LibraryTests(unittest.TestCase):
                         {
                             "id": 42,
                             "case_name": "Example v. State",
-                            "citations": [{"volume": 1, "reporter": "Cal.", "page": "2"}],
+                            "citations": [
+                                {"volume": 1, "reporter": "Cal.", "page": "2"},
+                                {"volume": "99", "reporter": "P.3d", "page": "100"},
+                            ],
+                        }
+                    ],
+                }
+            ]
+            expected = [
+                {
+                    "status": 200,
+                    "clusters": [
+                        {
+                            "id": 42,
+                            "case_name": "Example v. State",
+                            "official_citation": "1 Cal. 2",
+                            "citations": [{"volume": "1", "reporter": "Cal.", "page": "2"}],
                         }
                     ],
                 }
@@ -193,7 +209,97 @@ class LibraryTests(unittest.TestCase):
 
             library.upsert_lookup("1 Cal. 2", lookup)
 
-            self.assertEqual(library.read_lookup("1   Cal. 2"), lookup)
+            self.assertEqual(library.read_lookup("1   Cal. 2"), expected)
+            self.assertIsNone(library.read_lookup("99 P.3d 100"))
+
+    def test_upsert_lookup_does_not_store_nonofficial_lookup_key(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            lookup = [
+                {
+                    "status": 200,
+                    "clusters": [
+                        {
+                            "id": 42,
+                            "case_name": "Example v. State",
+                            "citations": [
+                                {"volume": "1", "reporter": "Cal.", "page": "2"},
+                                {"volume": "99", "reporter": "P.3d", "page": "100"},
+                            ],
+                        }
+                    ],
+                }
+            ]
+
+            library.upsert_lookup("99 P.3d 100", lookup)
+
+            self.assertIsNone(library.read_lookup("99 P.3d 100"))
+            self.assertIsNotNone(library.read_lookup("1 Cal. 2"))
+
+    def test_ensure_normalizes_legacy_clusters_to_official_citation_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            polluted = {
+                "id": 42,
+                "case_name": "In re Caden C.",
+                "official_citation": "11 Cal.5th 614",
+                "citations": [
+                    {"volume": "11", "reporter": "Cal.5th", "page": "614"},
+                    {"volume": "34", "reporter": "Cal.App.5th", "page": "87"},
+                ],
+            }
+            with library.connection() as conn:
+                conn.execute("DELETE FROM meta WHERE key = ?", ("official_citation_only_normalized_v2",))
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO cases(
+                        cluster_id, title, citation_text, cluster_json, opinion_ids_json, added_at, last_accessed
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "42",
+                        "In re Caden C.",
+                        "11 Cal.5th 614; 34 Cal.App.5th 87",
+                        json.dumps(polluted),
+                        "[]",
+                        "2026-01-01T00:00:00+00:00",
+                        "2026-01-01T00:00:00+00:00",
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO citation_aliases(normalized_citation, cluster_id, citation_text)
+                    VALUES (?, ?, ?)
+                    """,
+                    ("34 cal.app.5th 87", "42", "34 Cal.App.5th 87"),
+                )
+                for lookup_key in ("34 cal.app.5th 87", "486 p.3d 1096"):
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO lookup_results(
+                            normalized_citation, result_json, added_at, last_accessed
+                        ) VALUES (?, ?, ?, ?)
+                        """,
+                        (
+                            lookup_key,
+                            json.dumps([{"status": 200, "clusters": [polluted]}]),
+                            "2026-01-01T00:00:00+00:00",
+                            "2026-01-01T00:00:00+00:00",
+                        ),
+                    )
+
+            library.ensure()
+
+            cluster = library.read_cluster("42")
+            self.assertIsNotNone(cluster)
+            assert cluster is not None
+            self.assertEqual(cluster["official_citation"], "11 Cal.5th 614")
+            self.assertEqual(cluster["citations"], [{"volume": "11", "reporter": "Cal.5th", "page": "614"}])
+            self.assertIsNotNone(library.read_lookup("11 Cal.5th 614"))
+            self.assertIsNone(library.read_lookup("34 Cal.App.5th 87"))
+            self.assertIsNone(library.read_lookup("486 P.3d 1096"))
 
     def test_official_pagination_audit_identifies_ineligible_cases(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

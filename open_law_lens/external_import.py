@@ -6,28 +6,14 @@ from typing import Any
 
 from .case_titles import leading_adoption_title, leading_in_re_title, normalize_case_title
 from .import_text import clean_imported_opinion_text
-from .quality import OFFICIAL_CALIFORNIA_REPORTERS, normalized_reporter
-
-
-OFFICIAL_CITATION_RE = re.compile(
-    r"\b(?P<volume>\d+)\s+"
-    r"(?P<reporter>Cal\.?\s*(?:App\.?\s*)?(?:\d+d|[2-5]th)?)\s+"
-    r"(?P<page>\d+)\b",
-    re.IGNORECASE,
-)
-REPORTER_CITATION_RE = re.compile(
-    r"\b(?P<volume>\d+)\s+"
-    r"(?P<reporter>"
-    r"Cal\.?\s*(?:App\.?\s*)?(?:\d+d|[2-5]th)?"
-    r"|Cal\.?\s*Rptr\.?\s*(?:\d+d)?"
-    r"|P\.?\s*(?:\d+d)?)\s+"
-    r"(?P<page>\d+)\b",
-    re.IGNORECASE,
+from .citation_model import (
+    official_citation_dict_from_parts,
+    official_citation_parts_from_text,
 )
 
 
 def normalize_official_citation(text: str) -> str:
-    parts = official_citation_parts(text)
+    parts = official_citation_parts_from_text(text)
     if parts is None:
         return ""
     volume, reporter, page = parts
@@ -35,13 +21,7 @@ def normalize_official_citation(text: str) -> str:
 
 
 def official_citation_parts(text: str) -> tuple[str, str, str] | None:
-    match = OFFICIAL_CITATION_RE.search(text)
-    if match is None:
-        return None
-    reporter = OFFICIAL_CALIFORNIA_REPORTERS.get(normalized_reporter(match.group("reporter")))
-    if reporter is None:
-        return None
-    return (match.group("volume"), reporter, match.group("page"))
+    return official_citation_parts_from_text(text)
 
 
 def external_cluster_id(official_citation: str) -> str:
@@ -64,25 +44,11 @@ def imported_case_name_from_text(text: str) -> str:
     return ""
 
 
-def imported_citations_from_text(text: str, official_citation: str) -> list[dict[str, str]]:
-    seen: set[str] = set()
-    citations: list[dict[str, str]] = []
-
-    def append(volume: str, reporter: str, page: str) -> None:
-        key = re.sub(r"\s+", "", f"{volume} {reporter} {page}").casefold()
-        if key in seen:
-            return
-        seen.add(key)
-        citations.append({"volume": volume, "reporter": reporter, "page": page})
-
+def imported_citations_from_text(_text: str, official_citation: str) -> list[dict[str, str]]:
     official_parts = official_citation_parts(official_citation)
-    if official_parts is not None:
-        append(*official_parts)
-    for match in REPORTER_CITATION_RE.finditer(_citation_front_matter_text(text)):
-        reporter = _display_reporter(match.group("reporter"))
-        if reporter:
-            append(match.group("volume"), reporter, match.group("page"))
-    return citations
+    if official_parts is None:
+        return []
+    return [official_citation_dict_from_parts(official_parts)]
 
 
 def build_external_import_cluster(
@@ -113,6 +79,7 @@ def build_external_import_cluster(
         "case_name_short": clean_name,
         "case_name_full": clean_name,
         "date_filed": imported_year_from_text(imported_text),
+        "official_citation": normalized_citation,
         "citations": citations,
         "source_type": "user_imported_external_case",
         "source_url": source_url.strip(),
@@ -125,34 +92,6 @@ def imported_year_from_text(text: str) -> str:
         if match is not None:
             return match.group(0)
     return ""
-
-
-def _citation_front_matter_text(text: str) -> str:
-    lines = _meaningful_lines(clean_imported_opinion_text(text))
-    citation_lines: list[str] = []
-    seen_citation = False
-    for line in lines:
-        if REPORTER_CITATION_RE.search(line):
-            citation_lines.append(line)
-            seen_citation = True
-            continue
-        if seen_citation:
-            break
-    return "\n".join(citation_lines)
-
-
-def _display_reporter(reporter: str) -> str:
-    official = OFFICIAL_CALIFORNIA_REPORTERS.get(normalized_reporter(reporter))
-    if official is not None:
-        return official
-    compact = normalized_reporter(reporter)
-    if compact.startswith("cal.rptr."):
-        suffix = compact.removeprefix("cal.rptr.")
-        return "Cal.Rptr." if not suffix else f"Cal.Rptr.{suffix}"
-    if compact.startswith("p."):
-        suffix = compact.removeprefix("p.")
-        return "P." if not suffix else f"P.{suffix}"
-    return re.sub(r"\s+", " ", reporter).strip()
 
 
 def _meaningful_lines(text: str) -> list[str]:

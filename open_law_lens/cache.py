@@ -12,6 +12,11 @@ from pathlib import Path
 from typing import Any
 
 from .case_titles import cluster_short_title_value
+from .citation_model import (
+    canonicalize_cluster_citations,
+    canonicalize_lookup_result,
+    official_citation_from_cluster,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PROJECT_CACHE_DIR = PROJECT_ROOT / "cache"
@@ -94,15 +99,17 @@ class JsonCache:
         )
 
     def read_lookup(self, citation: str) -> Any | None:
-        return self.read_json(self.lookup_path(citation))
+        return canonicalize_lookup_result(self.read_json(self.lookup_path(citation)))
 
     def write_lookup(self, citation: str, value: Any) -> None:
-        self.write_json(self.lookup_path(citation), value)
+        self.write_json(self.lookup_path(citation), canonicalize_lookup_result(value))
 
     def read_resource(self, kind: str, resource_id: str) -> Any | None:
         return self.read_json(self.resource_path(kind, resource_id))
 
     def write_resource(self, kind: str, resource_id: str, value: Any) -> None:
+        if kind == "clusters" and isinstance(value, dict):
+            value = canonicalize_cluster_citations(value)
         self.write_json(self.resource_path(kind, resource_id), value)
 
     def list_lookups(self) -> list[Path]:
@@ -121,6 +128,7 @@ class JsonCache:
         self.write_json(self.case_index_path(), index)
 
     def upsert_cluster(self, cluster: dict[str, Any]) -> str:
+        cluster = canonicalize_cluster_citations(cluster)
         cluster_id = cluster_id_from_cluster(cluster)
         if not cluster_id:
             return ""
@@ -186,7 +194,7 @@ class JsonCache:
 
     def read_cached_cluster(self, cluster_id: str) -> dict[str, Any] | None:
         data = self.read_resource("clusters", cluster_id)
-        return data if isinstance(data, dict) else None
+        return canonicalize_cluster_citations(data) if isinstance(data, dict) else None
 
     def is_agent_selected(self, cluster_id: str) -> bool:
         entry = self.read_case_index().get(cluster_id)
@@ -282,18 +290,4 @@ def _cluster_title(cluster: dict[str, Any]) -> str:
 
 
 def _cluster_citation_line(cluster: dict[str, Any]) -> str:
-    citations = cluster.get("citations")
-    if not isinstance(citations, list):
-        return ""
-    rendered: list[str] = []
-    for citation in citations:
-        if not isinstance(citation, dict):
-            continue
-        pieces = [
-            str(piece).strip()
-            for piece in (citation.get("volume"), citation.get("reporter"), citation.get("page"))
-            if str(piece).strip()
-        ]
-        if pieces:
-            rendered.append(" ".join(pieces))
-    return "; ".join(rendered)
+    return official_citation_from_cluster(cluster)

@@ -166,7 +166,7 @@ class CitationLinkTests(unittest.TestCase):
 
         self.assertEqual(citation_italic_spans(text), [])
 
-    def test_cluster_citation_texts_renders_lookup_citations(self) -> None:
+    def test_cluster_citation_texts_returns_only_official_citation(self) -> None:
         cluster = {
             "citations": [
                 {"volume": "51", "reporter": "Cal.3d", "page": "368"},
@@ -174,7 +174,26 @@ class CitationLinkTests(unittest.TestCase):
             ],
         }
 
-        self.assertEqual(cluster_citation_texts(cluster), ["51 Cal.3d 368", "795 P.2d 1244"])
+        self.assertEqual(cluster_citation_texts(cluster), ["51 Cal.3d 368"])
+
+    def test_current_case_exclusion_uses_only_official_citation(self) -> None:
+        text = (
+            "Header In re Caden C. (2021) 11 Cal.5th 614. "
+            "The opinion cites In re Caden C. (2019) 34 Cal.App.5th 87 "
+            "and In re Breanna S. (2017) 8 Cal.App.5th 636."
+        )
+        polluted_cluster = {
+            "official_citation": "11 Cal.5th 614",
+            "citations": [
+                {"volume": "11", "reporter": "Cal.5th", "page": "614"},
+                {"volume": "34", "reporter": "Cal.App.5th", "page": "87"},
+                {"volume": "8", "reporter": "Cal.App.5th", "page": "636"},
+            ],
+        }
+
+        links = cited_case_links(text, excluded_citations=cluster_citation_texts(polluted_cluster))
+
+        self.assertEqual([link.lookup_text for link in links], ["34 Cal.App.5th 87", "8 Cal.App.5th 636"])
 
 
 if __name__ == "__main__":

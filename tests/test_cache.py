@@ -46,6 +46,43 @@ class CacheTests(unittest.TestCase):
             cache.write_lookup("576 U.S. 644", [{"status": 200}])
             self.assertEqual(cache.read_lookup("576 U.S. 644"), [{"status": 200}])
 
+    def test_write_lookup_canonicalizes_cluster_citations(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            lookup = [
+                {
+                    "status": 200,
+                    "clusters": [
+                        {
+                            "id": 42,
+                            "case_name": "Example v. State",
+                            "citations": [
+                                {"volume": 1, "reporter": "Cal.", "page": "2"},
+                                {"volume": "99", "reporter": "P.3d", "page": "100"},
+                            ],
+                        }
+                    ],
+                }
+            ]
+            cache.write_lookup("1 Cal. 2", lookup)
+
+            self.assertEqual(
+                cache.read_lookup("1 Cal. 2"),
+                [
+                    {
+                        "status": 200,
+                        "clusters": [
+                            {
+                                "id": 42,
+                                "case_name": "Example v. State",
+                                "official_citation": "1 Cal. 2",
+                                "citations": [{"volume": "1", "reporter": "Cal.", "page": "2"}],
+                            }
+                        ],
+                    }
+                ],
+            )
+
     def test_upsert_cluster_writes_case_index(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = JsonCache(Path(temp_dir))
@@ -55,7 +92,14 @@ class CacheTests(unittest.TestCase):
                 "citations": [{"volume": 1, "reporter": "Cal.", "page": "2"}],
             }
             self.assertEqual(cache.upsert_cluster(cluster), "42")
-            self.assertEqual(cache.read_cached_cluster("42"), cluster)
+            self.assertEqual(
+                cache.read_cached_cluster("42"),
+                {
+                    **cluster,
+                    "official_citation": "1 Cal. 2",
+                    "citations": [{"volume": "1", "reporter": "Cal.", "page": "2"}],
+                },
+            )
             entries = cache.list_case_entries()
             self.assertEqual(len(entries), 1)
             self.assertEqual(entries[0]["title"], "Example v. State")

@@ -137,20 +137,7 @@ def cluster_short_title(cluster: dict[str, Any]) -> str:
 
 
 def cluster_citation_line(cluster: dict[str, Any]) -> str:
-    citations = cluster.get("citations")
-    if not isinstance(citations, list):
-        return ""
-    rendered: list[str] = []
-    for citation in citations:
-        if not isinstance(citation, dict):
-            continue
-        volume = citation.get("volume")
-        reporter = citation.get("reporter")
-        page = citation.get("page")
-        pieces = [str(piece).strip() for piece in (volume, reporter, page) if str(piece).strip()]
-        if pieces:
-            rendered.append(" ".join(pieces))
-    return "; ".join(rendered)
+    return official_california_reporter_citation(cluster)
 
 
 def _normalized_reporter(value: str) -> str:
