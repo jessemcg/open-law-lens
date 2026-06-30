@@ -21,11 +21,12 @@ def normalize_case_title(title: str) -> str:
         flags=re.IGNORECASE,
     )
     if normalized.startswith("In re "):
+        normalized = _trim_dependency_caption_tail(normalized)
         normalized = _normalize_leading_name_words(normalized, "In re ")
     elif normalized.startswith("Adoption of "):
         normalized = _normalize_leading_name_words(normalized, "Adoption of ")
     else:
-        return normalized
+        return _normalize_civil_case_title(normalized)
     normalized = _normalize_initial_spacing(normalized)
     normalized = re.sub(
         r"^((?:In re|Adoption of) )([A-Z]{2})\.?(?=$|[\s,(])",
@@ -34,6 +35,20 @@ def normalize_case_title(title: str) -> str:
     )
     normalized = _normalize_habeas_title(normalized)
     return re.sub(r"\s+CA\d+\s*$", "", normalized)
+
+
+def _trim_dependency_caption_tail(title: str) -> str:
+    match = re.match(
+        r"^(?P<leading>In re .+?)[\s,.;]+(?:a\s+Person|Persons)\s+Coming\s+Under\b.*$",
+        title,
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return title
+    leading = match.group("leading").rstrip(" ,;")
+    if re.search(r"\b[A-Z]$", leading):
+        leading = f"{leading}."
+    return leading
 
 
 def _normalize_leading_name_words(title: str, prefix: str) -> str:
@@ -48,6 +63,37 @@ def _normalize_leading_name_words(title: str, prefix: str) -> str:
         return word[0] + word[1:].lower()
 
     return prefix + re.sub(r"\b[A-Z]{2,}\b", replace, body)
+
+
+def _normalize_civil_case_title(title: str) -> str:
+    parts = re.split(r"(\s+v\.\s+)", title, maxsplit=1)
+    if len(parts) != 3:
+        return title
+    return "".join(
+        (
+            _normalize_personal_party_title(parts[0]),
+            parts[1],
+            _normalize_personal_party_title(parts[2]),
+        )
+    )
+
+
+def _normalize_personal_party_title(party: str) -> str:
+    normalized = re.sub(
+        r"\b(?P<name>[A-Z][A-Z'-]{2,})(?=\s+(?:[A-Z]\.){1,3}(?:$|[\s,]))",
+        lambda match: _titlecase_name_word(match.group("name")),
+        party,
+    )
+    normalized = re.sub(
+        r"(?<=\b(?:[A-Z]\.)\s)(?P<name>[A-Z][A-Z'-]{2,})\b",
+        lambda match: _titlecase_name_word(match.group("name")),
+        normalized,
+    )
+    return normalized
+
+
+def _titlecase_name_word(word: str) -> str:
+    return "-".join(piece[:1] + piece[1:].lower() for piece in word.split("-"))
 
 
 def _normalize_initial_spacing(title: str) -> str:
@@ -85,8 +131,14 @@ def leading_in_re_title(title: str) -> str:
     if malformed_dependency_match is not None:
         leading = f"{normalized[:malformed_dependency_match.start()].rstrip()} V."
         return normalize_case_title(leading)
+    if re.search(
+        r"[\s,.;]+(?:a\s+Person|Persons)\s+Coming\s+Under\b",
+        normalized,
+        flags=re.IGNORECASE,
+    ):
+        return normalize_case_title(normalized)
     leading = re.split(
-        r"\s*,?\s*a\s+Person\s+Coming\s+Under\b|,",
+        r",",
         normalized,
         maxsplit=1,
         flags=re.IGNORECASE,

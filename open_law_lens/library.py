@@ -28,6 +28,7 @@ PROJECT_LIBRARY_DIR = PROJECT_ROOT / "library"
 DEFAULT_LIBRARY_DB = PROJECT_LIBRARY_DIR / "open_law_lens.sqlite3"
 SCHEMA_VERSION = "1"
 OFFICIAL_CITATION_ONLY_NORMALIZED_KEY = "official_citation_only_normalized_v2"
+CASE_TITLES_NORMALIZED_KEY = "case_titles_normalized_v1"
 TEXT_FIELDS = (
     "html_with_citations",
     "plain_text",
@@ -552,6 +553,7 @@ class CaseLibrary:
                 ("schema_version", SCHEMA_VERSION),
             )
             self._normalize_official_citation_only(conn)
+            self._normalize_case_titles(conn)
 
     def _normalize_official_citation_only(self, conn: sqlite3.Connection) -> None:
         row = conn.execute(
@@ -628,6 +630,32 @@ class CaseLibrary:
         conn.execute(
             "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
             (OFFICIAL_CITATION_ONLY_NORMALIZED_KEY, _utc_now()),
+        )
+
+    def _normalize_case_titles(self, conn: sqlite3.Connection) -> None:
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key = ?",
+            (CASE_TITLES_NORMALIZED_KEY,),
+        ).fetchone()
+        if row is not None:
+            return
+        rows = conn.execute("SELECT cluster_id, title, cluster_json FROM cases").fetchall()
+        for row in rows:
+            try:
+                cluster = _json_loads(str(row["cluster_json"]))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(cluster, dict):
+                continue
+            title = _cluster_title(cluster)
+            if title and title != str(row["title"]):
+                conn.execute(
+                    "UPDATE cases SET title = ? WHERE cluster_id = ?",
+                    (title, str(row["cluster_id"])),
+                )
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+            (CASE_TITLES_NORMALIZED_KEY, _utc_now()),
         )
 
     def import_json_cache_once(self, cache: JsonCache) -> None:

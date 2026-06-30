@@ -42,6 +42,40 @@ class LibraryTests(unittest.TestCase):
 
             self.assertEqual(library.list_case_entries()[0]["title"], "In re B.G.")
 
+    def test_ensure_refreshes_legacy_case_titles(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            cluster = {
+                "id": 42,
+                "case_name": (
+                    "In re Michael V.. Persons Coming Under the Juvenile Court Law. "
+                    "Los Angeles County Department OF Children And Family Services"
+                ),
+            }
+            with library.connection() as conn:
+                conn.execute("DELETE FROM meta WHERE key = ?", ("case_titles_normalized_v1",))
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO cases(
+                        cluster_id, title, citation_text, cluster_json, opinion_ids_json, added_at, last_accessed
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "42",
+                        "In re Michael V.. Persons Coming Under the Juvenile Court Law.",
+                        "",
+                        json.dumps(cluster),
+                        "[]",
+                        "2026-01-01T00:00:00+00:00",
+                        "2026-01-01T00:00:00+00:00",
+                    ),
+                )
+
+            library.ensure()
+
+            self.assertEqual(library.list_case_entries()[0]["title"], "In re Michael V.")
+
     def test_json_cache_case_index_uses_extracted_in_re_initial_title(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = JsonCache(Path(temp_dir))

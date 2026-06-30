@@ -126,6 +126,29 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(normalize_case_title("People v. In Re Holdings"), "People v. In Re Holdings")
         self.assertEqual(normalize_case_title("People v. KC Holdings"), "People v. KC Holdings")
         self.assertEqual(normalize_case_title("In re Marriage of Smith"), "In re Marriage of Smith")
+        self.assertEqual(
+            normalize_case_title(
+                "In re Michael V.. Persons Coming Under the Juvenile Court Law. "
+                "Los Angeles County Department OF Children And Family Services"
+            ),
+            "In re Michael V.",
+        )
+        self.assertEqual(
+            normalize_case_title(
+                "In re Michael V.; Persons Coming Under the Juvenile Court Law. "
+                "Los Angeles County Department OF Children And Family Services"
+            ),
+            "In re Michael V.",
+        )
+
+    def test_case_title_normalizes_all_caps_personal_party_names_narrowly(self) -> None:
+        self.assertEqual(normalize_case_title("SHEILA S. v. Superior Court"), "Sheila S. v. Superior Court")
+        self.assertEqual(normalize_case_title("C.C. v. L.B."), "C.C. v. L.B.")
+        self.assertEqual(normalize_case_title("DKN Holdings LLC v. Faerber"), "DKN Holdings LLC v. Faerber")
+        self.assertEqual(
+            normalize_case_title("LOS ANGELES COUNTY DEPARTMENT OF CHILDREN AND FAMILY SERVICES v. JESUS H."),
+            "LOS ANGELES COUNTY DEPARTMENT OF CHILDREN AND FAMILY SERVICES v. Jesus H.",
+        )
 
     def test_case_title_normalizes_habeas_title_to_last_name(self) -> None:
         self.assertEqual(normalize_case_title("In re Jesse Barber on Habeas Corpus."), "In re Barber")
@@ -443,6 +466,35 @@ class ClientTests(unittest.TestCase):
         self.assertIsNotNone(citation)
         assert citation is not None
         self.assertEqual(citation.plain_text, "In re Barber (2017) 15 Cal.App.5th 368")
+
+    def test_format_official_california_citation_strips_dependency_caption_tail(self) -> None:
+        cluster = {
+            "case_name": (
+                "In re Michael V.. Persons Coming Under the Juvenile Court Law. "
+                "Los Angeles County Department OF Children And Family Services"
+            ),
+            "date_filed": "2016-08-09",
+            "citations": [{"volume": "3", "reporter": "Cal.App.5th", "page": "225"}],
+        }
+
+        citation = format_official_california_citation(cluster)
+
+        self.assertIsNotNone(citation)
+        assert citation is not None
+        self.assertEqual(citation.plain_text, "In re Michael V. (2016) 3 Cal.App.5th 225")
+
+    def test_format_official_california_citation_normalizes_writ_party_casing(self) -> None:
+        cluster = {
+            "case_name": "SHEILA S. v. Superior Court",
+            "date_filed": "2000-07-28",
+            "citations": [{"volume": "84", "reporter": "Cal.App.4th", "page": "872"}],
+        }
+
+        citation = format_official_california_citation(cluster)
+
+        self.assertIsNotNone(citation)
+        assert citation is not None
+        self.assertEqual(citation.plain_text, "Sheila S. v. Superior Court (2000) 84 Cal.App.4th 872")
 
     def test_dedupe_case_clusters_prefers_cleaner_official_citation_match(self) -> None:
         duplicate_with_lexis = {
