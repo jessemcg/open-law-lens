@@ -85,6 +85,11 @@ from .external_import import (
 )
 from .library import PageMarker, opinion_display_text
 from .quality import official_pagination_quality
+from .scholar_search import (
+    ScholarSearchError,
+    ScholarSearchResult,
+    search_first_case_direct,
+)
 from .speech import DEFAULT_SPEECH_QUESTION_FILE, normalize_speech_question_text
 from .text_search import literal_match_ranges
 from .web_import import ExtractedWebpage, extract_webpage_text
@@ -521,6 +526,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_has_official_pagination = False
         self._last_lookup_text = ""
         self._external_lookup_window: Gtk.Window | None = None
+        self._external_lookup_query: str = ""
+        self._external_lookup_auto_find_button: Gtk.Button | None = None
+        self._external_lookup_source_entry: Gtk.Entry | None = None
+        self._external_lookup_auto_finding = False
+        self._external_lookup_auto_query = ""
+        self._external_lookup_auto_fallback_to_window = True
+        self._external_lookup_auto_import = False
+        self._pending_auto_scholar_cluster_id = ""
+        self._pending_auto_scholar_query = ""
         self._pending_quote_target: QuoteTarget | None = None
         self._settings_window: SettingsWindow | None = None
         self._dbus_commands_window: DbusCommandsWindow | None = None
@@ -1991,7 +2005,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return False
         return True
 
-    def _show_external_lookup_window(self, query: str) -> None:
+    def _show_external_lookup_window(self, query: str, *, initial_source_url: str = "") -> None:
         clean_query = re.sub(r"\s+", " ", query).strip()
         if not clean_query:
             return
@@ -2021,15 +2035,25 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             button.connect("clicked", self._on_external_lookup_button_clicked, url)
             box.append(button)
 
+        auto_find_button = Gtk.Button(label="Auto-Find on Scholar")
+        auto_find_button.set_tooltip_text(
+            "Automatically search Google Scholar and import the first case result"
+        )
+        auto_find_button.connect("clicked", self._on_external_lookup_auto_find_clicked)
+        box.append(auto_find_button)
+        self._external_lookup_auto_find_button = auto_find_button
+
         source_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         source_entry = Gtk.Entry()
         source_entry.set_hexpand(True)
         source_entry.set_placeholder_text("Google Scholar case URL")
+        source_entry.set_text(initial_source_url)
         source_row.append(source_entry)
         fetch_button = Gtk.Button(label="Fetch URL")
         fetch_button.connect("clicked", self._on_external_lookup_fetch_clicked, source_entry)
         source_row.append(fetch_button)
         box.append(source_row)
+        self._external_lookup_source_entry = source_entry
 
         import_button = Gtk.Button(label="Import Official Text")
         import_button.connect(
@@ -2040,10 +2064,16 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
         window.set_child(box)
         self._external_lookup_window = window
+        self._external_lookup_query = clean_query
         window.present()
 
     def _on_external_lookup_closed(self, _window: Gtk.Window) -> bool:
         self._external_lookup_window = None
+        self._external_lookup_query = ""
+        self._external_lookup_auto_find_button = None
+        self._external_lookup_source_entry = None
+        self._external_lookup_auto_finding = False
+        self._external_lookup_auto_query = ""
         return False
 
     def _close_external_lookup_window(self) -> None:
@@ -2066,6 +2096,150 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             initial_source_url=source_entry.get_text().strip(),
             fetch_on_present=True,
         )
+
+    def _on_external_lookup_auto_find_clicked(self, _button: Gtk.Button) -> None:
+        self._start_scholar_auto_find(
+            self._external_lookup_query,
+            fallback_to_window=True,
+            auto_import=False,
+        )
+
+    def _start_scholar_auto_find(
+        self,
+        query: str,
+        *,
+        fallback_to_window: bool,
+        auto_import: bool,
+    ) -> None:
+        clean_query = re.sub(r"\s+", " ", query).strip()
+        if self._external_lookup_auto_finding:
+            return
+        query = clean_query
+        if not query.strip():
+            self._set_status("No search query available for Auto-Find.")
+            return
+        self._external_lookup_auto_finding = True
+        self._external_lookup_auto_query = query
+        self._external_lookup_auto_fallback_to_window = fallback_to_window
+        self._external_lookup_auto_import = auto_import
+        if self._external_lookup_auto_find_button is not None:
+            self._external_lookup_auto_find_button.set_sensitive(False)
+            self._external_lookup_auto_find_button.set_label("Searching Scholar...")
+        self._set_status("Auto-searching Google Scholar...")
+        thread = threading.Thread(
+            target=self._external_lookup_auto_find_worker,
+            args=(query,),
+            daemon=True,
+        )
+        thread.start()
+
+    def _external_lookup_auto_find_worker(self, query: str) -> None:
+        try:
+            result = search_first_case_direct(query)
+        except ScholarSearchError as exc:
+            GLib.idle_add(self._finish_external_lookup_auto_find, query, None, str(exc))
+            return
+        GLib.idle_add(self._finish_external_lookup_auto_find, query, result, "")
+
+    def _finish_external_lookup_auto_find(
+        self,
+        query: str,
+        result: ScholarSearchResult | None,
+        error: str,
+    ) -> bool:
+        if query != self._external_lookup_auto_query:
+            return False
+        self._external_lookup_auto_finding = False
+        self._external_lookup_auto_query = ""
+        auto_import = self._external_lookup_auto_import
+        self._external_lookup_auto_import = False
+        button = self._external_lookup_auto_find_button
+        if button is not None:
+            button.set_sensitive(True)
+            button.set_label("Auto-Find on Scholar")
+
+        if result is not None:
+            if self._external_lookup_source_entry is not None:
+                self._external_lookup_source_entry.set_text(result.url)
+            title = f" - {result.title}" if result.title else ""
+            action = "importing" if auto_import else "fetching"
+            self._set_status(f"Found case on Scholar{title}. {action.capitalize()} text...")
+            if auto_import:
+                self._start_scholar_auto_import(query, result)
+                return False
+            # Reuse the existing Import + Fetch flow with the discovered URL.
+            self._on_import_official_text(
+                None,
+                None,
+                initial_source_url=result.url,
+                fetch_on_present=True,
+                fetch_error_fallback_query=query,
+            )
+            return False
+
+        self._set_status(
+            f"Auto-Find could not complete: {error or 'unknown error'}. "
+            "Open Scholar manually and paste the case URL."
+        )
+        if self._external_lookup_auto_fallback_to_window and query.strip():
+            self._show_external_lookup_window(query)
+        elif query.strip():
+            encoded = quote_plus(query)
+            self._launch_external_url(GOOGLE_SCHOLAR_CASE_SEARCH_TEMPLATE.format(query=encoded))
+        return False
+
+    def _start_scholar_auto_import(self, query: str, result: ScholarSearchResult) -> None:
+        thread = threading.Thread(
+            target=self._scholar_auto_import_worker,
+            args=(query, result),
+            daemon=True,
+        )
+        thread.start()
+
+    def _scholar_auto_import_worker(self, query: str, result: ScholarSearchResult) -> None:
+        try:
+            webpage = extract_webpage_text(result.url)
+        except RuntimeError as exc:
+            GLib.idle_add(
+                self._finish_scholar_auto_import_error,
+                query,
+                result.url,
+                str(exc),
+            )
+            return
+        GLib.idle_add(self._finish_scholar_auto_import, query, webpage)
+
+    def _finish_scholar_auto_import_error(
+        self,
+        query: str,
+        source_url: str,
+        message: str,
+    ) -> bool:
+        self._set_status(f"Scholar found a case, but automatic import failed: {message}")
+        self._show_external_lookup_window(query, initial_source_url=source_url)
+        return False
+
+    def _finish_scholar_auto_import(self, query: str, webpage: ExtractedWebpage) -> bool:
+        imported_text = clean_imported_opinion_text(webpage.text) or webpage.text
+        case_source = "\n".join(part for part in (webpage.title, imported_text) if part)
+        official_citation = (
+            normalize_official_citation(case_source)
+            or normalize_official_citation(query)
+            or self._default_import_official_citation()
+        )
+        case_name = imported_case_name_from_text(case_source) or self._default_import_case_name()
+        if self._save_imported_official_text(
+            case_name=case_name,
+            official_citation=official_citation,
+            imported_text=imported_text,
+            source_url=webpage.url,
+            failure_prefix="Automatic Scholar import not saved",
+            success_status="Imported Scholar official reporter text, saved to Library, and added to Research Cache.",
+        ):
+            self._close_external_lookup_window()
+            return False
+        self._show_external_lookup_window(query, initial_source_url=webpage.url)
+        return False
 
     def _default_import_case_name(self) -> str:
         if self._selected_cluster is not None:
@@ -2094,6 +2268,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         *,
         initial_source_url: str = "",
         fetch_on_present: bool = False,
+        fetch_error_fallback_query: str = "",
     ) -> bool:
         default_citation = self._default_import_official_citation()
         if not default_citation:
@@ -2132,6 +2307,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         fetch_button.connect(
             "clicked",
             self._on_import_fetch_url_clicked,
+            window,
             case_name_entry,
             citation_entry,
             source_entry,
@@ -2175,27 +2351,40 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if fetch_on_present:
             self._on_import_fetch_url_clicked(
                 fetch_button,
+                window,
                 case_name_entry,
                 citation_entry,
                 source_entry,
                 text_buffer,
+                fetch_error_fallback_query,
             )
         return True
 
     def _on_import_fetch_url_clicked(
         self,
         button: Gtk.Button,
+        window: Gtk.Window,
         case_name_entry: Gtk.Entry,
         citation_entry: Gtk.Entry,
         source_entry: Gtk.Entry,
         text_buffer: Gtk.TextBuffer,
+        fetch_error_fallback_query: str = "",
     ) -> None:
         url = source_entry.get_text().strip()
         button.set_sensitive(False)
         self._set_status("Fetching URL...")
         thread = threading.Thread(
             target=self._import_fetch_url_worker,
-            args=(url, button, case_name_entry, citation_entry, source_entry, text_buffer),
+            args=(
+                url,
+                button,
+                window,
+                case_name_entry,
+                citation_entry,
+                source_entry,
+                text_buffer,
+                fetch_error_fallback_query,
+            ),
             daemon=True,
         )
         thread.start()
@@ -2204,15 +2393,24 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self,
         url: str,
         button: Gtk.Button,
+        window: Gtk.Window,
         case_name_entry: Gtk.Entry,
         citation_entry: Gtk.Entry,
         source_entry: Gtk.Entry,
         text_buffer: Gtk.TextBuffer,
+        fetch_error_fallback_query: str,
     ) -> None:
         try:
             webpage = extract_webpage_text(url)
         except RuntimeError as exc:
-            GLib.idle_add(self._finish_import_fetch_url_error, button, str(exc))
+            GLib.idle_add(
+                self._finish_import_fetch_url_error,
+                button,
+                window,
+                str(exc),
+                fetch_error_fallback_query,
+                url,
+            )
             return
         GLib.idle_add(
             self._finish_import_fetch_url,
@@ -2224,9 +2422,22 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             text_buffer,
         )
 
-    def _finish_import_fetch_url_error(self, button: Gtk.Button, message: str) -> bool:
+    def _finish_import_fetch_url_error(
+        self,
+        button: Gtk.Button,
+        window: Gtk.Window,
+        message: str,
+        fallback_query: str = "",
+        fallback_source_url: str = "",
+    ) -> bool:
         button.set_sensitive(True)
         self._set_status(message)
+        if fallback_query.strip():
+            self._show_external_lookup_window(
+                fallback_query,
+                initial_source_url=fallback_source_url,
+            )
+            window.close()
         return False
 
     def _finish_import_fetch_url(
@@ -2275,33 +2486,59 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             or self._default_import_official_citation()
         )
         case_name = case_name_entry.get_text().strip() or imported_case_name_from_text(pasted_text)
+        if not self._save_imported_official_text(
+            case_name=case_name,
+            official_citation=official_citation,
+            imported_text=pasted_text,
+            source_url=source_entry.get_text().strip(),
+            failure_prefix="Import not saved",
+            success_status="Imported official reporter text, saved to Library, and added to Research Cache.",
+        ):
+            return
+        self._close_external_lookup_window()
+        window.close()
+
+    def _save_imported_official_text(
+        self,
+        *,
+        case_name: str,
+        official_citation: str,
+        imported_text: str,
+        source_url: str,
+        failure_prefix: str,
+        success_status: str,
+    ) -> bool:
+        imported_text = clean_imported_opinion_text(imported_text)
+        if not imported_text:
+            self._set_status(f"{failure_prefix}: imported text was empty after cleanup.")
+            return False
         try:
             cluster = build_external_import_cluster(
                 case_name=case_name,
                 official_citation=official_citation,
-                imported_text=pasted_text,
-                source_url=source_entry.get_text().strip(),
+                imported_text=imported_text,
+                source_url=source_url,
             )
         except ValueError as exc:
             self._set_status(str(exc))
-            return
+            return False
         cluster_id = cluster_id_from_cluster(cluster)
         if not cluster_id:
             self._set_status("Selected case has no cluster id.")
-            return
+            return False
         text_field = "html_with_citations" if re.search(r"<[a-zA-Z][^>]*>", imported_text) else "plain_text"
         opinion = {
             "id": f"official-import-{cluster_id}",
             "cluster_id": cluster_id,
             text_field: imported_text,
-            "source_url": source_entry.get_text().strip(),
+            "source_url": source_url,
             "source_type": "user_imported_official_text",
         }
         display = opinion_display_text(opinion)
         quality = official_pagination_quality(cluster, [display])
         if not quality.eligible:
-            self._set_status(f"Import not saved: {quality.reason}")
-            return
+            self._set_status(f"{failure_prefix}: {quality.reason}")
+            return False
         self.client.library.upsert_cluster(cluster)
         self.client.library.upsert_opinion(opinion)
         self.client.library.update_case_opinion_ids(cluster_id, [str(opinion["id"])])
@@ -2324,9 +2561,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._case_header_citation(cluster),
         )
         self._set_reader_text(display.text, display.page_markers)
-        self._set_status("Imported official reporter text, saved to Library, and added to Research Cache.")
-        self._close_external_lookup_window()
-        window.close()
+        self._set_status(success_status)
+        return True
 
     def _on_lookup_clicked(self, _widget: Gtk.Widget) -> None:
         entry_text = self.citation_entry.get_text().strip()
@@ -2338,6 +2574,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def _start_lookup(self, citation: str) -> None:
         self._last_lookup_text = citation.strip()
+        self._pending_auto_scholar_cluster_id = ""
+        self._pending_auto_scholar_query = ""
         self._hide_case_completion()
         self._set_status(f"Looking up {citation}...")
         self._set_reader_header("")
@@ -2528,6 +2766,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         citation: str = "",
     ) -> bool:
         select_cluster_id = cluster_id_from_cluster(clusters[0]) if clusters else ""
+        if clusters:
+            self._pending_auto_scholar_cluster_id = select_cluster_id
+            self._pending_auto_scholar_query = citation.strip()
+        else:
+            self._pending_auto_scholar_cluster_id = ""
+            self._pending_auto_scholar_query = ""
         self._set_sidebar_clusters(
             self.client.cached_clusters(),
             select_cluster_id=select_cluster_id,
@@ -2544,8 +2788,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._set_reader_header("")
             self.reader_buffer.set_text(status)
             if citation.strip():
-                self._show_external_lookup_window(citation)
-                self._set_status(f"{status}. External search options opened.")
+                self._set_status(f"{status}. Trying Scholar...")
+                self._start_scholar_auto_find(
+                    citation,
+                    fallback_to_window=True,
+                    auto_import=True,
+                )
         return False
 
     def _apply_error(self, message: str) -> bool:
@@ -2571,6 +2819,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         thread.start()
 
     def _case_worker(self, cluster: dict[str, Any]) -> None:
+        cluster_id = cluster_id_from_cluster(cluster)
         try:
             opinions = self.client.fetch_cluster_opinions(cluster)
             text_parts: list[str] = []
@@ -2608,14 +2857,38 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 text,
                 page_markers,
             )
-            GLib.idle_add(self._finish_case_quality_status, quality.eligible, quality.reason)
+            GLib.idle_add(
+                self._finish_case_quality_status,
+                cluster_id,
+                quality.eligible,
+                quality.reason,
+            )
         except CourtListenerError as exc:
-            GLib.idle_add(self._apply_error, str(exc))
+            GLib.idle_add(self._apply_case_error, cluster_id, str(exc))
 
-    def _finish_case_quality_status(self, eligible: bool, reason: str) -> bool:
+    def _apply_case_error(self, cluster_id: str, message: str) -> bool:
+        if cluster_id and cluster_id == self._pending_auto_scholar_cluster_id:
+            self._pending_auto_scholar_cluster_id = ""
+            self._pending_auto_scholar_query = ""
+        return self._apply_error(message)
+
+    def _finish_case_quality_status(self, cluster_id: str, eligible: bool, reason: str) -> bool:
         self._reader_has_official_pagination = eligible
+        pending_query = ""
+        if cluster_id and cluster_id == self._pending_auto_scholar_cluster_id:
+            pending_query = self._pending_auto_scholar_query
+            self._pending_auto_scholar_cluster_id = ""
+            self._pending_auto_scholar_query = ""
         if eligible:
             self._set_status("Saved to Library with official reporter pagination.")
+        elif pending_query:
+            detail = f": {reason}" if reason else ""
+            self._set_status(f"CourtListener copy is not official-paginated{detail}. Trying Scholar...")
+            self._start_scholar_auto_find(
+                pending_query,
+                fallback_to_window=True,
+                auto_import=True,
+            )
         elif reason:
             self._set_status(f"Transient view only: {reason} Use Find Official Text or Import Official Text.")
         return False

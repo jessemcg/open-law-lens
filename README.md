@@ -56,6 +56,23 @@ Clear Research Cache data without deleting saved library cases:
 uv run open-law-lens clear-cache
 ```
 
+## Automatic Google Scholar lookup
+
+When CourtListener cannot return an official reporter citation, the app opens a
+"Find Case Online" window. Clicking **Auto-Find on Scholar** tries a direct
+HTTP Google Scholar case-law search, follows the first case result, and feeds
+the discovered URL into the existing Fetch flow automatically.
+
+After a citation lookup, the app also tries this Scholar flow automatically when
+CourtListener has no matching case or returns only a transient copy without
+official reporter pagination. If the Scholar text passes the same official
+pagination check, it is saved to the Library and Research Cache automatically.
+Manual Scholar imports still open for review before saving.
+
+If Scholar blocks the direct request, returns a CAPTCHA, or has no readable case
+result, the app opens the Scholar search in your browser so you can paste a case
+URL manually.
+
 ## Library and Cache
 
 Open Law Lens keeps a durable SQLite case library at
