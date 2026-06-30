@@ -1548,6 +1548,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         )
         thread.start()
 
+    def _open_agent_cited_case_link(self, link: CitedCaseLink) -> None:
+        self._start_lookup(link.lookup_text)
+
     def _cited_case_lookup_worker(self, citation: str, current_cluster_id: str) -> None:
         try:
             result = self.client.lookup_citation(citation)
@@ -2833,6 +2836,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         cluster_id = cluster_id_from_cluster(cluster)
         try:
             opinions = self.client.fetch_cluster_opinions(cluster)
+            opinion_source = self.client.last_opinion_source
             text_parts: list[str] = []
             page_markers: list[PageMarker] = []
             text_length = 0
@@ -2873,6 +2877,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 cluster_id,
                 quality.eligible,
                 quality.reason,
+                opinion_source,
             )
         except CourtListenerError as exc:
             GLib.idle_add(self._apply_case_error, cluster_id, str(exc))
@@ -2883,7 +2888,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._pending_auto_scholar_query = ""
         return self._apply_error(message)
 
-    def _finish_case_quality_status(self, cluster_id: str, eligible: bool, reason: str) -> bool:
+    def _finish_case_quality_status(
+        self,
+        cluster_id: str,
+        eligible: bool,
+        reason: str,
+        source: str,
+    ) -> bool:
         self._reader_has_official_pagination = eligible
         pending_query = ""
         if cluster_id and cluster_id == self._pending_auto_scholar_cluster_id:
@@ -2891,7 +2902,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._pending_auto_scholar_cluster_id = ""
             self._pending_auto_scholar_query = ""
         if eligible:
-            self._set_status("Saved to Library with official reporter pagination.")
+            self._set_status(self._official_pagination_status(source))
         elif pending_query:
             detail = f": {reason}" if reason else ""
             self._set_status(f"CourtListener copy is not official-paginated{detail}. Trying Scholar...")
@@ -2903,6 +2914,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         elif reason:
             self._set_status(f"Transient view only: {reason} Use Find Official Text or Import Official Text.")
         return False
+
+    def _official_pagination_status(self, source: str) -> str:
+        if source == "Library":
+            return "Loaded from Library with official reporter pagination."
+        if source == "Fetched":
+            return "Saved to Library with official reporter pagination."
+        return "Loaded with official reporter pagination."
 
     def _format_agent_prompt(
         self,
@@ -3921,7 +3939,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         elif isinstance(target, CourtListenerSearchResult):
             self._open_search_result(target)
         elif isinstance(target, CitedCaseLink):
-            self._open_cited_case_link(target)
+            self._open_agent_cited_case_link(target)
         elif target is not None:
             self._open_quote_target(target)
 

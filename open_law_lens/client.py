@@ -343,6 +343,7 @@ class CourtListenerClient:
     token: str = ""
     timeout: float = 30.0
     last_lookup_source: str = ""
+    last_opinion_source: str = ""
 
     def __post_init__(self) -> None:
         if self.library is None:
@@ -553,6 +554,7 @@ class CourtListenerClient:
     def fetch_cluster_opinions(
         self, cluster: dict[str, Any], *, refresh: bool = False
     ) -> list[dict[str, Any]]:
+        self.last_opinion_source = ""
         cluster_id = cluster_id_from_cluster(cluster)
         if not refresh and cluster_id:
             library_opinions = [
@@ -561,11 +563,13 @@ class CourtListenerClient:
                 if (opinion := self.library.read_opinion(opinion_id)) is not None
             ]
             if library_opinions:
+                self.last_opinion_source = "Library"
                 return library_opinions
         urls = cluster.get("sub_opinions")
         if not isinstance(urls, list):
             self.cache.upsert_cluster(cluster)
             self.save_case_if_official_paginated(cluster, [])
+            self.last_opinion_source = "Lookup"
             return []
         opinions: list[dict[str, Any]] = []
         opinion_ids: list[str] = []
@@ -578,6 +582,7 @@ class CourtListenerClient:
                     opinion_ids.append(opinion_id)
         self.cache.update_case_opinions(cluster, opinion_ids)
         self.save_case_if_official_paginated(cluster, opinions)
+        self.last_opinion_source = "Fetched"
         return opinions
 
     def first_opinion_text(self, cluster: dict[str, Any], *, refresh: bool = False) -> str:
