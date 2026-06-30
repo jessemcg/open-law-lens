@@ -1830,52 +1830,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._open_cited_case_link(link)
 
     def _open_cited_case_link(self, link: CitedCaseLink) -> None:
-        current_cluster_id = cluster_id_from_cluster(self._selected_cluster or {})
-        self._set_status(f"Opening {link.lookup_text}...")
-        thread = threading.Thread(
-            target=self._cited_case_lookup_worker,
-            args=(link.lookup_text, current_cluster_id),
-            daemon=True,
-        )
-        thread.start()
+        self._open_citation_lookup_link(link)
 
     def _open_agent_cited_case_link(self, link: CitedCaseLink) -> None:
+        self._open_citation_lookup_link(link)
+
+    def _open_citation_lookup_link(self, link: CitedCaseLink) -> None:
         self._start_lookup(link.lookup_text)
-
-    def _cited_case_lookup_worker(self, citation: str, current_cluster_id: str) -> None:
-        try:
-            result = self.client.lookup_citation(citation)
-            clusters = dedupe_case_clusters(self.client.clusters_from_lookup(result))
-            cluster = next(
-                (
-                    candidate
-                    for candidate in clusters
-                    if cluster_id_from_cluster(candidate) != current_cluster_id
-                ),
-                clusters[0] if clusters else None,
-            )
-            if cluster is None:
-                GLib.idle_add(self._set_status, f"No case found for {citation}.")
-                return
-            cluster_id = cluster_id_from_cluster(cluster)
-            if not cluster_id:
-                GLib.idle_add(self._set_status, f"No cached case id found for {citation}.")
-                return
-            self.client.fetch_cluster_opinions(cluster)
-            source = self.client.last_lookup_source or "Lookup"
-            GLib.idle_add(self._finish_cited_case_lookup, citation, cluster_id, source)
-        except (CourtListenerError, ValueError) as exc:
-            GLib.idle_add(self._set_status, f"Unable to open {citation}: {exc}")
-
-    def _finish_cited_case_lookup(self, citation: str, cluster_id: str, source: str) -> bool:
-        clusters = self.client.cached_clusters()
-        self._set_sidebar_clusters(clusters, select_cluster_id=cluster_id)
-        self._refresh_case_suggestion_index_async(force=True)
-        if self.case_list.get_selected_row() is None:
-            self._set_status(f"Cached {citation}, but could not select the case.")
-        else:
-            self._set_status(f"{source}: opened {citation}.")
-        return False
 
     def _install_reader_find_key_controller(self, widget: Gtk.Widget) -> None:
         key_controller = Gtk.EventControllerKey()

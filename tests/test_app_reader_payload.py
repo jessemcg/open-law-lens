@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from open_law_lens.app import build_case_reader_payload
+from open_law_lens.app import OpenLawLensWindow, build_case_reader_payload
+from open_law_lens.citation_links import CitedCaseLink
 from open_law_lens.library import DisplayText, PageMarker
 
 
@@ -56,6 +57,25 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertTrue(payload.quality_eligible)
         self.assertTrue(payload.italic_spans)
         self.assertEqual(payload.cited_links[0].lookup_text, "2 Cal.5th 10")
+
+    def test_reader_and_agent_citation_links_use_shared_lookup_path(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.opened: list[str] = []
+
+            def _start_lookup(self, citation: str) -> None:
+                self.opened.append(citation)
+
+            def _open_citation_lookup_link(self, link: CitedCaseLink) -> None:
+                OpenLawLensWindow._open_citation_lookup_link(self, link)  # type: ignore[arg-type]
+
+        window = DummyWindow()
+        link = CitedCaseLink(start_offset=0, end_offset=25, lookup_text="11 Cal.5th 614")
+
+        OpenLawLensWindow._open_cited_case_link(window, link)  # type: ignore[arg-type]
+        OpenLawLensWindow._open_agent_cited_case_link(window, link)  # type: ignore[arg-type]
+
+        self.assertEqual(window.opened, ["11 Cal.5th 614", "11 Cal.5th 614"])
 
 
 if __name__ == "__main__":
