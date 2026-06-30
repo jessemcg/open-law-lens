@@ -206,9 +206,38 @@ class CacheTests(unittest.TestCase):
 
             self.assertFalse(cache.remove_case("missing"))
 
+    def test_detach_for_clear_moves_resources_and_preserves_unrelated_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cache = JsonCache(root)
+            cache.write_lookup("576 U.S. 644", [{"status": 200}])
+            cache.upsert_cluster({"id": 42, "case_name": "Example v. State"})
+            cache.write_resource("opinions", "10", {"id": 10})
+            agent_workspace = root / "agent-workspaces" / "workspace.test"
+            agent_workspace.mkdir(parents=True)
+            (agent_workspace / "manifest.json").write_text("{}", encoding="utf-8")
+
+            trash_path = cache.detach_for_clear()
+
+            self.assertIsNotNone(trash_path)
+            assert trash_path is not None
+            self.assertTrue(trash_path.is_dir())
+            self.assertTrue((trash_path / "lookups").is_dir())
+            self.assertTrue((trash_path / "clusters" / "42.json").is_file())
+            self.assertTrue((trash_path / "opinions" / "10.json").is_file())
+            self.assertTrue((trash_path / "cases_index.json").is_file())
+            self.assertEqual(cache.list_lookups(), [])
+            self.assertEqual(cache.list_case_entries(), [])
+            self.assertFalse(cache.selected_case_entries())
+            self.assertTrue((root / "lookups").is_dir())
+            self.assertTrue((root / "clusters").is_dir())
+            self.assertTrue((root / "opinions").is_dir())
+            self.assertTrue((agent_workspace / "manifest.json").is_file())
+
     def test_clear_removes_resources_and_recreates_directories(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            cache = JsonCache(Path(temp_dir))
+            root = Path(temp_dir)
+            cache = JsonCache(root)
             cache.write_lookup("576 U.S. 644", [{"status": 200}])
             cache.upsert_cluster({"id": 42, "case_name": "Example v. State"})
             cache.write_resource("opinions", "10", {"id": 10})
@@ -216,9 +245,10 @@ class CacheTests(unittest.TestCase):
             self.assertEqual(cache.list_lookups(), [])
             self.assertEqual(cache.list_case_entries(), [])
             self.assertFalse(cache.selected_case_entries())
-            self.assertTrue((Path(temp_dir) / "lookups").is_dir())
-            self.assertTrue((Path(temp_dir) / "clusters").is_dir())
-            self.assertTrue((Path(temp_dir) / "opinions").is_dir())
+            self.assertTrue((root / "lookups").is_dir())
+            self.assertTrue((root / "clusters").is_dir())
+            self.assertTrue((root / "opinions").is_dir())
+            self.assertEqual(list(root.glob(".clear-trash-*")), [])
 
 
 if __name__ == "__main__":

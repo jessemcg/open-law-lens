@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import uuid
 from datetime import UTC, datetime
 from dataclasses import dataclass
 from pathlib import Path
@@ -236,15 +237,40 @@ class JsonCache:
         ]
 
     def clear(self) -> None:
-        for name in ("lookups", "clusters", "opinions"):
-            path = self.root / name
-            if path.exists():
-                shutil.rmtree(path)
+        trash_path = self.detach_for_clear()
+        if trash_path is not None:
+            shutil.rmtree(trash_path)
+
+    def detach_for_clear(self) -> Path | None:
+        self.root.mkdir(parents=True, exist_ok=True)
+        trash_path = self.root / f".clear-trash-{_utc_now().replace(':', '-')}-{uuid.uuid4().hex}"
+        moved: list[tuple[Path, Path]] = []
         try:
-            self.case_index_path().unlink()
-        except FileNotFoundError:
-            pass
-        self.ensure()
+            for source in (
+                self.root / "lookups",
+                self.root / "clusters",
+                self.root / "opinions",
+                self.case_index_path(),
+            ):
+                if not source.exists():
+                    continue
+                trash_path.mkdir(parents=True, exist_ok=True)
+                target = trash_path / source.name
+                source.rename(target)
+                moved.append((source, target))
+            self.ensure()
+        except Exception:
+            for source, target in reversed(moved):
+                if not target.exists():
+                    continue
+                if source.exists() and source.is_dir() and not any(source.iterdir()):
+                    source.rmdir()
+                if not source.exists():
+                    target.rename(source)
+            if trash_path.exists():
+                shutil.rmtree(trash_path, ignore_errors=True)
+            raise
+        return trash_path if moved else None
 
 
 def _cluster_title(cluster: dict[str, Any]) -> str:

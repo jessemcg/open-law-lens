@@ -3,8 +3,10 @@ from __future__ import annotations
 import os
 import re
 import signal
+import shutil
 import tempfile
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote_plus
@@ -59,6 +61,7 @@ from .case_suggestions import (
 )
 from .citation_links import (
     CitedCaseLink,
+    CitationStyleSpan,
     citation_italic_spans,
     cited_case_links,
     cluster_citation_texts,
@@ -83,7 +86,7 @@ from .external_import import (
     imported_case_name_from_text,
     normalize_official_citation,
 )
-from .library import PageMarker, opinion_display_text
+from .library import DisplayText, PageMarker, opinion_display_text
 from .quality import official_pagination_quality
 from .scholar_search import (
     ScholarSearchError,
@@ -100,6 +103,8 @@ AGENT_WRAPPER = PROJECT_DIR / "scripts" / "open-law-lens-codex-agent-vte.sh"
 DEFAULT_CODEX_BIN = "codex"
 READER_BG = "#ffffff"
 READER_FG = "#000000"
+READER_RENDER_TEXT_CHUNK_SIZE = 60000
+READER_RENDER_TAG_CHUNK_SIZE = 250
 AGENT_PANEL_MIN_HEIGHT = 260
 AGENT_HEIGHT_DIVISOR = 4
 AGENT_SUBVIEW_ANSWER = "answer"
@@ -167,6 +172,70 @@ def _apply_terminal_theme(terminal: Any) -> None:
     terminal.set_color_background(background)
     terminal.set_color_foreground(foreground)
     terminal.set_clear_background(True)
+
+
+@dataclass(frozen=True)
+class CaseReaderPayload:
+    generation: int
+    cluster_id: str
+    text: str
+    page_markers: list[PageMarker]
+    italic_spans: list[CitationStyleSpan]
+    cited_links: list[CitedCaseLink]
+    quality_eligible: bool
+    quality_reason: str
+    opinion_source: str
+
+
+@dataclass(frozen=True)
+class LibrarySuggestionOpenResult:
+    lookup_text: str
+    cluster_id: str
+    clusters: list[dict[str, Any]]
+
+
+def build_case_reader_payload(
+    cluster: dict[str, Any],
+    displays: list[DisplayText],
+    *,
+    generation: int = 0,
+    opinion_source: str = "",
+) -> CaseReaderPayload:
+    text_parts: list[str] = []
+    page_markers: list[PageMarker] = []
+    text_length = 0
+    for display in displays:
+        if not display.text:
+            continue
+        if text_parts:
+            text_parts.append("\n\n")
+            text_length += 2
+        base_offset = text_length
+        text_parts.append(display.text)
+        text_length += len(display.text)
+        page_markers.extend(
+            PageMarker(
+                page_label=marker.page_label,
+                marker_text=marker.marker_text,
+                start_offset=base_offset + marker.start_offset,
+                end_offset=base_offset + marker.end_offset,
+                source_field=marker.source_field,
+            )
+            for marker in display.page_markers
+        )
+    text = "".join(text_parts) or "No opinion text found."
+    quality = official_pagination_quality(cluster, displays)
+    return CaseReaderPayload(
+        generation=generation,
+        cluster_id=cluster_id_from_cluster(cluster),
+        text=text,
+        page_markers=page_markers,
+        italic_spans=citation_italic_spans(text),
+        cited_links=cited_case_links(text, excluded_citations=cluster_citation_texts(cluster)),
+        quality_eligible=quality.eligible,
+        quality_reason=quality.reason,
+        opinion_source=opinion_source,
+    )
 
 
 class DbusCommandsWindow(Adw.ApplicationWindow):
@@ -517,6 +586,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_find_count_label: Gtk.Label | None = None
         self._reader_find_matches: list[tuple[int, int]] = []
         self._reader_find_index = -1
+        self._reader_busy_box: Gtk.Widget | None = None
+        self._reader_busy_spinner: Gtk.Spinner | None = None
+        self._reader_busy_label: Gtk.Label | None = None
         self._reader_citation_italic_tag: Gtk.TextTag | None = None
         self._reader_citation_link_tags: list[Gtk.TextTag] = []
         self._reader_citation_link_lookup: dict[Gtk.TextTag, CitedCaseLink] = {}
@@ -524,6 +596,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_citation_click_gesture: Gtk.GestureClick | None = None
         self._reader_header_citation: FormattedCitation | None = None
         self._reader_has_official_pagination = False
+        self._case_load_generation = 0
         self._last_lookup_text = ""
         self._external_lookup_window: Gtk.Window | None = None
         self._external_lookup_query: str = ""
@@ -547,6 +620,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._case_completion_list_box: Gtk.ListBox | None = None
         self._case_completion_changing = False
         self._case_completion_click_gesture: Gtk.GestureClick | None = None
+        self._case_suggestion_refresh_pending = False
         self._css_provider: Gtk.CssProvider | None = None
         self._status_label: Gtk.Label | None = None
 
@@ -771,6 +845,17 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
               font-size: 0.86rem;
               color: alpha(@window_fg_color, 0.72);
             }}
+            box.reader-busy-chip {{
+              background-color: alpha(@window_bg_color, 0.96);
+              border: 1px solid alpha(@window_fg_color, 0.14);
+              border-radius: 8px;
+              padding: 8px 12px;
+              box-shadow: 0 2px 8px alpha(@window_fg_color, 0.16);
+            }}
+            label.reader-busy-label {{
+              font-size: 0.9rem;
+              color: alpha(@window_fg_color, 0.72);
+            }}
             label.app-status-strip {{
               min-height: 18px;
               font-size: 0.88rem;
@@ -902,18 +987,49 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _refresh_case_suggestion_index(self, *, force: bool = False) -> None:
         if self._case_suggestions_loaded and not force:
             return
+        self._case_suggestions = self._load_case_suggestion_index()
+        self._case_suggestions_loaded = True
+
+    def _load_case_suggestion_index(self) -> list[CaseSuggestion]:
         configured_path = concordance_file_path()
         concordance_suggestions: list[CaseSuggestion] = []
         if configured_path is not None:
             concordance_suggestions = load_concordance_case_suggestions(configured_path)
         library_suggestions = case_suggestions_from_library(self.client.library)
-        self._case_suggestions = merge_case_suggestions(concordance_suggestions, library_suggestions)
+        return merge_case_suggestions(concordance_suggestions, library_suggestions)
+
+    def _refresh_case_suggestion_index_async(self, *, force: bool = False) -> None:
+        if self._case_suggestion_refresh_pending:
+            return
+        if self._case_suggestions_loaded and not force:
+            return
+        self._case_suggestion_refresh_pending = True
+        thread = threading.Thread(target=self._case_suggestion_index_worker, daemon=True)
+        thread.start()
+
+    def _case_suggestion_index_worker(self) -> None:
+        try:
+            suggestions = self._load_case_suggestion_index()
+        except Exception:
+            GLib.idle_add(self._finish_case_suggestion_index_refresh, self._case_suggestions)
+            return
+        GLib.idle_add(self._finish_case_suggestion_index_refresh, suggestions)
+
+    def _finish_case_suggestion_index_refresh(self, suggestions: list[CaseSuggestion]) -> bool:
+        self._case_suggestions = suggestions
         self._case_suggestions_loaded = True
+        self._case_suggestion_refresh_pending = False
+        if self.citation_entry.has_focus():
+            query = self.citation_entry.get_text().strip()
+            self._show_case_completion(matching_case_suggestions(query, self._case_suggestions))
+        return False
 
     def _on_citation_entry_changed(self, _entry: Gtk.Entry) -> None:
         if self._case_completion_changing:
             return
-        self._refresh_case_suggestion_index()
+        if not self._case_suggestions_loaded:
+            self._refresh_case_suggestion_index_async()
+            return
         query = self.citation_entry.get_text().strip()
         matches = matching_case_suggestions(query, self._case_suggestions)
         self._show_case_completion(matches)
@@ -1067,18 +1183,49 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def _open_case_suggestion(self, suggestion: CaseSuggestion) -> None:
         if suggestion.cluster_id:
-            cluster = self.client.library.read_cluster(suggestion.cluster_id)
-            if cluster is not None:
-                cluster_id = self.client.cache.upsert_cluster(cluster)
-                if cluster_id:
-                    self._set_sidebar_clusters(self.client.cached_clusters(), select_cluster_id=cluster_id)
-                    self._refresh_case_suggestion_index(force=True)
-                    if self.case_list.get_selected_row() is None:
-                        self._set_status(f"Library: cached {suggestion.lookup_text}, but could not select the case.")
-                    else:
-                        self._set_status(f"Library: opened {suggestion.lookup_text}.")
-                    return
+            self._set_status(f"Opening {suggestion.lookup_text} from Library...")
+            self._set_reader_busy(True, "Opening from Library...")
+            thread = threading.Thread(
+                target=self._library_case_suggestion_worker,
+                args=(suggestion,),
+                daemon=True,
+            )
+            thread.start()
+            return
         self._start_lookup(suggestion.lookup_text)
+
+    def _library_case_suggestion_worker(self, suggestion: CaseSuggestion) -> None:
+        try:
+            cluster = self.client.library.read_cluster(suggestion.cluster_id)
+            if cluster is None:
+                GLib.idle_add(self._start_lookup_from_idle, suggestion.lookup_text)
+                return
+            cluster_id = self.client.cache.upsert_cluster(cluster)
+            if not cluster_id:
+                GLib.idle_add(self._start_lookup_from_idle, suggestion.lookup_text)
+                return
+            result = LibrarySuggestionOpenResult(
+                lookup_text=suggestion.lookup_text,
+                cluster_id=cluster_id,
+                clusters=self.client.cached_clusters(),
+            )
+            GLib.idle_add(self._finish_library_case_suggestion_open, result)
+        except Exception as exc:
+            GLib.idle_add(self._apply_error, f"Unable to open {suggestion.lookup_text}: {exc}")
+
+    def _start_lookup_from_idle(self, lookup_text: str) -> bool:
+        self._start_lookup(lookup_text)
+        return False
+
+    def _finish_library_case_suggestion_open(self, result: LibrarySuggestionOpenResult) -> bool:
+        self._set_sidebar_clusters(result.clusters, select_cluster_id=result.cluster_id)
+        self._refresh_case_suggestion_index_async(force=True)
+        if self.case_list.get_selected_row() is None:
+            self._set_reader_busy(False)
+            self._set_status(f"Library: cached {result.lookup_text}, but could not select the case.")
+        else:
+            self._set_status(f"Library: opened {result.lookup_text}.")
+        return False
 
     def _lookup_text_from_entry(self, entry_text: str) -> str:
         self._refresh_case_suggestion_index()
@@ -1170,8 +1317,30 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         reader_overlay.set_vexpand(True)
         reader_overlay.set_child(frame)
         reader_overlay.add_overlay(self._build_reader_find_bar())
+        reader_overlay.add_overlay(self._build_reader_busy_indicator())
         box.append(reader_overlay)
         self.reader_buffer.set_text("")
+        return box
+
+    def _build_reader_busy_indicator(self) -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        box.add_css_class("reader-busy-chip")
+        box.set_halign(Gtk.Align.CENTER)
+        box.set_valign(Gtk.Align.CENTER)
+        box.set_can_target(False)
+        box.set_visible(False)
+
+        spinner = Gtk.Spinner()
+        spinner.set_size_request(18, 18)
+        box.append(spinner)
+
+        label = Gtk.Label(label="Loading...", xalign=0)
+        label.add_css_class("reader-busy-label")
+        box.append(label)
+
+        self._reader_busy_box = box
+        self._reader_busy_spinner = spinner
+        self._reader_busy_label = label
         return box
 
     def _build_reader_find_bar(self) -> Gtk.Widget:
@@ -1221,6 +1390,17 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_find_entry = entry
         self._reader_find_count_label = count
         return bar
+
+    def _set_reader_busy(self, busy: bool, text: str = "Loading...") -> None:
+        if self._reader_busy_box is None or self._reader_busy_spinner is None:
+            return
+        if self._reader_busy_label is not None:
+            self._reader_busy_label.set_text(text)
+        self._reader_busy_box.set_visible(busy)
+        if busy:
+            self._reader_busy_spinner.start()
+        else:
+            self._reader_busy_spinner.stop()
 
     def _build_agent_box(self) -> Gtk.Widget:
         frame = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -1377,6 +1557,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         text: str,
         page_markers: list[PageMarker] | None = None,
     ) -> bool:
+        self._set_reader_busy(False)
         self._close_reader_find(clear_entry=True)
         self._reader_text = text
         self.reader_buffer.set_text(text)
@@ -1397,6 +1578,110 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             target = self._pending_quote_target
             self._pending_quote_target = None
             self._highlight_reader_phrase(target.phrase)
+        return False
+
+    def _case_load_is_current(self, generation: int, cluster_id: str) -> bool:
+        if generation != self._case_load_generation:
+            return False
+        selected_cluster_id = cluster_id_from_cluster(self._selected_cluster or {})
+        return not cluster_id or cluster_id == selected_cluster_id
+
+    def _start_reader_payload_render(self, payload: CaseReaderPayload) -> bool:
+        if not self._case_load_is_current(payload.generation, payload.cluster_id):
+            return False
+        self._close_reader_find(clear_entry=True)
+        self._reader_text = ""
+        self._reader_has_official_pagination = False
+        self._clear_reader_citation_links()
+        self.reader_buffer.set_text("")
+        GLib.idle_add(self._insert_reader_payload_text_chunk, payload, 0)
+        return False
+
+    def _insert_reader_payload_text_chunk(self, payload: CaseReaderPayload, offset: int) -> bool:
+        if not self._case_load_is_current(payload.generation, payload.cluster_id):
+            return False
+        end = min(offset + READER_RENDER_TEXT_CHUNK_SIZE, len(payload.text))
+        if end > offset:
+            self.reader_buffer.insert(
+                self.reader_buffer.get_end_iter(),
+                payload.text[offset:end],
+            )
+        if end < len(payload.text):
+            GLib.idle_add(self._insert_reader_payload_text_chunk, payload, end)
+            return False
+        self._reader_text = payload.text
+        GLib.idle_add(self._apply_reader_payload_page_marker_chunk, payload, 0)
+        return False
+
+    def _apply_reader_payload_page_marker_chunk(self, payload: CaseReaderPayload, index: int) -> bool:
+        if not self._case_load_is_current(payload.generation, payload.cluster_id):
+            return False
+        end_index = min(index + READER_RENDER_TAG_CHUNK_SIZE, len(payload.page_markers))
+        for marker in payload.page_markers[index:end_index]:
+            start = max(0, min(marker.start_offset, len(payload.text)))
+            end = max(start, min(marker.end_offset, len(payload.text)))
+            if start == end:
+                continue
+            self.reader_buffer.apply_tag(
+                self.page_marker_tag,
+                self.reader_buffer.get_iter_at_offset(start),
+                self.reader_buffer.get_iter_at_offset(end),
+            )
+        if end_index < len(payload.page_markers):
+            GLib.idle_add(self._apply_reader_payload_page_marker_chunk, payload, end_index)
+            return False
+        GLib.idle_add(self._apply_reader_payload_italic_chunk, payload, 0)
+        return False
+
+    def _apply_reader_payload_italic_chunk(self, payload: CaseReaderPayload, index: int) -> bool:
+        if not self._case_load_is_current(payload.generation, payload.cluster_id):
+            return False
+        if self._reader_citation_italic_tag is None:
+            GLib.idle_add(self._apply_reader_payload_link_chunk, payload, 0)
+            return False
+        end_index = min(index + READER_RENDER_TAG_CHUNK_SIZE, len(payload.italic_spans))
+        for span in payload.italic_spans[index:end_index]:
+            start = max(0, min(span.start_offset, len(payload.text)))
+            end = max(start, min(span.end_offset, len(payload.text)))
+            if start == end:
+                continue
+            self.reader_buffer.apply_tag(
+                self._reader_citation_italic_tag,
+                self.reader_buffer.get_iter_at_offset(start),
+                self.reader_buffer.get_iter_at_offset(end),
+            )
+        if end_index < len(payload.italic_spans):
+            GLib.idle_add(self._apply_reader_payload_italic_chunk, payload, end_index)
+            return False
+        GLib.idle_add(self._apply_reader_payload_link_chunk, payload, 0)
+        return False
+
+    def _apply_reader_payload_link_chunk(self, payload: CaseReaderPayload, index: int) -> bool:
+        if not self._case_load_is_current(payload.generation, payload.cluster_id):
+            return False
+        end_index = min(index + READER_RENDER_TAG_CHUNK_SIZE, len(payload.cited_links))
+        for link_index, link in enumerate(payload.cited_links[index:end_index], start=index):
+            self._apply_reader_citation_link(link_index, link)
+        if end_index < len(payload.cited_links):
+            GLib.idle_add(self._apply_reader_payload_link_chunk, payload, end_index)
+            return False
+        GLib.idle_add(self._finish_reader_payload_render, payload)
+        return False
+
+    def _finish_reader_payload_render(self, payload: CaseReaderPayload) -> bool:
+        if not self._case_load_is_current(payload.generation, payload.cluster_id):
+            return False
+        if self._pending_quote_target is not None:
+            target = self._pending_quote_target
+            self._pending_quote_target = None
+            self._highlight_reader_phrase(target.phrase)
+        self._set_reader_busy(False)
+        self._finish_case_quality_status(
+            payload.cluster_id,
+            payload.quality_eligible,
+            payload.quality_reason,
+            payload.opinion_source,
+        )
         return False
 
     def _set_reader_header(
@@ -1438,30 +1723,36 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._start_cited_by_lookup(cluster)
 
     def _apply_reader_citation_links(self, text: str) -> None:
+        self._clear_reader_citation_links()
+        excluded = cluster_citation_texts(self._selected_cluster)
+        for index, link in enumerate(cited_case_links(text, excluded_citations=excluded)):
+            self._apply_reader_citation_link(index, link)
+
+    def _clear_reader_citation_links(self) -> None:
         table = self.reader_buffer.get_tag_table()
         if table is not None:
             for tag in self._reader_citation_link_tags:
                 table.remove(tag)
         self._reader_citation_link_tags.clear()
         self._reader_citation_link_lookup.clear()
-        excluded = cluster_citation_texts(self._selected_cluster)
-        for index, link in enumerate(cited_case_links(text, excluded_citations=excluded)):
-            start = max(0, min(link.start_offset, len(text)))
-            end = max(start, min(link.end_offset, len(text)))
-            if start == end:
-                continue
-            tag = self.reader_buffer.create_tag(
-                f"reader-citation-link-{index}",
-                underline=Pango.Underline.SINGLE,
-                foreground="#1a5fb4",
-            )
-            self.reader_buffer.apply_tag(
-                tag,
-                self.reader_buffer.get_iter_at_offset(start),
-                self.reader_buffer.get_iter_at_offset(end),
-            )
-            self._reader_citation_link_tags.append(tag)
-            self._reader_citation_link_lookup[tag] = link
+
+    def _apply_reader_citation_link(self, index: int, link: CitedCaseLink) -> None:
+        start = max(0, min(link.start_offset, len(self._reader_text)))
+        end = max(start, min(link.end_offset, len(self._reader_text)))
+        if start == end:
+            return
+        tag = self.reader_buffer.create_tag(
+            f"reader-citation-link-{index}",
+            underline=Pango.Underline.SINGLE,
+            foreground="#1a5fb4",
+        )
+        self.reader_buffer.apply_tag(
+            tag,
+            self.reader_buffer.get_iter_at_offset(start),
+            self.reader_buffer.get_iter_at_offset(end),
+        )
+        self._reader_citation_link_tags.append(tag)
+        self._reader_citation_link_lookup[tag] = link
 
     def _apply_reader_citation_italics(self, text: str) -> None:
         if self._reader_citation_italic_tag is None:
@@ -1579,7 +1870,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _finish_cited_case_lookup(self, citation: str, cluster_id: str, source: str) -> bool:
         clusters = self.client.cached_clusters()
         self._set_sidebar_clusters(clusters, select_cluster_id=cluster_id)
-        self._refresh_case_suggestion_index(force=True)
+        self._refresh_case_suggestion_index_async(force=True)
         if self.case_list.get_selected_row() is None:
             self._set_status(f"Cached {citation}, but could not select the case.")
         else:
@@ -1964,7 +2255,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.client = CourtListenerClient.default()
         self._install_css()
         self._load_cached_cases()
-        self._refresh_case_suggestion_index(force=True)
+        self._refresh_case_suggestion_index_async(force=True)
         self._set_status("Settings saved.")
 
     def _on_open_settings(self, _action: Gio.SimpleAction, _parameter: GLib.Variant | None) -> None:
@@ -1978,11 +2269,31 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return False
 
     def _on_clear_cache(self, _action: Gio.SimpleAction, _parameter: GLib.Variant | None) -> None:
-        self.client.cache.clear()
+        try:
+            trash_path = self.client.cache.detach_for_clear()
+        except Exception as exc:
+            self._set_status(f"Unable to clear Research Cache: {exc}")
+            return
         self._load_cached_cases()
         self._set_reader_header("")
         self.reader_buffer.set_text("")
-        self._set_status("Research Cache cleared. Library preserved.")
+        self._set_reader_busy(False)
+        if trash_path is None:
+            self._set_status("Research Cache cleared. Library preserved.")
+            return
+        self._set_status("Research Cache cleared. Library preserved. Deleting old files in background.")
+        thread = threading.Thread(
+            target=self._delete_detached_cache_worker,
+            args=(trash_path,),
+            daemon=True,
+        )
+        thread.start()
+
+    def _delete_detached_cache_worker(self, trash_path: Path) -> None:
+        try:
+            shutil.rmtree(trash_path)
+        except OSError as exc:
+            GLib.idle_add(self._set_status, f"Research Cache cleared, but old files remain: {exc}")
 
     def _on_open_official_search(
         self,
@@ -2139,6 +2450,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if self._external_lookup_auto_find_button is not None:
             self._external_lookup_auto_find_button.set_sensitive(False)
             self._external_lookup_auto_find_button.set_label("Searching Scholar...")
+        self._set_reader_busy(True, "Searching Google Scholar...")
         self._set_status("Auto-searching Google Scholar...")
         thread = threading.Thread(
             target=self._external_lookup_auto_find_worker,
@@ -2181,6 +2493,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             if auto_import:
                 self._start_scholar_auto_import(query, result)
                 return False
+            self._set_reader_busy(False)
             # Reuse the existing Import + Fetch flow with the discovered URL.
             self._on_import_official_text(
                 None,
@@ -2191,6 +2504,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             )
             return False
 
+        self._set_reader_busy(False)
         self._set_status(
             f"Auto-Find could not complete: {error or 'unknown error'}. "
             "Open Scholar manually and paste the case URL."
@@ -2203,6 +2517,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return False
 
     def _start_scholar_auto_import(self, query: str, result: ScholarSearchResult) -> None:
+        self._set_reader_busy(True, "Importing Scholar text...")
         thread = threading.Thread(
             target=self._scholar_auto_import_worker,
             args=(query, result),
@@ -2229,6 +2544,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         source_url: str,
         message: str,
     ) -> bool:
+        self._set_reader_busy(False)
         self._set_status(f"Scholar found a case, but automatic import failed: {message}")
         self._show_external_lookup_window(query, initial_source_url=source_url)
         return False
@@ -2445,13 +2761,17 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         fallback_source_url: str = "",
     ) -> bool:
         button.set_sensitive(True)
-        self._set_status(message)
         if fallback_query.strip():
+            self._set_reader_busy(False)
+            self._set_status("Scholar result needs manual review. Paste or choose a case URL.")
             self._show_external_lookup_window(
                 fallback_query,
                 initial_source_url=fallback_source_url,
             )
             window.close()
+        else:
+            self._set_reader_busy(False)
+            self._set_status(message)
         return False
 
     def _finish_import_fetch_url(
@@ -2568,7 +2888,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             [{"status": 200, "clusters": [cluster]}],
         )
         self._set_sidebar_clusters(self.client.cached_clusters(), select_cluster_id=cluster_id)
-        self._refresh_case_suggestion_index(force=True)
+        self._refresh_case_suggestion_index_async(force=True)
         self._reader_has_official_pagination = True
         self._set_reader_header(
             self._case_header_text(cluster),
@@ -2593,6 +2913,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._hide_case_completion()
         self._set_status(f"Looking up {citation}...")
         self._set_reader_header("")
+        self._set_reader_busy(True, "Looking up...")
         self.reader_buffer.set_text("Loading...")
         thread = threading.Thread(target=self._lookup_worker, args=(citation,), daemon=True)
         thread.start()
@@ -2623,8 +2944,22 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             shown_clusters = dedupe_case_clusters(raw_clusters)
             status = self._lookup_status_text(result, raw_clusters, shown_clusters)
             GLib.idle_add(self._apply_lookup_result, result, shown_clusters, status, citation)
-        except (CourtListenerError, ValueError) as exc:
+        except CourtListenerError:
+            GLib.idle_add(self._fallback_lookup_to_scholar, citation)
+        except ValueError as exc:
             GLib.idle_add(self._apply_error, str(exc))
+
+    def _fallback_lookup_to_scholar(self, citation: str) -> bool:
+        self._set_reader_header("")
+        self.reader_buffer.set_text("")
+        self._set_reader_busy(True, "Searching Google Scholar...")
+        self._set_status("CourtListener lookup unavailable. Searching Google Scholar...")
+        self._start_scholar_auto_find(
+            citation,
+            fallback_to_window=True,
+            auto_import=True,
+        )
+        return False
 
     def _lookup_status_text(
         self,
@@ -2670,7 +3005,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _load_cached_cases(self) -> None:
         clusters = self.client.cached_clusters()
         self._set_sidebar_clusters(clusters)
-        self._refresh_case_suggestion_index(force=True)
+        self._refresh_case_suggestion_index_async(force=True)
         if clusters:
             self._set_status(f"{len(clusters)} Research Cache item(s).")
         else:
@@ -2765,11 +3100,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._selected_cluster = None
             self._set_reader_header("")
             self.reader_buffer.set_text("")
+            self._set_reader_busy(False)
         self._set_sidebar_clusters(
             self.client.cached_clusters(),
             select_cluster_id="" if removed_selected else current_cluster_id,
         )
-        self._refresh_case_suggestion_index(force=True)
+        self._refresh_case_suggestion_index_async(force=True)
         self._set_status(f"Removed {title} from Research Cache. Library preserved.")
 
     def _apply_lookup_result(
@@ -2792,7 +3128,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             select_first=bool(clusters),
         )
         self._set_status(status)
-        self._refresh_case_suggestion_index(force=True)
+        self._refresh_case_suggestion_index_async(force=True)
         if clusters:
             if self.case_list.get_selected_row() is None:
                 first = self.case_list.get_row_at_index(0)
@@ -2800,17 +3136,22 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                     self.case_list.select_row(first)
         else:
             self._set_reader_header("")
-            self.reader_buffer.set_text(status)
             if citation.strip():
-                self._set_status(f"{status}. Trying Scholar...")
+                self.reader_buffer.set_text("")
+                self._set_reader_busy(True, "Searching Google Scholar...")
+                self._set_status("No CourtListener match shown. Searching Google Scholar...")
                 self._start_scholar_auto_find(
                     citation,
                     fallback_to_window=True,
                     auto_import=True,
                 )
+            else:
+                self._set_reader_busy(False)
+                self.reader_buffer.set_text(status)
         return False
 
     def _apply_error(self, message: str) -> bool:
+        self._set_reader_busy(False)
         self._set_status(message)
         self._set_reader_header("")
         self.reader_buffer.set_text(message)
@@ -2823,66 +3164,47 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if not isinstance(index, int) or index < 0 or index >= len(self._clusters):
             return
         cluster = self._clusters[index]
+        generation = self._begin_case_load(cluster)
+        thread = threading.Thread(target=self._case_worker, args=(cluster, generation), daemon=True)
+        thread.start()
+
+    def _begin_case_load(self, cluster: dict[str, Any]) -> int:
+        self._case_load_generation += 1
+        generation = self._case_load_generation
         self._selected_cluster = cluster
+        self._reader_has_official_pagination = False
         self._set_reader_header(
             self._case_header_text(cluster),
             self._case_header_citation(cluster),
         )
-        self.reader_buffer.set_text(f"Loading {cluster_title(cluster)}...")
-        thread = threading.Thread(target=self._case_worker, args=(cluster,), daemon=True)
-        thread.start()
+        title = cluster_title(cluster)
+        self.reader_buffer.set_text("")
+        self._reader_text = ""
+        self._clear_reader_citation_links()
+        self._set_reader_busy(True, f"Loading {title}...")
+        self._set_status(f"Loading {title}...")
+        return generation
 
-    def _case_worker(self, cluster: dict[str, Any]) -> None:
+    def _case_worker(self, cluster: dict[str, Any], generation: int) -> None:
         cluster_id = cluster_id_from_cluster(cluster)
         try:
             opinions = self.client.fetch_cluster_opinions(cluster)
             opinion_source = self.client.last_opinion_source
-            text_parts: list[str] = []
-            page_markers: list[PageMarker] = []
-            text_length = 0
-            for opinion in opinions:
-                display = self.client.opinion_display(opinion)
-                if not display.text:
-                    continue
-                if text_parts:
-                    text_parts.append("\n\n")
-                    text_length += 2
-                base_offset = text_length
-                text_parts.append(display.text)
-                text_length += len(display.text)
-                page_markers.extend(
-                    PageMarker(
-                        page_label=marker.page_label,
-                        marker_text=marker.marker_text,
-                        start_offset=base_offset + marker.start_offset,
-                        end_offset=base_offset + marker.end_offset,
-                        source_field=marker.source_field,
-                    )
-                    for marker in display.page_markers
-                )
-            text = "".join(text_parts)
-            if not text:
-                text = "No opinion text found."
-            quality = official_pagination_quality(
+            displays = [self.client.opinion_display(opinion) for opinion in opinions]
+            payload = build_case_reader_payload(
                 cluster,
-                [opinion_display_text(opinion) for opinion in opinions],
+                displays,
+                generation=generation,
+                opinion_source=opinion_source,
             )
-            GLib.idle_add(
-                self._set_reader_text,
-                text,
-                page_markers,
-            )
-            GLib.idle_add(
-                self._finish_case_quality_status,
-                cluster_id,
-                quality.eligible,
-                quality.reason,
-                opinion_source,
-            )
-        except CourtListenerError as exc:
-            GLib.idle_add(self._apply_case_error, cluster_id, str(exc))
+            GLib.idle_add(self._start_reader_payload_render, payload)
+        except (CourtListenerError, ValueError, OSError) as exc:
+            GLib.idle_add(self._apply_case_error, cluster_id, str(exc), generation)
 
-    def _apply_case_error(self, cluster_id: str, message: str) -> bool:
+    def _apply_case_error(self, cluster_id: str, message: str, generation: int = 0) -> bool:
+        if generation and not self._case_load_is_current(generation, cluster_id):
+            return False
+        self._set_reader_busy(False)
         if cluster_id and cluster_id == self._pending_auto_scholar_cluster_id:
             self._pending_auto_scholar_cluster_id = ""
             self._pending_auto_scholar_query = ""
@@ -2904,8 +3226,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if eligible:
             self._set_status(self._official_pagination_status(source))
         elif pending_query:
-            detail = f": {reason}" if reason else ""
-            self._set_status(f"CourtListener copy is not official-paginated{detail}. Trying Scholar...")
+            self._set_reader_busy(True, "Searching Google Scholar...")
+            self._set_status("Searching Google Scholar for official reporter text...")
             self._start_scholar_auto_find(
                 pending_query,
                 fallback_to_window=True,
@@ -4000,7 +4322,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self.client.cached_clusters(),
             select_cluster_id=cluster_id,
         )
-        self._refresh_case_suggestion_index(force=True)
+        self._refresh_case_suggestion_index_async(force=True)
         if self.case_list.get_selected_row() is None:
             self._set_status(f"Cached {title}, but could not select the case.")
         else:
