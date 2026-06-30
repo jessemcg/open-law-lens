@@ -195,6 +195,104 @@ class LibraryTests(unittest.TestCase):
 
             self.assertEqual(library.read_lookup("1   Cal. 2"), lookup)
 
+    def test_official_pagination_audit_identifies_ineligible_cases(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            eligible = {
+                "id": 101,
+                "case_name": "Eligible Case",
+                "citations": [{"volume": "10", "reporter": "Cal.App.5th", "page": "25"}],
+            }
+            ineligible = {
+                "id": 102,
+                "case_name": "Ineligible Case",
+                "citations": [{"volume": "11", "reporter": "Cal.App.5th", "page": "30"}],
+            }
+            library.upsert_cluster(eligible)
+            library.upsert_opinion(
+                {"id": 201, "cluster_id": 101, "plain_text": "[*25]Opening.\n\n[*26]Next."},
+                cluster=eligible,
+            )
+            library.upsert_cluster(ineligible)
+            library.upsert_opinion(
+                {"id": 202, "cluster_id": 102, "plain_text": "No reporter page markers."},
+                cluster=ineligible,
+            )
+
+            audit = library.official_pagination_audit()
+
+            by_cluster = {candidate.cluster_id: candidate for candidate in audit}
+            self.assertTrue(by_cluster["101"].eligible)
+            self.assertFalse(by_cluster["102"].eligible)
+            self.assertEqual(by_cluster["102"].marker_count, 0)
+            self.assertIn("No embedded reporter page markers", by_cluster["102"].reason)
+
+    def test_prune_ineligible_official_pagination_removes_lookup_references(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            eligible = {
+                "id": 101,
+                "case_name": "Eligible Case",
+                "citations": [{"volume": "10", "reporter": "Cal.App.5th", "page": "25"}],
+            }
+            ineligible = {
+                "id": 102,
+                "case_name": "Ineligible Case",
+                "citations": [{"volume": "11", "reporter": "Cal.App.5th", "page": "30"}],
+            }
+            library.upsert_lookup("10 Cal.App.5th 25", [{"status": 200, "clusters": [eligible, ineligible]}])
+            library.upsert_lookup("11 Cal.App.5th 30", [{"status": 200, "clusters": [ineligible]}])
+            library.upsert_opinion(
+                {"id": 201, "cluster_id": 101, "plain_text": "[*25]Opening.\n\n[*26]Next."},
+                cluster=eligible,
+            )
+            library.upsert_opinion(
+                {"id": 202, "cluster_id": 102, "plain_text": "No reporter page markers."},
+                cluster=ineligible,
+            )
+
+            result = library.prune_ineligible_official_pagination(create_backup=False)
+
+            self.assertIsNone(result.backup_path)
+            self.assertEqual([candidate.cluster_id for candidate in result.pruned], ["102"])
+            self.assertEqual(result.kept_count, 1)
+            self.assertIsNotNone(library.read_cluster("101"))
+            self.assertIsNotNone(library.read_opinion("201"))
+            self.assertIsNone(library.read_cluster("102"))
+            self.assertIsNone(library.read_opinion("202"))
+            self.assertIsNone(library.read_lookup("11 Cal.App.5th 30"))
+            mixed_lookup = library.read_lookup("10 Cal.App.5th 25")
+            self.assertIsNotNone(mixed_lookup)
+            assert mixed_lookup is not None
+            self.assertEqual(
+                [cluster["id"] for cluster in mixed_lookup[0]["clusters"]],
+                [101],
+            )
+
+    def test_prune_ineligible_official_pagination_creates_backup(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            ineligible = {
+                "id": 102,
+                "case_name": "Ineligible Case",
+                "citations": [{"volume": "11", "reporter": "Cal.App.5th", "page": "30"}],
+            }
+            library.upsert_cluster(ineligible)
+            library.upsert_opinion(
+                {"id": 202, "cluster_id": 102, "plain_text": "No reporter page markers."},
+                cluster=ineligible,
+            )
+
+            result = library.prune_ineligible_official_pagination()
+
+            self.assertIsNotNone(result.backup_path)
+            assert result.backup_path is not None
+            self.assertTrue(result.backup_path.exists())
+            self.assertEqual(result.backup_path.parent, Path(temp_dir))
+
     def test_opinion_display_text_preserves_explicit_page_markers(self) -> None:
         opinion = {
             "id": 10,

@@ -7,7 +7,7 @@ from typing import Any
 
 from .cache import JsonCache
 from .client import CourtListenerClient, CourtListenerError
-from .library import CaseLibrary
+from .library import CaseLibrary, LibraryPruneCandidate
 
 
 def _print_json(value: Any) -> None:
@@ -91,6 +91,39 @@ def _cmd_library_db(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_prune_candidate(candidate: LibraryPruneCandidate) -> None:
+    citation = candidate.official_citation or candidate.citation_text
+    citation_part = f" | {citation}" if citation else ""
+    reason_part = f" | {candidate.reason}" if candidate.reason else ""
+    print(
+        f"{candidate.title}{citation_part} | cluster {candidate.cluster_id} "
+        f"| {candidate.opinion_count} opinion(s) | {candidate.marker_count} marker(s)"
+        f"{reason_part}"
+    )
+
+
+def _cmd_prune_library(args: argparse.Namespace) -> int:
+    library = CaseLibrary.default()
+    if args.apply:
+        result = library.prune_ineligible_official_pagination(create_backup=True)
+        print(
+            f"Pruned {len(result.pruned)} ineligible library case(s); "
+            f"kept {result.kept_count} eligible case(s)."
+        )
+        if result.backup_path is not None:
+            print(f"Backup: {result.backup_path}")
+        return 0
+    candidates = library.official_pagination_audit()
+    ineligible = [candidate for candidate in candidates if not candidate.eligible]
+    print(
+        f"Dry run: {len(ineligible)} ineligible library case(s); "
+        f"{len(candidates) - len(ineligible)} eligible case(s)."
+    )
+    for candidate in ineligible:
+        _print_prune_candidate(candidate)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="open-law-lens")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -118,6 +151,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     library_db_parser = subparsers.add_parser("library-db", help="print the library database path")
     library_db_parser.set_defaults(func=_cmd_library_db)
+
+    prune_library_parser = subparsers.add_parser(
+        "prune-library",
+        help="remove durable library cases that lack official reporter pagination",
+    )
+    prune_library_mode = prune_library_parser.add_mutually_exclusive_group()
+    prune_library_mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="list ineligible library cases without changing the database",
+    )
+    prune_library_mode.add_argument(
+        "--apply",
+        action="store_true",
+        help="back up the database and remove ineligible library cases",
+    )
+    prune_library_parser.set_defaults(func=_cmd_prune_library)
     return parser
 
 

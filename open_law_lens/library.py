@@ -192,6 +192,25 @@ class DisplayText:
     page_markers: list[PageMarker]
 
 
+@dataclass(frozen=True)
+class LibraryPruneCandidate:
+    cluster_id: str
+    title: str
+    citation_text: str
+    opinion_count: int
+    marker_count: int
+    eligible: bool
+    official_citation: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class LibraryPruneResult:
+    backup_path: Path | None
+    pruned: list[LibraryPruneCandidate]
+    kept_count: int
+
+
 class _DisplayTextExtractor(HTMLParser):
     BLOCK_TAGS = {"p", "div", "li", "tr", "h1", "h2", "h3", "h4", "center", "author"}
 
@@ -888,6 +907,180 @@ class CaseLibrary:
             if cluster is not None:
                 clusters.append(cluster)
         return clusters
+
+    def official_pagination_audit(self) -> list[LibraryPruneCandidate]:
+        from .quality import official_pagination_quality
+
+        candidates: list[LibraryPruneCandidate] = []
+        for entry in self.list_case_entries():
+            cluster_id = str(entry.get("cluster_id") or "").strip()
+            cluster = self.read_cluster(cluster_id) if cluster_id else None
+            if cluster is None:
+                continue
+            opinion_ids = self.read_case_opinion_ids(cluster_id)
+            opinions = [
+                opinion
+                for opinion_id in opinion_ids
+                if (opinion := self.read_opinion(opinion_id)) is not None
+            ]
+            displays = [opinion_display_text(opinion) for opinion in opinions]
+            quality = official_pagination_quality(cluster, displays)
+            marker_count = sum(len(display.page_markers) for display in displays)
+            candidates.append(
+                LibraryPruneCandidate(
+                    cluster_id=cluster_id,
+                    title=str(entry.get("title") or _cluster_title(cluster)),
+                    citation_text=str(entry.get("citation_text") or ""),
+                    opinion_count=len(opinions),
+                    marker_count=marker_count,
+                    eligible=quality.eligible,
+                    official_citation=quality.official_citation,
+                    reason=quality.reason,
+                )
+            )
+        return candidates
+
+    def prune_ineligible_official_pagination(
+        self,
+        *,
+        create_backup: bool = True,
+    ) -> LibraryPruneResult:
+        candidates = self.official_pagination_audit()
+        pruned = [candidate for candidate in candidates if not candidate.eligible]
+        backup_path = self.backup() if create_backup and pruned else None
+        self._delete_cases_and_lookup_references([candidate.cluster_id for candidate in pruned])
+        return LibraryPruneResult(
+            backup_path=backup_path,
+            pruned=pruned,
+            kept_count=len(candidates) - len(pruned),
+        )
+
+    def backup(self) -> Path:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        backup_path = self.path.with_name(f"{self.path.stem}.backup-{timestamp}{self.path.suffix}")
+        suffix = 1
+        while backup_path.exists():
+            backup_path = self.path.with_name(
+                f"{self.path.stem}.backup-{timestamp}-{suffix}{self.path.suffix}"
+            )
+            suffix += 1
+        source = self.connect()
+        target = sqlite3.connect(backup_path)
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+            source.close()
+        return backup_path
+
+    def _delete_cases_and_lookup_references(self, cluster_ids: list[str]) -> None:
+        prune_ids = {str(cluster_id).strip() for cluster_id in cluster_ids if str(cluster_id).strip()}
+        if not prune_ids:
+            return
+        with self.connection() as conn:
+            self._rewrite_lookup_results_for_deleted_clusters(conn, prune_ids)
+            opinion_ids = self._opinion_ids_for_deleted_clusters(conn, prune_ids)
+            if opinion_ids:
+                opinion_placeholders = ",".join("?" for _ in opinion_ids)
+                conn.execute(
+                    f"DELETE FROM page_markers WHERE opinion_id IN ({opinion_placeholders})",
+                    tuple(opinion_ids),
+                )
+                conn.execute(
+                    f"DELETE FROM opinions WHERE opinion_id IN ({opinion_placeholders})",
+                    tuple(opinion_ids),
+                )
+            case_placeholders = ",".join("?" for _ in prune_ids)
+            conn.execute(
+                f"DELETE FROM citation_aliases WHERE cluster_id IN ({case_placeholders})",
+                tuple(prune_ids),
+            )
+            conn.execute(
+                f"DELETE FROM cases WHERE cluster_id IN ({case_placeholders})",
+                tuple(prune_ids),
+            )
+
+    def _opinion_ids_for_deleted_clusters(
+        self,
+        conn: sqlite3.Connection,
+        prune_ids: set[str],
+    ) -> set[str]:
+        case_placeholders = ",".join("?" for _ in prune_ids)
+        rows = conn.execute(
+            f"SELECT opinion_ids_json FROM cases WHERE cluster_id IN ({case_placeholders})",
+            tuple(prune_ids),
+        ).fetchall()
+        candidate_opinion_ids: set[str] = set()
+        for row in rows:
+            values = _json_loads(str(row["opinion_ids_json"]))
+            if isinstance(values, list):
+                candidate_opinion_ids.update(str(value).strip() for value in values if str(value).strip())
+        opinion_rows = conn.execute(
+            f"SELECT opinion_id FROM opinions WHERE cluster_id IN ({case_placeholders})",
+            tuple(prune_ids),
+        ).fetchall()
+        candidate_opinion_ids.update(str(row["opinion_id"]) for row in opinion_rows)
+        remaining_rows = conn.execute(
+            f"SELECT opinion_ids_json FROM cases WHERE cluster_id NOT IN ({case_placeholders})",
+            tuple(prune_ids),
+        ).fetchall()
+        shared_opinion_ids: set[str] = set()
+        for row in remaining_rows:
+            values = _json_loads(str(row["opinion_ids_json"]))
+            if isinstance(values, list):
+                shared_opinion_ids.update(str(value).strip() for value in values if str(value).strip())
+        return candidate_opinion_ids - shared_opinion_ids
+
+    def _rewrite_lookup_results_for_deleted_clusters(
+        self,
+        conn: sqlite3.Connection,
+        prune_ids: set[str],
+    ) -> None:
+        rows = conn.execute(
+            "SELECT normalized_citation, result_json FROM lookup_results"
+        ).fetchall()
+        for row in rows:
+            data = _json_loads(str(row["result_json"]))
+            if not isinstance(data, list):
+                continue
+            changed = False
+            kept_any_cluster = False
+            rewritten: list[Any] = []
+            for item in data:
+                if not isinstance(item, dict):
+                    rewritten.append(item)
+                    continue
+                clusters = item.get("clusters")
+                if not isinstance(clusters, list):
+                    rewritten.append(item)
+                    continue
+                kept_clusters = [
+                    cluster
+                    for cluster in clusters
+                    if not (
+                        isinstance(cluster, dict)
+                        and cluster_id_from_cluster(cluster) in prune_ids
+                    )
+                ]
+                if len(kept_clusters) != len(clusters):
+                    changed = True
+                if kept_clusters:
+                    kept_any_cluster = True
+                rewritten.append({**item, "clusters": kept_clusters})
+            if not changed:
+                continue
+            normalized = str(row["normalized_citation"])
+            if kept_any_cluster:
+                conn.execute(
+                    "UPDATE lookup_results SET result_json = ?, last_accessed = ? WHERE normalized_citation = ?",
+                    (_json_dumps(rewritten), _utc_now(), normalized),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM lookup_results WHERE normalized_citation = ?",
+                    (normalized,),
+                )
 
     @staticmethod
     def clusters_from_lookup(result: list[dict[str, Any]]) -> list[dict[str, Any]]:
