@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from open_law_lens.app import OpenLawLensApp, OpenLawLensWindow, build_case_reader_payload
+from open_law_lens.cache import JsonCache
 from open_law_lens.citation_links import CitedCaseLink
 from open_law_lens.config import AppConfig
 from open_law_lens.library import DisplayText, PageMarker
@@ -180,6 +183,219 @@ class AppReaderPayloadTests(unittest.TestCase):
             OpenLawLensWindow.open_authority_text(window, "7822")  # type: ignore[arg-type]
 
         self.assertEqual(window.opened_statutes, ["Fam. Code, § 7822"])
+
+    def test_selected_agent_statutes_and_rules_use_cached_text(self) -> None:
+        class DummyClient:
+            def __init__(self, cache: JsonCache) -> None:
+                self.cache = cache
+
+            def cached_statutes(self) -> list[dict[str, object]]:
+                return [
+                    statute
+                    for entry in self.cache.list_statute_entries()
+                    if (statute := self.cache.read_cached_statute(str(entry.get("statute_id") or ""))) is not None
+                ]
+
+            def cached_rules(self) -> list[dict[str, object]]:
+                return [
+                    rule
+                    for entry in self.cache.list_rule_entries()
+                    if (rule := self.cache.read_cached_rule(str(entry.get("rule_id") or ""))) is not None
+                ]
+
+        class DummyWindow:
+            def __init__(self, cache: JsonCache) -> None:
+                self.client = DummyClient(cache)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cache.upsert_statute(
+                {
+                    "statute_id": "WIC:300",
+                    "title": "Welfare and Institutions Code section 300",
+                    "citation": "Welf. & Inst. Code, § 300",
+                    "text": "stale statute text",
+                }
+            )
+            cache.set_statute_agent_selected("WIC:300", True)
+            cache.upsert_rule(
+                {
+                    "rule_id": "CRC:8.11",
+                    "title": "California Rules of Court, rule 8.11",
+                    "citation": "Cal. Rules of Court, rule 8.11",
+                    "text": "stale rule text",
+                }
+            )
+            cache.set_rule_agent_selected("CRC:8.11", True)
+            window = DummyWindow(cache)
+
+            statutes = OpenLawLensWindow._selected_agent_statutes(window)  # type: ignore[arg-type]
+            rules = OpenLawLensWindow._selected_agent_rules(window)  # type: ignore[arg-type]
+
+        self.assertEqual(statutes[0]["citation"], "Welf. & Inst. Code, § 300")
+        self.assertEqual(statutes[0]["text"], "stale statute text")
+        self.assertEqual(rules[0]["citation"], "Cal. Rules of Court, rule 8.11")
+        self.assertEqual(rules[0]["text"], "stale rule text")
+
+    def test_apply_statute_lookup_opens_fetched_result_without_sidebar_relookup(self) -> None:
+        class DummyClient:
+            last_lookup_source = "LegInfo"
+
+            def cached_clusters(self) -> list[dict[str, object]]:
+                return []
+
+            def cached_statutes(self) -> list[dict[str, object]]:
+                return []
+
+            def cached_rules(self) -> list[dict[str, object]]:
+                return []
+
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.client = DummyClient()
+                self.sidebar_kwargs: dict[str, object] = {}
+                self.opened: list[dict[str, object]] = []
+                self.statuses: list[str] = []
+                self.refreshes = 0
+
+            def _set_sidebar_authorities(self, *args: object, **kwargs: object) -> None:
+                self.sidebar_kwargs = kwargs
+
+            def _refresh_case_suggestion_index_async(self, *, force: bool = False) -> None:
+                self.refreshes += int(force)
+
+            def _open_statute_in_reader(self, statute: dict[str, object]) -> None:
+                self.opened.append(statute)
+
+            def _set_status(self, status: str) -> None:
+                self.statuses.append(status)
+
+        statute = {
+            "statute_id": "WIC:300",
+            "citation": "Welf. & Inst. Code, § 300",
+            "text": "300. A child comes within jurisdiction.",
+        }
+        window = DummyWindow()
+
+        result = OpenLawLensWindow._apply_statute_lookup_result(window, statute)  # type: ignore[arg-type]
+
+        self.assertFalse(result)
+        self.assertTrue(window.sidebar_kwargs["suppress_selection_lookup"])
+        self.assertEqual(window.opened, [statute])
+        self.assertEqual(window.refreshes, 1)
+        self.assertEqual(window.statuses[-1], "LegInfo: opened Welf. & Inst. Code, § 300.")
+
+    def test_apply_rule_lookup_opens_fetched_result_without_sidebar_relookup(self) -> None:
+        class DummyClient:
+            last_lookup_source = "California Courts"
+
+            def cached_clusters(self) -> list[dict[str, object]]:
+                return []
+
+            def cached_statutes(self) -> list[dict[str, object]]:
+                return []
+
+            def cached_rules(self) -> list[dict[str, object]]:
+                return []
+
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.client = DummyClient()
+                self.sidebar_kwargs: dict[str, object] = {}
+                self.opened: list[dict[str, object]] = []
+                self.statuses: list[str] = []
+                self.refreshes = 0
+
+            def _set_sidebar_authorities(self, *args: object, **kwargs: object) -> None:
+                self.sidebar_kwargs = kwargs
+
+            def _refresh_case_suggestion_index_async(self, *, force: bool = False) -> None:
+                self.refreshes += int(force)
+
+            def _open_rule_in_reader(self, rule: dict[str, object]) -> None:
+                self.opened.append(rule)
+
+            def _set_status(self, status: str) -> None:
+                self.statuses.append(status)
+
+        rule = {
+            "rule_id": "CRC:8.11",
+            "citation": "Cal. Rules of Court, rule 8.11",
+            "text": "Rule 8.11. Scope.",
+        }
+        window = DummyWindow()
+
+        result = OpenLawLensWindow._apply_rule_lookup_result(window, rule)  # type: ignore[arg-type]
+
+        self.assertFalse(result)
+        self.assertTrue(window.sidebar_kwargs["suppress_selection_lookup"])
+        self.assertEqual(window.opened, [rule])
+        self.assertEqual(window.refreshes, 1)
+        self.assertEqual(window.statuses[-1], "California Courts: opened Cal. Rules of Court, rule 8.11.")
+
+    def test_cached_statute_row_opens_cache_without_background_refresh(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self._pending_auto_scholar_cluster_id = "old"
+                self._pending_auto_scholar_query = "old"
+                self._last_lookup_text = ""
+                self.hidden = False
+                self.opened: list[dict[str, object]] = []
+
+            def _hide_case_completion(self) -> None:
+                self.hidden = True
+
+            def _open_statute_in_reader(self, statute: dict[str, object]) -> None:
+                self.opened.append(statute)
+
+        statute = {
+            "statute_id": "WIC:300",
+            "citation": "Welf. & Inst. Code, § 300",
+            "text": "cached text",
+        }
+        window = DummyWindow()
+
+        with patch("open_law_lens.app.threading.Thread") as thread_cls:
+            OpenLawLensWindow._open_cached_statute(window, statute)  # type: ignore[arg-type]
+
+        self.assertEqual(window.opened, [statute])
+        self.assertEqual(window._last_lookup_text, "Welf. & Inst. Code, § 300")
+        self.assertEqual(window._pending_auto_scholar_cluster_id, "")
+        self.assertEqual(window._pending_auto_scholar_query, "")
+        self.assertTrue(window.hidden)
+        thread_cls.assert_not_called()
+
+    def test_cached_rule_row_opens_cache_without_background_refresh(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self._pending_auto_scholar_cluster_id = "old"
+                self._pending_auto_scholar_query = "old"
+                self._last_lookup_text = ""
+                self.hidden = False
+                self.opened: list[dict[str, object]] = []
+
+            def _hide_case_completion(self) -> None:
+                self.hidden = True
+
+            def _open_rule_in_reader(self, rule: dict[str, object]) -> None:
+                self.opened.append(rule)
+
+        rule = {
+            "rule_id": "CRC:8.11",
+            "citation": "Cal. Rules of Court, rule 8.11",
+            "text": "cached text",
+        }
+        window = DummyWindow()
+
+        with patch("open_law_lens.app.threading.Thread") as thread_cls:
+            OpenLawLensWindow._open_cached_rule(window, rule)  # type: ignore[arg-type]
+
+        self.assertEqual(window.opened, [rule])
+        self.assertEqual(window._last_lookup_text, "Cal. Rules of Court, rule 8.11")
+        self.assertEqual(window._pending_auto_scholar_cluster_id, "")
+        self.assertEqual(window._pending_auto_scholar_query, "")
+        self.assertTrue(window.hidden)
+        thread_cls.assert_not_called()
 
     def test_external_case_open_does_not_sync_load_suggestions(self) -> None:
         class DummyEntry:

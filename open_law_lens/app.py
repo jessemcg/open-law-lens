@@ -63,8 +63,6 @@ from .case_suggestions import (
     matching_case_suggestions,
     merge_case_suggestions,
     resolve_case_lookup_text,
-    rule_suggestions_from_library,
-    statute_suggestions_from_library,
 )
 from .citation_links import (
     CitedCaseLink,
@@ -690,6 +688,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._selected_statute: dict[str, Any] | None = None
         self._rules: list[dict[str, Any]] = []
         self._selected_rule: dict[str, Any] | None = None
+        self._suppress_sidebar_selection_lookup = False
         self._agent_terminal: Any | None = None
         self._agent_pid: int | None = None
         self._agent_session_widget: Gtk.Widget | None = None
@@ -1176,13 +1175,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 *load_concordance_rule_suggestions(configured_path),
             ]
         library_suggestions = case_suggestions_from_library(self.client.library)
-        statute_suggestions = statute_suggestions_from_library(self.client.library)
-        rule_suggestions = rule_suggestions_from_library(self.client.library)
         return merge_case_suggestions(
             concordance_suggestions,
             library_suggestions,
-            statute_suggestions,
-            rule_suggestions,
         )
 
     def _refresh_case_suggestion_index_async(self, *, force: bool = False) -> None:
@@ -3201,6 +3196,16 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         thread = threading.Thread(target=self._statute_lookup_worker, args=(citation,), daemon=True)
         thread.start()
 
+    def _open_cached_statute(self, statute: dict[str, Any]) -> None:
+        citation = str(statute.get("citation") or "").strip()
+        if not citation:
+            return
+        self._last_lookup_text = citation
+        self._pending_auto_scholar_cluster_id = ""
+        self._pending_auto_scholar_query = ""
+        self._hide_case_completion()
+        self._open_statute_in_reader(statute)
+
     def _statute_lookup_worker(self, citation: str) -> None:
         try:
             statute = self.client.lookup_statute(citation)
@@ -3215,11 +3220,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self.client.cached_statutes(),
             self.client.cached_rules(),
             select_statute_id=statute_id,
+            suppress_selection_lookup=True,
         )
         self._refresh_case_suggestion_index_async(force=True)
-        if self.case_list.get_selected_row() is None:
-            self._open_statute_in_reader(statute)
-        source = self.client.last_lookup_source or "Library"
+        self._open_statute_in_reader(statute)
+        source = self.client.last_lookup_source or "Live source"
         self._set_status(f"{source}: opened {statute.get('citation') or statute_id}.")
         return False
 
@@ -3235,6 +3240,16 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         thread = threading.Thread(target=self._rule_lookup_worker, args=(citation,), daemon=True)
         thread.start()
 
+    def _open_cached_rule(self, rule: dict[str, Any]) -> None:
+        citation = str(rule.get("citation") or "").strip()
+        if not citation:
+            return
+        self._last_lookup_text = citation
+        self._pending_auto_scholar_cluster_id = ""
+        self._pending_auto_scholar_query = ""
+        self._hide_case_completion()
+        self._open_rule_in_reader(rule)
+
     def _rule_lookup_worker(self, citation: str) -> None:
         try:
             rule = self.client.lookup_rule(citation)
@@ -3249,11 +3264,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self.client.cached_statutes(),
             self.client.cached_rules(),
             select_rule_id=rule_id,
+            suppress_selection_lookup=True,
         )
         self._refresh_case_suggestion_index_async(force=True)
-        if self.case_list.get_selected_row() is None:
-            self._open_rule_in_reader(rule)
-        source = self.client.last_lookup_source or "Library"
+        self._open_rule_in_reader(rule)
+        source = self.client.last_lookup_source or "Live source"
         self._set_status(f"{source}: opened {rule.get('citation') or rule_id}.")
         return False
 
@@ -3390,6 +3405,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         select_statute_id: str = "",
         select_rule_id: str = "",
         select_first: bool = False,
+        suppress_selection_lookup: bool = False,
     ) -> None:
         self._clusters = clusters
         self._statutes = statutes
@@ -3546,7 +3562,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if selected_row is None and select_first:
             selected_row = self.case_list.get_row_at_index(0)
         if selected_row is not None:
-            self.case_list.select_row(selected_row)
+            old_suppress = self._suppress_sidebar_selection_lookup
+            self._suppress_sidebar_selection_lookup = suppress_selection_lookup
+            try:
+                self.case_list.select_row(selected_row)
+            finally:
+                self._suppress_sidebar_selection_lookup = old_suppress
 
     def _on_agent_case_toggled(self, button: Gtk.CheckButton, cluster_id: str) -> None:
         self.client.cache.set_agent_selected(cluster_id, button.get_active())
@@ -3694,18 +3715,20 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _on_case_selected(self, _listbox: Gtk.ListBox, row: Gtk.ListBoxRow | None) -> None:
         if row is None:
             return
+        if self._suppress_sidebar_selection_lookup:
+            return
         authority_type = getattr(row, "_open_law_lens_authority_type", "case")
         if authority_type == "statute":
             index = getattr(row, "_open_law_lens_statute_index", None)
             if not isinstance(index, int) or index < 0 or index >= len(self._statutes):
                 return
-            self._open_statute_in_reader(self._statutes[index])
+            self._open_cached_statute(self._statutes[index])
             return
         if authority_type == "rule":
             index = getattr(row, "_open_law_lens_rule_index", None)
             if not isinstance(index, int) or index < 0 or index >= len(self._rules):
                 return
-            self._open_rule_in_reader(self._rules[index])
+            self._open_cached_rule(self._rules[index])
             return
         index = getattr(row, "_open_law_lens_cluster_index", None)
         if not isinstance(index, int) or index < 0 or index >= len(self._clusters):
@@ -4105,7 +4128,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 workspace,
                 export.text_sources,
             )
-        except (CourtListenerError, OSError) as exc:
+        except (CourtListenerError, LegInfoError, CaliforniaRulesError, OSError, ValueError) as exc:
             GLib.idle_add(self._set_status, f"Unable to prepare marked authorities: {exc}")
 
     def _finish_case_agent_prepare(

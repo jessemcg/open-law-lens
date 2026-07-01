@@ -224,10 +224,8 @@ def _cmd_lookup_rule(args: argparse.Namespace) -> int:
 def _cmd_show_library(_args: argparse.Namespace) -> int:
     library = CaseLibrary.default()
     entries = library.list_case_entries()
-    statutes = library.list_statute_entries()
-    rules = library.list_rule_entries()
-    if not entries and not statutes and not rules:
-        print("No saved library authorities.")
+    if not entries:
+        print("No saved library cases.")
         return 0
     for entry in entries:
         title = str(entry.get("title") or "Untitled case")
@@ -237,18 +235,6 @@ def _cmd_show_library(_args: argparse.Namespace) -> int:
         opinion_count = len(opinion_ids) if isinstance(opinion_ids, list) else 0
         citation_part = f" | {citation}" if citation else ""
         print(f"{title}{citation_part} | cluster {cluster_id} | {opinion_count} opinion(s)")
-    for entry in statutes:
-        title = str(entry.get("title") or "Untitled statute")
-        citation = str(entry.get("citation") or "").strip()
-        statute_id = str(entry.get("statute_id") or "").strip()
-        citation_part = f" | {citation}" if citation else ""
-        print(f"{title}{citation_part} | statute {statute_id}")
-    for entry in rules:
-        title = str(entry.get("title") or "Untitled rule")
-        citation = str(entry.get("citation") or "").strip()
-        rule_id = str(entry.get("rule_id") or "").strip()
-        citation_part = f" | {citation}" if citation else ""
-        print(f"{title}{citation_part} | rule {rule_id}")
     return 0
 
 
@@ -369,13 +355,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     extract_statute_parser = subparsers.add_parser("extract-statute", help="extract a California statute")
     extract_statute_parser.add_argument("value")
-    extract_statute_parser.add_argument("--refresh", action="store_true", help="bypass saved statute data")
+    extract_statute_parser.add_argument("--refresh", action="store_true", help="accepted for compatibility")
     extract_statute_parser.add_argument("--text", action="store_true", help="print raw statute text")
     extract_statute_parser.set_defaults(func=_cmd_extract_statute)
 
     extract_rule_parser = subparsers.add_parser("extract-rule", help="extract a California Rule of Court")
     extract_rule_parser.add_argument("value")
-    extract_rule_parser.add_argument("--refresh", action="store_true", help="bypass saved rule data")
+    extract_rule_parser.add_argument("--refresh", action="store_true", help="accepted for compatibility")
     extract_rule_parser.add_argument("--text", action="store_true", help="print raw rule text")
     extract_rule_parser.set_defaults(func=_cmd_extract_rule)
 
@@ -394,13 +380,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     statute_parser = subparsers.add_parser("lookup-statute", help="look up a California statute")
     statute_parser.add_argument("citation")
-    statute_parser.add_argument("--refresh", action="store_true", help="bypass saved statute data")
+    statute_parser.add_argument("--refresh", action="store_true", help="accepted for compatibility")
     statute_parser.add_argument("--text", action="store_true", help="print statute text")
     statute_parser.set_defaults(func=_cmd_lookup_statute)
 
     rule_parser = subparsers.add_parser("lookup-rule", help="look up a California Rule of Court")
     rule_parser.add_argument("citation")
-    rule_parser.add_argument("--refresh", action="store_true", help="bypass saved rule data")
+    rule_parser.add_argument("--refresh", action="store_true", help="accepted for compatibility")
     rule_parser.add_argument("--text", action="store_true", help="print rule text")
     rule_parser.set_defaults(func=_cmd_lookup_rule)
 

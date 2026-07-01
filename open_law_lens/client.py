@@ -660,20 +660,14 @@ class CourtListenerClient:
         return dedupe_case_clusters(clusters)
 
     def lookup_statute(self, citation: str, *, refresh: bool = False) -> dict[str, Any]:
+        del refresh
         parsed = parse_statute_citation(citation)
         if parsed is None:
             raise ValueError("Could not parse a supported California statute citation.")
-        if not refresh:
-            statute = self.library.read_statute(parsed.law_code, parsed.section)
-            if statute is not None:
-                self.cache.upsert_statute(statute)
-                self.last_lookup_source = "Library"
-                return statute
         try:
             statute = fetch_leginfo_statute(parsed, timeout=self.timeout)
         except LegInfoError:
             raise
-        self.library.upsert_statute(statute)
         self.cache.upsert_statute(statute)
         self.last_lookup_source = "LegInfo"
         return statute
@@ -690,20 +684,14 @@ class CourtListenerClient:
         return statutes
 
     def lookup_rule(self, citation: str, *, refresh: bool = False) -> dict[str, Any]:
+        del refresh
         parsed = parse_rule_citation(citation)
         if parsed is None:
             raise ValueError("Could not parse a supported California Rules of Court citation.")
-        if not refresh:
-            rule = self.library.read_rule(parsed.rule_number)
-            if rule is not None:
-                self.cache.upsert_rule(rule)
-                self.last_lookup_source = "Library"
-                return rule
         try:
             rule = fetch_california_rule(parsed, timeout=self.timeout)
         except CaliforniaRulesError:
             raise
-        self.library.upsert_rule(rule)
         self.cache.upsert_rule(rule)
         self.last_lookup_source = "California Courts"
         return rule

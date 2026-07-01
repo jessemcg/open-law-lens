@@ -325,32 +325,6 @@ def case_suggestions_from_library(library: CaseLibrary) -> list[CaseSuggestion]:
     return sorted(suggestions, key=lambda item: item.display_name.casefold())
 
 
-def statute_suggestions_from_library(library: CaseLibrary) -> list[CaseSuggestion]:
-    suggestions: list[CaseSuggestion] = []
-    for statute in library.saved_statutes():
-        suggestion = make_statute_suggestion(
-            str(statute.get("citation") or ""),
-            source="Library",
-            statute_id_value=str(statute.get("statute_id") or ""),
-        )
-        if suggestion is not None:
-            suggestions.append(suggestion)
-    return sorted(suggestions, key=lambda item: item.display_name.casefold())
-
-
-def rule_suggestions_from_library(library: CaseLibrary) -> list[CaseSuggestion]:
-    suggestions: list[CaseSuggestion] = []
-    for rule in library.saved_rules():
-        suggestion = make_rule_suggestion(
-            str(rule.get("citation") or ""),
-            source="Library",
-            rule_id_value=str(rule.get("rule_id") or ""),
-        )
-        if suggestion is not None:
-            suggestions.append(suggestion)
-    return sorted(suggestions, key=lambda item: item.display_name.casefold())
-
-
 def merge_case_suggestions(*groups: Iterable[CaseSuggestion]) -> list[CaseSuggestion]:
     merged: dict[str, CaseSuggestion] = {}
     for group in groups:

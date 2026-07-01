@@ -14,8 +14,6 @@ from .case_suggestions import (
     load_concordance_statute_suggestions,
     merge_case_suggestions,
     resolve_case_lookup_text,
-    rule_suggestions_from_library,
-    statute_suggestions_from_library,
 )
 from .citation_links import REPORTER_CITATION_PATTERN, cited_case_links, cited_rule_links, cited_statute_links
 from .client import (
@@ -122,8 +120,6 @@ def _case_suggestions(client: CourtListenerClient):
     path = concordance_file_path()
     return merge_case_suggestions(
         case_suggestions_from_library(client.library),
-        statute_suggestions_from_library(client.library),
-        rule_suggestions_from_library(client.library),
         load_concordance_case_suggestions(path),
         load_concordance_statute_suggestions(path),
         load_concordance_rule_suggestions(path),

@@ -10,54 +10,37 @@ from open_law_lens.library import CaseLibrary, opinion_display_text
 
 
 class LibraryTests(unittest.TestCase):
-    def test_upsert_and_read_rule_alias(self) -> None:
+    def test_ensure_drops_legacy_statute_and_rule_tables(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            db_path = Path(temp_dir) / "library.sqlite3"
+            library = CaseLibrary(db_path)
             library.ensure()
-            rule = {
-                "rule_id": "CRC:8.11",
-                "rule_number": "8.11",
-                "rule_slug": "8_11",
-                "title_slug": "eight",
-                "title": "California Rules of Court, rule 8.11",
-                "citation": "Cal. Rules of Court, rule 8.11",
-                "source_url": "https://example.test",
-                "source_html": "<p>Rule 8.11.</p>",
-                "text": "Rule 8.11. Scope.",
-            }
+            with library.connection() as conn:
+                conn.executescript(
+                    """
+                    CREATE TABLE statutes (statute_id TEXT PRIMARY KEY);
+                    CREATE TABLE statute_aliases (normalized_citation TEXT PRIMARY KEY);
+                    CREATE TABLE rules (rule_id TEXT PRIMARY KEY);
+                    CREATE TABLE rule_aliases (normalized_citation TEXT PRIMARY KEY);
+                    INSERT INTO statutes(statute_id) VALUES ('WIC:300');
+                    INSERT INTO rules(rule_id) VALUES ('CRC:8.11');
+                    """
+                )
 
-            library.upsert_rule(rule)
-
-            self.assertEqual(library.read_rule("8.11")["text"], rule["text"])
-            self.assertEqual(
-                library.read_rule_by_citation("Cal. Rules of Court, rule 8.11")["rule_number"],
-                "8.11",
-            )
-            self.assertEqual(library.list_rule_entries()[0]["rule_id"], "CRC:8.11")
-
-    def test_upsert_and_read_statute_alias(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
             library.ensure()
-            statute = {
-                "statute_id": "WIC:300",
-                "law_code": "WIC",
-                "section": "300",
-                "title": "Welfare and Institutions Code section 300",
-                "citation": "Welf. & Inst. Code, § 300",
-                "source_url": "https://example.test",
-                "source_html": "<p>300.</p>",
-                "text": "300. A child comes within jurisdiction.",
-            }
 
-            library.upsert_statute(statute)
+            with library.connection() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT name FROM sqlite_master
+                    WHERE type = 'table'
+                    AND name IN ('statutes', 'statute_aliases', 'rules', 'rule_aliases')
+                    """
+                ).fetchall()
+            self.assertEqual(rows, [])
 
-            self.assertEqual(library.read_statute("WIC", "300")["text"], statute["text"])
-            self.assertEqual(
-                library.read_statute_by_citation("Welf. & Inst. Code, § 300")["section"],
-                "300",
-            )
-            self.assertEqual(library.list_statute_entries()[0]["statute_id"], "WIC:300")
+            library.upsert_cluster({"id": 42, "case_name": "Example v. State"})
+            self.assertEqual(library.list_case_entries()[0]["cluster_id"], "42")
 
     def test_upsert_cluster_and_lookup_alias(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

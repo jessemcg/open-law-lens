@@ -12,8 +12,6 @@ from open_law_lens.case_suggestions import (
     matching_case_suggestions,
     merge_case_suggestions,
     resolve_case_lookup_text,
-    rule_suggestions_from_library,
-    statute_suggestions_from_library,
 )
 from open_law_lens.library import CaseLibrary
 
@@ -155,51 +153,6 @@ class CaseSuggestionTests(unittest.TestCase):
             suggestions = case_suggestions_from_library(library)
 
         self.assertEqual(suggestions, [])
-
-    def test_library_statutes_become_suggestions(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
-            library.ensure()
-            library.upsert_statute(
-                {
-                    "statute_id": "EVID:720",
-                    "law_code": "EVID",
-                    "section": "720",
-                    "title": "Evidence Code section 720",
-                    "citation": "Evid. Code, § 720",
-                    "source_url": "https://example.test",
-                    "source_html": "",
-                    "text": "720. A person is qualified to testify as an expert.",
-                }
-            )
-
-            suggestions = statute_suggestions_from_library(library)
-
-        self.assertEqual(suggestions[0].authority_type, "statute")
-        self.assertEqual(suggestions[0].lookup_text, "Evid. Code, § 720")
-
-    def test_library_rules_become_suggestions(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
-            library.ensure()
-            library.upsert_rule(
-                {
-                    "rule_id": "CRC:8.11",
-                    "rule_number": "8.11",
-                    "rule_slug": "8_11",
-                    "title_slug": "eight",
-                    "title": "California Rules of Court, rule 8.11",
-                    "citation": "Cal. Rules of Court, rule 8.11",
-                    "source_url": "https://example.test",
-                    "source_html": "",
-                    "text": "Rule 8.11. Scope.",
-                }
-            )
-
-            suggestions = rule_suggestions_from_library(library)
-
-        self.assertEqual(suggestions[0].authority_type, "rule")
-        self.assertEqual(suggestions[0].lookup_text, "Cal. Rules of Court, rule 8.11")
 
     def test_merge_dedupes_concordance_and_library_official_labels(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

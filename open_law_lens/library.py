@@ -21,28 +21,6 @@ from .citation_model import (
     official_citation_parts_from_text,
 )
 from .import_text import clean_imported_opinion_text
-from .rules import (
-    RuleCitation,
-    normalize_rule_number,
-    parse_rule_citation,
-    rule_display_citation,
-    rule_id,
-    rule_slug,
-    rule_title,
-    title_slug_for_rule,
-)
-from .statutes import (
-    CODE_LABELS,
-    StatuteCitation,
-    normalize_law_code,
-    normalize_section,
-    parse_statute_citation,
-    statute_display_citation,
-    statute_id,
-    statute_title,
-)
-
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PROJECT_LIBRARY_DIR = PROJECT_ROOT / "library"
 DEFAULT_LIBRARY_DB = PROJECT_LIBRARY_DIR / "open_law_lens.sqlite3"
@@ -566,63 +544,25 @@ class CaseLibrary:
                 CREATE INDEX IF NOT EXISTS idx_cases_title ON cases(title);
                 CREATE INDEX IF NOT EXISTS idx_opinions_cluster_id ON opinions(cluster_id);
                 CREATE INDEX IF NOT EXISTS idx_aliases_citation ON citation_aliases(normalized_citation);
-
-                CREATE TABLE IF NOT EXISTS statutes (
-                    statute_id TEXT PRIMARY KEY,
-                    law_code TEXT NOT NULL,
-                    section TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    citation TEXT NOT NULL,
-                    source_url TEXT NOT NULL,
-                    source_html TEXT NOT NULL,
-                    text TEXT NOT NULL,
-                    statute_json TEXT NOT NULL,
-                    added_at TEXT NOT NULL,
-                    last_accessed TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS statute_aliases (
-                    normalized_citation TEXT PRIMARY KEY,
-                    statute_id TEXT NOT NULL,
-                    citation_text TEXT NOT NULL,
-                    FOREIGN KEY (statute_id) REFERENCES statutes(statute_id) ON DELETE CASCADE
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_statutes_title ON statutes(title);
-                CREATE INDEX IF NOT EXISTS idx_statute_aliases_citation ON statute_aliases(normalized_citation);
-
-                CREATE TABLE IF NOT EXISTS rules (
-                    rule_id TEXT PRIMARY KEY,
-                    rule_number TEXT NOT NULL,
-                    rule_slug TEXT NOT NULL,
-                    title_slug TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    citation TEXT NOT NULL,
-                    source_url TEXT NOT NULL,
-                    source_html TEXT NOT NULL,
-                    text TEXT NOT NULL,
-                    rule_json TEXT NOT NULL,
-                    added_at TEXT NOT NULL,
-                    last_accessed TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS rule_aliases (
-                    normalized_citation TEXT PRIMARY KEY,
-                    rule_id TEXT NOT NULL,
-                    citation_text TEXT NOT NULL,
-                    FOREIGN KEY (rule_id) REFERENCES rules(rule_id) ON DELETE CASCADE
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_rules_title ON rules(title);
-                CREATE INDEX IF NOT EXISTS idx_rule_aliases_citation ON rule_aliases(normalized_citation);
                 """
             )
+            self._drop_legacy_statute_rule_tables(conn)
             conn.execute(
                 "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
                 ("schema_version", SCHEMA_VERSION),
             )
             self._normalize_official_citation_only(conn)
             self._normalize_case_titles(conn)
+
+    def _drop_legacy_statute_rule_tables(self, conn: sqlite3.Connection) -> None:
+        conn.executescript(
+            """
+            DROP TABLE IF EXISTS statute_aliases;
+            DROP TABLE IF EXISTS rule_aliases;
+            DROP TABLE IF EXISTS statutes;
+            DROP TABLE IF EXISTS rules;
+            """
+        )
 
     def _normalize_official_citation_only(self, conn: sqlite3.Connection) -> None:
         row = conn.execute(
@@ -1095,282 +1035,6 @@ class CaseLibrary:
             if cluster is not None:
                 clusters.append(cluster)
         return clusters
-
-    def upsert_statute(self, statute: dict[str, Any]) -> str:
-        law_code = normalize_law_code(str(statute.get("law_code") or ""))
-        section = normalize_section(str(statute.get("section") or ""))
-        normalized_id = str(statute.get("statute_id") or statute_id(law_code, section)).strip()
-        citation = str(statute.get("citation") or statute_display_citation(StatuteCitation(law_code, section))).strip()
-        title = str(statute.get("title") or statute_title(StatuteCitation(law_code, section))).strip()
-        saved = {
-            **statute,
-            "statute_id": normalized_id,
-            "law_code": law_code,
-            "section": section,
-            "citation": citation,
-            "title": title,
-        }
-        now = _utc_now()
-        with self.connection() as conn:
-            existing = conn.execute(
-                "SELECT added_at FROM statutes WHERE statute_id = ?",
-                (normalized_id,),
-            ).fetchone()
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO statutes(
-                    statute_id, law_code, section, title, citation, source_url,
-                    source_html, text, statute_json, added_at, last_accessed
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    normalized_id,
-                    law_code,
-                    section,
-                    title,
-                    citation,
-                    str(saved.get("source_url") or ""),
-                    str(saved.get("source_html") or ""),
-                    str(saved.get("text") or ""),
-                    _json_dumps(saved),
-                    existing["added_at"] if existing else now,
-                    now,
-                ),
-            )
-        self.add_statute_alias(citation, normalized_id)
-        self.add_statute_alias(f"{law_code} {section}", normalized_id)
-        self.add_statute_alias(f"{CODE_LABELS.get(law_code, law_code)} section {section}", normalized_id)
-        return normalized_id
-
-    def add_statute_alias(self, citation: str, normalized_id: str) -> None:
-        normalized = normalize_citation(citation).casefold()
-        if not normalized or not normalized_id:
-            return
-        with self.connection() as conn:
-            row = conn.execute(
-                "SELECT citation FROM statutes WHERE statute_id = ?",
-                (normalized_id,),
-            ).fetchone()
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO statute_aliases(normalized_citation, statute_id, citation_text)
-                VALUES (?, ?, ?)
-                """,
-                (normalized, normalized_id, str(row["citation"]) if row else citation),
-            )
-
-    def read_statute(self, law_code: str, section: str) -> dict[str, Any] | None:
-        normalized_id = statute_id(law_code, section)
-        return self.read_statute_by_id(normalized_id)
-
-    def read_statute_by_id(self, normalized_id: str) -> dict[str, Any] | None:
-        with self.connection() as conn:
-            row = conn.execute(
-                "SELECT statute_json FROM statutes WHERE statute_id = ?",
-                (normalized_id,),
-            ).fetchone()
-            if row is not None:
-                conn.execute(
-                    "UPDATE statutes SET last_accessed = ? WHERE statute_id = ?",
-                    (_utc_now(), normalized_id),
-                )
-        if row is None:
-            return None
-        data = _json_loads(str(row["statute_json"]))
-        return data if isinstance(data, dict) else None
-
-    def read_statute_by_citation(self, citation: str) -> dict[str, Any] | None:
-        parsed = parse_statute_citation(citation)
-        if parsed is not None:
-            direct = self.read_statute(parsed.law_code, parsed.section)
-            if direct is not None:
-                return direct
-        normalized = normalize_citation(citation).casefold()
-        if not normalized:
-            return None
-        with self.connection() as conn:
-            row = conn.execute(
-                """
-                SELECT statutes.statute_json
-                FROM statute_aliases
-                JOIN statutes ON statutes.statute_id = statute_aliases.statute_id
-                WHERE statute_aliases.normalized_citation = ?
-                """,
-                (normalized,),
-            ).fetchone()
-        if row is None:
-            return None
-        data = _json_loads(str(row["statute_json"]))
-        return data if isinstance(data, dict) else None
-
-    def list_statute_entries(self) -> list[dict[str, Any]]:
-        with self.connection() as conn:
-            rows = conn.execute(
-                """
-                SELECT statute_id, law_code, section, title, citation, added_at, last_accessed
-                FROM statutes
-                ORDER BY title COLLATE NOCASE, citation COLLATE NOCASE, statute_id
-                """
-            ).fetchall()
-        return [
-            {
-                "statute_id": str(row["statute_id"]),
-                "law_code": str(row["law_code"]),
-                "section": str(row["section"]),
-                "title": str(row["title"]),
-                "citation": str(row["citation"]),
-                "added_at": str(row["added_at"]),
-                "last_accessed": str(row["last_accessed"]),
-            }
-            for row in rows
-        ]
-
-    def saved_statutes(self) -> list[dict[str, Any]]:
-        statutes: list[dict[str, Any]] = []
-        for entry in self.list_statute_entries():
-            statute = self.read_statute_by_id(str(entry.get("statute_id", "")))
-            if statute is not None:
-                statutes.append(statute)
-        return statutes
-
-    def upsert_rule(self, rule: dict[str, Any]) -> str:
-        number = normalize_rule_number(str(rule.get("rule_number") or ""))
-        normalized_id = str(rule.get("rule_id") or rule_id(number)).strip()
-        citation = str(rule.get("citation") or rule_display_citation(RuleCitation(number))).strip()
-        title = str(rule.get("title") or rule_title(RuleCitation(number))).strip()
-        saved = {
-            **rule,
-            "rule_id": normalized_id,
-            "rule_number": number,
-            "rule_slug": str(rule.get("rule_slug") or rule_slug(number)),
-            "title_slug": str(rule.get("title_slug") or title_slug_for_rule(number)),
-            "citation": citation,
-            "title": title,
-        }
-        now = _utc_now()
-        with self.connection() as conn:
-            existing = conn.execute(
-                "SELECT added_at FROM rules WHERE rule_id = ?",
-                (normalized_id,),
-            ).fetchone()
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO rules(
-                    rule_id, rule_number, rule_slug, title_slug, title, citation,
-                    source_url, source_html, text, rule_json, added_at, last_accessed
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    normalized_id,
-                    number,
-                    str(saved.get("rule_slug") or ""),
-                    str(saved.get("title_slug") or ""),
-                    title,
-                    citation,
-                    str(saved.get("source_url") or ""),
-                    str(saved.get("source_html") or ""),
-                    str(saved.get("text") or ""),
-                    _json_dumps(saved),
-                    existing["added_at"] if existing else now,
-                    now,
-                ),
-            )
-        self.add_rule_alias(citation, normalized_id)
-        self.add_rule_alias(f"rule {number}", normalized_id)
-        self.add_rule_alias(number, normalized_id)
-        self.add_rule_alias(f"California Rules of Court, rule {number}", normalized_id)
-        return normalized_id
-
-    def add_rule_alias(self, citation: str, normalized_id: str) -> None:
-        normalized = normalize_citation(citation).casefold()
-        if not normalized or not normalized_id:
-            return
-        with self.connection() as conn:
-            row = conn.execute(
-                "SELECT citation FROM rules WHERE rule_id = ?",
-                (normalized_id,),
-            ).fetchone()
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO rule_aliases(normalized_citation, rule_id, citation_text)
-                VALUES (?, ?, ?)
-                """,
-                (normalized, normalized_id, str(row["citation"]) if row else citation),
-            )
-
-    def read_rule(self, rule_number: str) -> dict[str, Any] | None:
-        return self.read_rule_by_id(rule_id(rule_number))
-
-    def read_rule_by_id(self, normalized_id: str) -> dict[str, Any] | None:
-        with self.connection() as conn:
-            row = conn.execute(
-                "SELECT rule_json FROM rules WHERE rule_id = ?",
-                (normalized_id,),
-            ).fetchone()
-            if row is not None:
-                conn.execute(
-                    "UPDATE rules SET last_accessed = ? WHERE rule_id = ?",
-                    (_utc_now(), normalized_id),
-                )
-        if row is None:
-            return None
-        data = _json_loads(str(row["rule_json"]))
-        return data if isinstance(data, dict) else None
-
-    def read_rule_by_citation(self, citation: str) -> dict[str, Any] | None:
-        parsed = parse_rule_citation(citation)
-        if parsed is not None:
-            direct = self.read_rule(parsed.rule_number)
-            if direct is not None:
-                return direct
-        normalized = normalize_citation(citation).casefold()
-        if not normalized:
-            return None
-        with self.connection() as conn:
-            row = conn.execute(
-                """
-                SELECT rules.rule_json
-                FROM rule_aliases
-                JOIN rules ON rules.rule_id = rule_aliases.rule_id
-                WHERE rule_aliases.normalized_citation = ?
-                """,
-                (normalized,),
-            ).fetchone()
-        if row is None:
-            return None
-        data = _json_loads(str(row["rule_json"]))
-        return data if isinstance(data, dict) else None
-
-    def list_rule_entries(self) -> list[dict[str, Any]]:
-        with self.connection() as conn:
-            rows = conn.execute(
-                """
-                SELECT rule_id, rule_number, rule_slug, title_slug, title, citation, added_at, last_accessed
-                FROM rules
-                ORDER BY title COLLATE NOCASE, citation COLLATE NOCASE, rule_id
-                """
-            ).fetchall()
-        return [
-            {
-                "rule_id": str(row["rule_id"]),
-                "rule_number": str(row["rule_number"]),
-                "rule_slug": str(row["rule_slug"]),
-                "title_slug": str(row["title_slug"]),
-                "title": str(row["title"]),
-                "citation": str(row["citation"]),
-                "added_at": str(row["added_at"]),
-                "last_accessed": str(row["last_accessed"]),
-            }
-            for row in rows
-        ]
-
-    def saved_rules(self) -> list[dict[str, Any]]:
-        rules: list[dict[str, Any]] = []
-        for entry in self.list_rule_entries():
-            rule = self.read_rule_by_id(str(entry.get("rule_id", "")))
-            if rule is not None:
-                rules.append(rule)
-        return rules
 
     def official_pagination_audit(self) -> list[LibraryPruneCandidate]:
         from .quality import official_pagination_quality

@@ -30,65 +30,63 @@ from open_law_lens.library import CaseLibrary
 
 
 class ClientTests(unittest.TestCase):
-    def test_lookup_rule_uses_library_before_california_courts(self) -> None:
+    def test_lookup_rule_fetches_california_courts_and_caches_result(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             library = CaseLibrary(temp_path / "library.sqlite3")
             library.ensure()
-            library.upsert_rule(
-                {
-                    "rule_id": "CRC:8.11",
-                    "rule_number": "8.11",
-                    "rule_slug": "8_11",
-                    "title_slug": "eight",
-                    "title": "California Rules of Court, rule 8.11",
-                    "citation": "Cal. Rules of Court, rule 8.11",
-                    "source_url": "https://example.test",
-                    "source_html": "",
-                    "text": "Rule 8.11. Scope.",
-                }
-            )
             client = CourtListenerClient(
                 cache=JsonCache(temp_path / "cache"),
                 library=library,
             )
+            fetched_rule = {
+                "rule_id": "CRC:8.11",
+                "rule_number": "8.11",
+                "rule_slug": "8_11",
+                "title_slug": "eight",
+                "title": "California Rules of Court, rule 8.11",
+                "citation": "Cal. Rules of Court, rule 8.11",
+                "source_url": "https://example.test",
+                "source_html": "",
+                "text": "Rule 8.11. Scope.",
+            }
 
             with patch("open_law_lens.client.fetch_california_rule") as fetch_mock:
+                fetch_mock.return_value = fetched_rule
                 rule = client.lookup_rule("rule 8.11")
 
-            fetch_mock.assert_not_called()
+            fetch_mock.assert_called_once()
             self.assertEqual(rule["rule_id"], "CRC:8.11")
-            self.assertEqual(client.last_lookup_source, "Library")
+            self.assertEqual(client.last_lookup_source, "California Courts")
             self.assertIsNotNone(client.cache.read_cached_rule("CRC:8.11"))
 
-    def test_lookup_statute_uses_library_before_leginfo(self) -> None:
+    def test_lookup_statute_fetches_leginfo_and_caches_result(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             library = CaseLibrary(temp_path / "library.sqlite3")
             library.ensure()
-            library.upsert_statute(
-                {
-                    "statute_id": "WIC:300",
-                    "law_code": "WIC",
-                    "section": "300",
-                    "title": "Welfare and Institutions Code section 300",
-                    "citation": "Welf. & Inst. Code, § 300",
-                    "source_url": "https://example.test",
-                    "source_html": "",
-                    "text": "300. A child comes within jurisdiction.",
-                }
-            )
             client = CourtListenerClient(
                 cache=JsonCache(temp_path / "cache"),
                 library=library,
             )
+            fetched_statute = {
+                "statute_id": "WIC:300",
+                "law_code": "WIC",
+                "section": "300",
+                "title": "Welfare and Institutions Code section 300",
+                "citation": "Welf. & Inst. Code, § 300",
+                "source_url": "https://example.test",
+                "source_html": "",
+                "text": "300. A child comes within jurisdiction.",
+            }
 
             with patch("open_law_lens.client.fetch_leginfo_statute") as fetch_mock:
+                fetch_mock.return_value = fetched_statute
                 statute = client.lookup_statute("section 300")
 
-            fetch_mock.assert_not_called()
+            fetch_mock.assert_called_once()
             self.assertEqual(statute["statute_id"], "WIC:300")
-            self.assertEqual(client.last_lookup_source, "Library")
+            self.assertEqual(client.last_lookup_source, "LegInfo")
             self.assertIsNotNone(client.cache.read_cached_statute("WIC:300"))
 
     def test_request_json_retries_courtlistener_rate_limit(self) -> None:
