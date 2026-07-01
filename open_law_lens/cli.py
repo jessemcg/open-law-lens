@@ -2,28 +2,36 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
+from pathlib import Path
 import subprocess
 import sys
 from typing import Any
 
+from . import APP_ID
 from .authority_resolver import extract_authority, read_selected_text_from_os
 from .cache import JsonCache
 from .cli_commands import build_cli_commands_text
 from .client import CourtListenerClient, CourtListenerError
-from . import APP_ID
+from .launch_request import discard_open_authority_request, write_open_authority_request
 from .library import CaseLibrary, LibraryPruneCandidate
 from .rules import CaliforniaRulesError
 from .statutes import LegInfoError
+
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+DBUS_ACTIVATE_TIMEOUT_SECONDS = 0.35
+DESKTOP_APP_ID = APP_ID
 
 
 def _print_json(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2))
 
 
-def _cmd_app(_args: argparse.Namespace) -> int:
+def _cmd_app(args: argparse.Namespace) -> int:
     from .app import main as app_main
 
+    open_authority = str(getattr(args, "open_authority", "") or "").strip()
+    if open_authority:
+        return app_main(["--open-authority", open_authority])
     return app_main()
 
 
@@ -108,7 +116,7 @@ def _cmd_commands(_args: argparse.Namespace) -> int:
     return 0
 
 
-def _activate_open_authority(value: str) -> bool:
+def _activate_open_authority(value: str, *, timeout: float = DBUS_ACTIVATE_TIMEOUT_SECONDS) -> bool:
     command = [
         "gdbus",
         "call",
@@ -120,11 +128,11 @@ def _activate_open_authority(value: str) -> bool:
         "--method",
         "org.gtk.Actions.Activate",
         "open_authority",
-        f"['{_dbus_quote(value)}']",
+        f"[<'{_dbus_quote(value)}'>]",
         "{}",
     ]
     try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=2, check=False)
+        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
     except (OSError, subprocess.SubprocessError):
         return False
     return result.returncode == 0
@@ -134,28 +142,63 @@ def _dbus_quote(value: str) -> str:
     return value.replace("\\", "\\\\").replace("'", "\\'")
 
 
-def _launch_app_with_open_text(value: str) -> int:
-    os.environ["OPEN_LAW_LENS_OPEN_TEXT"] = value
-    from .app import main as app_main
+def _start_app_detached(open_text: str = "") -> subprocess.Popen[bytes]:
+    return subprocess.Popen(
+        [sys.executable, "-m", "open_law_lens", "app"],
+        cwd=PROJECT_DIR,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        start_new_session=True,
+    )
 
-    return app_main()
+
+def _launch_desktop_app() -> bool:
+    try:
+        result = subprocess.run(
+            ["gtk-launch", DESKTOP_APP_ID],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
 
 
-def _cmd_open(args: argparse.Namespace) -> int:
-    value = args.value.strip()
+def _open_authority_after_launch(value: str) -> int:
+    try:
+        write_open_authority_request(value)
+        if _launch_desktop_app():
+            return 0
+        _start_app_detached()
+    except OSError as exc:
+        discard_open_authority_request()
+        print(f"Unable to launch Open Law Lens: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _open_authority_in_app(value: str) -> int:
+    value = value.strip()
     if not value:
         print("No authority text provided.", file=sys.stderr)
         return 1
     if _activate_open_authority(value):
         return 0
-    return _launch_app_with_open_text(value)
+    return _open_authority_after_launch(value)
+
+
+def _cmd_open(args: argparse.Namespace) -> int:
+    return _open_authority_in_app(args.value)
 
 
 def _cmd_open_selected(_args: argparse.Namespace) -> int:
     value, _source = read_selected_text_from_os()
-    if _activate_open_authority(value):
-        return 0
-    return _launch_app_with_open_text(value)
+    return _open_authority_in_app(value)
 
 
 def _cmd_lookup_statute(args: argparse.Namespace) -> int:
@@ -300,6 +343,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command")
 
     app_parser = subparsers.add_parser("app", help="launch the GTK app")
+    app_parser.add_argument(
+        "--open-authority",
+        help=argparse.SUPPRESS,
+    )
     app_parser.set_defaults(func=_cmd_app)
 
     lookup_parser = subparsers.add_parser("lookup-citation", help="look up a case citation")

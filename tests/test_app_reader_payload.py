@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
-from open_law_lens.app import OpenLawLensWindow, build_case_reader_payload
+from open_law_lens.app import OpenLawLensApp, OpenLawLensWindow, build_case_reader_payload
 from open_law_lens.citation_links import CitedCaseLink
+from open_law_lens.config import AppConfig
 from open_law_lens.library import DisplayText, PageMarker
 
 
@@ -76,6 +78,217 @@ class AppReaderPayloadTests(unittest.TestCase):
         OpenLawLensWindow._open_agent_cited_case_link(window, link)  # type: ignore[arg-type]
 
         self.assertEqual(window.opened, ["11 Cal.5th 614", "11 Cal.5th 614"])
+
+    def test_open_authority_text_uses_first_detected_authority(self) -> None:
+        class DummyEntry:
+            def __init__(self) -> None:
+                self.values: list[str] = []
+
+            def set_text(self, text: str) -> None:
+                self.values.append(text)
+
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.citation_entry = DummyEntry()
+                self.opened_cases: list[str] = []
+                self.opened_statutes: list[str] = []
+                self.opened_rules: list[str] = []
+
+            def _set_status(self, _text: str) -> None:
+                pass
+
+            def _lookup_text_from_entry(self, entry_text: str) -> str:
+                return entry_text
+
+            def _bare_statute_lookup_text(self, text: str) -> str:
+                return OpenLawLensWindow._bare_statute_lookup_text(self, text)  # type: ignore[arg-type]
+
+            def _external_lookup_text(self, lookup_text: str) -> str:
+                return OpenLawLensWindow._external_lookup_text(self, lookup_text)  # type: ignore[arg-type]
+
+            def _start_lookup(self, citation: str) -> None:
+                self.opened_cases.append(citation)
+
+            def _start_statute_lookup(self, citation: str) -> None:
+                self.opened_statutes.append(citation)
+
+            def _start_rule_lookup(self, citation: str) -> None:
+                self.opened_rules.append(citation)
+
+        window = DummyWindow()
+
+        OpenLawLensWindow.open_authority_text(  # type: ignore[arg-type]
+            window,
+            "Background text. See Welf. & Inst. Code, § 300 and 13 Cal.4th 952.",
+        )
+
+        self.assertEqual(window.opened_statutes, ["Welf. & Inst. Code, § 300"])
+        self.assertEqual(window.opened_cases, [])
+        self.assertEqual(window.opened_rules, [])
+
+    def test_open_authority_text_treats_bare_number_as_configured_statute(self) -> None:
+        class DummyEntry:
+            def set_text(self, _text: str) -> None:
+                pass
+
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.citation_entry = DummyEntry()
+                self.opened_statutes: list[str] = []
+
+            def _start_statute_lookup(self, citation: str) -> None:
+                self.opened_statutes.append(citation)
+
+            def _bare_statute_lookup_text(self, text: str) -> str:
+                return OpenLawLensWindow._bare_statute_lookup_text(self, text)  # type: ignore[arg-type]
+
+            def _set_status(self, _text: str) -> None:
+                pass
+
+        window = DummyWindow()
+
+        with patch("open_law_lens.app.load_config", return_value=AppConfig()):
+            OpenLawLensWindow.open_authority_text(window, "300")  # type: ignore[arg-type]
+
+        self.assertEqual(window.opened_statutes, ["Welf. & Inst. Code, § 300"])
+
+    def test_open_authority_text_uses_configured_bare_number_statute_code(self) -> None:
+        class DummyEntry:
+            def set_text(self, _text: str) -> None:
+                pass
+
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.citation_entry = DummyEntry()
+                self.opened_statutes: list[str] = []
+
+            def _start_statute_lookup(self, citation: str) -> None:
+                self.opened_statutes.append(citation)
+
+            def _bare_statute_lookup_text(self, text: str) -> str:
+                return OpenLawLensWindow._bare_statute_lookup_text(self, text)  # type: ignore[arg-type]
+
+            def _set_status(self, _text: str) -> None:
+                pass
+
+        window = DummyWindow()
+
+        with patch(
+            "open_law_lens.app.load_config",
+            return_value=AppConfig(default_bare_statute_law_code="FAM"),
+        ):
+            OpenLawLensWindow.open_authority_text(window, "7822")  # type: ignore[arg-type]
+
+        self.assertEqual(window.opened_statutes, ["Fam. Code, § 7822"])
+
+    def test_external_case_open_does_not_sync_load_suggestions(self) -> None:
+        class DummyEntry:
+            def set_text(self, _text: str) -> None:
+                pass
+
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.citation_entry = DummyEntry()
+                self._case_suggestions_loaded = False
+                self.async_refreshes = 0
+                self.opened_cases: list[str] = []
+
+            def _set_status(self, _text: str) -> None:
+                pass
+
+            def _bare_statute_lookup_text(self, text: str) -> str:
+                return OpenLawLensWindow._bare_statute_lookup_text(self, text)  # type: ignore[arg-type]
+
+            def _external_lookup_text(self, lookup_text: str) -> str:
+                return OpenLawLensWindow._external_lookup_text(self, lookup_text)  # type: ignore[arg-type]
+
+            def _refresh_case_suggestion_index_async(self) -> None:
+                self.async_refreshes += 1
+
+            def _lookup_text_from_entry(self, _entry_text: str) -> str:
+                raise AssertionError("external case open should not synchronously load suggestions")
+
+            def _start_lookup(self, citation: str) -> None:
+                self.opened_cases.append(citation)
+
+            def _start_statute_lookup(self, _citation: str) -> None:
+                raise AssertionError("case citation should not route to statute lookup")
+
+            def _start_rule_lookup(self, _citation: str) -> None:
+                raise AssertionError("case citation should not route to rule lookup")
+
+        window = DummyWindow()
+
+        OpenLawLensWindow.open_authority_text(  # type: ignore[arg-type]
+            window,
+            "See In re Caden C. (2021) 11 Cal.5th 614.",
+        )
+
+        self.assertEqual(window.async_refreshes, 1)
+        self.assertEqual(window.opened_cases, ["11 Cal.5th 614"])
+
+    def test_app_startup_request_uses_existing_open_authority_path(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.pending: list[str] = []
+
+            def show_open_authority_pending(self) -> None:
+                self.pending.append("pending")
+
+            def open_authority_text(self, text: str) -> bool:
+                self.pending.append(text)
+                return False
+
+        window = DummyWindow()
+
+        with (
+            patch("open_law_lens.app.pop_open_authority_request", return_value="300"),
+            patch("open_law_lens.app.GLib.idle_add") as idle_add,
+        ):
+            OpenLawLensApp._open_startup_authority_if_requested(  # type: ignore[arg-type]
+                object(),
+                window,
+            )
+
+        self.assertEqual(window.pending, ["pending"])
+        idle_add.assert_called_once_with(window.open_authority_text, "300")
+
+    def test_command_line_without_open_authority_consumes_startup_request(self) -> None:
+        class DummyOptions:
+            def lookup_value(self, _name: str, _variant_type: object) -> None:
+                return None
+
+        class DummyCommandLine:
+            def get_options_dict(self) -> DummyOptions:
+                return DummyOptions()
+
+        class DummyWindow:
+            pass
+
+        class DummyApp:
+            def __init__(self) -> None:
+                self.window = DummyWindow()
+                self.main_window_calls = 0
+                self.request_windows: list[DummyWindow] = []
+
+            def _main_window(self) -> DummyWindow:
+                self.main_window_calls += 1
+                return self.window
+
+            def _open_startup_authority_if_requested(self, window: DummyWindow) -> None:
+                self.request_windows.append(window)
+
+        app = DummyApp()
+
+        status = OpenLawLensApp._on_command_line(  # type: ignore[arg-type]
+            app,
+            object(),
+            DummyCommandLine(),
+        )
+
+        self.assertEqual(status, 0)
+        self.assertEqual(app.main_window_calls, 1)
+        self.assertEqual(app.request_windows, [app.window])
 
     def test_research_cache_clear_action_lives_in_sidebar_header_not_menu(self) -> None:
         class DummyWindow:

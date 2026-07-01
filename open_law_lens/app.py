@@ -4,6 +4,7 @@ import os
 import re
 import signal
 import shutil
+import sys
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -36,6 +37,7 @@ from .agent import (
     find_latest_codex_session_log_for_cwd,
     resolve_quote_target,
 )
+from .authority_resolver import first_authority_candidate
 from .cache import cluster_id_from_cluster
 from .cli_commands import CLI_COMMANDS
 from .client import (
@@ -77,12 +79,14 @@ from .citation_links import (
 )
 from .config import (
     AppConfig,
+    BARE_STATUTE_LAW_CODE_OPTIONS,
     DEFAULT_CASE_AGENT_PROMPT_TEMPLATE,
     DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE,
     concordance_file_path,
     coerce_reader_font_size,
     courtlistener_token,
     load_config,
+    normalize_bare_statute_law_code,
     reader_font_css,
     normalize_reader_font_family,
     READER_FONT_FAMILY_OPTIONS,
@@ -95,6 +99,7 @@ from .external_import import (
     imported_case_name_from_text,
     normalize_official_citation,
 )
+from .launch_request import pop_open_authority_request
 from .library import DisplayText, PageMarker, opinion_display_text
 from .quality import official_pagination_quality
 from .scholar_search import (
@@ -104,7 +109,13 @@ from .scholar_search import (
 )
 from .speech import DEFAULT_SPEECH_QUESTION_FILE, normalize_speech_question_text
 from .rules import CaliforniaRulesError, parse_rule_citation
-from .statutes import LegInfoError, parse_statute_citation
+from .statutes import (
+    LegInfoError,
+    StatuteCitation,
+    normalize_section,
+    parse_statute_citation,
+    statute_display_citation,
+)
 from .text_search import literal_match_ranges
 from .web_import import ExtractedWebpage, extract_webpage_text
 
@@ -486,6 +497,27 @@ class SettingsWindow(Adw.ApplicationWindow):
         display_group.add(self.reader_font_family_row)
         outer.append(display_group)
 
+        authority_group = Adw.PreferencesGroup(title="Authority Lookup")
+        self.bare_statute_law_code_values = [code for code, _label in BARE_STATUTE_LAW_CODE_OPTIONS]
+        bare_statute_labels = [
+            f"{label} ({code})"
+            for code, label in BARE_STATUTE_LAW_CODE_OPTIONS
+        ]
+        self.bare_statute_law_code_row = Adw.ComboRow(
+            title="Bare Number Statute Code",
+            subtitle="When selected text is only a section number, open it as this California code.",
+        )
+        self.bare_statute_law_code_row.set_model(Gtk.StringList.new(bare_statute_labels))
+        try:
+            selected_bare_statute_index = self.bare_statute_law_code_values.index(
+                config.default_bare_statute_law_code
+            )
+        except ValueError:
+            selected_bare_statute_index = 0
+        self.bare_statute_law_code_row.set_selected(selected_bare_statute_index)
+        authority_group.add(self.bare_statute_law_code_row)
+        outer.append(authority_group)
+
         concordance_group = Adw.PreferencesGroup(title="Concordance")
         self.concordance_row = Adw.EntryRow(title="Concordance file")
         self.concordance_row.set_text(config.concordance_file_path)
@@ -580,6 +612,11 @@ class SettingsWindow(Adw.ApplicationWindow):
             reader_font_family = self.reader_font_family_values[selected_font_family_index]
         else:
             reader_font_family = load_config().reader_font_family
+        selected_bare_statute_index = int(self.bare_statute_law_code_row.get_selected())
+        if 0 <= selected_bare_statute_index < len(self.bare_statute_law_code_values):
+            bare_statute_law_code = self.bare_statute_law_code_values[selected_bare_statute_index]
+        else:
+            bare_statute_law_code = load_config().default_bare_statute_law_code
         save_config(
             AppConfig(
                 courtlistener_token=token,
@@ -596,6 +633,9 @@ class SettingsWindow(Adw.ApplicationWindow):
                     int(round(self.reader_font_size_row.get_value()))
                 ),
                 reader_font_family=normalize_reader_font_family(reader_font_family),
+                default_bare_statute_law_code=normalize_bare_statute_law_code(
+                    bare_statute_law_code
+                ),
             )
         )
         self.parent_window.reload_settings()
@@ -2443,16 +2483,46 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if not entry_text:
             self._set_status("No authority text provided.")
             return False
-        citation = self._lookup_text_from_entry(entry_text)
+        bare_statute_lookup_text = self._bare_statute_lookup_text(entry_text)
+        if bare_statute_lookup_text:
+            self.citation_entry.set_text("")
+            self._start_statute_lookup(bare_statute_lookup_text)
+            return False
+        candidate = first_authority_candidate(entry_text)
+        lookup_text = candidate.text
         self.citation_entry.set_text("")
-        if parse_statute_citation(citation) is not None:
-            self._start_statute_lookup(citation)
+        if candidate.authority_type == "statute" or parse_statute_citation(lookup_text) is not None:
+            self._start_statute_lookup(lookup_text)
             return False
-        if parse_rule_citation(citation) is not None:
-            self._start_rule_lookup(citation)
+        if candidate.authority_type == "rule" or parse_rule_citation(lookup_text) is not None:
+            self._start_rule_lookup(lookup_text)
             return False
+        citation = self._external_lookup_text(lookup_text)
         self._start_lookup(citation)
         return False
+
+    def _external_lookup_text(self, lookup_text: str) -> str:
+        if not self._case_suggestions_loaded:
+            self._refresh_case_suggestion_index_async()
+            return lookup_text
+        return resolve_case_lookup_text(lookup_text, self._case_suggestions) or lookup_text
+
+    def _bare_statute_lookup_text(self, text: str) -> str:
+        if re.fullmatch(r"\d+[a-z]?(?:\.\d+[a-z]?)?", text, re.IGNORECASE) is None:
+            return ""
+        try:
+            law_code = normalize_bare_statute_law_code(load_config().default_bare_statute_law_code)
+            section = normalize_section(text)
+            return statute_display_citation(StatuteCitation(law_code, section))
+        except ValueError:
+            return ""
+
+    def show_open_authority_pending(self, message: str = "Opening selected authority...") -> None:
+        self._hide_case_completion()
+        self._set_reader_header("")
+        self._set_status(message)
+        self._set_reader_busy(True, message)
+        self.reader_buffer.set_text("Loading...")
 
     def _on_window_tick(self, _widget: Gtk.Widget, _clock: Gdk.FrameClock) -> bool:
         self._update_agent_panel_height()
@@ -5005,8 +5075,20 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
 class OpenLawLensApp(Adw.Application):
     def __init__(self) -> None:
-        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+        super().__init__(
+            application_id=APP_ID,
+            flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE,
+        )
         self.connect("activate", self._on_activate)
+        self.connect("command-line", self._on_command_line)
+        self.add_main_option(
+            "open-authority",
+            0,
+            GLib.OptionFlags.NONE,
+            GLib.OptionArg.STRING,
+            "Open authority text after launching the app",
+            "TEXT",
+        )
         self._install_actions()
         self.set_accels_for_action("win.focus_citation", ["<Primary>l"])
         self.set_accels_for_action("win.focus_law_question", ["<Primary>q"])
@@ -5036,10 +5118,29 @@ class OpenLawLensApp(Adw.Application):
         self.add_action(submit_speech_cache_question)
 
     def _on_activate(self, _app: Adw.Application) -> None:
-        window = OpenLawLensWindow(self)
-        window.present()
-        open_text = os.environ.pop("OPEN_LAW_LENS_OPEN_TEXT", "").strip()
+        window = self._main_window()
+        self._open_startup_authority_if_requested(window)
+
+    def _on_command_line(
+        self,
+        _app: Adw.Application,
+        command_line: Gio.ApplicationCommandLine,
+    ) -> int:
+        options = command_line.get_options_dict()
+        open_text_variant = options.lookup_value("open-authority", GLib.VariantType.new("s"))
+        open_text = open_text_variant.get_string().strip() if open_text_variant is not None else ""
+        window = self._main_window()
         if open_text:
+            window.show_open_authority_pending()
+            GLib.idle_add(window.open_authority_text, open_text)
+        else:
+            self._open_startup_authority_if_requested(window)
+        return 0
+
+    def _open_startup_authority_if_requested(self, window: OpenLawLensWindow) -> None:
+        open_text = pop_open_authority_request()
+        if open_text:
+            window.show_open_authority_pending()
             GLib.idle_add(window.open_authority_text, open_text)
 
     def _main_window(self) -> OpenLawLensWindow:
@@ -5078,6 +5179,7 @@ class OpenLawLensApp(Adw.Application):
         self._main_window().open_authority_text(parameter.get_string())
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     app = OpenLawLensApp()
-    return int(app.run(None))
+    run_argv = None if argv is None else [sys.argv[0], *argv]
+    return int(app.run(run_argv))

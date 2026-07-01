@@ -15,8 +15,18 @@ CONFIG_KEY_GENERAL_AGENT_PROMPT_TEMPLATE = "general_agent_prompt_template"
 CONFIG_KEY_CASE_AGENT_PROMPT_TEMPLATE = "case_agent_prompt_template"
 CONFIG_KEY_READER_FONT_SIZE_PT = "reader_font_size_pt"
 CONFIG_KEY_READER_FONT_FAMILY = "reader_font_family"
+CONFIG_KEY_DEFAULT_BARE_STATUTE_LAW_CODE = "default_bare_statute_law_code"
 ENV_CONCORDANCE_FILE = "OPEN_LAW_LENS_CONCORDANCE_FILE"
 DEFAULT_READER_FONT_SIZE_PT = 11
+DEFAULT_BARE_STATUTE_LAW_CODE = "WIC"
+BARE_STATUTE_LAW_CODE_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("WIC", "Welfare and Institutions Code"),
+    ("EVID", "Evidence Code"),
+    ("CIV", "Civil Code"),
+    ("CCP", "Code of Civil Procedure"),
+    ("FAM", "Family Code"),
+    ("PEN", "Penal Code"),
+)
 READER_FONT_FAMILY_OPTIONS: tuple[tuple[str, str], ...] = (
     ("Noto Serif", '"Noto Serif", "Liberation Serif", "DejaVu Serif", serif'),
     ("Georgia", 'Georgia, "Times New Roman", "Liberation Serif", serif'),
@@ -67,6 +77,7 @@ class AppConfig:
     case_agent_prompt_template: str = DEFAULT_CASE_AGENT_PROMPT_TEMPLATE
     reader_font_size_pt: int = DEFAULT_READER_FONT_SIZE_PT
     reader_font_family: str = DEFAULT_READER_FONT_FAMILY
+    default_bare_statute_law_code: str = DEFAULT_BARE_STATUTE_LAW_CODE
 
 
 def coerce_reader_font_size(value: Any, default: int = DEFAULT_READER_FONT_SIZE_PT) -> int:
@@ -84,6 +95,14 @@ def normalize_reader_font_family(value: Any) -> str:
         if normalized == name:
             return name
     return DEFAULT_READER_FONT_FAMILY
+
+
+def normalize_bare_statute_law_code(value: Any) -> str:
+    normalized = str(value or "").strip().upper()
+    for code, _label in BARE_STATUTE_LAW_CODE_OPTIONS:
+        if normalized == code:
+            return code
+    return DEFAULT_BARE_STATUTE_LAW_CODE
 
 
 def reader_font_css(font_family: str) -> str:
@@ -124,6 +143,9 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
         ),
         reader_font_size_pt=coerce_reader_font_size(raw.get(CONFIG_KEY_READER_FONT_SIZE_PT)),
         reader_font_family=normalize_reader_font_family(raw.get(CONFIG_KEY_READER_FONT_FAMILY)),
+        default_bare_statute_law_code=normalize_bare_statute_law_code(
+            raw.get(CONFIG_KEY_DEFAULT_BARE_STATUTE_LAW_CODE)
+        ),
     )
 
 
@@ -139,6 +161,9 @@ def save_config(config: AppConfig, path: Path = CONFIG_PATH) -> None:
         ),
         CONFIG_KEY_READER_FONT_SIZE_PT: coerce_reader_font_size(config.reader_font_size_pt),
         CONFIG_KEY_READER_FONT_FAMILY: normalize_reader_font_family(config.reader_font_family),
+        CONFIG_KEY_DEFAULT_BARE_STATUTE_LAW_CODE: normalize_bare_statute_law_code(
+            config.default_bare_statute_law_code
+        ),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
