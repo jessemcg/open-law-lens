@@ -6,6 +6,7 @@ from typing import Iterable
 
 from .cache import normalize_citation
 from .citation_model import official_citation_from_cluster
+from .statutes import StatuteLink, cited_statute_links
 
 
 REPORTER_CITATION_PATTERN = (
@@ -146,3 +147,14 @@ def cluster_citation_texts(cluster: dict[str, object] | None) -> list[str]:
         return []
     official = official_citation_from_cluster(cluster)
     return [official] if official else []
+
+
+__all__ = [
+    "CitedCaseLink",
+    "CitationStyleSpan",
+    "StatuteLink",
+    "cited_case_links",
+    "cited_statute_links",
+    "citation_italic_spans",
+    "cluster_citation_texts",
+]

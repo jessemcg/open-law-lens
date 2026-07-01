@@ -33,6 +33,8 @@ class CaseTextSource:
     citation: str
     text_path: str
     text: str
+    authority_type: str = "case"
+    statute_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,11 @@ class CaseExport:
     case_dir: Path
     case_count: int
     text_sources: list[CaseTextSource]
+    statute_count: int = 0
+
+    @property
+    def authority_count(self) -> int:
+        return self.case_count + self.statute_count
 
 
 def _json_dumps(value: Any) -> str:
@@ -172,8 +179,18 @@ def export_selected_cases(
     clusters: list[dict[str, Any]],
     case_dir: Path,
 ) -> CaseExport:
+    return export_selected_authorities(client, clusters, [], case_dir)
+
+
+def export_selected_authorities(
+    client: Any,
+    clusters: list[dict[str, Any]],
+    statutes: list[dict[str, Any]],
+    case_dir: Path,
+) -> CaseExport:
     case_dir.mkdir(parents=True, exist_ok=True)
     manifest_cases: list[dict[str, Any]] = []
+    manifest_statutes: list[dict[str, Any]] = []
     text_sources: list[CaseTextSource] = []
 
     for cluster in clusters:
@@ -228,10 +245,49 @@ def export_selected_cases(
                 }
             )
 
+    for statute in statutes:
+        statute_id = str(statute.get("statute_id") or "").strip()
+        title = str(statute.get("title") or "").strip()
+        citation = str(statute.get("citation") or "").strip()
+        text = str(statute.get("text") or "").strip()
+        if not statute_id or not text:
+            continue
+        filename = f"statute_{re.sub(r'[^A-Za-z0-9_.-]+', '_', statute_id)}.txt"
+        text_path = case_dir / filename
+        header = (
+            f"Title: {title}\n"
+            f"Citation: {citation}\n"
+            f"Statute ID: {statute_id}\n"
+            f"Source URL: {statute.get('source_url') or ''}\n\n"
+        )
+        text_path.write_text(header + text, encoding="utf-8")
+        manifest_statutes.append(
+            {
+                "statute_id": statute_id,
+                "title": title,
+                "citation": citation,
+                "text_path": str(text_path),
+                "source_url": str(statute.get("source_url") or ""),
+            }
+        )
+        text_sources.append(
+            CaseTextSource(
+                cluster_id="",
+                opinion_id="",
+                title=title,
+                citation=citation,
+                text_path=str(text_path),
+                text=text,
+                authority_type="statute",
+                statute_id=statute_id,
+            )
+        )
+
     manifest = {
         "cases": manifest_cases,
+        "statutes": manifest_statutes,
         "instructions": (
-            "Use only these selected Open Law Lens Research Cache cases. "
+            "Use only these selected Open Law Lens Research Cache authorities. "
             "Quote exact continuous phrases from the text files."
         ),
     }
@@ -241,5 +297,6 @@ def export_selected_cases(
         manifest_path=manifest_path,
         case_dir=case_dir,
         case_count=len(manifest_cases),
+        statute_count=len(manifest_statutes),
         text_sources=text_sources,
     )

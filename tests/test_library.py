@@ -10,6 +10,30 @@ from open_law_lens.library import CaseLibrary, opinion_display_text
 
 
 class LibraryTests(unittest.TestCase):
+    def test_upsert_and_read_statute_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            statute = {
+                "statute_id": "WIC:300",
+                "law_code": "WIC",
+                "section": "300",
+                "title": "Welfare and Institutions Code section 300",
+                "citation": "Welf. & Inst. Code, § 300",
+                "source_url": "https://example.test",
+                "source_html": "<p>300.</p>",
+                "text": "300. A child comes within jurisdiction.",
+            }
+
+            library.upsert_statute(statute)
+
+            self.assertEqual(library.read_statute("WIC", "300")["text"], statute["text"])
+            self.assertEqual(
+                library.read_statute_by_citation("Welf. & Inst. Code, § 300")["section"],
+                "300",
+            )
+            self.assertEqual(library.list_statute_entries()[0]["statute_id"], "WIC:300")
+
     def test_upsert_cluster_and_lookup_alias(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             library = CaseLibrary(Path(temp_dir) / "library.sqlite3")

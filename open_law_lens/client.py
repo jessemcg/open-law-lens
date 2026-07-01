@@ -25,6 +25,11 @@ from .quality import (
     official_california_reporter_key,
     official_pagination_quality,
 )
+from .statutes import (
+    LegInfoError,
+    fetch_leginfo_statute,
+    parse_statute_citation,
+)
 
 
 BASE_URL = "https://www.courtlistener.com"
@@ -648,6 +653,36 @@ class CourtListenerClient:
             if cluster is not None:
                 clusters.append(cluster)
         return dedupe_case_clusters(clusters)
+
+    def lookup_statute(self, citation: str, *, refresh: bool = False) -> dict[str, Any]:
+        parsed = parse_statute_citation(citation)
+        if parsed is None:
+            raise ValueError("Could not parse a supported California statute citation.")
+        if not refresh:
+            statute = self.library.read_statute(parsed.law_code, parsed.section)
+            if statute is not None:
+                self.cache.upsert_statute(statute)
+                self.last_lookup_source = "Library"
+                return statute
+        try:
+            statute = fetch_leginfo_statute(parsed, timeout=self.timeout)
+        except LegInfoError:
+            raise
+        self.library.upsert_statute(statute)
+        self.cache.upsert_statute(statute)
+        self.last_lookup_source = "LegInfo"
+        return statute
+
+    def cached_statutes(self) -> list[dict[str, Any]]:
+        statutes: list[dict[str, Any]] = []
+        for entry in self.cache.list_statute_entries():
+            statute_id = str(entry.get("statute_id", "")).strip()
+            if not statute_id:
+                continue
+            statute = self.cache.read_cached_statute(statute_id)
+            if statute is not None:
+                statutes.append(statute)
+        return statutes
 
     def _cache_lookup_clusters(self, result: list[dict[str, Any]]) -> None:
         for cluster in dedupe_case_clusters(self.clusters_from_lookup(result)):

@@ -41,22 +41,22 @@ Confine research to California state law unless the user's question explicitly r
 Question:
 {question}"""
 
-DEFAULT_CASE_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens Marked Research Cache Cases Agent.
+DEFAULT_CASE_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens Marked Research Cache Authorities Agent.
 
-Answer only from the selected cached cases exported into this workspace. Do not use CourtListener MCP, web browsing, or unselected Open Law Lens cases. If the exported cases do not answer the question, say that plainly.
+Answer only from the selected cached authorities exported into this workspace. Do not use CourtListener MCP, web browsing, or unselected Open Law Lens authorities. If the exported authorities do not answer the question, say that plainly.
 
 In your answer, include short direct quotes from the record to highlight legally significant statements. Each quote should be only two to five words long, enclosed in quotation marks, and must include continuous phrases exactly as they appear in the source text.
 
 Question:
 {question}
 
-Selected case manifest:
+Selected authority manifest:
 {case_manifest}
 
-Selected case text directory:
+Selected authority text directory:
 {case_dir}
 
-Selected case count: {case_count}"""
+Selected authority count: {case_count}"""
 
 
 @dataclass(frozen=True)

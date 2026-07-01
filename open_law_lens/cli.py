@@ -8,6 +8,7 @@ from typing import Any
 from .cache import JsonCache
 from .client import CourtListenerClient, CourtListenerError
 from .library import CaseLibrary, LibraryPruneCandidate
+from .statutes import LegInfoError
 
 
 def _print_json(value: Any) -> None:
@@ -40,11 +41,22 @@ def _cmd_lookup(args: argparse.Namespace) -> int:
     return 1
 
 
+def _cmd_lookup_statute(args: argparse.Namespace) -> int:
+    client = CourtListenerClient.default()
+    statute = client.lookup_statute(args.citation, refresh=args.refresh)
+    if args.text:
+        print(str(statute.get("text") or ""))
+        return 0
+    _print_json(statute)
+    return 0
+
+
 def _cmd_show_library(_args: argparse.Namespace) -> int:
     library = CaseLibrary.default()
     entries = library.list_case_entries()
-    if not entries:
-        print("No saved library cases.")
+    statutes = library.list_statute_entries()
+    if not entries and not statutes:
+        print("No saved library authorities.")
         return 0
     for entry in entries:
         title = str(entry.get("title") or "Untitled case")
@@ -54,14 +66,21 @@ def _cmd_show_library(_args: argparse.Namespace) -> int:
         opinion_count = len(opinion_ids) if isinstance(opinion_ids, list) else 0
         citation_part = f" | {citation}" if citation else ""
         print(f"{title}{citation_part} | cluster {cluster_id} | {opinion_count} opinion(s)")
+    for entry in statutes:
+        title = str(entry.get("title") or "Untitled statute")
+        citation = str(entry.get("citation") or "").strip()
+        statute_id = str(entry.get("statute_id") or "").strip()
+        citation_part = f" | {citation}" if citation else ""
+        print(f"{title}{citation_part} | statute {statute_id}")
     return 0
 
 
 def _cmd_show_cache(_args: argparse.Namespace) -> int:
     cache = JsonCache.default()
     entries = cache.list_case_entries()
-    if not entries:
-        print("No Research Cache cases.")
+    statutes = cache.list_statute_entries()
+    if not entries and not statutes:
+        print("No Research Cache authorities.")
         return 0
     for entry in entries:
         title = str(entry.get("title") or "Untitled case")
@@ -71,6 +90,12 @@ def _cmd_show_cache(_args: argparse.Namespace) -> int:
         opinion_count = len(opinion_ids) if isinstance(opinion_ids, list) else 0
         citation_part = f" | {citation}" if citation else ""
         print(f"{title}{citation_part} | cluster {cluster_id} | {opinion_count} opinion(s)")
+    for entry in statutes:
+        title = str(entry.get("title") or "Untitled statute")
+        citation = str(entry.get("citation") or "").strip()
+        statute_id = str(entry.get("statute_id") or "").strip()
+        citation_part = f" | {citation}" if citation else ""
+        print(f"{title}{citation_part} | statute {statute_id}")
     return 0
 
 
@@ -137,10 +162,16 @@ def build_parser() -> argparse.ArgumentParser:
     lookup_parser.add_argument("--text", action="store_true", help="print first matching opinion text")
     lookup_parser.set_defaults(func=_cmd_lookup)
 
-    library_parser = subparsers.add_parser("show-library", help="list saved library cases")
+    statute_parser = subparsers.add_parser("lookup-statute", help="look up a California statute")
+    statute_parser.add_argument("citation")
+    statute_parser.add_argument("--refresh", action="store_true", help="bypass saved statute data")
+    statute_parser.add_argument("--text", action="store_true", help="print statute text")
+    statute_parser.set_defaults(func=_cmd_lookup_statute)
+
+    library_parser = subparsers.add_parser("show-library", help="list saved library authorities")
     library_parser.set_defaults(func=_cmd_show_library)
 
-    cache_parser = subparsers.add_parser("show-cache", help="list Research Cache cases")
+    cache_parser = subparsers.add_parser("show-cache", help="list Research Cache authorities")
     cache_parser.set_defaults(func=_cmd_show_cache)
 
     clear_cache_parser = subparsers.add_parser("clear-cache", help="delete Research Cache data")
@@ -176,6 +207,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return int(args.func(args))
-    except (CourtListenerError, ValueError) as exc:
+    except (CourtListenerError, LegInfoError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1

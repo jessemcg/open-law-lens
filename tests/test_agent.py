@@ -9,6 +9,7 @@ from pathlib import Path
 from open_law_lens.agent import (
     CaseTextSource,
     codex_session_log_matches_cwd,
+    export_selected_authorities,
     export_selected_cases,
     extract_latest_codex_final_answer_from_jsonl,
     extract_quoted_phrases,
@@ -124,6 +125,30 @@ class AgentTests(unittest.TestCase):
             manifest = json.loads(export.manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(manifest["cases"][0]["cluster_id"], "42")
             self.assertIn("active risk today", Path(export.text_sources[0].text_path).read_text())
+
+    def test_export_selected_authorities_writes_statutes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            export = export_selected_authorities(
+                DummyClient(),
+                [],
+                [
+                    {
+                        "statute_id": "WIC:300",
+                        "title": "Welfare and Institutions Code section 300",
+                        "citation": "Welf. & Inst. Code, § 300",
+                        "source_url": "https://example.test",
+                        "text": "300. A child comes within jurisdiction.",
+                    }
+                ],
+                Path(temp_dir) / "selected_authorities",
+            )
+
+            self.assertEqual(export.case_count, 0)
+            self.assertEqual(export.statute_count, 1)
+            self.assertEqual(export.authority_count, 1)
+            manifest = json.loads(export.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["statutes"][0]["statute_id"], "WIC:300")
+            self.assertIn("300. A child", Path(export.text_sources[0].text_path).read_text())
 
 
 if __name__ == "__main__":

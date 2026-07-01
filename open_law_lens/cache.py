@@ -67,11 +67,14 @@ class JsonCache:
         return cls(cache_root())
 
     def ensure(self) -> None:
-        for name in ("lookups", "clusters", "opinions"):
+        for name in ("lookups", "clusters", "opinions", "statutes"):
             (self.root / name).mkdir(parents=True, exist_ok=True)
 
     def case_index_path(self) -> Path:
         return self.root / "cases_index.json"
+
+    def statute_index_path(self) -> Path:
+        return self.root / "statutes_index.json"
 
     def lookup_path(self, citation: str) -> Path:
         return self.root / "lookups" / f"{citation_cache_key(citation)}.json"
@@ -84,6 +87,9 @@ class JsonCache:
 
     def opinion_path(self, opinion_id: str) -> Path:
         return self.resource_path("opinions", opinion_id)
+
+    def statute_path(self, statute_id: str) -> Path:
+        return self.resource_path("statutes", statute_id.replace(":", "_"))
 
     def read_json(self, path: Path) -> Any | None:
         try:
@@ -126,6 +132,15 @@ class JsonCache:
 
     def write_case_index(self, index: dict[str, dict[str, Any]]) -> None:
         self.write_json(self.case_index_path(), index)
+
+    def read_statute_index(self) -> dict[str, dict[str, Any]]:
+        data = self.read_json(self.statute_index_path())
+        if not isinstance(data, dict):
+            return {}
+        return {str(key): value for key, value in data.items() if isinstance(value, dict)}
+
+    def write_statute_index(self, index: dict[str, dict[str, Any]]) -> None:
+        self.write_json(self.statute_index_path(), index)
 
     def upsert_cluster(self, cluster: dict[str, Any]) -> str:
         cluster = canonicalize_cluster_citations(cluster)
@@ -244,6 +259,83 @@ class JsonCache:
             if bool(entry.get("agent_selected"))
         ]
 
+    def upsert_statute(self, statute: dict[str, Any]) -> str:
+        statute_id = str(statute.get("statute_id") or "").strip()
+        if not statute_id:
+            law_code = str(statute.get("law_code") or "").strip().upper()
+            section = str(statute.get("section") or "").strip()
+            statute_id = f"{law_code}:{section}" if law_code and section else ""
+        if not statute_id:
+            return ""
+        self.write_json(self.statute_path(statute_id), statute)
+        index = self.read_statute_index()
+        now = _utc_now()
+        existing = index.get(statute_id, {})
+        index[statute_id] = {
+            **existing,
+            "statute_id": statute_id,
+            "title": str(statute.get("title") or ""),
+            "citation": str(statute.get("citation") or ""),
+            "law_code": str(statute.get("law_code") or ""),
+            "section": str(statute.get("section") or ""),
+            "statute_path": str(self.statute_path(statute_id)),
+            "agent_selected": bool(existing.get("agent_selected", False)),
+            "added_at": existing.get("added_at", now),
+            "last_accessed": now,
+        }
+        self.write_statute_index(index)
+        return statute_id
+
+    def list_statute_entries(self) -> list[dict[str, Any]]:
+        entries = list(self.read_statute_index().values())
+        entries.sort(
+            key=lambda item: (
+                str(item.get("title", "")).casefold(),
+                str(item.get("citation", "")).casefold(),
+                str(item.get("statute_id", "")),
+            )
+        )
+        entries.sort(key=lambda item: str(item.get("added_at", "")), reverse=True)
+        return entries
+
+    def read_cached_statute(self, statute_id: str) -> dict[str, Any] | None:
+        data = self.read_json(self.statute_path(statute_id))
+        return data if isinstance(data, dict) else None
+
+    def is_statute_agent_selected(self, statute_id: str) -> bool:
+        entry = self.read_statute_index().get(statute_id)
+        return bool(entry.get("agent_selected")) if isinstance(entry, dict) else False
+
+    def set_statute_agent_selected(self, statute_id: str, selected: bool) -> None:
+        if not statute_id:
+            return
+        index = self.read_statute_index()
+        entry = index.get(statute_id)
+        if not isinstance(entry, dict):
+            return
+        entry["agent_selected"] = bool(selected)
+        entry["last_accessed"] = _utc_now()
+        index[statute_id] = entry
+        self.write_statute_index(index)
+
+    def selected_statute_entries(self) -> list[dict[str, Any]]:
+        return [
+            entry
+            for entry in self.list_statute_entries()
+            if bool(entry.get("agent_selected"))
+        ]
+
+    def remove_statute(self, statute_id: str) -> bool:
+        if not statute_id:
+            return False
+        index = self.read_statute_index()
+        entry = index.pop(statute_id, None)
+        if not isinstance(entry, dict):
+            return False
+        self.statute_path(statute_id).unlink(missing_ok=True)
+        self.write_statute_index(index)
+        return True
+
     def clear(self) -> None:
         trash_path = self.detach_for_clear()
         if trash_path is not None:
@@ -258,7 +350,9 @@ class JsonCache:
                 self.root / "lookups",
                 self.root / "clusters",
                 self.root / "opinions",
+                self.root / "statutes",
                 self.case_index_path(),
+                self.statute_index_path(),
             ):
                 if not source.exists():
                     continue

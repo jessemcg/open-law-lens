@@ -15,6 +15,12 @@ from .client import (
 )
 from .library import CaseLibrary
 from .quality import official_pagination_quality
+from .statutes import (
+    parse_statute_citation,
+    statute_display_citation,
+    statute_search_terms,
+    statute_title,
+)
 
 
 CALIFORNIA_REPORTER_PATTERN = re.compile(
@@ -37,6 +43,8 @@ class CaseSuggestion:
     search_terms: tuple[str, ...]
     source: str = ""
     cluster_id: str = ""
+    authority_type: str = "case"
+    statute_id: str = ""
 
 
 def normalize_lookup_text(text: str) -> str:
@@ -168,6 +176,53 @@ def load_concordance_case_suggestions(path: Path) -> list[CaseSuggestion]:
     return sorted(suggestions, key=lambda item: item.display_name.casefold())
 
 
+def make_statute_suggestion(
+    text: str,
+    *,
+    source: str = "",
+    statute_id_value: str = "",
+) -> CaseSuggestion | None:
+    parsed = parse_statute_citation(text)
+    if parsed is None:
+        return None
+    statute = {
+        "law_code": parsed.law_code,
+        "section": parsed.section,
+        "statute_id": parsed.statute_id,
+    }
+    label = statute_display_citation(parsed)
+    display = statute_title(parsed)
+    return CaseSuggestion(
+        label=label,
+        lookup_text=label,
+        display_name=display,
+        search_terms=statute_search_terms(statute),
+        source=source,
+        authority_type="statute",
+        statute_id=statute_id_value or parsed.statute_id,
+    )
+
+
+def load_concordance_statute_suggestions(path: Path) -> list[CaseSuggestion]:
+    try:
+        handle = path.open(encoding="utf-8", errors="ignore", newline="")
+    except OSError:
+        return []
+    suggestions: list[CaseSuggestion] = []
+    seen: set[str] = set()
+    with handle:
+        for row in csv.reader(handle, delimiter=";"):
+            if len(row) < 3 or row[2].strip() != "Statutes":
+                continue
+            text = (row[1] or row[0]).strip()
+            suggestion = make_statute_suggestion(text, source="Concordance")
+            if suggestion is None or suggestion.lookup_text in seen:
+                continue
+            seen.add(suggestion.lookup_text)
+            suggestions.append(suggestion)
+    return sorted(suggestions, key=lambda item: item.display_name.casefold())
+
+
 def _cluster_citations(cluster: dict[str, object]) -> list[str]:
     citations = cluster.get("citations")
     if not isinstance(citations, list):
@@ -214,6 +269,19 @@ def case_suggestions_from_library(library: CaseLibrary) -> list[CaseSuggestion]:
             continue
         seen_labels.add(suggestion.label)
         suggestions.append(suggestion)
+    return sorted(suggestions, key=lambda item: item.display_name.casefold())
+
+
+def statute_suggestions_from_library(library: CaseLibrary) -> list[CaseSuggestion]:
+    suggestions: list[CaseSuggestion] = []
+    for statute in library.saved_statutes():
+        suggestion = make_statute_suggestion(
+            str(statute.get("citation") or ""),
+            source="Library",
+            statute_id_value=str(statute.get("statute_id") or ""),
+        )
+        if suggestion is not None:
+            suggestions.append(suggestion)
     return sorted(suggestions, key=lambda item: item.display_name.casefold())
 
 

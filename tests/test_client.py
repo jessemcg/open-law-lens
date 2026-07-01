@@ -30,6 +30,36 @@ from open_law_lens.library import CaseLibrary
 
 
 class ClientTests(unittest.TestCase):
+    def test_lookup_statute_uses_library_before_leginfo(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            library = CaseLibrary(temp_path / "library.sqlite3")
+            library.ensure()
+            library.upsert_statute(
+                {
+                    "statute_id": "WIC:300",
+                    "law_code": "WIC",
+                    "section": "300",
+                    "title": "Welfare and Institutions Code section 300",
+                    "citation": "Welf. & Inst. Code, § 300",
+                    "source_url": "https://example.test",
+                    "source_html": "",
+                    "text": "300. A child comes within jurisdiction.",
+                }
+            )
+            client = CourtListenerClient(
+                cache=JsonCache(temp_path / "cache"),
+                library=library,
+            )
+
+            with patch("open_law_lens.client.fetch_leginfo_statute") as fetch_mock:
+                statute = client.lookup_statute("section 300")
+
+            fetch_mock.assert_not_called()
+            self.assertEqual(statute["statute_id"], "WIC:300")
+            self.assertEqual(client.last_lookup_source, "Library")
+            self.assertIsNotNone(client.cache.read_cached_statute("WIC:300"))
+
     def test_request_json_retries_courtlistener_rate_limit(self) -> None:
         class FakeResponse:
             def __init__(self, payload: bytes) -> None:

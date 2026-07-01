@@ -211,6 +211,25 @@ class CacheTests(unittest.TestCase):
             self.assertTrue(cache.is_agent_selected("42"))
             self.assertEqual(cache.selected_case_entries()[0]["cluster_id"], "42")
 
+    def test_statute_cache_round_trip_and_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            statute = {
+                "statute_id": "WIC:300",
+                "law_code": "WIC",
+                "section": "300",
+                "title": "Welfare and Institutions Code section 300",
+                "citation": "Welf. & Inst. Code, § 300",
+                "text": "300. A child comes within jurisdiction.",
+            }
+
+            self.assertEqual(cache.upsert_statute(statute), "WIC:300")
+            cache.set_statute_agent_selected("WIC:300", True)
+
+            self.assertEqual(cache.read_cached_statute("WIC:300"), statute)
+            self.assertTrue(cache.is_statute_agent_selected("WIC:300"))
+            self.assertEqual(cache.selected_statute_entries()[0]["statute_id"], "WIC:300")
+
     def test_remove_case_removes_index_cluster_and_unshared_opinions(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = JsonCache(Path(temp_dir))
@@ -269,6 +288,7 @@ class CacheTests(unittest.TestCase):
             self.assertTrue((trash_path / "lookups").is_dir())
             self.assertTrue((trash_path / "clusters" / "42.json").is_file())
             self.assertTrue((trash_path / "opinions" / "10.json").is_file())
+            self.assertFalse((trash_path / "statutes").exists())
             self.assertTrue((trash_path / "cases_index.json").is_file())
             self.assertEqual(cache.list_lookups(), [])
             self.assertEqual(cache.list_case_entries(), [])

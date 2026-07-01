@@ -7,9 +7,11 @@ from pathlib import Path
 from open_law_lens.case_suggestions import (
     case_suggestions_from_library,
     load_concordance_case_suggestions,
+    load_concordance_statute_suggestions,
     matching_case_suggestions,
     merge_case_suggestions,
     resolve_case_lookup_text,
+    statute_suggestions_from_library,
 )
 from open_law_lens.library import CaseLibrary
 
@@ -53,6 +55,21 @@ class CaseSuggestionTests(unittest.TestCase):
         self.assertEqual(matching_case_suggestions("51 Cal 3d", suggestions)[0].lookup_text, "51 Cal.3d 368")
         self.assertEqual(resolve_case_lookup_text("In re Malinda S.", suggestions), "51 Cal.3d 368")
         self.assertEqual(resolve_case_lookup_text("In re Malinda S. (1990) 51 Cal.3d 368", suggestions), "51 Cal.3d 368")
+
+    def test_concordance_statutes_become_suggestions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "Concordance_File.sdi"
+            path.write_text(
+                "section 300;Welf. & Inst. Code, § 300;Statutes\n",
+                encoding="utf-8",
+            )
+
+            suggestions = load_concordance_statute_suggestions(path)
+
+        self.assertEqual(len(suggestions), 1)
+        self.assertEqual(suggestions[0].authority_type, "statute")
+        self.assertEqual(suggestions[0].lookup_text, "Welf. & Inst. Code, § 300")
+        self.assertEqual(matching_case_suggestions("welf", suggestions)[0].statute_id, "WIC:300")
 
     def test_ambiguous_case_name_does_not_resolve(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -121,6 +138,28 @@ class CaseSuggestionTests(unittest.TestCase):
             suggestions = case_suggestions_from_library(library)
 
         self.assertEqual(suggestions, [])
+
+    def test_library_statutes_become_suggestions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            library.upsert_statute(
+                {
+                    "statute_id": "EVID:720",
+                    "law_code": "EVID",
+                    "section": "720",
+                    "title": "Evidence Code section 720",
+                    "citation": "Evid. Code, § 720",
+                    "source_url": "https://example.test",
+                    "source_html": "",
+                    "text": "720. A person is qualified to testify as an expert.",
+                }
+            )
+
+            suggestions = statute_suggestions_from_library(library)
+
+        self.assertEqual(suggestions[0].authority_type, "statute")
+        self.assertEqual(suggestions[0].lookup_text, "Evid. Code, § 720")
 
     def test_merge_dedupes_concordance_and_library_official_labels(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

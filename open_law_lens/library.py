@@ -21,6 +21,16 @@ from .citation_model import (
     official_citation_parts_from_text,
 )
 from .import_text import clean_imported_opinion_text
+from .statutes import (
+    CODE_LABELS,
+    StatuteCitation,
+    normalize_law_code,
+    normalize_section,
+    parse_statute_citation,
+    statute_display_citation,
+    statute_id,
+    statute_title,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -546,6 +556,30 @@ class CaseLibrary:
                 CREATE INDEX IF NOT EXISTS idx_cases_title ON cases(title);
                 CREATE INDEX IF NOT EXISTS idx_opinions_cluster_id ON opinions(cluster_id);
                 CREATE INDEX IF NOT EXISTS idx_aliases_citation ON citation_aliases(normalized_citation);
+
+                CREATE TABLE IF NOT EXISTS statutes (
+                    statute_id TEXT PRIMARY KEY,
+                    law_code TEXT NOT NULL,
+                    section TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    citation TEXT NOT NULL,
+                    source_url TEXT NOT NULL,
+                    source_html TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    statute_json TEXT NOT NULL,
+                    added_at TEXT NOT NULL,
+                    last_accessed TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS statute_aliases (
+                    normalized_citation TEXT PRIMARY KEY,
+                    statute_id TEXT NOT NULL,
+                    citation_text TEXT NOT NULL,
+                    FOREIGN KEY (statute_id) REFERENCES statutes(statute_id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_statutes_title ON statutes(title);
+                CREATE INDEX IF NOT EXISTS idx_statute_aliases_citation ON statute_aliases(normalized_citation);
                 """
             )
             conn.execute(
@@ -1026,6 +1060,143 @@ class CaseLibrary:
             if cluster is not None:
                 clusters.append(cluster)
         return clusters
+
+    def upsert_statute(self, statute: dict[str, Any]) -> str:
+        law_code = normalize_law_code(str(statute.get("law_code") or ""))
+        section = normalize_section(str(statute.get("section") or ""))
+        normalized_id = str(statute.get("statute_id") or statute_id(law_code, section)).strip()
+        citation = str(statute.get("citation") or statute_display_citation(StatuteCitation(law_code, section))).strip()
+        title = str(statute.get("title") or statute_title(StatuteCitation(law_code, section))).strip()
+        saved = {
+            **statute,
+            "statute_id": normalized_id,
+            "law_code": law_code,
+            "section": section,
+            "citation": citation,
+            "title": title,
+        }
+        now = _utc_now()
+        with self.connection() as conn:
+            existing = conn.execute(
+                "SELECT added_at FROM statutes WHERE statute_id = ?",
+                (normalized_id,),
+            ).fetchone()
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO statutes(
+                    statute_id, law_code, section, title, citation, source_url,
+                    source_html, text, statute_json, added_at, last_accessed
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    normalized_id,
+                    law_code,
+                    section,
+                    title,
+                    citation,
+                    str(saved.get("source_url") or ""),
+                    str(saved.get("source_html") or ""),
+                    str(saved.get("text") or ""),
+                    _json_dumps(saved),
+                    existing["added_at"] if existing else now,
+                    now,
+                ),
+            )
+        self.add_statute_alias(citation, normalized_id)
+        self.add_statute_alias(f"{law_code} {section}", normalized_id)
+        self.add_statute_alias(f"{CODE_LABELS.get(law_code, law_code)} section {section}", normalized_id)
+        return normalized_id
+
+    def add_statute_alias(self, citation: str, normalized_id: str) -> None:
+        normalized = normalize_citation(citation).casefold()
+        if not normalized or not normalized_id:
+            return
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT citation FROM statutes WHERE statute_id = ?",
+                (normalized_id,),
+            ).fetchone()
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO statute_aliases(normalized_citation, statute_id, citation_text)
+                VALUES (?, ?, ?)
+                """,
+                (normalized, normalized_id, str(row["citation"]) if row else citation),
+            )
+
+    def read_statute(self, law_code: str, section: str) -> dict[str, Any] | None:
+        normalized_id = statute_id(law_code, section)
+        return self.read_statute_by_id(normalized_id)
+
+    def read_statute_by_id(self, normalized_id: str) -> dict[str, Any] | None:
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT statute_json FROM statutes WHERE statute_id = ?",
+                (normalized_id,),
+            ).fetchone()
+            if row is not None:
+                conn.execute(
+                    "UPDATE statutes SET last_accessed = ? WHERE statute_id = ?",
+                    (_utc_now(), normalized_id),
+                )
+        if row is None:
+            return None
+        data = _json_loads(str(row["statute_json"]))
+        return data if isinstance(data, dict) else None
+
+    def read_statute_by_citation(self, citation: str) -> dict[str, Any] | None:
+        parsed = parse_statute_citation(citation)
+        if parsed is not None:
+            direct = self.read_statute(parsed.law_code, parsed.section)
+            if direct is not None:
+                return direct
+        normalized = normalize_citation(citation).casefold()
+        if not normalized:
+            return None
+        with self.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT statutes.statute_json
+                FROM statute_aliases
+                JOIN statutes ON statutes.statute_id = statute_aliases.statute_id
+                WHERE statute_aliases.normalized_citation = ?
+                """,
+                (normalized,),
+            ).fetchone()
+        if row is None:
+            return None
+        data = _json_loads(str(row["statute_json"]))
+        return data if isinstance(data, dict) else None
+
+    def list_statute_entries(self) -> list[dict[str, Any]]:
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT statute_id, law_code, section, title, citation, added_at, last_accessed
+                FROM statutes
+                ORDER BY title COLLATE NOCASE, citation COLLATE NOCASE, statute_id
+                """
+            ).fetchall()
+        return [
+            {
+                "statute_id": str(row["statute_id"]),
+                "law_code": str(row["law_code"]),
+                "section": str(row["section"]),
+                "title": str(row["title"]),
+                "citation": str(row["citation"]),
+                "added_at": str(row["added_at"]),
+                "last_accessed": str(row["last_accessed"]),
+            }
+            for row in rows
+        ]
+
+    def saved_statutes(self) -> list[dict[str, Any]]:
+        statutes: list[dict[str, Any]] = []
+        for entry in self.list_statute_entries():
+            statute = self.read_statute_by_id(str(entry.get("statute_id", "")))
+            if statute is not None:
+                statutes.append(statute)
+        return statutes
 
     def official_pagination_audit(self) -> list[LibraryPruneCandidate]:
         from .quality import official_pagination_quality
