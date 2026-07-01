@@ -140,6 +140,7 @@ class AgentTests(unittest.TestCase):
                         "text": "300. A child comes within jurisdiction.",
                     }
                 ],
+                [],
                 Path(temp_dir) / "selected_authorities",
             )
 
@@ -149,6 +150,31 @@ class AgentTests(unittest.TestCase):
             manifest = json.loads(export.manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(manifest["statutes"][0]["statute_id"], "WIC:300")
             self.assertIn("300. A child", Path(export.text_sources[0].text_path).read_text())
+
+    def test_export_selected_authorities_writes_rules(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            export = export_selected_authorities(
+                DummyClient(),
+                [],
+                [],
+                [
+                    {
+                        "rule_id": "CRC:8.11",
+                        "title": "California Rules of Court, rule 8.11",
+                        "citation": "Cal. Rules of Court, rule 8.11",
+                        "source_url": "https://example.test",
+                        "text": "Rule 8.11. Scope.",
+                    }
+                ],
+                Path(temp_dir) / "selected_authorities",
+            )
+
+            self.assertEqual(export.case_count, 0)
+            self.assertEqual(export.rule_count, 1)
+            self.assertEqual(export.authority_count, 1)
+            manifest = json.loads(export.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["rules"][0]["rule_id"], "CRC:8.11")
+            self.assertIn("Rule 8.11.", Path(export.text_sources[0].text_path).read_text())
 
 
 if __name__ == "__main__":

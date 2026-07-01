@@ -67,7 +67,7 @@ class JsonCache:
         return cls(cache_root())
 
     def ensure(self) -> None:
-        for name in ("lookups", "clusters", "opinions", "statutes"):
+        for name in ("lookups", "clusters", "opinions", "statutes", "rules"):
             (self.root / name).mkdir(parents=True, exist_ok=True)
 
     def case_index_path(self) -> Path:
@@ -75,6 +75,9 @@ class JsonCache:
 
     def statute_index_path(self) -> Path:
         return self.root / "statutes_index.json"
+
+    def rule_index_path(self) -> Path:
+        return self.root / "rules_index.json"
 
     def lookup_path(self, citation: str) -> Path:
         return self.root / "lookups" / f"{citation_cache_key(citation)}.json"
@@ -90,6 +93,9 @@ class JsonCache:
 
     def statute_path(self, statute_id: str) -> Path:
         return self.resource_path("statutes", statute_id.replace(":", "_"))
+
+    def rule_path(self, rule_id: str) -> Path:
+        return self.resource_path("rules", rule_id.replace(":", "_"))
 
     def read_json(self, path: Path) -> Any | None:
         try:
@@ -141,6 +147,15 @@ class JsonCache:
 
     def write_statute_index(self, index: dict[str, dict[str, Any]]) -> None:
         self.write_json(self.statute_index_path(), index)
+
+    def read_rule_index(self) -> dict[str, dict[str, Any]]:
+        data = self.read_json(self.rule_index_path())
+        if not isinstance(data, dict):
+            return {}
+        return {str(key): value for key, value in data.items() if isinstance(value, dict)}
+
+    def write_rule_index(self, index: dict[str, dict[str, Any]]) -> None:
+        self.write_json(self.rule_index_path(), index)
 
     def upsert_cluster(self, cluster: dict[str, Any]) -> str:
         cluster = canonicalize_cluster_citations(cluster)
@@ -336,6 +351,83 @@ class JsonCache:
         self.write_statute_index(index)
         return True
 
+    def upsert_rule(self, rule: dict[str, Any]) -> str:
+        rule_id = str(rule.get("rule_id") or "").strip()
+        if not rule_id:
+            rule_number = str(rule.get("rule_number") or "").strip()
+            rule_id = f"CRC:{rule_number}" if rule_number else ""
+        if not rule_id:
+            return ""
+        self.write_json(self.rule_path(rule_id), rule)
+        index = self.read_rule_index()
+        now = _utc_now()
+        existing = index.get(rule_id, {})
+        index[rule_id] = {
+            **existing,
+            "rule_id": rule_id,
+            "title": str(rule.get("title") or ""),
+            "citation": str(rule.get("citation") or ""),
+            "rule_number": str(rule.get("rule_number") or ""),
+            "rule_slug": str(rule.get("rule_slug") or ""),
+            "title_slug": str(rule.get("title_slug") or ""),
+            "rule_path": str(self.rule_path(rule_id)),
+            "agent_selected": bool(existing.get("agent_selected", False)),
+            "added_at": existing.get("added_at", now),
+            "last_accessed": now,
+        }
+        self.write_rule_index(index)
+        return rule_id
+
+    def list_rule_entries(self) -> list[dict[str, Any]]:
+        entries = list(self.read_rule_index().values())
+        entries.sort(
+            key=lambda item: (
+                str(item.get("title", "")).casefold(),
+                str(item.get("citation", "")).casefold(),
+                str(item.get("rule_id", "")),
+            )
+        )
+        entries.sort(key=lambda item: str(item.get("added_at", "")), reverse=True)
+        return entries
+
+    def read_cached_rule(self, rule_id: str) -> dict[str, Any] | None:
+        data = self.read_json(self.rule_path(rule_id))
+        return data if isinstance(data, dict) else None
+
+    def is_rule_agent_selected(self, rule_id: str) -> bool:
+        entry = self.read_rule_index().get(rule_id)
+        return bool(entry.get("agent_selected")) if isinstance(entry, dict) else False
+
+    def set_rule_agent_selected(self, rule_id: str, selected: bool) -> None:
+        if not rule_id:
+            return
+        index = self.read_rule_index()
+        entry = index.get(rule_id)
+        if not isinstance(entry, dict):
+            return
+        entry["agent_selected"] = bool(selected)
+        entry["last_accessed"] = _utc_now()
+        index[rule_id] = entry
+        self.write_rule_index(index)
+
+    def selected_rule_entries(self) -> list[dict[str, Any]]:
+        return [
+            entry
+            for entry in self.list_rule_entries()
+            if bool(entry.get("agent_selected"))
+        ]
+
+    def remove_rule(self, rule_id: str) -> bool:
+        if not rule_id:
+            return False
+        index = self.read_rule_index()
+        entry = index.pop(rule_id, None)
+        if not isinstance(entry, dict):
+            return False
+        self.rule_path(rule_id).unlink(missing_ok=True)
+        self.write_rule_index(index)
+        return True
+
     def clear(self) -> None:
         trash_path = self.detach_for_clear()
         if trash_path is not None:
@@ -351,8 +443,10 @@ class JsonCache:
                 self.root / "clusters",
                 self.root / "opinions",
                 self.root / "statutes",
+                self.root / "rules",
                 self.case_index_path(),
                 self.statute_index_path(),
+                self.rule_index_path(),
             ):
                 if not source.exists():
                     continue

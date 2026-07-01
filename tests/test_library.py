@@ -10,6 +10,31 @@ from open_law_lens.library import CaseLibrary, opinion_display_text
 
 
 class LibraryTests(unittest.TestCase):
+    def test_upsert_and_read_rule_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            rule = {
+                "rule_id": "CRC:8.11",
+                "rule_number": "8.11",
+                "rule_slug": "8_11",
+                "title_slug": "eight",
+                "title": "California Rules of Court, rule 8.11",
+                "citation": "Cal. Rules of Court, rule 8.11",
+                "source_url": "https://example.test",
+                "source_html": "<p>Rule 8.11.</p>",
+                "text": "Rule 8.11. Scope.",
+            }
+
+            library.upsert_rule(rule)
+
+            self.assertEqual(library.read_rule("8.11")["text"], rule["text"])
+            self.assertEqual(
+                library.read_rule_by_citation("Cal. Rules of Court, rule 8.11")["rule_number"],
+                "8.11",
+            )
+            self.assertEqual(library.list_rule_entries()[0]["rule_id"], "CRC:8.11")
+
     def test_upsert_and_read_statute_alias(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             library = CaseLibrary(Path(temp_dir) / "library.sqlite3")

@@ -8,6 +8,7 @@ from typing import Any
 from .cache import JsonCache
 from .client import CourtListenerClient, CourtListenerError
 from .library import CaseLibrary, LibraryPruneCandidate
+from .rules import CaliforniaRulesError
 from .statutes import LegInfoError
 
 
@@ -51,11 +52,22 @@ def _cmd_lookup_statute(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_lookup_rule(args: argparse.Namespace) -> int:
+    client = CourtListenerClient.default()
+    rule = client.lookup_rule(args.citation, refresh=args.refresh)
+    if args.text:
+        print(str(rule.get("text") or ""))
+        return 0
+    _print_json(rule)
+    return 0
+
+
 def _cmd_show_library(_args: argparse.Namespace) -> int:
     library = CaseLibrary.default()
     entries = library.list_case_entries()
     statutes = library.list_statute_entries()
-    if not entries and not statutes:
+    rules = library.list_rule_entries()
+    if not entries and not statutes and not rules:
         print("No saved library authorities.")
         return 0
     for entry in entries:
@@ -72,6 +84,12 @@ def _cmd_show_library(_args: argparse.Namespace) -> int:
         statute_id = str(entry.get("statute_id") or "").strip()
         citation_part = f" | {citation}" if citation else ""
         print(f"{title}{citation_part} | statute {statute_id}")
+    for entry in rules:
+        title = str(entry.get("title") or "Untitled rule")
+        citation = str(entry.get("citation") or "").strip()
+        rule_id = str(entry.get("rule_id") or "").strip()
+        citation_part = f" | {citation}" if citation else ""
+        print(f"{title}{citation_part} | rule {rule_id}")
     return 0
 
 
@@ -79,7 +97,8 @@ def _cmd_show_cache(_args: argparse.Namespace) -> int:
     cache = JsonCache.default()
     entries = cache.list_case_entries()
     statutes = cache.list_statute_entries()
-    if not entries and not statutes:
+    rules = cache.list_rule_entries()
+    if not entries and not statutes and not rules:
         print("No Research Cache authorities.")
         return 0
     for entry in entries:
@@ -96,6 +115,12 @@ def _cmd_show_cache(_args: argparse.Namespace) -> int:
         statute_id = str(entry.get("statute_id") or "").strip()
         citation_part = f" | {citation}" if citation else ""
         print(f"{title}{citation_part} | statute {statute_id}")
+    for entry in rules:
+        title = str(entry.get("title") or "Untitled rule")
+        citation = str(entry.get("citation") or "").strip()
+        rule_id = str(entry.get("rule_id") or "").strip()
+        citation_part = f" | {citation}" if citation else ""
+        print(f"{title}{citation_part} | rule {rule_id}")
     return 0
 
 
@@ -168,6 +193,12 @@ def build_parser() -> argparse.ArgumentParser:
     statute_parser.add_argument("--text", action="store_true", help="print statute text")
     statute_parser.set_defaults(func=_cmd_lookup_statute)
 
+    rule_parser = subparsers.add_parser("lookup-rule", help="look up a California Rule of Court")
+    rule_parser.add_argument("citation")
+    rule_parser.add_argument("--refresh", action="store_true", help="bypass saved rule data")
+    rule_parser.add_argument("--text", action="store_true", help="print rule text")
+    rule_parser.set_defaults(func=_cmd_lookup_rule)
+
     library_parser = subparsers.add_parser("show-library", help="list saved library authorities")
     library_parser.set_defaults(func=_cmd_show_library)
 
@@ -207,6 +238,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return int(args.func(args))
-    except (CourtListenerError, LegInfoError, ValueError) as exc:
+    except (CourtListenerError, LegInfoError, CaliforniaRulesError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1

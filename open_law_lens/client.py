@@ -25,6 +25,11 @@ from .quality import (
     official_california_reporter_key,
     official_pagination_quality,
 )
+from .rules import (
+    CaliforniaRulesError,
+    fetch_california_rule,
+    parse_rule_citation,
+)
 from .statutes import (
     LegInfoError,
     fetch_leginfo_statute,
@@ -683,6 +688,36 @@ class CourtListenerClient:
             if statute is not None:
                 statutes.append(statute)
         return statutes
+
+    def lookup_rule(self, citation: str, *, refresh: bool = False) -> dict[str, Any]:
+        parsed = parse_rule_citation(citation)
+        if parsed is None:
+            raise ValueError("Could not parse a supported California Rules of Court citation.")
+        if not refresh:
+            rule = self.library.read_rule(parsed.rule_number)
+            if rule is not None:
+                self.cache.upsert_rule(rule)
+                self.last_lookup_source = "Library"
+                return rule
+        try:
+            rule = fetch_california_rule(parsed, timeout=self.timeout)
+        except CaliforniaRulesError:
+            raise
+        self.library.upsert_rule(rule)
+        self.cache.upsert_rule(rule)
+        self.last_lookup_source = "California Courts"
+        return rule
+
+    def cached_rules(self) -> list[dict[str, Any]]:
+        rules: list[dict[str, Any]] = []
+        for entry in self.cache.list_rule_entries():
+            rule_id = str(entry.get("rule_id", "")).strip()
+            if not rule_id:
+                continue
+            rule = self.cache.read_cached_rule(rule_id)
+            if rule is not None:
+                rules.append(rule)
+        return rules
 
     def _cache_lookup_clusters(self, result: list[dict[str, Any]]) -> None:
         for cluster in dedupe_case_clusters(self.clusters_from_lookup(result)):

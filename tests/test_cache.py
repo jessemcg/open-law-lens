@@ -230,6 +230,26 @@ class CacheTests(unittest.TestCase):
             self.assertTrue(cache.is_statute_agent_selected("WIC:300"))
             self.assertEqual(cache.selected_statute_entries()[0]["statute_id"], "WIC:300")
 
+    def test_rule_cache_round_trip_and_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            rule = {
+                "rule_id": "CRC:8.11",
+                "rule_number": "8.11",
+                "rule_slug": "8_11",
+                "title_slug": "eight",
+                "title": "California Rules of Court, rule 8.11",
+                "citation": "Cal. Rules of Court, rule 8.11",
+                "text": "Rule 8.11. Scope.",
+            }
+
+            self.assertEqual(cache.upsert_rule(rule), "CRC:8.11")
+            cache.set_rule_agent_selected("CRC:8.11", True)
+
+            self.assertEqual(cache.read_cached_rule("CRC:8.11"), rule)
+            self.assertTrue(cache.is_rule_agent_selected("CRC:8.11"))
+            self.assertEqual(cache.selected_rule_entries()[0]["rule_id"], "CRC:8.11")
+
     def test_remove_case_removes_index_cluster_and_unshared_opinions(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = JsonCache(Path(temp_dir))
@@ -276,6 +296,14 @@ class CacheTests(unittest.TestCase):
             cache.write_lookup("576 U.S. 644", [{"status": 200}])
             cache.upsert_cluster({"id": 42, "case_name": "Example v. State"})
             cache.write_resource("opinions", "10", {"id": 10})
+            cache.upsert_rule(
+                {
+                    "rule_id": "CRC:8.11",
+                    "rule_number": "8.11",
+                    "title": "California Rules of Court, rule 8.11",
+                    "citation": "Cal. Rules of Court, rule 8.11",
+                }
+            )
             agent_workspace = root / "agent-workspaces" / "workspace.test"
             agent_workspace.mkdir(parents=True)
             (agent_workspace / "manifest.json").write_text("{}", encoding="utf-8")
@@ -289,13 +317,16 @@ class CacheTests(unittest.TestCase):
             self.assertTrue((trash_path / "clusters" / "42.json").is_file())
             self.assertTrue((trash_path / "opinions" / "10.json").is_file())
             self.assertFalse((trash_path / "statutes").exists())
+            self.assertTrue((trash_path / "rules" / "CRC_8.11.json").is_file())
             self.assertTrue((trash_path / "cases_index.json").is_file())
+            self.assertTrue((trash_path / "rules_index.json").is_file())
             self.assertEqual(cache.list_lookups(), [])
             self.assertEqual(cache.list_case_entries(), [])
             self.assertFalse(cache.selected_case_entries())
             self.assertTrue((root / "lookups").is_dir())
             self.assertTrue((root / "clusters").is_dir())
             self.assertTrue((root / "opinions").is_dir())
+            self.assertTrue((root / "rules").is_dir())
             self.assertTrue((agent_workspace / "manifest.json").is_file())
 
     def test_clear_removes_resources_and_recreates_directories(self) -> None:

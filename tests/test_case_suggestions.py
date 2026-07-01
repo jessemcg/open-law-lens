@@ -7,10 +7,12 @@ from pathlib import Path
 from open_law_lens.case_suggestions import (
     case_suggestions_from_library,
     load_concordance_case_suggestions,
+    load_concordance_rule_suggestions,
     load_concordance_statute_suggestions,
     matching_case_suggestions,
     merge_case_suggestions,
     resolve_case_lookup_text,
+    rule_suggestions_from_library,
     statute_suggestions_from_library,
 )
 from open_law_lens.library import CaseLibrary
@@ -70,6 +72,21 @@ class CaseSuggestionTests(unittest.TestCase):
         self.assertEqual(suggestions[0].authority_type, "statute")
         self.assertEqual(suggestions[0].lookup_text, "Welf. & Inst. Code, § 300")
         self.assertEqual(matching_case_suggestions("welf", suggestions)[0].statute_id, "WIC:300")
+
+    def test_concordance_rules_become_suggestions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "Concordance_File.sdi"
+            path.write_text(
+                "rule 8.11;Cal. Rules of Court, rule 8.11;Rules\n",
+                encoding="utf-8",
+            )
+
+            suggestions = load_concordance_rule_suggestions(path)
+
+        self.assertEqual(len(suggestions), 1)
+        self.assertEqual(suggestions[0].authority_type, "rule")
+        self.assertEqual(suggestions[0].lookup_text, "Cal. Rules of Court, rule 8.11")
+        self.assertEqual(matching_case_suggestions("8.11", suggestions)[0].rule_id, "CRC:8.11")
 
     def test_ambiguous_case_name_does_not_resolve(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -160,6 +177,29 @@ class CaseSuggestionTests(unittest.TestCase):
 
         self.assertEqual(suggestions[0].authority_type, "statute")
         self.assertEqual(suggestions[0].lookup_text, "Evid. Code, § 720")
+
+    def test_library_rules_become_suggestions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            library.upsert_rule(
+                {
+                    "rule_id": "CRC:8.11",
+                    "rule_number": "8.11",
+                    "rule_slug": "8_11",
+                    "title_slug": "eight",
+                    "title": "California Rules of Court, rule 8.11",
+                    "citation": "Cal. Rules of Court, rule 8.11",
+                    "source_url": "https://example.test",
+                    "source_html": "",
+                    "text": "Rule 8.11. Scope.",
+                }
+            )
+
+            suggestions = rule_suggestions_from_library(library)
+
+        self.assertEqual(suggestions[0].authority_type, "rule")
+        self.assertEqual(suggestions[0].lookup_text, "Cal. Rules of Court, rule 8.11")
 
     def test_merge_dedupes_concordance_and_library_official_labels(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

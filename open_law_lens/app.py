@@ -55,18 +55,22 @@ from .case_suggestions import (
     CaseSuggestion,
     case_suggestions_from_library,
     load_concordance_case_suggestions,
+    load_concordance_rule_suggestions,
     load_concordance_statute_suggestions,
     matching_case_suggestions,
     merge_case_suggestions,
     resolve_case_lookup_text,
+    rule_suggestions_from_library,
     statute_suggestions_from_library,
 )
 from .citation_links import (
     CitedCaseLink,
     CitationStyleSpan,
+    RuleLink,
     StatuteLink,
     citation_italic_spans,
     cited_case_links,
+    cited_rule_links,
     cited_statute_links,
     cluster_citation_texts,
 )
@@ -98,6 +102,7 @@ from .scholar_search import (
     search_first_case_direct,
 )
 from .speech import DEFAULT_SPEECH_QUESTION_FILE, normalize_speech_question_text
+from .rules import CaliforniaRulesError, parse_rule_citation
 from .statutes import LegInfoError, parse_statute_citation
 from .text_search import literal_match_ranges
 from .web_import import ExtractedWebpage, extract_webpage_text
@@ -543,6 +548,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._selected_cluster: dict[str, Any] | None = None
         self._statutes: list[dict[str, Any]] = []
         self._selected_statute: dict[str, Any] | None = None
+        self._rules: list[dict[str, Any]] = []
+        self._selected_rule: dict[str, Any] | None = None
         self._agent_terminal: Any | None = None
         self._agent_pid: int | None = None
         self._agent_session_widget: Gtk.Widget | None = None
@@ -579,6 +586,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_link_lookup: dict[Gtk.TextTag, QuoteTarget] = {}
         self._agent_citation_link_lookup: dict[Gtk.TextTag, CitedCaseLink] = {}
         self._agent_statute_link_lookup: dict[Gtk.TextTag, StatuteLink] = {}
+        self._agent_rule_link_lookup: dict[Gtk.TextTag, RuleLink] = {}
         self._agent_search_link_lookup: dict[Gtk.TextTag, CourtListenerSearchResult] = {}
         self._agent_search_next_link_tags: set[Gtk.TextTag] = set()
         self._agent_search_action_link_lookup: dict[Gtk.TextTag, str] = {}
@@ -601,6 +609,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_citation_link_tags: list[Gtk.TextTag] = []
         self._reader_citation_link_lookup: dict[Gtk.TextTag, CitedCaseLink] = {}
         self._reader_statute_link_lookup: dict[Gtk.TextTag, StatuteLink] = {}
+        self._reader_rule_link_lookup: dict[Gtk.TextTag, RuleLink] = {}
         self._reader_citation_motion_controller: Gtk.EventControllerMotion | None = None
         self._reader_citation_click_gesture: Gtk.GestureClick | None = None
         self._reader_header_citation: FormattedCitation | None = None
@@ -1019,10 +1028,17 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             concordance_suggestions = [
                 *load_concordance_case_suggestions(configured_path),
                 *load_concordance_statute_suggestions(configured_path),
+                *load_concordance_rule_suggestions(configured_path),
             ]
         library_suggestions = case_suggestions_from_library(self.client.library)
         statute_suggestions = statute_suggestions_from_library(self.client.library)
-        return merge_case_suggestions(concordance_suggestions, library_suggestions, statute_suggestions)
+        rule_suggestions = rule_suggestions_from_library(self.client.library)
+        return merge_case_suggestions(
+            concordance_suggestions,
+            library_suggestions,
+            statute_suggestions,
+            rule_suggestions,
+        )
 
     def _refresh_case_suggestion_index_async(self, *, force: bool = False) -> None:
         if self._case_suggestion_refresh_pending:
@@ -1210,6 +1226,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _open_case_suggestion(self, suggestion: CaseSuggestion) -> None:
         if suggestion.authority_type == "statute":
             self._start_statute_lookup(suggestion.lookup_text)
+            return
+        if suggestion.authority_type == "rule":
+            self._start_rule_lookup(suggestion.lookup_text)
             return
         if suggestion.cluster_id:
             self._set_status(f"Opening {suggestion.lookup_text} from Library...")
@@ -1760,6 +1779,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         offset = len(self._reader_citation_link_tags)
         for index, link in enumerate(cited_statute_links(text), start=offset):
             self._apply_reader_statute_link(index, link)
+        offset = len(self._reader_citation_link_tags)
+        for index, link in enumerate(cited_rule_links(text), start=offset):
+            self._apply_reader_rule_link(index, link)
 
     def _clear_reader_citation_links(self) -> None:
         table = self.reader_buffer.get_tag_table()
@@ -1769,6 +1791,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_citation_link_tags.clear()
         self._reader_citation_link_lookup.clear()
         self._reader_statute_link_lookup.clear()
+        self._reader_rule_link_lookup.clear()
 
     def _apply_reader_citation_link(self, index: int, link: CitedCaseLink) -> None:
         start = max(0, min(link.start_offset, len(self._reader_text)))
@@ -1806,6 +1829,24 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_citation_link_tags.append(tag)
         self._reader_statute_link_lookup[tag] = link
 
+    def _apply_reader_rule_link(self, index: int, link: RuleLink) -> None:
+        start = max(0, min(link.start_offset, len(self._reader_text)))
+        end = max(start, min(link.end_offset, len(self._reader_text)))
+        if start == end:
+            return
+        tag = self.reader_buffer.create_tag(
+            f"reader-rule-link-{index}",
+            underline=Pango.Underline.SINGLE,
+            foreground="#1a5fb4",
+        )
+        self.reader_buffer.apply_tag(
+            tag,
+            self.reader_buffer.get_iter_at_offset(start),
+            self.reader_buffer.get_iter_at_offset(end),
+        )
+        self._reader_citation_link_tags.append(tag)
+        self._reader_rule_link_lookup[tag] = link
+
     def _apply_reader_citation_italics(self, text: str) -> None:
         if self._reader_citation_italic_tag is None:
             return
@@ -1835,7 +1876,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self.reader_view.add_controller(click)
             self._reader_citation_click_gesture = click
 
-    def _reader_citation_link_at_coords(self, x: float, y: float) -> CitedCaseLink | StatuteLink | None:
+    def _reader_citation_link_at_coords(self, x: float, y: float) -> CitedCaseLink | StatuteLink | RuleLink | None:
         bx, by = self.reader_view.window_to_buffer_coords(Gtk.TextWindowType.WIDGET, int(x), int(y))
         iter_result = self.reader_view.get_iter_at_location(int(bx), int(by))
         if isinstance(iter_result, tuple):
@@ -1853,6 +1894,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             statute_link = self._reader_statute_link_lookup.get(tag)
             if statute_link is not None:
                 return statute_link
+            rule_link = self._reader_rule_link_lookup.get(tag)
+            if rule_link is not None:
+                return rule_link
         return None
 
     def _on_reader_citation_motion(
@@ -1885,6 +1929,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if isinstance(link, StatuteLink):
             self._open_statute_link(link)
             return
+        if isinstance(link, RuleLink):
+            self._open_rule_link(link)
+            return
         self._open_cited_case_link(link)
 
     def _open_cited_case_link(self, link: CitedCaseLink) -> None:
@@ -1895,6 +1942,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def _open_statute_link(self, link: StatuteLink) -> None:
         self._start_statute_lookup(link.lookup_text)
+
+    def _open_rule_link(self, link: RuleLink) -> None:
+        self._start_rule_lookup(link.lookup_text)
 
     def _open_citation_lookup_link(self, link: CitedCaseLink) -> None:
         self._start_lookup(link.lookup_text)
@@ -2929,6 +2979,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if parse_statute_citation(citation) is not None:
             self._start_statute_lookup(citation)
             return
+        if parse_rule_citation(citation) is not None:
+            self._start_rule_lookup(citation)
+            return
         self._start_lookup(citation)
 
     def _start_statute_lookup(self, citation: str) -> None:
@@ -2955,6 +3008,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_sidebar_authorities(
             self.client.cached_clusters(),
             self.client.cached_statutes(),
+            self.client.cached_rules(),
             select_statute_id=statute_id,
         )
         self._refresh_case_suggestion_index_async(force=True)
@@ -2962,6 +3016,40 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._open_statute_in_reader(statute)
         source = self.client.last_lookup_source or "Library"
         self._set_status(f"{source}: opened {statute.get('citation') or statute_id}.")
+        return False
+
+    def _start_rule_lookup(self, citation: str) -> None:
+        self._last_lookup_text = citation.strip()
+        self._pending_auto_scholar_cluster_id = ""
+        self._pending_auto_scholar_query = ""
+        self._hide_case_completion()
+        self._set_status(f"Looking up {citation}...")
+        self._set_reader_header("")
+        self._set_reader_busy(True, "Looking up rule...")
+        self.reader_buffer.set_text("Loading...")
+        thread = threading.Thread(target=self._rule_lookup_worker, args=(citation,), daemon=True)
+        thread.start()
+
+    def _rule_lookup_worker(self, citation: str) -> None:
+        try:
+            rule = self.client.lookup_rule(citation)
+            GLib.idle_add(self._apply_rule_lookup_result, rule)
+        except (CaliforniaRulesError, ValueError) as exc:
+            GLib.idle_add(self._apply_error, str(exc))
+
+    def _apply_rule_lookup_result(self, rule: dict[str, Any]) -> bool:
+        rule_id = str(rule.get("rule_id") or "").strip()
+        self._set_sidebar_authorities(
+            self.client.cached_clusters(),
+            self.client.cached_statutes(),
+            self.client.cached_rules(),
+            select_rule_id=rule_id,
+        )
+        self._refresh_case_suggestion_index_async(force=True)
+        if self.case_list.get_selected_row() is None:
+            self._open_rule_in_reader(rule)
+        source = self.client.last_lookup_source or "Library"
+        self._set_status(f"{source}: opened {rule.get('citation') or rule_id}.")
         return False
 
     def _start_lookup(self, citation: str) -> None:
@@ -3063,9 +3151,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _load_cached_cases(self) -> None:
         clusters = self.client.cached_clusters()
         statutes = self.client.cached_statutes()
-        self._set_sidebar_authorities(clusters, statutes)
+        rules = self.client.cached_rules()
+        self._set_sidebar_authorities(clusters, statutes, rules)
         self._refresh_case_suggestion_index_async(force=True)
-        count = len(clusters) + len(statutes)
+        count = len(clusters) + len(statutes) + len(rules)
         if count:
             self._set_status(f"{count} Research Cache item(s).")
         else:
@@ -3081,6 +3170,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_sidebar_authorities(
             clusters,
             self.client.cached_statutes(),
+            self.client.cached_rules(),
             select_cluster_id=select_cluster_id,
             select_first=select_first,
         )
@@ -3089,15 +3179,19 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self,
         clusters: list[dict[str, Any]],
         statutes: list[dict[str, Any]],
+        rules: list[dict[str, Any]],
         *,
         select_cluster_id: str = "",
         select_statute_id: str = "",
+        select_rule_id: str = "",
         select_first: bool = False,
     ) -> None:
         self._clusters = clusters
         self._statutes = statutes
+        self._rules = rules
         self._selected_cluster = None
         self._selected_statute = None
+        self._selected_rule = None
         while row := self.case_list.get_row_at_index(0):
             self.case_list.remove(row)
         selected_row: Gtk.ListBoxRow | None = None
@@ -3198,6 +3292,52 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self.case_list.append(row)
             if select_statute_id and statute_id == select_statute_id:
                 selected_row = row
+        for index, rule in enumerate(rules):
+            row = Gtk.ListBoxRow()
+            row.set_selectable(True)
+            row.set_activatable(True)
+            row.add_css_class("case-cache-row")
+            row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            row_box.set_margin_top(8)
+            row_box.set_margin_bottom(8)
+            row_box.set_margin_start(8)
+            row_box.set_margin_end(8)
+            rule_id = str(rule.get("rule_id") or "").strip()
+            actions_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+            actions_box.set_valign(Gtk.Align.START)
+            remove_button = Gtk.Button(icon_name="user-trash-symbolic")
+            remove_button.add_css_class("flat")
+            remove_button.add_css_class("case-row-icon-button")
+            remove_button.set_tooltip_text("Remove from Research Cache")
+            remove_button.set_sensitive(bool(rule_id))
+            remove_button.connect("clicked", self._on_remove_cached_rule_clicked, rule_id, rule)
+            actions_box.append(remove_button)
+            row_box.append(actions_box)
+            text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            text_box.set_hexpand(True)
+            title = Gtk.Label(label=str(rule.get("title") or "Untitled rule"), xalign=0)
+            title.set_wrap(True)
+            text_box.append(title)
+            citation_text = str(rule.get("citation") or "").strip()
+            if citation_text:
+                citation = Gtk.Label(label=citation_text, xalign=0)
+                citation.add_css_class("dim-label")
+                citation.set_wrap(True)
+                text_box.append(citation)
+            row_box.append(text_box)
+            check = Gtk.CheckButton()
+            check.add_css_class("neutral-agent-check")
+            check.set_valign(Gtk.Align.START)
+            check.set_tooltip_text("Make rule available to Cache Agent")
+            check.set_active(self.client.cache.is_rule_agent_selected(rule_id))
+            check.connect("toggled", self._on_agent_rule_toggled, rule_id)
+            row_box.append(check)
+            row.set_child(row_box)
+            row._open_law_lens_rule_index = index
+            row._open_law_lens_authority_type = "rule"
+            self.case_list.append(row)
+            if select_rule_id and rule_id == select_rule_id:
+                selected_row = row
         if selected_row is None and select_first:
             selected_row = self.case_list.get_row_at_index(0)
         if selected_row is not None:
@@ -3208,6 +3348,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def _on_agent_statute_toggled(self, button: Gtk.CheckButton, statute_id: str) -> None:
         self.client.cache.set_statute_agent_selected(statute_id, button.get_active())
+
+    def _on_agent_rule_toggled(self, button: Gtk.CheckButton, rule_id: str) -> None:
+        self.client.cache.set_rule_agent_selected(rule_id, button.get_active())
 
     def _on_remove_cached_case_clicked(
         self,
@@ -3259,7 +3402,37 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_sidebar_authorities(
             self.client.cached_clusters(),
             self.client.cached_statutes(),
+            self.client.cached_rules(),
             select_statute_id="" if removed_selected else current_statute_id,
+        )
+        self._refresh_case_suggestion_index_async(force=True)
+        self._set_status(f"Removed {title} from Research Cache. Library preserved.")
+
+    def _on_remove_cached_rule_clicked(
+        self,
+        _button: Gtk.Button,
+        rule_id: str,
+        rule: dict[str, Any],
+    ) -> None:
+        if not rule_id:
+            self._set_status("Could not remove rule from Research Cache.")
+            return
+        current_rule_id = str((self._selected_rule or {}).get("rule_id") or "")
+        removed_selected = current_rule_id == rule_id
+        title = str(rule.get("title") or rule_id)
+        if not self.client.cache.remove_rule(rule_id):
+            self._set_status("Rule was not found in Research Cache.")
+            return
+        if removed_selected:
+            self._selected_rule = None
+            self._set_reader_header("")
+            self.reader_buffer.set_text("")
+            self._set_reader_busy(False)
+        self._set_sidebar_authorities(
+            self.client.cached_clusters(),
+            self.client.cached_statutes(),
+            self.client.cached_rules(),
+            select_rule_id="" if removed_selected else current_rule_id,
         )
         self._refresh_case_suggestion_index_async(force=True)
         self._set_status(f"Removed {title} from Research Cache. Library preserved.")
@@ -3323,6 +3496,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 return
             self._open_statute_in_reader(self._statutes[index])
             return
+        if authority_type == "rule":
+            index = getattr(row, "_open_law_lens_rule_index", None)
+            if not isinstance(index, int) or index < 0 or index >= len(self._rules):
+                return
+            self._open_rule_in_reader(self._rules[index])
+            return
         index = getattr(row, "_open_law_lens_cluster_index", None)
         if not isinstance(index, int) or index < 0 or index >= len(self._clusters):
             return
@@ -3335,6 +3514,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._case_load_generation += 1
         self._selected_cluster = None
         self._selected_statute = statute
+        self._selected_rule = None
         self._reader_has_official_pagination = False
         self._clear_reader_citation_links()
         citation_text = str(statute.get("citation") or "").strip()
@@ -3347,11 +3527,29 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_reader_text(str(statute.get("text") or "No statute text found."))
         self._set_status(f"Loaded {citation_text or header} from Research Cache.")
 
+    def _open_rule_in_reader(self, rule: dict[str, Any]) -> None:
+        self._case_load_generation += 1
+        self._selected_cluster = None
+        self._selected_statute = None
+        self._selected_rule = rule
+        self._reader_has_official_pagination = False
+        self._clear_reader_citation_links()
+        citation_text = str(rule.get("citation") or "").strip()
+        header = str(rule.get("title") or citation_text or "Untitled rule")
+        formatted = FormattedCitation(
+            plain_text=citation_text,
+            html_text=GLib.markup_escape_text(citation_text),
+        ) if citation_text else None
+        self._set_reader_header(header, formatted)
+        self._set_reader_text(str(rule.get("text") or "No rule text found."))
+        self._set_status(f"Loaded {citation_text or header} from Research Cache.")
+
     def _begin_case_load(self, cluster: dict[str, Any]) -> int:
         self._case_load_generation += 1
         generation = self._case_load_generation
         self._selected_cluster = cluster
         self._selected_statute = None
+        self._selected_rule = None
         self._reader_has_official_pagination = False
         self._set_reader_header(
             self._case_header_text(cluster),
@@ -3496,6 +3694,17 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             if str(statute.get("statute_id") or "").strip() in selected_ids
         ]
 
+    def _selected_agent_rules(self) -> list[dict[str, Any]]:
+        selected_ids = {
+            str(entry.get("rule_id", "")).strip()
+            for entry in self.client.cache.selected_rule_entries()
+        }
+        return [
+            rule
+            for rule in self.client.cached_rules()
+            if str(rule.get("rule_id") or "").strip() in selected_ids
+        ]
+
     def _on_agent_launch(self, _widget: Gtk.Widget) -> None:
         mode = self._selected_agent_mode
         question = self.agent_question_entry.get_text().strip()
@@ -3508,13 +3717,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if mode == AGENT_MODE_CASE:
             clusters = self._selected_agent_clusters()
             statutes = self._selected_agent_statutes()
-            if not clusters and not statutes:
+            rules = self._selected_agent_rules()
+            if not clusters and not statutes and not rules:
                 self._set_status("Mark at least one Research Cache authority for the Cache Agent.")
                 return
             self._set_status("Preparing marked authorities for Cache Agent...")
             thread = threading.Thread(
                 target=self._prepare_case_agent_worker,
-                args=(question, clusters, statutes),
+                args=(question, clusters, statutes, rules),
                 daemon=True,
             )
             thread.start()
@@ -3669,6 +3879,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         question: str,
         clusters: list[dict[str, Any]],
         statutes: list[dict[str, Any]],
+        rules: list[dict[str, Any]],
     ) -> None:
         try:
             workspace = self._create_agent_workspace()
@@ -3676,6 +3887,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 self.client,
                 clusters,
                 statutes,
+                rules,
                 workspace / "selected_authorities",
             )
             if export.authority_count == 0:
@@ -3786,6 +3998,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_link_lookup.clear()
         self._agent_citation_link_lookup.clear()
         self._agent_statute_link_lookup.clear()
+        self._agent_rule_link_lookup.clear()
         self._agent_search_link_lookup.clear()
         self._agent_search_next_link_tags.clear()
         self._agent_search_action_link_lookup.clear()
@@ -3995,6 +4208,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if self._agent_mode == AGENT_MODE_GENERAL:
             self._apply_agent_citation_links(buffer, rendered)
             self._apply_agent_statute_links(buffer, rendered)
+            self._apply_agent_rule_links(buffer, rendered)
 
     def _apply_agent_citation_italics(self, buffer: Gtk.TextBuffer, text: str) -> None:
         table = buffer.get_tag_table()
@@ -4054,6 +4268,26 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._agent_link_tags.append(tag)
             self._agent_statute_link_lookup[tag] = link
 
+    def _apply_agent_rule_links(self, buffer: Gtk.TextBuffer, text: str) -> None:
+        for link in cited_rule_links(text):
+            start = max(0, min(link.start_offset, len(text)))
+            end = max(start, min(link.end_offset, len(text)))
+            if start == end:
+                continue
+            tag = buffer.create_tag(
+                None,
+                foreground_rgba=self._resolve_agent_quote_color(),
+                underline=Pango.Underline.NONE,
+                weight=Pango.Weight.MEDIUM,
+            )
+            buffer.apply_tag(
+                tag,
+                buffer.get_iter_at_offset(start),
+                buffer.get_iter_at_offset(end),
+            )
+            self._agent_link_tags.append(tag)
+            self._agent_rule_link_lookup[tag] = link
+
     def _render_search_results(
         self,
         query: str,
@@ -4087,6 +4321,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_link_lookup.clear()
         self._agent_citation_link_lookup.clear()
         self._agent_statute_link_lookup.clear()
+        self._agent_rule_link_lookup.clear()
         self._agent_search_link_lookup.clear()
         self._agent_search_next_link_tags.clear()
         self._agent_search_action_link_lookup.clear()
@@ -4417,7 +4652,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self,
         x: float,
         y: float,
-    ) -> CitedCaseLink | StatuteLink | QuoteTarget | CourtListenerSearchResult | str | None:
+    ) -> CitedCaseLink | StatuteLink | RuleLink | QuoteTarget | CourtListenerSearchResult | str | None:
         view = self._agent_answer_view
         if view is None:
             return None
@@ -4446,6 +4681,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             statute_link = self._agent_statute_link_lookup.get(tag)
             if statute_link is not None:
                 return statute_link
+            rule_link = self._agent_rule_link_lookup.get(tag)
+            if rule_link is not None:
+                return rule_link
             search_result = self._agent_search_link_lookup.get(tag)
             if search_result is not None:
                 return search_result
@@ -4492,6 +4730,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._open_agent_cited_case_link(target)
         elif isinstance(target, StatuteLink):
             self._open_statute_link(target)
+        elif isinstance(target, RuleLink):
+            self._open_rule_link(target)
         elif target is not None:
             self._open_quote_target(target)
 
