@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import subprocess
 import sys
 from typing import Any
 
+from .authority_resolver import extract_authority, read_selected_text_from_os
 from .cache import JsonCache
+from .cli_commands import build_cli_commands_text
 from .client import CourtListenerClient, CourtListenerError
+from . import APP_ID
 from .library import CaseLibrary, LibraryPruneCandidate
 from .rules import CaliforniaRulesError
 from .statutes import LegInfoError
@@ -40,6 +45,117 @@ def _cmd_lookup(args: argparse.Namespace) -> int:
             return 0
     print("No opinion text found for first matching cluster.", file=sys.stderr)
     return 1
+
+
+def _print_authority_result(args: argparse.Namespace, authority_type: str) -> int:
+    try:
+        result = extract_authority(
+            args.value,
+            authority_type=authority_type,
+            refresh=getattr(args, "refresh", False),
+        )
+    except (CourtListenerError, LegInfoError, CaliforniaRulesError, ValueError, RuntimeError) as exc:
+        if getattr(args, "text", False):
+            print(str(exc), file=sys.stderr)
+            return 1
+        _print_json(
+            {
+                "ok": False,
+                "authority_type": authority_type,
+                "input": args.value,
+                "resolved_input": "",
+                "source": "",
+                "title": "",
+                "citation": "",
+                "identifier": "",
+                "source_url": "",
+                "text": "",
+                "text_length": 0,
+                "warnings": [],
+                "error": str(exc),
+            }
+        )
+        return 1
+    if getattr(args, "text", False):
+        if result.text:
+            print(result.text)
+            return 0
+        if result.error:
+            print(result.error, file=sys.stderr)
+        return 1
+    _print_json(result.to_json())
+    return 0 if result.ok else 1
+
+
+def _cmd_extract(args: argparse.Namespace) -> int:
+    return _print_authority_result(args, "auto")
+
+
+def _cmd_extract_case(args: argparse.Namespace) -> int:
+    return _print_authority_result(args, "case")
+
+
+def _cmd_extract_statute(args: argparse.Namespace) -> int:
+    return _print_authority_result(args, "statute")
+
+
+def _cmd_extract_rule(args: argparse.Namespace) -> int:
+    return _print_authority_result(args, "rule")
+
+
+def _cmd_commands(_args: argparse.Namespace) -> int:
+    print(build_cli_commands_text(), end="")
+    return 0
+
+
+def _activate_open_authority(value: str) -> bool:
+    command = [
+        "gdbus",
+        "call",
+        "--session",
+        "--dest",
+        APP_ID,
+        "--object-path",
+        "/" + APP_ID.replace(".", "/"),
+        "--method",
+        "org.gtk.Actions.Activate",
+        "open_authority",
+        f"['{_dbus_quote(value)}']",
+        "{}",
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=2, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def _dbus_quote(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def _launch_app_with_open_text(value: str) -> int:
+    os.environ["OPEN_LAW_LENS_OPEN_TEXT"] = value
+    from .app import main as app_main
+
+    return app_main()
+
+
+def _cmd_open(args: argparse.Namespace) -> int:
+    value = args.value.strip()
+    if not value:
+        print("No authority text provided.", file=sys.stderr)
+        return 1
+    if _activate_open_authority(value):
+        return 0
+    return _launch_app_with_open_text(value)
+
+
+def _cmd_open_selected(_args: argparse.Namespace) -> int:
+    value, _source = read_selected_text_from_os()
+    if _activate_open_authority(value):
+        return 0
+    return _launch_app_with_open_text(value)
 
 
 def _cmd_lookup_statute(args: argparse.Namespace) -> int:
@@ -176,7 +292,12 @@ def _cmd_prune_library(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="open-law-lens")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    parser.add_argument(
+        "--list-cli-commands",
+        action="store_true",
+        help="print available CLI authority commands and examples",
+    )
+    subparsers = parser.add_subparsers(dest="command")
 
     app_parser = subparsers.add_parser("app", help="launch the GTK app")
     app_parser.set_defaults(func=_cmd_app)
@@ -186,6 +307,43 @@ def build_parser() -> argparse.ArgumentParser:
     lookup_parser.add_argument("--refresh", action="store_true", help="bypass cached lookup data")
     lookup_parser.add_argument("--text", action="store_true", help="print first matching opinion text")
     lookup_parser.set_defaults(func=_cmd_lookup)
+
+    extract_parser = subparsers.add_parser("extract", help="detect and extract the first authority")
+    extract_parser.add_argument("value")
+    extract_parser.add_argument("--refresh", action="store_true", help="bypass saved lookup data where possible")
+    extract_parser.add_argument("--text", action="store_true", help="print raw authority text")
+    extract_parser.set_defaults(func=_cmd_extract)
+
+    extract_case_parser = subparsers.add_parser("extract-case", help="extract a case")
+    extract_case_parser.add_argument("value")
+    extract_case_parser.add_argument("--refresh", action="store_true", help="bypass saved lookup data where possible")
+    extract_case_parser.add_argument("--text", action="store_true", help="print raw case text")
+    extract_case_parser.set_defaults(func=_cmd_extract_case)
+
+    extract_statute_parser = subparsers.add_parser("extract-statute", help="extract a California statute")
+    extract_statute_parser.add_argument("value")
+    extract_statute_parser.add_argument("--refresh", action="store_true", help="bypass saved statute data")
+    extract_statute_parser.add_argument("--text", action="store_true", help="print raw statute text")
+    extract_statute_parser.set_defaults(func=_cmd_extract_statute)
+
+    extract_rule_parser = subparsers.add_parser("extract-rule", help="extract a California Rule of Court")
+    extract_rule_parser.add_argument("value")
+    extract_rule_parser.add_argument("--refresh", action="store_true", help="bypass saved rule data")
+    extract_rule_parser.add_argument("--text", action="store_true", help="print raw rule text")
+    extract_rule_parser.set_defaults(func=_cmd_extract_rule)
+
+    open_parser = subparsers.add_parser("open", help="open an authority in the GTK app")
+    open_parser.add_argument("value")
+    open_parser.set_defaults(func=_cmd_open)
+
+    open_selected_parser = subparsers.add_parser(
+        "open-selected",
+        help="open the authority from OS selection or clipboard in the GTK app",
+    )
+    open_selected_parser.set_defaults(func=_cmd_open_selected)
+
+    commands_parser = subparsers.add_parser("commands", help="list available CLI authority commands")
+    commands_parser.set_defaults(func=_cmd_commands)
 
     statute_parser = subparsers.add_parser("lookup-statute", help="look up a California statute")
     statute_parser.add_argument("citation")
@@ -236,8 +394,14 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.list_cli_commands:
+        print(build_cli_commands_text(), end="")
+        return 0
+    if not hasattr(args, "func"):
+        parser.print_help()
+        return 2
     try:
         return int(args.func(args))
-    except (CourtListenerError, LegInfoError, CaliforniaRulesError, ValueError) as exc:
+    except (CourtListenerError, LegInfoError, CaliforniaRulesError, ValueError, RuntimeError) as exc:
         print(str(exc), file=sys.stderr)
         return 1

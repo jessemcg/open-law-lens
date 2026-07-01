@@ -37,6 +37,7 @@ from .agent import (
     resolve_quote_target,
 )
 from .cache import cluster_id_from_cluster
+from .cli_commands import CLI_COMMANDS
 from .client import (
     CourtListenerClient,
     CourtListenerError,
@@ -331,6 +332,105 @@ class DbusCommandsWindow(Adw.ApplicationWindow):
         if display:
             display.get_clipboard().set(command)
             self.parent_window._set_status("D-Bus command copied to clipboard.")
+
+
+class CliCommandsWindow(Adw.ApplicationWindow):
+    def __init__(self, parent: "OpenLawLensWindow") -> None:
+        super().__init__(application=parent.get_application(), title="CLI Commands")
+        self.parent_window = parent
+        self.set_transient_for(parent)
+        self.set_default_size(900, 560)
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        view = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        header.add_css_class("flat")
+        header.set_title_widget(Adw.WindowTitle(title="CLI Commands"))
+        view.add_top_bar(header)
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        outer.set_margin_top(16)
+        outer.set_margin_bottom(16)
+        outer.set_margin_start(16)
+        outer.set_margin_end(16)
+
+        intro = Gtk.Label(
+            label=(
+                "Run these from the OpenLawLens project directory. "
+                "Extract commands print JSON by default; add --text to print only the authority text."
+            ),
+            xalign=0,
+        )
+        intro.set_wrap(True)
+        outer.append(intro)
+
+        command_list = Gtk.ListBox()
+        command_list.add_css_class("boxed-list")
+        command_list.set_selection_mode(Gtk.SelectionMode.NONE)
+        for command in CLI_COMMANDS:
+            row = Gtk.ListBoxRow()
+            row.set_activatable(False)
+            row.set_selectable(False)
+            row.set_child(self._build_command_row(command))
+            command_list.append(row)
+        outer.append(command_list)
+
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_child(outer)
+        view.set_content(scroller)
+        self.set_content(view)
+
+    def _build_command_row(self, command: Any) -> Gtk.Widget:
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        row.set_margin_top(10)
+        row.set_margin_bottom(10)
+        row.set_margin_start(12)
+        row.set_margin_end(12)
+
+        text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        text_box.set_hexpand(True)
+
+        title = Gtk.Label(label=command.title, xalign=0)
+        title.add_css_class("heading")
+        title.set_wrap(True)
+        text_box.append(title)
+
+        name = Gtk.Label(label=command.name, xalign=0)
+        name.add_css_class("monospace")
+        name.add_css_class("dim-label")
+        name.set_selectable(True)
+        text_box.append(name)
+
+        description = Gtk.Label(label=command.description, xalign=0)
+        description.set_wrap(True)
+        description.set_selectable(True)
+        text_box.append(description)
+
+        example = Gtk.Label(label=command.example, xalign=0)
+        example.add_css_class("monospace")
+        example.set_wrap(True)
+        example.set_selectable(True)
+        text_box.append(example)
+
+        row.append(text_box)
+
+        copy_button = Gtk.Button(icon_name="edit-copy-symbolic")
+        copy_button.add_css_class("flat")
+        copy_button.set_tooltip_text(f"Copy {command.name} example")
+        copy_button.set_valign(Gtk.Align.CENTER)
+        copy_button.connect("clicked", self._on_copy_cli_command_clicked, command.example)
+        row.append(copy_button)
+        return row
+
+    def _on_copy_cli_command_clicked(self, _button: Gtk.Button, command: str) -> None:
+        display = Gdk.Display.get_default()
+        if display is None:
+            self.parent_window._set_status("Could not access clipboard.")
+            return
+        display.get_clipboard().set(command)
+        self.parent_window._set_status("CLI command copied to clipboard.")
 
 
 class SettingsWindow(Adw.ApplicationWindow):
@@ -629,6 +729,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._pending_quote_target: QuoteTarget | None = None
         self._settings_window: SettingsWindow | None = None
         self._dbus_commands_window: DbusCommandsWindow | None = None
+        self._cli_commands_window: CliCommandsWindow | None = None
         self._shortcuts_window: Gtk.ShortcutsWindow | None = None
         self._case_suggestions: list[CaseSuggestion] = []
         self._case_suggestions_loaded = False
@@ -660,6 +761,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         show_dbus_commands = Gio.SimpleAction.new("show_dbus_commands", None)
         show_dbus_commands.connect("activate", self._on_show_dbus_commands)
         self.add_action(show_dbus_commands)
+        show_cli_commands = Gio.SimpleAction.new("show_cli_commands", None)
+        show_cli_commands.connect("activate", self._on_show_cli_commands)
+        self.add_action(show_cli_commands)
         focus_citation = Gio.SimpleAction.new("focus_citation", None)
         focus_citation.connect("activate", self._on_focus_citation)
         self.add_action(focus_citation)
@@ -925,6 +1029,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _build_menu_button(self) -> Gtk.MenuButton:
         menu = Gio.Menu()
         menu.append("Keyboard Shortcuts", "win.show_shortcuts")
+        menu.append("CLI Commands", "win.show_cli_commands")
         menu.append("D-Bus Commands", "win.show_dbus_commands")
         menu.append("Settings", "win.settings")
         button = Gtk.MenuButton(icon_name="open-menu-symbolic")
@@ -2317,6 +2422,36 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def _on_dbus_commands_closed(self, _window: Gtk.Window) -> bool:
         self._dbus_commands_window = None
+        return False
+
+    def _on_show_cli_commands(
+        self,
+        _action: Gio.SimpleAction,
+        _parameter: GLib.Variant | None,
+    ) -> None:
+        if self._cli_commands_window is None:
+            self._cli_commands_window = CliCommandsWindow(self)
+            self._cli_commands_window.connect("close-request", self._on_cli_commands_closed)
+        self._cli_commands_window.present()
+
+    def _on_cli_commands_closed(self, _window: Gtk.Window) -> bool:
+        self._cli_commands_window = None
+        return False
+
+    def open_authority_text(self, text: str) -> bool:
+        entry_text = re.sub(r"\s+", " ", text).strip()
+        if not entry_text:
+            self._set_status("No authority text provided.")
+            return False
+        citation = self._lookup_text_from_entry(entry_text)
+        self.citation_entry.set_text("")
+        if parse_statute_citation(citation) is not None:
+            self._start_statute_lookup(citation)
+            return False
+        if parse_rule_citation(citation) is not None:
+            self._start_rule_lookup(citation)
+            return False
+        self._start_lookup(citation)
         return False
 
     def _on_window_tick(self, _widget: Gtk.Widget, _clock: Gdk.FrameClock) -> bool:
@@ -4879,6 +5014,13 @@ class OpenLawLensApp(Adw.Application):
         self.set_accels_for_action("win.show_shortcuts", ["F1"])
 
     def _install_actions(self) -> None:
+        open_authority = Gio.SimpleAction.new("open_authority", GLib.VariantType.new("s"))
+        open_authority.connect(
+            "activate",
+            self._on_open_authority,
+        )
+        self.add_action(open_authority)
+
         submit_speech_law_question = Gio.SimpleAction.new("submit_speech_law_question", None)
         submit_speech_law_question.connect(
             "activate",
@@ -4896,6 +5038,9 @@ class OpenLawLensApp(Adw.Application):
     def _on_activate(self, _app: Adw.Application) -> None:
         window = OpenLawLensWindow(self)
         window.present()
+        open_text = os.environ.pop("OPEN_LAW_LENS_OPEN_TEXT", "").strip()
+        if open_text:
+            GLib.idle_add(window.open_authority_text, open_text)
 
     def _main_window(self) -> OpenLawLensWindow:
         active = self.get_active_window()
@@ -4922,6 +5067,15 @@ class OpenLawLensApp(Adw.Application):
         _parameter: GLib.Variant | None,
     ) -> None:
         self._main_window().submit_speech_question(AGENT_MODE_CASE)
+
+    def _on_open_authority(
+        self,
+        _action: Gio.SimpleAction,
+        parameter: GLib.Variant | None,
+    ) -> None:
+        if parameter is None:
+            return
+        self._main_window().open_authority_text(parameter.get_string())
 
 
 def main() -> int:
