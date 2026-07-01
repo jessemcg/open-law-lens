@@ -130,6 +130,24 @@ def opinion_text(opinion: dict[str, Any]) -> str:
     return ""
 
 
+def _opinion_order_value(opinion: dict[str, Any]) -> int:
+    value = opinion.get("ordering_key")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        pass
+    opinion_type = str(opinion.get("type") or "")
+    match = re.match(r"^(\d+)", opinion_type)
+    if match:
+        return int(match.group(1))
+    return 10_000
+
+
+def _opinion_sort_key(indexed_opinion: tuple[int, dict[str, Any]]) -> tuple[int, str, int]:
+    index, opinion = indexed_opinion
+    return (_opinion_order_value(opinion), str(opinion.get("type") or ""), index)
+
+
 def cluster_title(cluster: dict[str, Any]) -> str:
     title = cluster_title_value(cluster)
     if title:
@@ -583,7 +601,8 @@ class CourtListenerClient:
         return opinions
 
     def first_opinion_text(self, cluster: dict[str, Any], *, refresh: bool = False) -> str:
-        for opinion in self.fetch_cluster_opinions(cluster, refresh=refresh):
+        opinions = self.reader_opinions(self.fetch_cluster_opinions(cluster, refresh=refresh))
+        for opinion in opinions:
             text = self.opinion_display(opinion).text
             if text:
                 return text
@@ -596,6 +615,20 @@ class CourtListenerClient:
             if display is not None:
                 return display
         return opinion_display_text(opinion)
+
+    def reader_opinions(self, opinions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        combined: list[tuple[int, dict[str, Any]]] = []
+        separate: list[tuple[int, dict[str, Any]]] = []
+        for index, opinion in enumerate(opinions):
+            if not self.opinion_display(opinion).text:
+                continue
+            if str(opinion.get("type") or "").casefold() == "010combined":
+                combined.append((index, opinion))
+            else:
+                separate.append((index, opinion))
+        if combined:
+            return [opinion for _, opinion in sorted(combined, key=_opinion_sort_key)]
+        return [opinion for _, opinion in sorted(separate, key=_opinion_sort_key)]
 
     @staticmethod
     def clusters_from_lookup(result: list[dict[str, Any]]) -> list[dict[str, Any]]:

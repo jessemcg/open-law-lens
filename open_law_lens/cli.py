@@ -45,7 +45,9 @@ def _cmd_lookup(args: argparse.Namespace) -> int:
     if not clusters:
         print("No matching CourtListener case clusters.", file=sys.stderr)
         return 1
-    opinions = client.fetch_cluster_opinions(clusters[0], refresh=args.refresh)
+    opinions = client.reader_opinions(
+        client.fetch_cluster_opinions(clusters[0], refresh=args.refresh)
+    )
     for opinion in opinions:
         text = client.opinion_display(opinion).text
         if text:

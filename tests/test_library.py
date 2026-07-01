@@ -400,6 +400,58 @@ class LibraryTests(unittest.TestCase):
             self.assertEqual(by_cluster["102"].marker_count, 0)
             self.assertIn("No embedded reporter page markers", by_cluster["102"].reason)
 
+    def test_official_pagination_audit_keeps_combined_opinion_duplicates(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            cluster = {
+                "id": 1176122,
+                "case_name": "People v. Marsden",
+                "citations": [{"volume": "2", "reporter": "Cal.3d", "page": "118"}],
+            }
+            library.upsert_cluster(cluster)
+            library.upsert_opinion(
+                {
+                    "id": 9548598,
+                    "cluster_id": 1176122,
+                    "type": "040dissent",
+                    "ordering_key": 2,
+                    "plain_text": "McCOMB, J.\n\nI dissent.",
+                },
+                cluster=cluster,
+            )
+            library.upsert_opinion(
+                {
+                    "id": 1176122,
+                    "cluster_id": 1176122,
+                    "type": "010combined",
+                    "plain_text": "[*118]Caption.\n\n[*120]Majority.\n\n[*134]Dissent.",
+                },
+                cluster=cluster,
+            )
+            library.upsert_opinion(
+                {
+                    "id": 9548597,
+                    "cluster_id": 1176122,
+                    "type": "020lead",
+                    "ordering_key": 1,
+                    "plain_text": "[*120]Majority.",
+                },
+                cluster=cluster,
+            )
+
+            result = library.prune_ineligible_official_pagination(create_backup=False)
+
+            self.assertEqual(result.pruned, [])
+            self.assertEqual(result.kept_count, 1)
+            self.assertEqual(
+                library.read_case_opinion_ids("1176122"),
+                ["9548598", "1176122", "9548597"],
+            )
+            self.assertIsNotNone(library.read_opinion("9548598"))
+            self.assertIsNotNone(library.read_opinion("1176122"))
+            self.assertIsNotNone(library.read_opinion("9548597"))
+
     def test_prune_ineligible_official_pagination_removes_lookup_references(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             library = CaseLibrary(Path(temp_dir) / "library.sqlite3")

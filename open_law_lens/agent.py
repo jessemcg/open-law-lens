@@ -204,7 +204,7 @@ def export_selected_authorities(
             continue
         title = cluster_title(cluster)
         citation = cluster_citation_line(cluster)
-        opinions = client.fetch_cluster_opinions(cluster)
+        opinions = client.reader_opinions(client.fetch_cluster_opinions(cluster))
         opinion_entries: list[dict[str, Any]] = []
         for opinion in opinions:
             opinion_id = str(opinion.get("id") or "").strip()

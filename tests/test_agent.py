@@ -33,6 +33,12 @@ class DummyClient:
     def fetch_cluster_opinions(self, _cluster: dict[str, object]) -> list[dict[str, object]]:
         return [{"id": 10, "plain_text": "The juvenile court found active risk today."}]
 
+    def reader_opinions(
+        self,
+        opinions: list[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        return opinions
+
     def opinion_display(self, opinion: dict[str, object]) -> DisplayText:
         return DisplayText(
             text=str(opinion["plain_text"]),

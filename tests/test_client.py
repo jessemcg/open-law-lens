@@ -941,6 +941,80 @@ class ClientTests(unittest.TestCase):
 
             self.assertEqual(library.saved_clusters(), [])
 
+    def test_reader_opinions_prefers_combined_opinion(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            client = CourtListenerClient(cache=JsonCache(Path(temp_dir) / "cache"), library=library)
+            opinions = [
+                {
+                    "id": 1,
+                    "type": "040dissent",
+                    "ordering_key": 2,
+                    "plain_text": "Dissent only.",
+                },
+                {
+                    "id": 2,
+                    "type": "010combined",
+                    "plain_text": "Caption.\n\nMajority.\n\nDissent.",
+                },
+                {
+                    "id": 3,
+                    "type": "020lead",
+                    "ordering_key": 1,
+                    "plain_text": "Majority only.",
+                },
+            ]
+
+            reader_opinions = client.reader_opinions(opinions)
+
+            self.assertEqual([opinion["id"] for opinion in reader_opinions], [2])
+
+    def test_reader_opinions_sorts_separate_writings_when_no_combined_opinion(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            client = CourtListenerClient(cache=JsonCache(Path(temp_dir) / "cache"), library=library)
+            opinions = [
+                {
+                    "id": 1,
+                    "type": "040dissent",
+                    "ordering_key": 3,
+                    "plain_text": "Dissent.",
+                },
+                {
+                    "id": 2,
+                    "type": "030concurrence",
+                    "ordering_key": 2,
+                    "plain_text": "Concurrence.",
+                },
+                {
+                    "id": 3,
+                    "type": "020lead",
+                    "ordering_key": 1,
+                    "plain_text": "Lead.",
+                },
+            ]
+
+            reader_opinions = client.reader_opinions(opinions)
+
+            self.assertEqual([opinion["id"] for opinion in reader_opinions], [3, 2, 1])
+
+    def test_reader_opinions_uses_type_prefix_order_when_ordering_key_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            client = CourtListenerClient(cache=JsonCache(Path(temp_dir) / "cache"), library=library)
+            opinions = [
+                {"id": 1, "type": "040dissent", "plain_text": "Dissent."},
+                {"id": 2, "type": "020lead", "plain_text": "Lead."},
+                {"id": 3, "type": "030concurrence", "plain_text": "Concurrence."},
+            ]
+
+            reader_opinions = client.reader_opinions(opinions)
+
+            self.assertEqual([opinion["id"] for opinion in reader_opinions], [2, 3, 1])
+
     def test_lookup_rejects_empty_citation(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             library = CaseLibrary(Path(temp_dir) / "library.sqlite3")

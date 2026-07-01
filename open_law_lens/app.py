@@ -3796,7 +3796,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         try:
             opinions = self.client.fetch_cluster_opinions(cluster)
             opinion_source = self.client.last_opinion_source
-            displays = [self.client.opinion_display(opinion) for opinion in opinions]
+            reader_opinions = self.client.reader_opinions(opinions)
+            displays = [self.client.opinion_display(opinion) for opinion in reader_opinions]
             payload = build_case_reader_payload(
                 cluster,
                 displays,

@@ -241,7 +241,7 @@ def _extract_case_from_cluster(
     original_input: str,
     warnings: list[str],
 ) -> AuthorityResult:
-    opinions = client.fetch_cluster_opinions(cluster, refresh=refresh)
+    opinions = client.reader_opinions(client.fetch_cluster_opinions(cluster, refresh=refresh))
     displays = [client.opinion_display(opinion) for opinion in opinions]
     text = "\n\n".join(display.text for display in displays if display.text).strip()
     quality = official_pagination_quality(cluster, displays)
