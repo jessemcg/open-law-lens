@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import signal
@@ -8,6 +9,7 @@ import sys
 import tempfile
 import threading
 from dataclasses import dataclass
+from importlib import resources
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote_plus
@@ -140,6 +142,10 @@ AGENT_SUBVIEW_ANSWER = "answer"
 AGENT_SUBVIEW_SESSION = "session"
 AGENT_MODE_GENERAL = "general"
 AGENT_MODE_CASE = "case"
+AGENT_MODE_ICONS = {
+    AGENT_MODE_GENERAL: "license-symbolic",
+    AGENT_MODE_CASE: "file-cabinet-symbolic",
+}
 GOOGLE_SCHOLAR_CASE_SEARCH_TEMPLATE = "https://scholar.google.com/scholar?hl=en&as_sdt=6,33&q={query}"
 AGENT_MODE_RESULTS = "results"
 SEARCH_NEXT_PAGE_TARGET = "search-next-page"
@@ -1708,8 +1714,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
         mode_strip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         mode_strip.add_css_class("focus-pill-group")
-        mode_strip.append(self._build_agent_mode_button("Law", AGENT_MODE_GENERAL))
-        mode_strip.append(self._build_agent_mode_button("Cache", AGENT_MODE_CASE))
+        mode_strip.append(self._build_agent_mode_button(AGENT_MODE_GENERAL))
+        mode_strip.append(self._build_agent_mode_button(AGENT_MODE_CASE))
         row.append(mode_strip)
 
         self.agent_question_entry = Gtk.Entry()
@@ -1729,11 +1735,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_agent_mode(AGENT_MODE_GENERAL)
         return row
 
-    def _build_agent_mode_button(self, label: str, mode: str) -> Gtk.ToggleButton:
-        button = Gtk.ToggleButton(label=label)
+    def _build_agent_mode_button(self, mode: str) -> Gtk.ToggleButton:
+        button = Gtk.ToggleButton()
         button.add_css_class("flat")
         button.add_css_class("no-bold")
         button.add_css_class("focus-pill-segment")
+        icon = Gtk.Image(icon_name=AGENT_MODE_ICONS[mode])
+        icon.set_pixel_size(16)
+        button.set_child(icon)
         tooltip = (
             "Ask from CourtListener legal authority"
             if mode == AGENT_MODE_GENERAL
@@ -5400,8 +5409,11 @@ class OpenLawLensApp(Adw.Application):
             application_id=APP_ID,
             flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE,
         )
+        self._resource_context = contextlib.ExitStack()
+        self._installed_bundled_icon_path = False
         self.connect("activate", self._on_activate)
         self.connect("command-line", self._on_command_line)
+        self.connect("shutdown", self._on_shutdown)
         self.add_main_option(
             "open-authority",
             0,
@@ -5415,6 +5427,20 @@ class OpenLawLensApp(Adw.Application):
         self.set_accels_for_action("win.focus_law_question", ["<Primary>q"])
         self.set_accels_for_action("win.focus_cache_question", ["<Primary><Shift>q"])
         self.set_accels_for_action("win.show_shortcuts", ["F1"])
+
+    def _install_bundled_icon_path(self) -> None:
+        if self._installed_bundled_icon_path:
+            return
+        display = Gdk.Display.get_default()
+        if display is None:
+            return
+        icons_ref = resources.files(__package__).joinpath("icons")
+        icons_path = self._resource_context.enter_context(resources.as_file(icons_ref))
+        Gtk.IconTheme.get_for_display(display).add_search_path(str(icons_path))
+        self._installed_bundled_icon_path = True
+
+    def _on_shutdown(self, _app: Adw.Application) -> None:
+        self._resource_context.close()
 
     def _install_actions(self) -> None:
         open_authority = Gio.SimpleAction.new("open_authority", GLib.VariantType.new("s"))
@@ -5439,6 +5465,9 @@ class OpenLawLensApp(Adw.Application):
         self.add_action(submit_speech_cache_question)
 
     def _on_activate(self, _app: Adw.Application) -> None:
+        install_bundled_icons = getattr(self, "_install_bundled_icon_path", None)
+        if install_bundled_icons is not None:
+            install_bundled_icons()
         window = self._main_window()
         self._open_startup_authority_if_requested(window)
 
@@ -5450,6 +5479,9 @@ class OpenLawLensApp(Adw.Application):
         options = command_line.get_options_dict()
         open_text_variant = options.lookup_value("open-authority", GLib.VariantType.new("s"))
         open_text = open_text_variant.get_string().strip() if open_text_variant is not None else ""
+        install_bundled_icons = getattr(self, "_install_bundled_icon_path", None)
+        if install_bundled_icons is not None:
+            install_bundled_icons()
         window = self._main_window()
         if open_text:
             window.show_open_authority_pending()
