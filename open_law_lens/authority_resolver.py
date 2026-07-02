@@ -231,6 +231,33 @@ def extract_case(
     )
 
 
+def extract_case_by_cluster_id(
+    cluster_id: str,
+    *,
+    refresh: bool = False,
+    client: CourtListenerClient | None = None,
+) -> AuthorityResult:
+    client = client or CourtListenerClient.default()
+    clean_cluster_id = re.sub(r"\s+", "", str(cluster_id or ""))
+    if not clean_cluster_id:
+        raise ValueError("Cluster ID is required.")
+    cluster = client.fetch_url(
+        f"/api/rest/v4/clusters/{clean_cluster_id}/",
+        kind="clusters",
+        refresh=refresh,
+    )
+    title = str(cluster.get("case_name_short") or cluster.get("case_name") or clean_cluster_id)
+    return _extract_case_from_cluster(
+        cluster,
+        resolved=clean_cluster_id,
+        source=client.last_lookup_source or "CourtListener API",
+        refresh=refresh,
+        client=client,
+        original_input=title,
+        warnings=[],
+    )
+
+
 def _extract_case_from_cluster(
     cluster: dict[str, Any],
     *,

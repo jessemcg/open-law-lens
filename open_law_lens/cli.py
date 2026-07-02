@@ -8,10 +8,10 @@ import sys
 from typing import Any
 
 from . import APP_ID
-from .authority_resolver import extract_authority, read_selected_text_from_os
+from .authority_resolver import extract_authority, extract_case_by_cluster_id, read_selected_text_from_os
 from .cache import JsonCache
 from .cli_commands import build_cli_commands_text
-from .client import CourtListenerClient, CourtListenerError
+from .client import CALIFORNIA_CASE_COURT_IDS, CourtListenerClient, CourtListenerError
 from .launch_request import discard_open_authority_request, write_open_authority_request
 from .library import CaseLibrary, LibraryPruneCandidate
 from .rules import CaliforniaRulesError
@@ -102,7 +102,111 @@ def _cmd_extract(args: argparse.Namespace) -> int:
 
 
 def _cmd_extract_case(args: argparse.Namespace) -> int:
+    cluster_id = str(getattr(args, "cluster_id", "") or "").strip()
+    if cluster_id:
+        try:
+            result = extract_case_by_cluster_id(
+                cluster_id,
+                refresh=getattr(args, "refresh", False),
+            )
+        except (CourtListenerError, ValueError, RuntimeError) as exc:
+            if getattr(args, "text", False):
+                print(str(exc), file=sys.stderr)
+                return 1
+            _print_json(
+                {
+                    "ok": False,
+                    "authority_type": "case",
+                    "input": cluster_id,
+                    "resolved_input": cluster_id,
+                    "source": "",
+                    "title": "",
+                    "citation": "",
+                    "identifier": cluster_id,
+                    "source_url": "",
+                    "text": "",
+                    "text_length": 0,
+                    "warnings": [],
+                    "error": str(exc),
+                }
+            )
+            return 1
+        if getattr(args, "text", False):
+            if result.text:
+                print(result.text)
+                return 0
+            if result.error:
+                print(result.error, file=sys.stderr)
+            return 1
+        _print_json(result.to_json())
+        return 0 if result.ok else 1
+    if not str(getattr(args, "value", "") or "").strip():
+        print("Case citation, query, or --cluster-id is required.", file=sys.stderr)
+        return 1
     return _print_authority_result(args, "case")
+
+
+def _case_search_result_json(result: Any, rank: int) -> dict[str, Any]:
+    return {
+        "rank": rank,
+        "cluster_id": result.cluster_id,
+        "opinion_ids": list(result.opinion_ids),
+        "case_name": result.case_name,
+        "official_citation": result.citation,
+        "citations": list(result.citations),
+        "court": result.court,
+        "court_id": result.court_id,
+        "date_filed": result.date_filed,
+        "status": result.status,
+        "cite_count": result.cite_count,
+        "snippet": result.snippet,
+        "extract_command": f"uv run open-law-lens extract-case --cluster-id {result.cluster_id}",
+    }
+
+
+def _cmd_case_search(args: argparse.Namespace) -> int:
+    client = CourtListenerClient.default()
+    courts = tuple(getattr(args, "court", None) or ())
+    if getattr(args, "all_courts", False):
+        courts = ()
+    elif not courts:
+        courts = CALIFORNIA_CASE_COURT_IDS
+    page = client.search_cases(
+        getattr(args, "query", "") or "",
+        semantic=getattr(args, "semantic", False),
+        include_unpublished=getattr(args, "include_unpublished", False),
+        page_size=getattr(args, "limit", 10),
+        url=getattr(args, "next", "") or "",
+        courts=courts,
+    )
+    api_query = ""
+    if not getattr(args, "next", ""):
+        api_query = client.case_search_api_query(
+            getattr(args, "query", "") or "",
+            include_unpublished=getattr(args, "include_unpublished", False),
+            courts=courts,
+        )
+    _print_json(
+        {
+            "ok": True,
+            "query": getattr(args, "query", "") or "",
+            "api_query": api_query,
+            "scope": {
+                "courts": list(courts),
+                "all_courts": bool(getattr(args, "all_courts", False)),
+            },
+            "semantic": bool(getattr(args, "semantic", False)),
+            "include_unpublished": bool(getattr(args, "include_unpublished", False)),
+            "total_count": page.count,
+            "result_count": len(page.results),
+            "next_url": page.next_url,
+            "results": [
+                _case_search_result_json(result, index)
+                for index, result in enumerate(page.results, start=1)
+            ],
+        }
+    )
+    return 0
 
 
 def _cmd_extract_statute(args: argparse.Namespace) -> int:
@@ -382,10 +486,38 @@ def build_parser() -> argparse.ArgumentParser:
     extract_parser.set_defaults(func=_cmd_extract)
 
     extract_case_parser = subparsers.add_parser("extract-case", help="extract a case")
-    extract_case_parser.add_argument("value")
+    extract_case_parser.add_argument("value", nargs="?")
+    extract_case_parser.add_argument("--cluster-id", help="extract a CourtListener case cluster by ID")
     extract_case_parser.add_argument("--refresh", action="store_true", help="bypass saved lookup data where possible")
     extract_case_parser.add_argument("--text", action="store_true", help="print raw case text")
     extract_case_parser.set_defaults(func=_cmd_extract_case)
+
+    case_search_parser = subparsers.add_parser("case-search", help="search California case law")
+    case_search_parser.add_argument("query", nargs="?", help="CourtListener case-search query")
+    case_search_parser.add_argument("--semantic", action="store_true", help="request CourtListener semantic search")
+    case_search_parser.add_argument(
+        "--include-unpublished",
+        action="store_true",
+        help="include unpublished search results",
+    )
+    case_search_parser.add_argument(
+        "--limit",
+        type=int,
+        default=10,
+        help="maximum results to request, from 1 to 25",
+    )
+    case_search_parser.add_argument("--next", help="load a CourtListener next results URL")
+    case_search_parser.add_argument(
+        "--court",
+        action="append",
+        help="restrict to a CourtListener court ID; repeat for multiple courts",
+    )
+    case_search_parser.add_argument(
+        "--all-courts",
+        action="store_true",
+        help="do not apply the default California court filter",
+    )
+    case_search_parser.set_defaults(func=_cmd_case_search)
 
     extract_statute_parser = subparsers.add_parser("extract-statute", help="extract a California statute")
     extract_statute_parser.add_argument("value")

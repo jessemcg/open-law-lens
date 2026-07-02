@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -13,6 +14,7 @@ from open_law_lens.config import (
     DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE,
     DEFAULT_READER_FONT_FAMILY,
     DEFAULT_READER_FONT_SIZE_PT,
+    LEGACY_GENERAL_AGENT_PROMPT_TEMPLATE,
     load_config,
     save_config,
 )
@@ -53,6 +55,26 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.reader_font_size_pt, 14)
             self.assertEqual(config.reader_font_family, "Georgia")
             self.assertEqual(config.default_bare_statute_law_code, "FAM")
+
+    def test_legacy_general_prompt_migrates_to_new_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text(
+                json.dumps({"general_agent_prompt_template": LEGACY_GENERAL_AGENT_PROMPT_TEMPLATE}),
+                encoding="utf-8",
+            )
+
+            config = load_config(path)
+
+            self.assertEqual(config.general_agent_prompt_template, DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE)
+            self.assertNotIn("CourtListener MCP server only", config.general_agent_prompt_template)
+
+    def test_custom_general_prompt_is_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            save_config(AppConfig(general_agent_prompt_template="Custom {question}"), path)
+
+            self.assertEqual(load_config(path).general_agent_prompt_template, "Custom {question}")
 
     def test_bare_statute_law_code_falls_back_to_wic(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

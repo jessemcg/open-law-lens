@@ -19,6 +19,7 @@ from open_law_lens.client import (
     dedupe_case_clusters,
     format_official_california_citation,
     html_to_text,
+    normalize_search_api_result,
     official_california_reporter_citation_from_text,
     official_california_reporter_citation,
     opinion_text,
@@ -30,6 +31,82 @@ from open_law_lens.library import CaseLibrary
 
 
 class ClientTests(unittest.TestCase):
+    def test_case_search_api_query_defaults_to_california_published_cases(self) -> None:
+        query = CourtListenerClient.case_search_api_query("beneficial relationship")
+
+        self.assertIn("court_id:(", query)
+        self.assertIn("cal", query)
+        self.assertIn("calctapp", query)
+        self.assertIn("status:Published", query)
+        self.assertTrue(query.endswith("beneficial relationship"))
+
+    def test_case_search_api_query_can_include_unpublished_and_custom_court(self) -> None:
+        query = CourtListenerClient.case_search_api_query(
+            "ICWA",
+            include_unpublished=True,
+            courts=("cal",),
+        )
+
+        self.assertEqual(query, "court_id:(cal) ICWA")
+
+    def test_normalize_search_api_result_uses_official_citation_and_snippet(self) -> None:
+        result = normalize_search_api_result(
+            {
+                "cluster_id": 6240402,
+                "caseName": "San Francisco Human Servs. Agency v. Christine C. (In re Caden C.)",
+                "citation": ["245 Cal. Rptr. 3d 797", "34 Cal. App. 5th 87"],
+                "court": "Cal. Ct. App.",
+                "court_id": "calctapp5d",
+                "dateFiled": "2019-04-09",
+                "status": "Published",
+                "citeCount": 12,
+                "opinions": [{"id": 6107345, "snippet": "A <mark>beneficial relationship</mark>."}],
+            }
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.cluster_id, "6240402")
+        self.assertEqual(result.citation, "34 Cal.App.5th 87")
+        self.assertEqual(result.citations, ("245 Cal. Rptr. 3d 797", "34 Cal. App. 5th 87"))
+        self.assertEqual(result.opinion_ids, ("6107345",))
+        self.assertEqual(result.snippet, "A beneficial relationship.")
+        self.assertEqual(result.cite_count, 12)
+
+    def test_search_cases_calls_courtlistener_search_endpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            client = CourtListenerClient(
+                cache=JsonCache(temp_path / "cache"),
+                library=CaseLibrary(temp_path / "library.sqlite3"),
+            )
+
+            with patch.object(client, "_request_json") as request_json:
+                request_json.return_value = {
+                    "count": 1,
+                    "next": "https://www.courtlistener.com/api/rest/v4/search/?page=2",
+                    "results": [
+                        {
+                            "cluster_id": 1,
+                            "caseName": "In re Example",
+                            "citation": ["1 Cal. 5th 2"],
+                            "court_id": "cal",
+                            "dateFiled": "2024-01-01",
+                            "status": "Published",
+                        }
+                    ],
+                }
+
+                page = client.search_cases("dependency", semantic=True, page_size=99)
+
+        request = request_json.call_args.args[0]
+        self.assertIn("/api/rest/v4/search/", request.full_url)
+        self.assertIn("semantic=true", request.full_url)
+        self.assertIn("page_size=25", request.full_url)
+        self.assertEqual(page.count, 1)
+        self.assertEqual(page.next_url, "https://www.courtlistener.com/api/rest/v4/search/?page=2")
+        self.assertEqual(page.results[0].case_name, "In re Example")
+
     def test_lookup_rule_fetches_california_courts_and_caches_result(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)

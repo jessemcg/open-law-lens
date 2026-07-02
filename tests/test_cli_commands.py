@@ -21,6 +21,11 @@ class CliCommandTests(unittest.TestCase):
 
         self.assertEqual(parser.parse_args(["extract", "13 Cal.4th 952"]).command, "extract")
         self.assertEqual(parser.parse_args(["extract-case", "13 Cal.4th 952"]).command, "extract-case")
+        self.assertEqual(
+            parser.parse_args(["extract-case", "--cluster-id", "6240402"]).cluster_id,
+            "6240402",
+        )
+        self.assertEqual(parser.parse_args(["case-search", "ICWA"]).command, "case-search")
         self.assertEqual(parser.parse_args(["open", "13 Cal.4th 952"]).command, "open")
         self.assertEqual(parser.parse_args(["open-selected"]).command, "open-selected")
         self.assertEqual(parser.parse_args(["show-research-sets"]).command, "show-research-sets")
@@ -53,6 +58,61 @@ class CliCommandTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn('"ok": false', output.getvalue())
         self.assertIn('"error": "bad cite"', output.getvalue())
+
+    def test_extract_case_by_cluster_id_prints_json(self) -> None:
+        result = MagicMock()
+        result.ok = True
+        result.text = "Opinion text"
+        result.error = ""
+        result.to_json.return_value = {
+            "ok": True,
+            "authority_type": "case",
+            "identifier": "6240402",
+            "text": "Opinion text",
+            "text_length": 12,
+        }
+        output = StringIO()
+        with (
+            patch("open_law_lens.cli.extract_case_by_cluster_id", return_value=result) as extract,
+            redirect_stdout(output),
+        ):
+            status = main(["extract-case", "--cluster-id", "6240402"])
+
+        self.assertEqual(status, 0)
+        extract.assert_called_once_with("6240402", refresh=False)
+        self.assertIn('"identifier": "6240402"', output.getvalue())
+
+    def test_case_search_prints_structured_json(self) -> None:
+        search_result = MagicMock()
+        search_result.cluster_id = "6240402"
+        search_result.opinion_ids = ("6107345",)
+        search_result.case_name = "In re Caden C."
+        search_result.citation = "11 Cal.5th 614"
+        search_result.citations = ("11 Cal.5th 614",)
+        search_result.court = "California Supreme Court"
+        search_result.court_id = "cal"
+        search_result.date_filed = "2021-05-27"
+        search_result.status = "Published"
+        search_result.cite_count = 100
+        search_result.snippet = "beneficial relationship"
+        page = MagicMock()
+        page.count = 1
+        page.next_url = ""
+        page.results = [search_result]
+        client = MagicMock()
+        client.search_cases.return_value = page
+        client.case_search_api_query.return_value = "court_id:(cal) status:Published beneficial"
+        output = StringIO()
+        with (
+            patch("open_law_lens.cli.CourtListenerClient.default", return_value=client),
+            redirect_stdout(output),
+        ):
+            status = main(["case-search", "beneficial", "--court", "cal", "--limit", "3"])
+
+        self.assertEqual(status, 0)
+        client.search_cases.assert_called_once()
+        self.assertIn('"cluster_id": "6240402"', output.getvalue())
+        self.assertIn('"extract_command": "uv run open-law-lens extract-case --cluster-id 6240402"', output.getvalue())
 
     def test_open_dispatches_to_running_app_without_launching(self) -> None:
         with (

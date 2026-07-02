@@ -41,10 +41,23 @@ BASE_URL = "https://www.courtlistener.com"
 API_BASE = f"{BASE_URL}/api/rest/v4"
 CITATION_LOOKUP_URL = f"{API_BASE}/citation-lookup/"
 OPINIONS_CITED_URL = f"{API_BASE}/opinions-cited/"
+SEARCH_URL = f"{API_BASE}/search/"
 RATE_LIMIT_RETRY_ATTEMPTS = 3
 RATE_LIMIT_RETRY_BUFFER_SECONDS = 1.0
 RATE_LIMIT_RETRY_MAX_SECONDS = 90.0
 CITED_BY_PAGE_SIZE = 8
+CASE_SEARCH_DEFAULT_PAGE_SIZE = 10
+CASE_SEARCH_MAX_PAGE_SIZE = 25
+CALIFORNIA_CASE_COURT_IDS = (
+    "cal",
+    "calctapp",
+    "calctapp1d",
+    "calctapp2d",
+    "calctapp3d",
+    "calctapp4d",
+    "calctapp5d",
+    "calctapp6d",
+)
 TEXT_FIELDS = (
     "html_with_citations",
     "plain_text",
@@ -79,6 +92,9 @@ class CourtListenerSearchResult:
     date_filed: str
     status: str
     snippet: str = ""
+    opinion_ids: tuple[str, ...] = ()
+    citations: tuple[str, ...] = ()
+    cite_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -212,6 +228,98 @@ def search_result_full_citation(result: CourtListenerSearchResult) -> str:
     if year:
         return f"{result.case_name} ({year}) [official reporter unavailable]"
     return result.case_name
+
+
+def _clean_search_snippet(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    return html_to_text(value)
+
+
+def _search_row_citations(row: dict[str, Any]) -> tuple[str, ...]:
+    citations = row.get("citation")
+    if isinstance(citations, list):
+        return tuple(str(value).strip() for value in citations if str(value).strip())
+    if isinstance(citations, str) and citations.strip():
+        return (citations.strip(),)
+    return ()
+
+
+def _official_citation_from_search_row(row: dict[str, Any]) -> str:
+    for citation in _search_row_citations(row):
+        official = quality_official_california_reporter_citation_from_text(citation)
+        if official:
+            return official
+    return ""
+
+
+def _search_row_opinion_ids(row: dict[str, Any]) -> tuple[str, ...]:
+    opinion_ids: list[str] = []
+    opinions = row.get("opinions")
+    if not isinstance(opinions, list):
+        return ()
+    for opinion in opinions:
+        if not isinstance(opinion, dict):
+            continue
+        for key in ("id", "opinion_id"):
+            value = str(opinion.get(key) or "").strip()
+            if value:
+                opinion_ids.append(value)
+                break
+    return tuple(dict.fromkeys(opinion_ids))
+
+
+def _search_row_snippet(row: dict[str, Any]) -> str:
+    snippet = _clean_search_snippet(row.get("snippet"))
+    if snippet:
+        return snippet
+    opinions = row.get("opinions")
+    if not isinstance(opinions, list):
+        return ""
+    for opinion in opinions:
+        if not isinstance(opinion, dict):
+            continue
+        snippet = _clean_search_snippet(opinion.get("snippet"))
+        if snippet:
+            return snippet
+    return ""
+
+
+def normalize_search_api_result(row: dict[str, Any]) -> CourtListenerSearchResult | None:
+    cluster_id = str(row.get("cluster_id") or row.get("clusterId") or "").strip()
+    if not cluster_id:
+        cluster = row.get("cluster")
+        if isinstance(cluster, dict):
+            cluster_id = cluster_id_from_cluster(cluster)
+    if not cluster_id:
+        return None
+    case_name = html_to_text(str(
+        row.get("caseName")
+        or row.get("case_name")
+        or row.get("caseNameShort")
+        or row.get("case_name_short")
+        or ""
+    )).strip()
+    return CourtListenerSearchResult(
+        cluster_id=cluster_id,
+        case_name=case_name or f"Cluster {cluster_id}",
+        citation=_official_citation_from_search_row(row),
+        court=str(row.get("court") or "").strip(),
+        court_id=str(row.get("court_id") or row.get("courtId") or "").strip(),
+        date_filed=str(row.get("dateFiled") or row.get("date_filed") or "").strip(),
+        status=str(row.get("status") or row.get("precedential_status") or "").strip(),
+        snippet=_search_row_snippet(row),
+        opinion_ids=_search_row_opinion_ids(row),
+        citations=_search_row_citations(row),
+        cite_count=_int_value(row.get("citeCount") or row.get("citation_count")),
+    )
+
+
+def _int_value(value: object, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def us_long_date(value: str) -> str:
@@ -455,6 +563,77 @@ class CourtListenerClient:
         self._upsert_eligible_lookup(normalized, result)
         self.last_lookup_source = "CourtListener API"
         return result
+
+    def search_cases(
+        self,
+        query: str,
+        *,
+        semantic: bool = False,
+        include_unpublished: bool = False,
+        page_size: int = CASE_SEARCH_DEFAULT_PAGE_SIZE,
+        url: str = "",
+        courts: tuple[str, ...] = CALIFORNIA_CASE_COURT_IDS,
+    ) -> CourtListenerSearchPage:
+        clean_query = re.sub(r"\s+", " ", query or "").strip()
+        if not clean_query and not url:
+            raise ValueError("Search query is required.")
+        safe_page_size = min(CASE_SEARCH_MAX_PAGE_SIZE, max(1, page_size))
+        if url:
+            full_url = url if url.startswith("http") else f"{BASE_URL}{url}"
+        else:
+            api_query = self.case_search_api_query(
+                clean_query,
+                include_unpublished=include_unpublished,
+                courts=courts,
+            )
+            params: dict[str, str] = {
+                "type": "o",
+                "q": api_query,
+                "highlight": "on",
+                "page_size": str(safe_page_size),
+            }
+            if semantic:
+                params["semantic"] = "true"
+            full_url = f"{SEARCH_URL}?{urlencode(params)}"
+        request = Request(full_url, headers=self._headers(), method="GET")
+        result = self._request_json(request)
+        if not isinstance(result, dict):
+            raise CourtListenerError("CourtListener search returned unexpected JSON.")
+        rows = result.get("results")
+        if not isinstance(rows, list):
+            raise CourtListenerError("CourtListener search returned unexpected results.")
+        normalized = [
+            search_result
+            for row in rows
+            if isinstance(row, dict)
+            if (search_result := normalize_search_api_result(row)) is not None
+        ][:safe_page_size]
+        count = _int_value(result.get("count"), len(normalized))
+        next_value = result.get("next")
+        return CourtListenerSearchPage(
+            results=normalized,
+            count=count,
+            next_url=next_value if isinstance(next_value, str) else "",
+        )
+
+    @staticmethod
+    def case_search_api_query(
+        query: str,
+        *,
+        include_unpublished: bool = False,
+        courts: tuple[str, ...] = CALIFORNIA_CASE_COURT_IDS,
+    ) -> str:
+        clean_query = re.sub(r"\s+", " ", query or "").strip()
+        parts: list[str] = []
+        clean_courts = tuple(dict.fromkeys(court.strip() for court in courts if court.strip()))
+        if clean_courts:
+            court_query = " OR ".join(clean_courts)
+            parts.append(f"court_id:({court_query})")
+        if not include_unpublished:
+            parts.append("status:Published")
+        if clean_query:
+            parts.append(clean_query)
+        return " ".join(parts).strip()
 
     def citing_opinions(
         self,

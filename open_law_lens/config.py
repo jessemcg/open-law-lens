@@ -42,11 +42,24 @@ READER_FONT_FAMILY_OPTIONS: tuple[tuple[str, str], ...] = (
 DEFAULT_READER_FONT_FAMILY = READER_FONT_FAMILY_OPTIONS[0][0]
 LEGACY_READER_FONT_FAMILY_ALIASES: dict[str, str] = {}
 
-DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens General California Law Agent.
+LEGACY_GENERAL_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens General California Law Agent.
 
 Answer only legal questions about California law. Use the CourtListener MCP server only for legal authority and legal research. Do not use local Open Law Lens cache files, the durable library database, local project files, web browsing, or shell commands as legal authority.
 
 Confine research to California state law unless the user's question explicitly requires federal law. Prefer published California Supreme Court and California Court of Appeal authority when available.
+
+Question:
+{question}"""
+
+DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens General California Law Agent.
+
+Answer only legal questions about California law. Use Open Law Lens CLI commands tied directly to CourtListener APIs for legal authority and legal research. Do not use the CourtListener MCP server.
+
+For California case-law discovery, start with `uv run open-law-lens case-search "<query>"`. Treat search results as leads only. Extract the most relevant candidate opinions with `uv run open-law-lens extract-case --cluster-id <cluster_id>` before relying on a case in the answer.
+
+Confine research to California state law unless the user's question explicitly requires federal law. Prefer published California Supreme Court and California Court of Appeal authority when available. Use `case-search --include-unpublished` only when unpublished cases are useful for context, not as controlling authority.
+
+Use Google Scholar or Codex web search only as a fallback to verify or fill in an official reporter citation or official text when CourtListener metadata is missing or suspect. State when a citation remains uncertain.
 
 Question:
 {question}"""
@@ -128,6 +141,8 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
         CONFIG_KEY_GENERAL_AGENT_PROMPT_TEMPLATE,
         DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE,
     )
+    if str(general_agent_prompt).strip() == LEGACY_GENERAL_AGENT_PROMPT_TEMPLATE:
+        general_agent_prompt = DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE
     case_agent_prompt = raw.get(
         CONFIG_KEY_CASE_AGENT_PROMPT_TEMPLATE,
         DEFAULT_CASE_AGENT_PROMPT_TEMPLATE,
