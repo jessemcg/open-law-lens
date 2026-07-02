@@ -148,6 +148,17 @@ AGENT_MODE_ICONS = {
     AGENT_MODE_CASE: "file-cabinet-symbolic",
 }
 GOOGLE_SCHOLAR_CASE_SEARCH_TEMPLATE = "https://scholar.google.com/scholar?hl=en&as_sdt=6,33&q={query}"
+SCHOLAR_FALLBACK_MANUAL_WINDOW = "manual_window"
+SCHOLAR_FALLBACK_TRANSIENT_NOTICE = "transient_notice"
+SCHOLAR_FALLBACK_NOTICE_ONLY = "notice_only"
+OFFICIAL_PAGINATION_NOT_FOUND_TITLE = "Official Pagination Not Found"
+OFFICIAL_PAGINATION_NOT_FOUND_MESSAGE = (
+    "A version of this case with pagination from the official reporter was not found. "
+    "You can view this version, but page citations may not match the official reporter."
+)
+OFFICIAL_PAGINATION_NOT_FOUND_ONLY_MESSAGE = (
+    "A version of this case with pagination from the official reporter was not found."
+)
 AGENT_MODE_RESULTS = "results"
 SEARCH_NEXT_PAGE_TARGET = "search-next-page"
 CITED_BY_INCLUDE_UNPUBLISHED_TARGET = "cited-by-include-unpublished"
@@ -779,7 +790,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._external_lookup_source_entry: Gtk.Entry | None = None
         self._external_lookup_auto_finding = False
         self._external_lookup_auto_query = ""
-        self._external_lookup_auto_fallback_to_window = True
+        self._external_lookup_auto_fallback_mode = SCHOLAR_FALLBACK_MANUAL_WINDOW
         self._external_lookup_auto_import = False
         self._pending_auto_scholar_cluster_id = ""
         self._pending_auto_scholar_query = ""
@@ -3259,7 +3270,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _on_external_lookup_auto_find_clicked(self, _button: Gtk.Button) -> None:
         self._start_scholar_auto_find(
             self._external_lookup_query,
-            fallback_to_window=True,
+            fallback_mode=SCHOLAR_FALLBACK_MANUAL_WINDOW,
             auto_import=False,
         )
 
@@ -3267,7 +3278,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self,
         query: str,
         *,
-        fallback_to_window: bool,
+        fallback_mode: str,
         auto_import: bool,
     ) -> None:
         clean_query = re.sub(r"\s+", " ", query).strip()
@@ -3279,7 +3290,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return
         self._external_lookup_auto_finding = True
         self._external_lookup_auto_query = query
-        self._external_lookup_auto_fallback_to_window = fallback_to_window
+        self._external_lookup_auto_fallback_mode = fallback_mode
         self._external_lookup_auto_import = auto_import
         if self._external_lookup_auto_find_button is not None:
             self._external_lookup_auto_find_button.set_sensitive(False)
@@ -3312,7 +3323,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._external_lookup_auto_finding = False
         self._external_lookup_auto_query = ""
         auto_import = self._external_lookup_auto_import
+        fallback_mode = self._external_lookup_auto_fallback_mode
         self._external_lookup_auto_import = False
+        self._external_lookup_auto_fallback_mode = SCHOLAR_FALLBACK_MANUAL_WINDOW
         button = self._external_lookup_auto_find_button
         if button is not None:
             button.set_sensitive(True)
@@ -3325,7 +3338,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             action = "importing" if auto_import else "fetching"
             self._set_status(f"Found case on Scholar{title}. {action.capitalize()} text...")
             if auto_import:
-                self._start_scholar_auto_import(query, result)
+                self._start_scholar_auto_import(query, result, fallback_mode)
                 return False
             self._set_reader_busy(False)
             # Reuse the existing Import + Fetch flow with the discovered URL.
@@ -3339,27 +3352,33 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return False
 
         self._set_reader_busy(False)
-        self._set_status(
-            f"Auto-Find could not complete: {error or 'unknown error'}. "
-            "Open Scholar manually and paste the case URL."
+        self._handle_scholar_auto_failure(
+            query,
+            f"Auto-Find could not complete: {error or 'unknown error'}.",
+            fallback_mode,
         )
-        if self._external_lookup_auto_fallback_to_window and query.strip():
-            self._show_external_lookup_window(query)
-        elif query.strip():
-            encoded = quote_plus(query)
-            self._launch_external_url(GOOGLE_SCHOLAR_CASE_SEARCH_TEMPLATE.format(query=encoded))
         return False
 
-    def _start_scholar_auto_import(self, query: str, result: ScholarSearchResult) -> None:
+    def _start_scholar_auto_import(
+        self,
+        query: str,
+        result: ScholarSearchResult,
+        fallback_mode: str,
+    ) -> None:
         self._set_reader_busy(True, "Importing Scholar text...")
         thread = threading.Thread(
             target=self._scholar_auto_import_worker,
-            args=(query, result),
+            args=(query, result, fallback_mode),
             daemon=True,
         )
         thread.start()
 
-    def _scholar_auto_import_worker(self, query: str, result: ScholarSearchResult) -> None:
+    def _scholar_auto_import_worker(
+        self,
+        query: str,
+        result: ScholarSearchResult,
+        fallback_mode: str,
+    ) -> None:
         try:
             webpage = extract_webpage_text(result.url)
         except RuntimeError as exc:
@@ -3368,22 +3387,33 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 query,
                 result.url,
                 str(exc),
+                fallback_mode,
             )
             return
-        GLib.idle_add(self._finish_scholar_auto_import, query, webpage)
+        GLib.idle_add(self._finish_scholar_auto_import, query, webpage, fallback_mode)
 
     def _finish_scholar_auto_import_error(
         self,
         query: str,
         source_url: str,
         message: str,
+        fallback_mode: str,
     ) -> bool:
         self._set_reader_busy(False)
-        self._set_status(f"Scholar found a case, but automatic import failed: {message}")
-        self._show_external_lookup_window(query, initial_source_url=source_url)
+        self._handle_scholar_auto_failure(
+            query,
+            f"Scholar found a case, but automatic import failed: {message}",
+            fallback_mode,
+            initial_source_url=source_url,
+        )
         return False
 
-    def _finish_scholar_auto_import(self, query: str, webpage: ExtractedWebpage) -> bool:
+    def _finish_scholar_auto_import(
+        self,
+        query: str,
+        webpage: ExtractedWebpage,
+        fallback_mode: str,
+    ) -> bool:
         imported_text = clean_imported_opinion_text(webpage.text) or webpage.text
         case_source = "\n".join(part for part in (webpage.title, imported_text) if part)
         official_citation = (
@@ -3402,8 +3432,67 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         ):
             self._close_external_lookup_window()
             return False
-        self._show_external_lookup_window(query, initial_source_url=webpage.url)
+        self._handle_scholar_auto_failure(
+            query,
+            "Scholar did not provide official reporter pagination.",
+            fallback_mode,
+            initial_source_url=webpage.url,
+        )
         return False
+
+    def _handle_scholar_auto_failure(
+        self,
+        query: str,
+        message: str,
+        fallback_mode: str,
+        *,
+        initial_source_url: str = "",
+    ) -> None:
+        self._set_reader_busy(False)
+        if fallback_mode == SCHOLAR_FALLBACK_MANUAL_WINDOW:
+            self._set_status(f"{message} Open Scholar manually and paste the case URL.")
+            if query.strip():
+                self._show_external_lookup_window(query, initial_source_url=initial_source_url)
+            return
+        if fallback_mode == SCHOLAR_FALLBACK_TRANSIENT_NOTICE:
+            self._set_status("Transient view only: official reporter pagination was not found.")
+            self._show_official_pagination_not_found_notice(can_view_current=True)
+            return
+        self._set_status(OFFICIAL_PAGINATION_NOT_FOUND_ONLY_MESSAGE)
+        self._show_official_pagination_not_found_notice(can_view_current=False)
+
+    def _show_official_pagination_not_found_notice(self, *, can_view_current: bool) -> None:
+        message = (
+            OFFICIAL_PAGINATION_NOT_FOUND_MESSAGE
+            if can_view_current
+            else OFFICIAL_PAGINATION_NOT_FOUND_ONLY_MESSAGE
+        )
+        window = Gtk.Window(title=OFFICIAL_PAGINATION_NOT_FOUND_TITLE)
+        window.set_transient_for(self)
+        window.set_modal(True)
+        window.set_default_size(460, 160)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        box.set_margin_top(16)
+        box.set_margin_bottom(16)
+        box.set_margin_start(16)
+        box.set_margin_end(16)
+
+        heading = Gtk.Label(label=OFFICIAL_PAGINATION_NOT_FOUND_TITLE, xalign=0)
+        heading.add_css_class("heading")
+        box.append(heading)
+
+        label = Gtk.Label(label=message, xalign=0)
+        label.set_wrap(True)
+        box.append(label)
+
+        ok_button = Gtk.Button(label="OK")
+        ok_button.set_halign(Gtk.Align.END)
+        ok_button.connect("clicked", lambda _button: window.close())
+        box.append(ok_button)
+
+        window.set_child(box)
+        window.present()
 
     def _default_import_case_name(self) -> str:
         if self._selected_cluster is not None:
@@ -3896,7 +3985,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_status("CourtListener lookup unavailable. Searching Google Scholar...")
         self._start_scholar_auto_find(
             citation,
-            fallback_to_window=True,
+            fallback_mode=SCHOLAR_FALLBACK_NOTICE_ONLY,
             auto_import=True,
         )
         return False
@@ -4271,7 +4360,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 self._set_status("No CourtListener match shown. Searching Google Scholar...")
                 self._start_scholar_auto_find(
                     citation,
-                    fallback_to_window=True,
+                    fallback_mode=SCHOLAR_FALLBACK_NOTICE_ONLY,
                     auto_import=True,
                 )
             else:
@@ -4412,7 +4501,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._set_status("Searching Google Scholar for official reporter text...")
             self._start_scholar_auto_find(
                 pending_query,
-                fallback_to_window=True,
+                fallback_mode=SCHOLAR_FALLBACK_TRANSIENT_NOTICE,
                 auto_import=True,
             )
         elif reason:

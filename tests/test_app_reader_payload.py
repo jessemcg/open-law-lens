@@ -5,12 +5,19 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from open_law_lens.app import OpenLawLensApp, OpenLawLensWindow, build_case_reader_payload
+from open_law_lens.app import (
+    SCHOLAR_FALLBACK_NOTICE_ONLY,
+    SCHOLAR_FALLBACK_TRANSIENT_NOTICE,
+    OpenLawLensApp,
+    OpenLawLensWindow,
+    build_case_reader_payload,
+)
 from open_law_lens.cache import JsonCache
 from open_law_lens.citation_links import CitedCaseLink
 from open_law_lens.client import FormattedCitation
 from open_law_lens.config import AppConfig
 from open_law_lens.library import DisplayText, PageMarker
+from open_law_lens.web_import import ExtractedWebpage
 
 
 class AppReaderPayloadTests(unittest.TestCase):
@@ -63,6 +70,186 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertTrue(payload.quality_eligible)
         self.assertTrue(payload.italic_spans)
         self.assertEqual(payload.cited_links[0].lookup_text, "2 Cal.5th 10")
+
+    def test_ineligible_loaded_case_starts_scholar_with_transient_notice_mode(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self._reader_has_official_pagination = True
+                self._pending_auto_scholar_cluster_id = "42"
+                self._pending_auto_scholar_query = "10 Cal.App.5th 25"
+                self.busy: list[tuple[bool, str]] = []
+                self.statuses: list[str] = []
+                self.auto_find_calls: list[dict[str, object]] = []
+
+            def _set_reader_busy(self, busy: bool, message: str = "") -> None:
+                self.busy.append((busy, message))
+
+            def _set_status(self, status: str) -> None:
+                self.statuses.append(status)
+
+            def _start_scholar_auto_find(
+                self,
+                query: str,
+                *,
+                fallback_mode: str,
+                auto_import: bool,
+            ) -> None:
+                self.auto_find_calls.append(
+                    {
+                        "query": query,
+                        "fallback_mode": fallback_mode,
+                        "auto_import": auto_import,
+                    }
+                )
+
+        window = DummyWindow()
+
+        result = OpenLawLensWindow._finish_case_quality_status(  # type: ignore[arg-type]
+            window,
+            "42",
+            False,
+            "No embedded reporter page markers.",
+            "Fetched",
+        )
+
+        self.assertFalse(result)
+        self.assertFalse(window._reader_has_official_pagination)
+        self.assertEqual(window._pending_auto_scholar_cluster_id, "")
+        self.assertEqual(window._pending_auto_scholar_query, "")
+        self.assertEqual(window.statuses[-1], "Searching Google Scholar for official reporter text...")
+        self.assertEqual(
+            window.auto_find_calls,
+            [
+                {
+                    "query": "10 Cal.App.5th 25",
+                    "fallback_mode": SCHOLAR_FALLBACK_TRANSIENT_NOTICE,
+                    "auto_import": True,
+                }
+            ],
+        )
+
+    def test_transient_scholar_failure_shows_notice_without_manual_window(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.busy: list[tuple[bool, str]] = []
+                self.statuses: list[str] = []
+                self.notices: list[bool] = []
+                self.external_windows: list[tuple[str, str]] = []
+
+            def _set_reader_busy(self, busy: bool, message: str = "") -> None:
+                self.busy.append((busy, message))
+
+            def _set_status(self, status: str) -> None:
+                self.statuses.append(status)
+
+            def _show_official_pagination_not_found_notice(self, *, can_view_current: bool) -> None:
+                self.notices.append(can_view_current)
+
+            def _show_external_lookup_window(self, query: str, *, initial_source_url: str = "") -> None:
+                self.external_windows.append((query, initial_source_url))
+
+        window = DummyWindow()
+
+        OpenLawLensWindow._handle_scholar_auto_failure(  # type: ignore[arg-type]
+            window,
+            "10 Cal.App.5th 25",
+            "Auto-Find could not complete: no case result.",
+            SCHOLAR_FALLBACK_TRANSIENT_NOTICE,
+        )
+
+        self.assertEqual(window.busy[-1], (False, ""))
+        self.assertEqual(window.statuses[-1], "Transient view only: official reporter pagination was not found.")
+        self.assertEqual(window.notices, [True])
+        self.assertEqual(window.external_windows, [])
+
+    def test_notice_only_scholar_failure_does_not_open_manual_window(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.statuses: list[str] = []
+                self.notices: list[bool] = []
+                self.external_windows: list[str] = []
+
+            def _set_reader_busy(self, _busy: bool, _message: str = "") -> None:
+                pass
+
+            def _set_status(self, status: str) -> None:
+                self.statuses.append(status)
+
+            def _show_official_pagination_not_found_notice(self, *, can_view_current: bool) -> None:
+                self.notices.append(can_view_current)
+
+            def _show_external_lookup_window(self, query: str, *, initial_source_url: str = "") -> None:
+                del initial_source_url
+                self.external_windows.append(query)
+
+        window = DummyWindow()
+
+        OpenLawLensWindow._handle_scholar_auto_failure(  # type: ignore[arg-type]
+            window,
+            "missing citation",
+            "Auto-Find could not complete.",
+            SCHOLAR_FALLBACK_NOTICE_ONLY,
+        )
+
+        self.assertEqual(
+            window.statuses[-1],
+            "A version of this case with pagination from the official reporter was not found.",
+        )
+        self.assertEqual(window.notices, [False])
+        self.assertEqual(window.external_windows, [])
+
+    def test_ineligible_scholar_auto_import_uses_transient_notice_mode(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.failures: list[dict[str, str]] = []
+
+            def _default_import_official_citation(self) -> str:
+                return "10 Cal.App.5th 25"
+
+            def _default_import_case_name(self) -> str:
+                return "Example v. State"
+
+            def _save_imported_official_text(self, **_kwargs: object) -> bool:
+                return False
+
+            def _close_external_lookup_window(self) -> None:
+                raise AssertionError("External lookup window should not close on failed save.")
+
+            def _handle_scholar_auto_failure(
+                self,
+                query: str,
+                message: str,
+                fallback_mode: str,
+                *,
+                initial_source_url: str = "",
+            ) -> None:
+                self.failures.append(
+                    {
+                        "query": query,
+                        "message": message,
+                        "fallback_mode": fallback_mode,
+                        "initial_source_url": initial_source_url,
+                    }
+                )
+
+        window = DummyWindow()
+        webpage = ExtractedWebpage(
+            url="https://scholar.google.com/scholar_case?case=123",
+            title="Example v. State",
+            text="Different pagination text.",
+        )
+
+        result = OpenLawLensWindow._finish_scholar_auto_import(  # type: ignore[arg-type]
+            window,
+            "10 Cal.App.5th 25",
+            webpage,
+            SCHOLAR_FALLBACK_TRANSIENT_NOTICE,
+        )
+
+        self.assertFalse(result)
+        self.assertEqual(window.failures[0]["query"], "10 Cal.App.5th 25")
+        self.assertEqual(window.failures[0]["fallback_mode"], SCHOLAR_FALLBACK_TRANSIENT_NOTICE)
+        self.assertEqual(window.failures[0]["initial_source_url"], webpage.url)
 
     def test_reader_and_agent_citation_links_use_shared_lookup_path(self) -> None:
         class DummyWindow:
