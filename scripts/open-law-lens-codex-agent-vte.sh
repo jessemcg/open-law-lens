@@ -37,11 +37,6 @@ mkdir -p "$workspace/tmp"
 export TMPDIR="$workspace/tmp"
 export OPEN_LAW_LENS_CACHE_DIR="$cache_root"
 
-courtlistener_args=()
-if [[ "$agent_mode" == "case" ]]; then
-  courtlistener_args=(-c 'mcp_servers.courtlistener.enabled=false')
-fi
-
 python3 "$script_dir/open-law-lens-codex-agent-pty.py" \
   --prompt-file "$prompt_file" \
   -- \
@@ -49,6 +44,5 @@ python3 "$script_dir/open-law-lens-codex-agent-pty.py" \
   "${profile_args[@]}" \
   -c 'mcp_servers.openaiDeveloperDocs.enabled=false' \
   -c 'mcp_servers.context7.enabled=false' \
-  "${courtlistener_args[@]}" \
   -C "$workspace" \
   --sandbox workspace-write

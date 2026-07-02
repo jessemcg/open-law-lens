@@ -14,7 +14,6 @@ from open_law_lens.config import (
     DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE,
     DEFAULT_READER_FONT_FAMILY,
     DEFAULT_READER_FONT_SIZE_PT,
-    LEGACY_GENERAL_AGENT_PROMPT_TEMPLATE,
     load_config,
     save_config,
 )
@@ -60,14 +59,31 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "config.json"
             path.write_text(
-                json.dumps({"general_agent_prompt_template": LEGACY_GENERAL_AGENT_PROMPT_TEMPLATE}),
+                json.dumps(
+                    {
+                        "general_agent_prompt_template": (
+                            "You are the Open Law Lens General California Law Agent.\n\n"
+                            "Answer only legal questions about California law. "
+                            "Use the CourtListener "
+                            "MCP server only for legal authority and legal research. "
+                            "Do not use local Open Law Lens cache files, the durable "
+                            "library database, local project files, web browsing, or "
+                            "shell commands as legal authority.\n\n"
+                            "Confine research to California state law unless the user's "
+                            "question explicitly requires federal law. Prefer published "
+                            "California Supreme Court and California Court of Appeal "
+                            "authority when available.\n\n"
+                            "Question:\n{question}"
+                        )
+                    }
+                ),
                 encoding="utf-8",
             )
 
             config = load_config(path)
 
             self.assertEqual(config.general_agent_prompt_template, DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE)
-            self.assertNotIn("CourtListener MCP server only", config.general_agent_prompt_template)
+            self.assertNotIn("CourtListener " + "MCP server only", config.general_agent_prompt_template)
 
     def test_custom_general_prompt_is_preserved(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

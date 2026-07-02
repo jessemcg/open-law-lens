@@ -102,6 +102,20 @@ class CitationLinkTests(unittest.TestCase):
             ],
         )
 
+    def test_cited_case_links_find_adoption_of_case_names(self) -> None:
+        text = (
+            "The term comes from Adoption of Kelsey S. (1992) 1 Cal.4th 816. "
+            "Later shorthand cites Kelsey S., 1 Cal.4th at pp. 849-850."
+        )
+
+        links = cited_case_links(text)
+
+        self.assertEqual([link.lookup_text for link in links], ["1 Cal.4th 816"])
+        self.assertEqual(
+            text[links[0].start_offset:links[0].end_offset],
+            "Adoption of Kelsey S. (1992) 1 Cal.4th 816",
+        )
+
     def test_citation_italic_spans_cover_case_names_in_full_citations(self) -> None:
         text = (
             "The rule follows In re Alexis E. (2009) 171 Cal.App.4th 438 "

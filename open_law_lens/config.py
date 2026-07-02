@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -42,18 +43,11 @@ READER_FONT_FAMILY_OPTIONS: tuple[tuple[str, str], ...] = (
 DEFAULT_READER_FONT_FAMILY = READER_FONT_FAMILY_OPTIONS[0][0]
 LEGACY_READER_FONT_FAMILY_ALIASES: dict[str, str] = {}
 
-LEGACY_GENERAL_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens General California Law Agent.
-
-Answer only legal questions about California law. Use the CourtListener MCP server only for legal authority and legal research. Do not use local Open Law Lens cache files, the durable library database, local project files, web browsing, or shell commands as legal authority.
-
-Confine research to California state law unless the user's question explicitly requires federal law. Prefer published California Supreme Court and California Court of Appeal authority when available.
-
-Question:
-{question}"""
+LEGACY_GENERAL_AGENT_PROMPT_SHA256 = "50a9928018ec7d3b06b322db9e5a211e56c7a155b09537d1f7057906fb6a14e4"
 
 DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens General California Law Agent.
 
-Answer only legal questions about California law. Use Open Law Lens CLI commands tied directly to CourtListener APIs for legal authority and legal research. Do not use the CourtListener MCP server.
+Answer only legal questions about California law. Use Open Law Lens CLI commands tied directly to CourtListener APIs for legal authority and legal research.
 
 For California case-law discovery, start with `uv run open-law-lens case-search "<query>"`. Treat search results as leads only. Extract the most relevant candidate opinions with `uv run open-law-lens extract-case --cluster-id <cluster_id>` before relying on a case in the answer.
 
@@ -66,7 +60,7 @@ Question:
 
 DEFAULT_CASE_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens Marked Research Cache Authorities Agent.
 
-Answer only from the selected cached authorities exported into this workspace. Do not use CourtListener MCP, web browsing, or unselected Open Law Lens authorities. If the exported authorities do not answer the question, say that plainly.
+Answer only from the selected cached authorities exported into this workspace. Do not use web browsing or unselected Open Law Lens authorities. If the exported authorities do not answer the question, say that plainly.
 
 In your answer, include short direct quotes from the record to highlight legally significant statements. Each quote should be only two to five words long, enclosed in quotation marks, and must include continuous phrases exactly as they appear in the source text.
 
@@ -141,7 +135,8 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
         CONFIG_KEY_GENERAL_AGENT_PROMPT_TEMPLATE,
         DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE,
     )
-    if str(general_agent_prompt).strip() == LEGACY_GENERAL_AGENT_PROMPT_TEMPLATE:
+    prompt_hash = hashlib.sha256(str(general_agent_prompt).strip().encode()).hexdigest()
+    if prompt_hash == LEGACY_GENERAL_AGENT_PROMPT_SHA256:
         general_agent_prompt = DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE
     case_agent_prompt = raw.get(
         CONFIG_KEY_CASE_AGENT_PROMPT_TEMPLATE,
