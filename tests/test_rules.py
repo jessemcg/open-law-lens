@@ -44,7 +44,26 @@ class RuleTests(unittest.TestCase):
         <h1>Rule 8.12. Next rule</h1></body></html>
         """
         text = extract_california_rule_text(html, RuleCitation("8.11"))
-        self.assertEqual(text, "Rule 8.11. Scope of rules\n(a) These rules apply.")
+        self.assertEqual(text, "Rule 8.11. Scope of rules\n\n(a) These rules apply.")
+
+    def test_extract_rule_text_collapses_source_wraps_inside_paragraphs(self) -> None:
+        html = """
+        <html><body><nav>menu</nav>
+        <h1>Rule 8.11. Scope of rules</h1>
+        <p>(a) These rules apply to any orders
+        related to custody.</p>
+        <p>(b) Next paragraph.</p>
+        <h1>Rule 8.12. Next rule</h1></body></html>
+        """
+
+        text = extract_california_rule_text(html, RuleCitation("8.11"))
+
+        self.assertEqual(
+            text,
+            "Rule 8.11. Scope of rules\n\n"
+            "(a) These rules apply to any orders related to custody.\n\n"
+            "(b) Next paragraph.",
+        )
 
     def test_cited_rule_links(self) -> None:
         text = "See Cal. Rules of Court, rule 8.204(a)(1)(B), and rule 5.695."

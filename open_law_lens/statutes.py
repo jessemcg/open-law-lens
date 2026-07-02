@@ -303,11 +303,12 @@ class _LegInfoTextParser(HTMLParser):
 
     def handle_data(self, data: str) -> None:
         if not self._skip_depth:
-            self.parts.append(data)
+            self.parts.append(re.sub(r"\s+", " ", data))
 
     def text(self) -> str:
         text = html.unescape("".join(self.parts))
         text = re.sub(r"[ \t\r\f\v]+", " ", text)
+        text = re.sub(r" *\n *", "\n", text)
         text = re.sub(r"\n{3,}", "\n\n", text)
         return text.strip()
 

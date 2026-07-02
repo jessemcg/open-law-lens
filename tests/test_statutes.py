@@ -56,6 +56,23 @@ class StatuteTests(unittest.TestCase):
         text = extract_leginfo_text(html, StatuteCitation("WIC", "361.5"))
         self.assertEqual(text, "361.5. (a) Reunification services shall be provided.")
 
+    def test_extract_leginfo_text_collapses_source_wraps_inside_paragraphs(self) -> None:
+        html = """
+        <html><body>
+        <div>388. <p>(a) The court may modify any orders
+        related to custody.</p><p>(b) Next paragraph.</p></div>
+        <div>History</div></body></html>
+        """
+
+        text = extract_leginfo_text(html, StatuteCitation("WIC", "388"))
+
+        self.assertEqual(
+            text,
+            "388.\n"
+            "(a) The court may modify any orders related to custody.\n\n"
+            "(b) Next paragraph.",
+        )
+
     def test_cited_statute_links(self) -> None:
         text = "See Welf. & Inst. Code, § 300, subd. (b)(1), and Evidence Code section 720."
         links = cited_statute_links(text)
