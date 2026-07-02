@@ -8,6 +8,7 @@ from unittest.mock import patch
 from open_law_lens.app import OpenLawLensApp, OpenLawLensWindow, build_case_reader_payload
 from open_law_lens.cache import JsonCache
 from open_law_lens.citation_links import CitedCaseLink
+from open_law_lens.client import FormattedCitation
 from open_law_lens.config import AppConfig
 from open_law_lens.library import DisplayText, PageMarker
 
@@ -575,6 +576,161 @@ class AppReaderPayloadTests(unittest.TestCase):
 
         self.assertEqual(citation, "Cal. Rules of Court, rule 8.204(a)(1)(A)-(B)")
 
+    def test_reader_case_selection_pinpoint_uses_current_page(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self._selected_cluster = {
+                    "case_name_short": "In re Caden C.",
+                    "date_filed": "2021-05-27",
+                    "citations": [{"volume": "11", "reporter": "Cal.5th", "page": "614"}],
+                }
+                self._selected_statute = None
+                self._selected_rule = None
+                self._reader_text = "[*631] Substantial evidence supports the finding."
+                self._reader_page_markers = [
+                    PageMarker("631", "[*631]", 0, 6, "plain_text"),
+                ]
+
+        window = DummyWindow()
+
+        citation = OpenLawLensWindow._reader_selection_pinpoint_citation(  # type: ignore[arg-type]
+            window,
+            window._reader_text.index("Substantial"),
+            len(window._reader_text),
+        )
+
+        self.assertEqual(citation, "In re Caden C. (2021) 11 Cal.5th 614, 631")
+
+    def test_reader_case_selection_pinpoint_html_italicizes_case_name(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self._selected_cluster = {
+                    "case_name_short": "In re Caden C.",
+                    "date_filed": "2021-05-27",
+                    "citations": [{"volume": "11", "reporter": "Cal.5th", "page": "614"}],
+                }
+                self._selected_statute = None
+                self._selected_rule = None
+                self._reader_text = "[*631] Substantial evidence supports the finding."
+                self._reader_page_markers = [
+                    PageMarker("631", "[*631]", 0, 6, "plain_text"),
+                ]
+
+        window = DummyWindow()
+
+        citation = OpenLawLensWindow._reader_selection_pinpoint_formatted_citation(  # type: ignore[arg-type]
+            window,
+            window._reader_text.index("Substantial"),
+            len(window._reader_text),
+        )
+
+        self.assertIsNotNone(citation)
+        assert citation is not None
+        self.assertEqual(citation.plain_text, "In re Caden C. (2021) 11 Cal.5th 614, 631")
+        self.assertEqual(
+            citation.html_text,
+            "<i>In re Caden C.</i> (2021) 11 Cal.5th 614, 631",
+        )
+
+    def test_reader_case_selection_pinpoint_uses_en_dash_page_range(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self._selected_cluster = {
+                    "case_name_short": "In re Caden C.",
+                    "date_filed": "2021-05-27",
+                    "citations": [{"volume": "11", "reporter": "Cal.5th", "page": "614"}],
+                }
+                self._selected_statute = None
+                self._selected_rule = None
+                self._reader_text = "[*631] First page text. [*632] Second page text."
+                self._reader_page_markers = [
+                    PageMarker("631", "[*631]", 0, 6, "plain_text"),
+                    PageMarker("632", "[*632]", 24, 30, "plain_text"),
+                ]
+
+        window = DummyWindow()
+
+        citation = OpenLawLensWindow._reader_selection_pinpoint_citation(  # type: ignore[arg-type]
+            window,
+            window._reader_text.index("First"),
+            len(window._reader_text),
+        )
+
+        self.assertEqual(citation, "In re Caden C. (2021) 11 Cal.5th 614, 631–632")
+
+    def test_reader_case_selection_before_first_marker_uses_official_first_page(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self._selected_cluster = {
+                    "case_name_short": "In re Caden C.",
+                    "date_filed": "2021-05-27",
+                    "citations": [{"volume": "11", "reporter": "Cal.5th", "page": "614"}],
+                }
+                self._selected_statute = None
+                self._selected_rule = None
+                self._reader_text = "Syllabus text before markers. [*631] Opinion text."
+                self._reader_page_markers = [
+                    PageMarker("631", "[*631]", 30, 36, "plain_text"),
+                ]
+
+        window = DummyWindow()
+
+        citation = OpenLawLensWindow._reader_selection_pinpoint_citation(  # type: ignore[arg-type]
+            window,
+            0,
+            window._reader_text.index("markers"),
+        )
+
+        self.assertEqual(citation, "In re Caden C. (2021) 11 Cal.5th 614, 614")
+
+    def test_reader_case_selection_without_markers_returns_empty_pinpoint(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self._selected_cluster = {
+                    "case_name_short": "In re Caden C.",
+                    "date_filed": "2021-05-27",
+                    "citations": [{"volume": "11", "reporter": "Cal.5th", "page": "614"}],
+                }
+                self._selected_statute = None
+                self._selected_rule = None
+                self._reader_page_markers = []
+
+        window = DummyWindow()
+
+        citation = OpenLawLensWindow._reader_selection_pinpoint_citation(  # type: ignore[arg-type]
+            window,
+            0,
+            10,
+        )
+
+        self.assertEqual(citation, "")
+
+    def test_case_clipboard_text_strips_reader_page_markers(self) -> None:
+        text = OpenLawLensWindow._clipboard_selected_authority_text(
+            "First page [*631] second page.",
+            strip_page_markers=True,
+        )
+
+        self.assertEqual(text, "First page second page.")
+
+    def test_selection_pinpoint_clipboard_payload_preserves_citation_html(self) -> None:
+        payload = OpenLawLensWindow._selection_pinpoint_clipboard_payload(
+            "Selected <text>",
+            FormattedCitation(
+                plain_text="In re Caden C. (2021) 11 Cal.5th 614, 631",
+                html_text="<i>In re Caden C.</i> (2021) 11 Cal.5th 614, 631",
+            ),
+        )
+
+        self.assertEqual(
+            payload.plain_text,
+            "Selected <text> (In re Caden C. (2021) 11 Cal.5th 614, 631.)",
+        )
+        self.assertEqual(
+            payload.html_text,
+            "Selected &lt;text&gt; (<i>In re Caden C.</i> (2021) 11 Cal.5th 614, 631.)",
+        )
+
     def test_copy_reader_selection_pinpoint_warns_without_selection(self) -> None:
         class DummyWindow:
             def __init__(self) -> None:
@@ -595,7 +751,7 @@ class AppReaderPayloadTests(unittest.TestCase):
 
         self.assertEqual(
             window.statuses,
-            ["Select statute or rule text before copying a pinpoint citation."],
+            ["Select case, statute, or rule text before copying a pinpoint citation."],
         )
 
     def test_pinpoint_citation_parenthetical_places_period_inside(self) -> None:

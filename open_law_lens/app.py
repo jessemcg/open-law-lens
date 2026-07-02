@@ -75,6 +75,7 @@ from .citation_links import (
     cited_statute_links,
     cluster_citation_texts,
 )
+from .citation_model import official_citation_parts_from_cluster
 from .config import (
     AppConfig,
     BARE_STATUTE_LAW_CODE_OPTIONS,
@@ -741,6 +742,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_motion_controller: Gtk.EventControllerMotion | None = None
         self._agent_click_gesture: Gtk.GestureClick | None = None
         self._reader_text = ""
+        self._reader_page_markers: list[PageMarker] = []
         self._reader_highlight_tag: Gtk.TextTag | None = None
         self._reader_find_tag: Gtk.TextTag | None = None
         self._reader_find_current_tag: Gtk.TextTag | None = None
@@ -1771,6 +1773,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_reader_busy(False)
         self._close_reader_find(clear_entry=True)
         self._reader_text = text
+        self._reader_page_markers = list(page_markers or [])
         self.reader_buffer.set_text(text)
         self._update_reader_selection_pinpoint_button()
         if page_markers:
@@ -1803,6 +1806,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return False
         self._close_reader_find(clear_entry=True)
         self._reader_text = ""
+        self._reader_page_markers = list(payload.page_markers)
         self._reader_has_official_pagination = False
         self._clear_reader_citation_links()
         self.reader_buffer.set_text("")
@@ -1909,7 +1913,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.reader_header_copy_button.set_visible(citation is not None)
         if self.reader_selection_pinpoint_button is not None:
             has_selected_authority = (
-                self._selected_statute is not None
+                self._selected_cluster is not None
+                or self._selected_statute is not None
                 or self._selected_rule is not None
             )
             self.reader_selection_pinpoint_button.set_visible(
@@ -1945,8 +1950,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if self.reader_selection_pinpoint_button is None:
             return
         has_authority = (
-            self._selected_statute is not None
-            or self._selected_rule is not None
+            getattr(self, "_selected_cluster", None) is not None
+            or getattr(self, "_selected_statute", None) is not None
+            or getattr(self, "_selected_rule", None) is not None
         )
         self.reader_selection_pinpoint_button.set_sensitive(
             bool(has_authority and self._reader_selection_bounds() is not None)
@@ -1978,29 +1984,54 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _on_copy_reader_selection_pinpoint_clicked(self, _button: Gtk.Button) -> None:
         selection = self._reader_selection_bounds()
         if selection is None:
-            self._set_status("Select statute or rule text before copying a pinpoint citation.")
+            self._set_status(
+                "Select case, statute, or rule text before copying a pinpoint citation."
+            )
             return
         start_offset, end_offset, selected_text = selection
-        citation = self._reader_selection_pinpoint_citation(start_offset, end_offset)
-        if not citation:
-            self._set_status("Select a statute or rule before copying a pinpoint citation.")
+        citation = self._reader_selection_pinpoint_formatted_citation(start_offset, end_offset)
+        if citation is None:
+            self._set_status("Could not determine a pinpoint citation for the selected text.")
             return
-        selected_text = self._clipboard_selected_authority_text(selected_text)
+        selected_text = self._clipboard_selected_authority_text(
+            selected_text,
+            strip_page_markers=True,
+        )
         if not selected_text:
             self._set_status("Selected text is empty.")
             return
-        display = Gdk.Display.get_default()
-        if display is None:
-            self._set_status("Could not access clipboard.")
-            return
-        display.get_clipboard().set(
-            f"{selected_text} {self._pinpoint_citation_parenthetical(citation)}"
+        payload = self._selection_pinpoint_clipboard_payload(
+            selected_text,
+            citation,
         )
-        self._set_status("Selected text and pinpoint citation copied.")
+        if self._set_formatted_clipboard(payload, "Could not copy selected text."):
+            self._set_status("Selected text and pinpoint citation copied.")
 
     def _reader_selection_pinpoint_citation(self, start_offset: int, end_offset: int) -> str:
-        if self._selected_statute is not None:
-            statute = self._selected_statute
+        formatted = OpenLawLensWindow._reader_selection_pinpoint_formatted_citation(
+            self,
+            start_offset,
+            end_offset,
+        )
+        return formatted.plain_text if formatted is not None else ""
+
+    def _reader_selection_pinpoint_formatted_citation(
+        self,
+        start_offset: int,
+        end_offset: int,
+    ) -> FormattedCitation | None:
+        selected_cluster = getattr(self, "_selected_cluster", None)
+        selected_statute = getattr(self, "_selected_statute", None)
+        selected_rule = getattr(self, "_selected_rule", None)
+        if selected_cluster is not None:
+            return OpenLawLensWindow._case_selection_pinpoint_formatted_citation(
+                self,
+                selected_cluster,
+                start_offset,
+                end_offset,
+            )
+        if selected_statute is not None:
+            statute = selected_statute
             citation_text = str(statute.get("citation") or "").strip()
             parsed = parse_statute_citation(citation_text)
             law_code = str(statute.get("law_code") or "").strip()
@@ -2009,7 +2040,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 law_code = law_code or parsed.law_code
                 section = section or parsed.section
             if not law_code or not section:
-                return ""
+                return None
             subdivisions = statute_subdivisions_for_range(
                 self._reader_text,
                 start_offset,
@@ -2017,19 +2048,23 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             )
             if not subdivisions and parsed is not None and parsed.subdivision:
                 subdivisions = (parsed.subdivision,)
-            return statute_pinpoint_citation(
+            plain = statute_pinpoint_citation(
                 StatuteCitation(law_code, section),
                 subdivisions,
             )
-        if self._selected_rule is not None:
-            rule = self._selected_rule
+            return FormattedCitation(
+                plain_text=plain,
+                html_text=GLib.markup_escape_text(plain),
+            )
+        if selected_rule is not None:
+            rule = selected_rule
             citation_text = str(rule.get("citation") or "").strip()
             parsed = parse_rule_citation(citation_text)
             rule_number = str(rule.get("rule_number") or "").strip()
             if parsed is not None:
                 rule_number = rule_number or parsed.rule_number
             if not rule_number:
-                return ""
+                return None
             subdivisions = rule_subdivisions_for_range(
                 self._reader_text,
                 start_offset,
@@ -2041,14 +2076,84 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                     subdivisions = (existing,)
                 elif parsed is not None and parsed.subdivision:
                     subdivisions = (parsed.subdivision,)
-            return rule_pinpoint_citation(
+            plain = rule_pinpoint_citation(
                 RuleCitation(rule_number),
                 subdivisions,
             )
-        return ""
+            return FormattedCitation(
+                plain_text=plain,
+                html_text=GLib.markup_escape_text(plain),
+            )
+        return None
+
+    def _case_selection_pinpoint_formatted_citation(
+        self,
+        cluster: dict[str, Any],
+        start_offset: int,
+        end_offset: int,
+    ) -> FormattedCitation | None:
+        formatted = format_official_california_citation(cluster)
+        if formatted is None:
+            return None
+        if not getattr(self, "_reader_page_markers", []):
+            return None
+        first_page = OpenLawLensWindow._case_first_official_page(cluster)
+        start_page = OpenLawLensWindow._reader_page_for_offset(self, start_offset)
+        if start_page is None:
+            start_page = first_page
+        end_page = OpenLawLensWindow._reader_page_for_offset(
+            self,
+            max(start_offset, end_offset - 1),
+        )
+        if end_page is None:
+            end_page = start_page
+        if start_page is None or end_page is None:
+            return None
+        pinpoint = start_page if start_page == end_page else f"{start_page}\u2013{end_page}"
+        return FormattedCitation(
+            plain_text=f"{formatted.plain_text}, {pinpoint}",
+            html_text=f"{formatted.html_text}, {GLib.markup_escape_text(pinpoint)}",
+        )
+
+    def _case_selection_pinpoint_citation(
+        self,
+        cluster: dict[str, Any],
+        start_offset: int,
+        end_offset: int,
+    ) -> str:
+        formatted = OpenLawLensWindow._case_selection_pinpoint_formatted_citation(
+            self,
+            cluster,
+            start_offset,
+            end_offset,
+        )
+        return formatted.plain_text if formatted is not None else ""
+
+    def _reader_page_for_offset(self, offset: int) -> str | None:
+        page = ""
+        for marker in sorted(
+            getattr(self, "_reader_page_markers", []),
+            key=lambda value: value.start_offset,
+        ):
+            if marker.start_offset <= offset:
+                label = str(marker.page_label).strip()
+                if re.fullmatch(r"\d{1,5}", label):
+                    page = label
+                continue
+            break
+        return page or None
 
     @staticmethod
-    def _clipboard_selected_authority_text(text: str) -> str:
+    def _case_first_official_page(cluster: dict[str, Any]) -> str | None:
+        parts = official_citation_parts_from_cluster(cluster)
+        if parts is None:
+            return None
+        return parts[2]
+
+    @staticmethod
+    def _clipboard_selected_authority_text(text: str, *, strip_page_markers: bool = False) -> str:
+        if strip_page_markers:
+            text = re.sub(r"\[\*\d{1,5}\]", " ", text)
         return re.sub(r"\s+", " ", text).strip()
 
     @staticmethod
@@ -2058,6 +2163,30 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return ""
         suffix = "" if stripped.endswith(".") else "."
         return f"({stripped}{suffix})"
+
+    @staticmethod
+    def _pinpoint_citation_parenthetical_html(citation_html: str) -> str:
+        stripped = citation_html.strip()
+        if not stripped:
+            return ""
+        suffix = "" if stripped.endswith(".") else "."
+        return f"({stripped}{suffix})"
+
+    @staticmethod
+    def _selection_pinpoint_clipboard_payload(
+        selected_text: str,
+        citation: FormattedCitation,
+    ) -> FormattedCitation:
+        return FormattedCitation(
+            plain_text=(
+                f"{selected_text} "
+                f"{OpenLawLensWindow._pinpoint_citation_parenthetical(citation.plain_text)}"
+            ),
+            html_text=(
+                f"{GLib.markup_escape_text(selected_text)} "
+                f"{OpenLawLensWindow._pinpoint_citation_parenthetical_html(citation.html_text)}"
+            ),
+        )
 
     def _on_cited_by_clicked(self, _button: Gtk.Button) -> None:
         cluster = self._selected_cluster
@@ -3439,11 +3568,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         thread = threading.Thread(target=self._lookup_worker, args=(citation,), daemon=True)
         thread.start()
 
-    def _copy_formatted_citation(self, citation: FormattedCitation) -> None:
+    def _set_formatted_clipboard(
+        self,
+        citation: FormattedCitation,
+        failure_message: str,
+    ) -> bool:
         display = Gdk.Display.get_default()
         if display is None:
             self._set_status("Could not access clipboard.")
-            return
+            return False
         html_provider = Gdk.ContentProvider.new_for_bytes(
             "text/html",
             GLib.Bytes.new(citation.html_text.encode("utf-8")),
@@ -3454,7 +3587,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         )
         provider = Gdk.ContentProvider.new_union([html_provider, plain_provider])
         if not display.get_clipboard().set_content(provider):
-            self._set_status("Could not copy official citation.")
+            self._set_status(failure_message)
+            return False
+        return True
+
+    def _copy_formatted_citation(self, citation: FormattedCitation) -> None:
+        if not self._set_formatted_clipboard(
+            citation,
+            "Could not copy official citation.",
+        ):
             return
         self._set_status("Official citation copied.")
 
@@ -3934,6 +4075,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._selected_statute = None
         self._selected_rule = None
         self._reader_has_official_pagination = False
+        self._reader_page_markers = []
         self._set_reader_header(
             self._case_header_text(cluster),
             self._case_header_citation(cluster),
