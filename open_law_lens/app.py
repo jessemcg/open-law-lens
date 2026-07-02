@@ -106,13 +106,21 @@ from .scholar_search import (
     search_first_case_direct,
 )
 from .speech import DEFAULT_SPEECH_QUESTION_FILE, normalize_speech_question_text
-from .rules import CaliforniaRulesError, parse_rule_citation
+from .rules import (
+    CaliforniaRulesError,
+    RuleCitation,
+    parse_rule_citation,
+    rule_pinpoint_citation,
+    rule_subdivisions_for_range,
+)
 from .statutes import (
     LegInfoError,
     StatuteCitation,
     normalize_section,
     parse_statute_citation,
     statute_display_citation,
+    statute_pinpoint_citation,
+    statute_subdivisions_for_range,
 )
 from .text_search import literal_match_ranges
 from .web_import import ExtractedWebpage, extract_webpage_text
@@ -752,6 +760,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_citation_motion_controller: Gtk.EventControllerMotion | None = None
         self._reader_citation_click_gesture: Gtk.GestureClick | None = None
         self._reader_header_citation: FormattedCitation | None = None
+        self.reader_selection_pinpoint_button: Gtk.Button | None = None
         self._reader_has_official_pagination = False
         self._case_load_generation = 0
         self._last_lookup_text = ""
@@ -1427,6 +1436,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         box.append(self._build_agent_box())
 
         self.reader_buffer = Gtk.TextBuffer()
+        self.reader_buffer.connect("mark-set", self._on_reader_selection_changed)
         self.page_marker_tag = self.reader_buffer.create_tag(
             "page-marker",
             weight=Pango.Weight.BOLD,
@@ -1467,6 +1477,19 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.reader_header_copy_button.set_valign(Gtk.Align.CENTER)
         self.reader_header_copy_button.connect("clicked", self._on_copy_reader_citation_clicked)
         self.reader_header_box.append(self.reader_header_copy_button)
+
+        self.reader_selection_pinpoint_button = Gtk.Button(icon_name="insert-text-symbolic")
+        self.reader_selection_pinpoint_button.add_css_class("case-reader-copy-button")
+        self.reader_selection_pinpoint_button.set_tooltip_text(
+            "Copy selected text with pinpoint citation"
+        )
+        self.reader_selection_pinpoint_button.set_valign(Gtk.Align.CENTER)
+        self.reader_selection_pinpoint_button.set_sensitive(False)
+        self.reader_selection_pinpoint_button.connect(
+            "clicked",
+            self._on_copy_reader_selection_pinpoint_clicked,
+        )
+        self.reader_header_box.append(self.reader_selection_pinpoint_button)
 
         self.reader_header_cited_by_button = Gtk.Button(icon_name="edit-find-symbolic")
         self.reader_header_cited_by_button.add_css_class("case-reader-copy-button")
@@ -1749,6 +1772,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._close_reader_find(clear_entry=True)
         self._reader_text = text
         self.reader_buffer.set_text(text)
+        self._update_reader_selection_pinpoint_button()
         if page_markers:
             for marker in page_markers:
                 start = max(0, min(marker.start_offset, len(text)))
@@ -1782,6 +1806,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_has_official_pagination = False
         self._clear_reader_citation_links()
         self.reader_buffer.set_text("")
+        self._update_reader_selection_pinpoint_button()
         GLib.idle_add(self._insert_reader_payload_text_chunk, payload, 0)
         return False
 
@@ -1882,6 +1907,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_header_citation = citation
         self.reader_header_label.set_text(header)
         self.reader_header_copy_button.set_visible(citation is not None)
+        if self.reader_selection_pinpoint_button is not None:
+            has_selected_authority = (
+                self._selected_statute is not None
+                or self._selected_rule is not None
+            )
+            self.reader_selection_pinpoint_button.set_visible(
+                bool(header and has_selected_authority)
+            )
+            self._update_reader_selection_pinpoint_button()
         self.reader_header_cited_by_button.set_visible(
             bool(header and self._selected_cluster)
         )
@@ -1903,6 +1937,127 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._set_status("No citation available to copy.")
             return
         self._copy_formatted_citation(self._reader_header_citation)
+
+    def _on_reader_selection_changed(self, *_args: object) -> None:
+        self._update_reader_selection_pinpoint_button()
+
+    def _update_reader_selection_pinpoint_button(self) -> None:
+        if self.reader_selection_pinpoint_button is None:
+            return
+        has_authority = (
+            self._selected_statute is not None
+            or self._selected_rule is not None
+        )
+        self.reader_selection_pinpoint_button.set_sensitive(
+            bool(has_authority and self._reader_selection_bounds() is not None)
+        )
+
+    def _reader_selection_bounds(self) -> tuple[int, int, str] | None:
+        bounds = self.reader_buffer.get_selection_bounds()
+        if not bounds:
+            return None
+        if len(bounds) == 3:
+            selected, start_iter, end_iter = bounds
+            if not selected:
+                return None
+        elif len(bounds) == 2:
+            start_iter, end_iter = bounds
+        else:
+            return None
+        start_offset = start_iter.get_offset()
+        end_offset = end_iter.get_offset()
+        if start_offset == end_offset:
+            return None
+        if end_offset < start_offset:
+            start_offset, end_offset = end_offset, start_offset
+            start_iter = self.reader_buffer.get_iter_at_offset(start_offset)
+            end_iter = self.reader_buffer.get_iter_at_offset(end_offset)
+        selected_text = self.reader_buffer.get_text(start_iter, end_iter, True)
+        return start_offset, end_offset, selected_text
+
+    def _on_copy_reader_selection_pinpoint_clicked(self, _button: Gtk.Button) -> None:
+        selection = self._reader_selection_bounds()
+        if selection is None:
+            self._set_status("Select statute or rule text before copying a pinpoint citation.")
+            return
+        start_offset, end_offset, selected_text = selection
+        citation = self._reader_selection_pinpoint_citation(start_offset, end_offset)
+        if not citation:
+            self._set_status("Select a statute or rule before copying a pinpoint citation.")
+            return
+        selected_text = self._clipboard_selected_authority_text(selected_text)
+        if not selected_text:
+            self._set_status("Selected text is empty.")
+            return
+        display = Gdk.Display.get_default()
+        if display is None:
+            self._set_status("Could not access clipboard.")
+            return
+        display.get_clipboard().set(
+            f"{selected_text} {self._pinpoint_citation_parenthetical(citation)}"
+        )
+        self._set_status("Selected text and pinpoint citation copied.")
+
+    def _reader_selection_pinpoint_citation(self, start_offset: int, end_offset: int) -> str:
+        if self._selected_statute is not None:
+            statute = self._selected_statute
+            citation_text = str(statute.get("citation") or "").strip()
+            parsed = parse_statute_citation(citation_text)
+            law_code = str(statute.get("law_code") or "").strip()
+            section = str(statute.get("section") or "").strip()
+            if parsed is not None:
+                law_code = law_code or parsed.law_code
+                section = section or parsed.section
+            if not law_code or not section:
+                return ""
+            subdivisions = statute_subdivisions_for_range(
+                self._reader_text,
+                start_offset,
+                end_offset,
+            )
+            if not subdivisions and parsed is not None and parsed.subdivision:
+                subdivisions = (parsed.subdivision,)
+            return statute_pinpoint_citation(
+                StatuteCitation(law_code, section),
+                subdivisions,
+            )
+        if self._selected_rule is not None:
+            rule = self._selected_rule
+            citation_text = str(rule.get("citation") or "").strip()
+            parsed = parse_rule_citation(citation_text)
+            rule_number = str(rule.get("rule_number") or "").strip()
+            if parsed is not None:
+                rule_number = rule_number or parsed.rule_number
+            if not rule_number:
+                return ""
+            subdivisions = rule_subdivisions_for_range(
+                self._reader_text,
+                start_offset,
+                end_offset,
+            )
+            if not subdivisions:
+                existing = str(rule.get("subdivision") or "").strip()
+                if existing:
+                    subdivisions = (existing,)
+                elif parsed is not None and parsed.subdivision:
+                    subdivisions = (parsed.subdivision,)
+            return rule_pinpoint_citation(
+                RuleCitation(rule_number),
+                subdivisions,
+            )
+        return ""
+
+    @staticmethod
+    def _clipboard_selected_authority_text(text: str) -> str:
+        return re.sub(r"\s+", " ", text).strip()
+
+    @staticmethod
+    def _pinpoint_citation_parenthetical(citation: str) -> str:
+        stripped = citation.strip()
+        if not stripped:
+            return ""
+        suffix = "" if stripped.endswith(".") else "."
+        return f"({stripped}{suffix})"
 
     def _on_cited_by_clicked(self, _button: Gtk.Button) -> None:
         cluster = self._selected_cluster

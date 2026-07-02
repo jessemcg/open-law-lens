@@ -8,6 +8,8 @@ from open_law_lens.statutes import (
     extract_leginfo_text,
     parse_statute_citation,
     statute_display_citation,
+    statute_pinpoint_citation,
+    statute_subdivisions_for_range,
     statute_url,
 )
 
@@ -61,6 +63,29 @@ class StatuteTests(unittest.TestCase):
             "Welf. & Inst. Code, § 300, subd. (b)(1)",
             "Evidence Code section 720",
         ])
+
+    def test_statute_subdivisions_for_selected_range(self) -> None:
+        text = "300. (a) First.\n(b) Second.\n(1) One.\n(2) Two.\n(c) Third."
+
+        subdivisions = statute_subdivisions_for_range(
+            text,
+            text.index("One"),
+            text.index("Two") + len("Two"),
+        )
+
+        self.assertEqual(subdivisions, ("(b)(1)", "(b)(2)"))
+
+    def test_statute_pinpoint_uses_subd_and_subds(self) -> None:
+        citation = StatuteCitation("WIC", "300")
+
+        self.assertEqual(
+            statute_pinpoint_citation(citation, ("(b)(1)",)),
+            "Welf. & Inst. Code, § 300, subd. (b)(1)",
+        )
+        self.assertEqual(
+            statute_pinpoint_citation(citation, ("(b)(1)", "(b)(2)")),
+            "Welf. & Inst. Code, § 300, subds. (b)(1)-(2)",
+        )
 
 
 if __name__ == "__main__":

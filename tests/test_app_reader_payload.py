@@ -528,6 +528,86 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertNotIn("Find Official Text", labels)
         self.assertNotIn("Import Official Text", labels)
 
+    def test_reader_statute_selection_pinpoint_uses_inferred_subdivision(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self._reader_text = "300. (a) First.\n(b) Second.\n(1) One.\n(2) Two."
+                self._selected_statute = {
+                    "law_code": "WIC",
+                    "section": "300",
+                    "citation": "Welf. & Inst. Code, § 300",
+                }
+                self._selected_rule = None
+
+        window = DummyWindow()
+
+        citation = OpenLawLensWindow._reader_selection_pinpoint_citation(  # type: ignore[arg-type]
+            window,
+            window._reader_text.index("One"),
+            window._reader_text.index("Two") + len("Two"),
+        )
+
+        self.assertEqual(citation, "Welf. & Inst. Code, § 300, subds. (b)(1)-(2)")
+
+    def test_reader_rule_selection_pinpoint_uses_inferred_subdivision(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self._reader_text = (
+                    "Rule 8.204. Briefs.\n"
+                    "(a) Contents.\n"
+                    "(1) Each brief must.\n"
+                    "(A) State facts.\n"
+                    "(B) Cite authority."
+                )
+                self._selected_statute = None
+                self._selected_rule = {
+                    "rule_number": "8.204",
+                    "citation": "Cal. Rules of Court, rule 8.204",
+                }
+
+        window = DummyWindow()
+
+        citation = OpenLawLensWindow._reader_selection_pinpoint_citation(  # type: ignore[arg-type]
+            window,
+            window._reader_text.index("State facts"),
+            window._reader_text.index("Cite authority") + len("Cite authority"),
+        )
+
+        self.assertEqual(citation, "Cal. Rules of Court, rule 8.204(a)(1)(A)-(B)")
+
+    def test_copy_reader_selection_pinpoint_warns_without_selection(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.statuses: list[str] = []
+
+            def _reader_selection_bounds(self) -> None:
+                return None
+
+            def _set_status(self, text: str) -> None:
+                self.statuses.append(text)
+
+        window = DummyWindow()
+
+        OpenLawLensWindow._on_copy_reader_selection_pinpoint_clicked(  # type: ignore[arg-type]
+            window,
+            object(),
+        )
+
+        self.assertEqual(
+            window.statuses,
+            ["Select statute or rule text before copying a pinpoint citation."],
+        )
+
+    def test_pinpoint_citation_parenthetical_places_period_inside(self) -> None:
+        parenthetical = OpenLawLensWindow._pinpoint_citation_parenthetical(
+            "Welf. & Inst. Code, § 388, subd. (a)(2)"
+        )
+
+        self.assertEqual(
+            parenthetical,
+            "(Welf. & Inst. Code, § 388, subd. (a)(2).)",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

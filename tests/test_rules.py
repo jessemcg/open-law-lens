@@ -8,6 +8,8 @@ from open_law_lens.rules import (
     extract_california_rule_text,
     parse_rule_citation,
     rule_display_citation,
+    rule_pinpoint_citation,
+    rule_subdivisions_for_range,
     rule_url,
 )
 
@@ -50,6 +52,35 @@ class RuleTests(unittest.TestCase):
         self.assertEqual(
             [link.lookup_text for link in links],
             ["Cal. Rules of Court, rule 8.204(a)(1)(B)", "rule 5.695"],
+        )
+
+    def test_rule_subdivisions_for_selected_range(self) -> None:
+        text = (
+            "Rule 8.204. Briefs.\n"
+            "(a) Contents.\n"
+            "(1) Each brief must.\n"
+            "(A) State facts.\n"
+            "(B) Cite authority."
+        )
+
+        subdivisions = rule_subdivisions_for_range(
+            text,
+            text.index("State facts"),
+            text.index("Cite authority") + len("Cite authority"),
+        )
+
+        self.assertEqual(subdivisions, ("(a)(1)(A)", "(a)(1)(B)"))
+
+    def test_rule_pinpoint_appends_subdivisions_without_subd_label(self) -> None:
+        citation = RuleCitation("8.204")
+
+        self.assertEqual(
+            rule_pinpoint_citation(citation, ("(a)(1)(A)",)),
+            "Cal. Rules of Court, rule 8.204(a)(1)(A)",
+        )
+        self.assertEqual(
+            rule_pinpoint_citation(citation, ("(a)(1)(A)", "(a)(1)(B)")),
+            "Cal. Rules of Court, rule 8.204(a)(1)(A)-(B)",
         )
 
 

@@ -38,6 +38,13 @@ class RuleLink:
     lookup_text: str
 
 
+@dataclass(frozen=True)
+class RuleSubdivisionSpan:
+    start_offset: int
+    end_offset: int
+    subdivision: str
+
+
 class CaliforniaRulesError(RuntimeError):
     pass
 
@@ -67,6 +74,11 @@ RULE_CITATION_RE = re.compile(
     r"(?P<subdivision>(?:\([A-Za-z0-9]+\))*)"
     r")",
     re.IGNORECASE,
+)
+SUBDIVISION_MARKER_RE = re.compile(
+    r"(?m)(?:^|\n)\s*(?:Rule\s+(?:10|[1-9])\.\d+(?:\.\d+)?\.?\s*)?"
+    r"(?P<markers>\([A-Za-z0-9]+\)(?:\s*\([A-Za-z0-9]+\))*)"
+    r"(?=\s+)",
 )
 
 
@@ -107,6 +119,43 @@ def rule_display_citation(citation: RuleCitation | dict[str, Any]) -> str:
         number = citation.rule_number
         subdivision = citation.subdivision.strip()
     return f"Cal. Rules of Court, rule {number}{subdivision}"
+
+
+def rule_pinpoint_citation(
+    citation: RuleCitation | dict[str, Any],
+    subdivisions: tuple[str, ...] | list[str],
+) -> str:
+    parts = _rule_citation_parts(citation)
+    base = rule_display_citation({**parts, "subdivision": ""})
+    cleaned = _clean_subdivision_values(subdivisions)
+    if not cleaned:
+        return base
+    if len(cleaned) == 1:
+        return f"{base}{cleaned[0]}"
+    return f"{base}{_format_subdivision_range(cleaned)}"
+
+
+def rule_subdivision_spans(text: str) -> list[RuleSubdivisionSpan]:
+    markers = list(_iter_subdivision_markers(text))
+    spans: list[RuleSubdivisionSpan] = []
+    for index, marker in enumerate(markers):
+        end_offset = markers[index + 1][0] if index + 1 < len(markers) else len(text)
+        spans.append(
+            RuleSubdivisionSpan(
+                start_offset=marker[0],
+                end_offset=end_offset,
+                subdivision=marker[1],
+            )
+        )
+    return spans
+
+
+def rule_subdivisions_for_range(
+    text: str,
+    start_offset: int,
+    end_offset: int,
+) -> tuple[str, ...]:
+    return _subdivisions_for_range(rule_subdivision_spans(text), start_offset, end_offset)
 
 
 def rule_title(citation: RuleCitation | dict[str, Any]) -> str:
@@ -284,6 +333,116 @@ def _rule_body_html(raw_html: str, citation: RuleCitation) -> str:
     article_end = raw_html.find("</article>", heading_match.end())
     end = article_end + len("</article>") if article_end >= 0 else len(raw_html)
     return raw_html[start:end]
+
+
+def _rule_citation_parts(citation: RuleCitation | dict[str, Any]) -> dict[str, str]:
+    if isinstance(citation, dict):
+        return {
+            "rule_number": normalize_rule_number(str(citation.get("rule_number") or "")),
+            "subdivision": str(citation.get("subdivision") or "").strip(),
+        }
+    return {
+        "rule_number": normalize_rule_number(citation.rule_number),
+        "subdivision": citation.subdivision.strip(),
+    }
+
+
+def _iter_subdivision_markers(text: str) -> list[tuple[int, str]]:
+    current: list[str] = []
+    markers: list[tuple[int, str]] = []
+    for match in SUBDIVISION_MARKER_RE.finditer(text):
+        parts = re.findall(r"\([A-Za-z0-9]+\)", match.group("markers"))
+        if not parts:
+            continue
+        for part in parts:
+            level = _subdivision_part_level(part)
+            if level < 1:
+                continue
+            current = current[: level - 1]
+            current.append(part)
+        if current:
+            markers.append((match.start("markers"), "".join(current)))
+    return markers
+
+
+def _subdivision_part_level(part: str) -> int:
+    value = part.strip("()")
+    if re.fullmatch(r"[a-z]", value):
+        return 1
+    if re.fullmatch(r"\d+", value):
+        return 2
+    if re.fullmatch(r"[A-Z]", value):
+        return 3
+    if re.fullmatch(r"[ivxlcdm]+", value):
+        return 4
+    return 1
+
+
+def _subdivisions_for_range(
+    spans: list[RuleSubdivisionSpan],
+    start_offset: int,
+    end_offset: int,
+) -> tuple[str, ...]:
+    if end_offset < start_offset:
+        start_offset, end_offset = end_offset, start_offset
+    selected_end = max(start_offset, end_offset)
+    values: list[str] = []
+    for span in spans:
+        if span.end_offset <= start_offset:
+            continue
+        if span.start_offset >= selected_end:
+            break
+        values.append(span.subdivision)
+    if values:
+        return tuple(dict.fromkeys(values))
+    previous = ""
+    for span in spans:
+        if span.start_offset <= start_offset:
+            previous = span.subdivision
+            continue
+        break
+    return (previous,) if previous else ()
+
+
+def _clean_subdivision_values(subdivisions: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+    values: list[str] = []
+    for subdivision in subdivisions:
+        value = re.sub(r"\s+", "", subdivision.strip())
+        if value and value not in values:
+            values.append(value)
+    return tuple(values)
+
+
+def _format_subdivision_range(subdivisions: tuple[str, ...]) -> str:
+    if not subdivisions:
+        return ""
+    if len(subdivisions) == 1:
+        return subdivisions[0]
+    common = _common_subdivision_prefix(subdivisions)
+    if common:
+        start_suffix = subdivisions[0][len(common):]
+        end_suffix = subdivisions[-1][len(common):]
+        if start_suffix and end_suffix:
+            return f"{common}{start_suffix}-{end_suffix}"
+    first_parts = re.findall(r"\([^)]+\)", subdivisions[0])
+    last_parts = re.findall(r"\([^)]+\)", subdivisions[-1])
+    if first_parts and len(first_parts) == len(last_parts):
+        return f"{subdivisions[0]}-{subdivisions[-1]}"
+    return ", ".join(subdivisions)
+
+
+def _common_subdivision_prefix(subdivisions: tuple[str, ...]) -> str:
+    split_values = [re.findall(r"\([^)]+\)", value) for value in subdivisions]
+    if not split_values:
+        return ""
+    prefix: list[str] = []
+    for parts in zip(*split_values):
+        first = parts[0]
+        if all(part == first for part in parts):
+            prefix.append(first)
+        else:
+            break
+    return "".join(prefix)
 
 
 def _normalize_lookup(value: str) -> str:
