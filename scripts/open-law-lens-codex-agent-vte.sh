@@ -3,10 +3,13 @@ set -euo pipefail
 
 prompt_file="${OPEN_LAW_LENS_AGENT_PROMPT_FILE:-}"
 cache_root="${OPEN_LAW_LENS_CACHE_DIR:-${XDG_CACHE_HOME:-${HOME:-}/.cache}/open-law-lens}"
+library_db="${OPEN_LAW_LENS_LIBRARY_DB:-}"
 agent_mode="${OPEN_LAW_LENS_AGENT_MODE:-general}"
 workspace="${OPEN_LAW_LENS_AGENT_WORKSPACE:-}"
 codex_bin="${CODEX_BIN:-codex}"
 codex_profile="${CODEX_PROFILE:-}"
+codex_sandbox="${OPEN_LAW_LENS_CODEX_SANDBOX:-workspace-write}"
+codex_approval="${OPEN_LAW_LENS_CODEX_APPROVAL:-}"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 workspace_parent="${XDG_CACHE_HOME:-${HOME:-}/.cache}/open-law-lens/agent-workspaces"
 
@@ -32,10 +35,28 @@ if [[ -n "$codex_profile" ]]; then
   profile_args=(--profile "$codex_profile")
 fi
 
+case "$codex_sandbox" in
+  read-only|workspace-write|danger-full-access) ;;
+  *) codex_sandbox="workspace-write" ;;
+esac
+
+case "$codex_approval" in
+  ""|untrusted|on-request|on-failure|never) ;;
+  *) codex_approval="" ;;
+esac
+
+approval_args=()
+if [[ -n "$codex_approval" ]]; then
+  approval_args=(--ask-for-approval "$codex_approval")
+fi
+
 cd "$workspace"
 mkdir -p "$workspace/tmp"
 export TMPDIR="$workspace/tmp"
 export OPEN_LAW_LENS_CACHE_DIR="$cache_root"
+if [[ -n "$library_db" ]]; then
+  export OPEN_LAW_LENS_LIBRARY_DB="$library_db"
+fi
 
 python3 "$script_dir/open-law-lens-codex-agent-pty.py" \
   --prompt-file "$prompt_file" \
@@ -45,4 +66,5 @@ python3 "$script_dir/open-law-lens-codex-agent-pty.py" \
   -c 'mcp_servers.openaiDeveloperDocs.enabled=false' \
   -c 'mcp_servers.context7.enabled=false' \
   -C "$workspace" \
-  --sandbox workspace-write
+  --sandbox "$codex_sandbox" \
+  "${approval_args[@]}"

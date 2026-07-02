@@ -17,9 +17,17 @@ CONFIG_KEY_CASE_AGENT_PROMPT_TEMPLATE = "case_agent_prompt_template"
 CONFIG_KEY_READER_FONT_SIZE_PT = "reader_font_size_pt"
 CONFIG_KEY_READER_FONT_FAMILY = "reader_font_family"
 CONFIG_KEY_DEFAULT_BARE_STATUTE_LAW_CODE = "default_bare_statute_law_code"
+CONFIG_KEY_AGENT_PERMISSION_MODE = "agent_permission_mode"
 ENV_CONCORDANCE_FILE = "OPEN_LAW_LENS_CONCORDANCE_FILE"
 DEFAULT_READER_FONT_SIZE_PT = 11
 DEFAULT_BARE_STATUTE_LAW_CODE = "WIC"
+AGENT_PERMISSION_MODE_SANDBOXED = "sandboxed"
+AGENT_PERMISSION_MODE_FULL_ACCESS = "full_access"
+DEFAULT_AGENT_PERMISSION_MODE = AGENT_PERMISSION_MODE_SANDBOXED
+AGENT_PERMISSION_MODE_OPTIONS: tuple[tuple[str, str], ...] = (
+    (AGENT_PERMISSION_MODE_SANDBOXED, "Sandboxed"),
+    (AGENT_PERMISSION_MODE_FULL_ACCESS, "Full access"),
+)
 BARE_STATUTE_LAW_CODE_OPTIONS: tuple[tuple[str, str], ...] = (
     ("WIC", "Welfare and Institutions Code"),
     ("EVID", "Evidence Code"),
@@ -85,6 +93,7 @@ class AppConfig:
     reader_font_size_pt: int = DEFAULT_READER_FONT_SIZE_PT
     reader_font_family: str = DEFAULT_READER_FONT_FAMILY
     default_bare_statute_law_code: str = DEFAULT_BARE_STATUTE_LAW_CODE
+    agent_permission_mode: str = DEFAULT_AGENT_PERMISSION_MODE
 
 
 def coerce_reader_font_size(value: Any, default: int = DEFAULT_READER_FONT_SIZE_PT) -> int:
@@ -110,6 +119,14 @@ def normalize_bare_statute_law_code(value: Any) -> str:
         if normalized == code:
             return code
     return DEFAULT_BARE_STATUTE_LAW_CODE
+
+
+def normalize_agent_permission_mode(value: Any) -> str:
+    normalized = str(value or "").strip()
+    for mode, _label in AGENT_PERMISSION_MODE_OPTIONS:
+        if normalized == mode:
+            return mode
+    return DEFAULT_AGENT_PERMISSION_MODE
 
 
 def reader_font_css(font_family: str) -> str:
@@ -156,6 +173,9 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
         default_bare_statute_law_code=normalize_bare_statute_law_code(
             raw.get(CONFIG_KEY_DEFAULT_BARE_STATUTE_LAW_CODE)
         ),
+        agent_permission_mode=normalize_agent_permission_mode(
+            raw.get(CONFIG_KEY_AGENT_PERMISSION_MODE)
+        ),
     )
 
 
@@ -173,6 +193,9 @@ def save_config(config: AppConfig, path: Path = CONFIG_PATH) -> None:
         CONFIG_KEY_READER_FONT_FAMILY: normalize_reader_font_family(config.reader_font_family),
         CONFIG_KEY_DEFAULT_BARE_STATUTE_LAW_CODE: normalize_bare_statute_law_code(
             config.default_bare_statute_law_code
+        ),
+        CONFIG_KEY_AGENT_PERMISSION_MODE: normalize_agent_permission_mode(
+            config.agent_permission_mode
         ),
     }
     path.parent.mkdir(parents=True, exist_ok=True)

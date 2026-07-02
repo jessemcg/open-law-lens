@@ -8,8 +8,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from open_law_lens.config import (
+    AGENT_PERMISSION_MODE_FULL_ACCESS,
     AppConfig,
     DEFAULT_CASE_AGENT_PROMPT_TEMPLATE,
+    DEFAULT_AGENT_PERMISSION_MODE,
     DEFAULT_BARE_STATUTE_LAW_CODE,
     DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE,
     DEFAULT_READER_FONT_FAMILY,
@@ -30,6 +32,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.reader_font_size_pt, DEFAULT_READER_FONT_SIZE_PT)
             self.assertEqual(config.reader_font_family, DEFAULT_READER_FONT_FAMILY)
             self.assertEqual(config.default_bare_statute_law_code, DEFAULT_BARE_STATUTE_LAW_CODE)
+            self.assertEqual(config.agent_permission_mode, DEFAULT_AGENT_PERMISSION_MODE)
 
     def test_save_and_load_settings(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -43,6 +46,7 @@ class ConfigTests(unittest.TestCase):
                     reader_font_size_pt=14,
                     reader_font_family="Georgia",
                     default_bare_statute_law_code="FAM",
+                    agent_permission_mode=AGENT_PERMISSION_MODE_FULL_ACCESS,
                 ),
                 path,
             )
@@ -54,6 +58,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.reader_font_size_pt, 14)
             self.assertEqual(config.reader_font_family, "Georgia")
             self.assertEqual(config.default_bare_statute_law_code, "FAM")
+            self.assertEqual(config.agent_permission_mode, AGENT_PERMISSION_MODE_FULL_ACCESS)
 
     def test_legacy_general_prompt_migrates_to_new_default(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -98,6 +103,13 @@ class ConfigTests(unittest.TestCase):
             save_config(AppConfig(default_bare_statute_law_code="unsupported"), path)
 
             self.assertEqual(load_config(path).default_bare_statute_law_code, "WIC")
+
+    def test_agent_permission_mode_falls_back_to_sandboxed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            save_config(AppConfig(agent_permission_mode="unsupported"), path)
+
+            self.assertEqual(load_config(path).agent_permission_mode, DEFAULT_AGENT_PERMISSION_MODE)
 
     def test_reader_font_settings_are_coerced(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

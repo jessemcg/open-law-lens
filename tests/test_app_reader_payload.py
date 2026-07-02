@@ -10,6 +10,7 @@ from open_law_lens.app import (
     SCHOLAR_FALLBACK_TRANSIENT_NOTICE,
     OpenLawLensApp,
     OpenLawLensWindow,
+    build_agent_launch_env,
     build_case_reader_payload,
 )
 from open_law_lens.cache import JsonCache
@@ -21,6 +22,54 @@ from open_law_lens.web_import import ExtractedWebpage
 
 
 class AppReaderPayloadTests(unittest.TestCase):
+    def test_agent_launch_env_defaults_to_workspace_sandbox(self) -> None:
+        class DummyCache:
+            root = Path("/tmp/open-law-lens-cache")
+
+        class DummyLibrary:
+            path = Path("/tmp/open-law-lens-library/library.sqlite3")
+
+        class DummyClient:
+            cache = DummyCache()
+            library = DummyLibrary()
+
+        env = build_agent_launch_env(
+            DummyClient(),  # type: ignore[arg-type]
+            Path("/tmp/prompt.txt"),
+            Path("/tmp/workspace"),
+            "general",
+            AppConfig(),
+        )
+
+        self.assertEqual(env["OPEN_LAW_LENS_CODEX_SANDBOX"], "workspace-write")
+        self.assertEqual(env["OPEN_LAW_LENS_CODEX_APPROVAL"], "")
+        self.assertEqual(env["OPEN_LAW_LENS_CACHE_DIR"], "/tmp/open-law-lens-cache")
+        self.assertEqual(
+            env["OPEN_LAW_LENS_LIBRARY_DB"],
+            "/tmp/open-law-lens-library/library.sqlite3",
+        )
+
+    def test_agent_launch_env_full_access_disables_approval_prompts(self) -> None:
+        class DummyCache:
+            root = Path("/tmp/open-law-lens-cache")
+
+        class DummyClient:
+            cache = DummyCache()
+            library = None
+
+        env = build_agent_launch_env(
+            DummyClient(),  # type: ignore[arg-type]
+            Path("/tmp/prompt.txt"),
+            Path("/tmp/workspace"),
+            "case",
+            AppConfig(agent_permission_mode="full_access"),
+        )
+
+        self.assertEqual(env["OPEN_LAW_LENS_AGENT_MODE"], "case")
+        self.assertEqual(env["OPEN_LAW_LENS_CODEX_SANDBOX"], "danger-full-access")
+        self.assertEqual(env["OPEN_LAW_LENS_CODEX_APPROVAL"], "never")
+        self.assertNotIn("OPEN_LAW_LENS_LIBRARY_DB", env)
+
     def test_payload_combines_displays_and_offsets_page_markers(self) -> None:
         cluster = {
             "id": 42,

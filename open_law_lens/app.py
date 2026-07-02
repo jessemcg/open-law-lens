@@ -80,6 +80,9 @@ from .citation_links import (
 )
 from .citation_model import official_citation_parts_from_cluster
 from .config import (
+    AGENT_PERMISSION_MODE_FULL_ACCESS,
+    AGENT_PERMISSION_MODE_OPTIONS,
+    AGENT_PERMISSION_MODE_SANDBOXED,
     AppConfig,
     BARE_STATUTE_LAW_CODE_OPTIONS,
     DEFAULT_CASE_AGENT_PROMPT_TEMPLATE,
@@ -88,9 +91,10 @@ from .config import (
     coerce_reader_font_size,
     courtlistener_token,
     load_config,
+    normalize_agent_permission_mode,
     normalize_bare_statute_law_code,
-    reader_font_css,
     normalize_reader_font_family,
+    reader_font_css,
     READER_FONT_FAMILY_OPTIONS,
     save_config,
 )
@@ -178,6 +182,38 @@ AGENT_MARKDOWN_HEADING_SCALES = {
     3: 1.15,
 }
 CODEX_SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
+
+
+def build_agent_launch_env(
+    client: CourtListenerClient,
+    prompt_path: Path,
+    workspace: Path,
+    mode: str,
+    config: AppConfig,
+) -> dict[str, str]:
+    permission_mode = normalize_agent_permission_mode(config.agent_permission_mode)
+    sandbox_mode = "workspace-write"
+    approval_policy = ""
+    if permission_mode == AGENT_PERMISSION_MODE_FULL_ACCESS:
+        sandbox_mode = "danger-full-access"
+        approval_policy = "never"
+
+    env = {
+        "OPEN_LAW_LENS_AGENT_PROMPT_FILE": str(prompt_path),
+        "OPEN_LAW_LENS_AGENT_WORKSPACE": str(workspace),
+        "OPEN_LAW_LENS_AGENT_MODE": mode,
+        "OPEN_LAW_LENS_CACHE_DIR": str(client.cache.root),
+        "OPEN_LAW_LENS_CODEX_SANDBOX": sandbox_mode,
+        "OPEN_LAW_LENS_CODEX_APPROVAL": approval_policy,
+        "CODEX_BIN": os.environ.get("OPEN_LAW_LENS_CODEX_BIN", DEFAULT_CODEX_BIN),
+    }
+    library = getattr(client, "library", None)
+    library_path = getattr(library, "path", None)
+    if library_path is not None:
+        env["OPEN_LAW_LENS_LIBRARY_DB"] = str(library_path)
+    return env
+
+
 MARKDOWN_TOKEN_RE = re.compile(r"(\*\*([^*\n]+)\*\*|\*([^*\n]+)\*)")
 TERMINAL_DARK_FOREGROUND = "#f2f4f8"
 TERMINAL_DARK_BACKGROUND = "#3d3d3d"
@@ -550,6 +586,28 @@ class SettingsWindow(Adw.ApplicationWindow):
         concordance_group.add(self.concordance_row)
         outer.append(concordance_group)
 
+        agent_group = Adw.PreferencesGroup(title="Agent Runtime")
+        self.agent_permission_mode_values = [
+            mode for mode, _label in AGENT_PERMISSION_MODE_OPTIONS
+        ]
+        agent_permission_mode_labels = [label for _mode, label in AGENT_PERMISSION_MODE_OPTIONS]
+        self.agent_permission_mode_row = Adw.ComboRow(
+            title="Embedded Codex Permissions",
+            subtitle=(
+                "Full access lets Codex use normal user paths without sandbox approval prompts."
+            ),
+        )
+        self.agent_permission_mode_row.set_model(Gtk.StringList.new(agent_permission_mode_labels))
+        try:
+            selected_agent_permission_mode_index = self.agent_permission_mode_values.index(
+                config.agent_permission_mode
+            )
+        except ValueError:
+            selected_agent_permission_mode_index = 0
+        self.agent_permission_mode_row.set_selected(selected_agent_permission_mode_index)
+        agent_group.add(self.agent_permission_mode_row)
+        outer.append(agent_group)
+
         prompt_group = Adw.PreferencesGroup(title="Agent Prompts")
         prompt_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         prompt_group.set_vexpand(True)
@@ -642,6 +700,13 @@ class SettingsWindow(Adw.ApplicationWindow):
             bare_statute_law_code = self.bare_statute_law_code_values[selected_bare_statute_index]
         else:
             bare_statute_law_code = load_config().default_bare_statute_law_code
+        selected_agent_permission_mode_index = int(self.agent_permission_mode_row.get_selected())
+        if 0 <= selected_agent_permission_mode_index < len(self.agent_permission_mode_values):
+            agent_permission_mode = self.agent_permission_mode_values[
+                selected_agent_permission_mode_index
+            ]
+        else:
+            agent_permission_mode = AGENT_PERMISSION_MODE_SANDBOXED
         save_config(
             AppConfig(
                 courtlistener_token=token,
@@ -661,6 +726,7 @@ class SettingsWindow(Adw.ApplicationWindow):
                 default_bare_statute_law_code=normalize_bare_statute_law_code(
                     bare_statute_law_code
                 ),
+                agent_permission_mode=normalize_agent_permission_mode(agent_permission_mode),
             )
         )
         self.parent_window.reload_settings()
@@ -4923,16 +4989,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if not AGENT_WRAPPER.is_file():
             self._set_status(f"Agent wrapper not found: {AGENT_WRAPPER}")
             return
+        config = load_config()
         env = os.environ.copy()
-        env.update(
-            {
-                "OPEN_LAW_LENS_AGENT_PROMPT_FILE": str(prompt_path),
-                "OPEN_LAW_LENS_AGENT_WORKSPACE": str(workspace),
-                "OPEN_LAW_LENS_AGENT_MODE": mode,
-                "OPEN_LAW_LENS_CACHE_DIR": str(self.client.cache.root),
-                "CODEX_BIN": os.environ.get("OPEN_LAW_LENS_CODEX_BIN", DEFAULT_CODEX_BIN),
-            }
-        )
+        env.update(build_agent_launch_env(self.client, prompt_path, workspace, mode, config))
         profile = os.environ.get("OPEN_LAW_LENS_CODEX_PROFILE", "").strip()
         if profile:
             env["CODEX_PROFILE"] = profile
