@@ -24,7 +24,7 @@ from .import_text import clean_imported_opinion_text
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PROJECT_LIBRARY_DIR = PROJECT_ROOT / "library"
 DEFAULT_LIBRARY_DB = PROJECT_LIBRARY_DIR / "open_law_lens.sqlite3"
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 OFFICIAL_CITATION_ONLY_NORMALIZED_KEY = "official_citation_only_normalized_v2"
 CASE_TITLES_NORMALIZED_KEY = "case_titles_normalized_v1"
 TEXT_FIELDS = (
@@ -221,6 +221,31 @@ class LibraryPruneResult:
     kept_count: int
 
 
+@dataclass(frozen=True)
+class ResearchSetItem:
+    item_type: str
+    authority_id: str
+    title: str
+    citation: str
+    payload: dict[str, Any]
+    position: int
+    agent_selected: bool
+
+
+@dataclass(frozen=True)
+class ResearchSet:
+    set_id: int
+    name: str
+    created_at: str
+    updated_at: str
+    last_accessed: str
+    item_count: int
+    case_count: int
+    statute_count: int
+    rule_count: int
+    items: list[ResearchSetItem]
+
+
 class _DisplayTextExtractor(HTMLParser):
     BLOCK_TAGS = {"p", "div", "li", "tr", "h1", "h2", "h3", "h4", "center", "author"}
 
@@ -363,6 +388,10 @@ def _page_marker_label(value: str) -> str:
     label = label.lstrip("*").strip()
     label = re.sub(r"(?i)^page\s+", "", label).strip()
     return label
+
+
+def _research_set_normalized_name(name: str) -> str:
+    return re.sub(r"\s+", " ", name.strip()).casefold()
 
 
 def _normalize_raw_star_page_markers(display: DisplayText) -> DisplayText:
@@ -541,9 +570,34 @@ class CaseLibrary:
                     FOREIGN KEY (opinion_id) REFERENCES opinions(opinion_id) ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS research_sets (
+                    set_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    normalized_name TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    last_accessed TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS research_set_items (
+                    set_id INTEGER NOT NULL,
+                    item_type TEXT NOT NULL,
+                    authority_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    citation TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    agent_selected INTEGER NOT NULL DEFAULT 0,
+                    added_at TEXT NOT NULL,
+                    PRIMARY KEY (set_id, item_type, authority_id),
+                    FOREIGN KEY (set_id) REFERENCES research_sets(set_id) ON DELETE CASCADE
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_cases_title ON cases(title);
                 CREATE INDEX IF NOT EXISTS idx_opinions_cluster_id ON opinions(cluster_id);
                 CREATE INDEX IF NOT EXISTS idx_aliases_citation ON citation_aliases(normalized_citation);
+                CREATE INDEX IF NOT EXISTS idx_research_set_items_set_id
+                ON research_set_items(set_id, position);
                 """
             )
             self._drop_legacy_statute_rule_tables(conn)
@@ -1035,6 +1089,296 @@ class CaseLibrary:
             if cluster is not None:
                 clusters.append(cluster)
         return clusters
+
+    def save_research_set(
+        self,
+        name: str,
+        cache: JsonCache,
+        *,
+        replace: bool = False,
+    ) -> ResearchSet:
+        clean_name = re.sub(r"\s+", " ", name.strip())
+        normalized_name = _research_set_normalized_name(clean_name)
+        if not normalized_name:
+            raise ValueError("Research set name is required.")
+        items = self._research_set_items_from_cache(cache)
+        if not items:
+            raise ValueError("Research Cache is empty.")
+        now = _utc_now()
+        with self.connection() as conn:
+            existing = conn.execute(
+                "SELECT set_id, created_at FROM research_sets WHERE normalized_name = ?",
+                (normalized_name,),
+            ).fetchone()
+            if existing is not None and not replace:
+                raise ValueError(f"Research set already exists: {clean_name}")
+            if existing is None:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO research_sets(name, normalized_name, created_at, updated_at, last_accessed)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (clean_name, normalized_name, now, now, now),
+                )
+                set_id = int(cursor.lastrowid)
+            else:
+                set_id = int(existing["set_id"])
+                conn.execute("DELETE FROM research_set_items WHERE set_id = ?", (set_id,))
+                conn.execute(
+                    """
+                    UPDATE research_sets
+                    SET name = ?, normalized_name = ?, updated_at = ?, last_accessed = ?
+                    WHERE set_id = ?
+                    """,
+                    (clean_name, normalized_name, now, now, set_id),
+                )
+            conn.executemany(
+                """
+                INSERT INTO research_set_items(
+                    set_id, item_type, authority_id, title, citation, payload_json,
+                    position, agent_selected, added_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        set_id,
+                        item.item_type,
+                        item.authority_id,
+                        item.title,
+                        item.citation,
+                        _json_dumps(item.payload),
+                        item.position,
+                        1 if item.agent_selected else 0,
+                        now,
+                    )
+                    for item in items
+                ],
+            )
+        result = self.read_research_set(clean_name)
+        if result is None:
+            raise RuntimeError("Saved research set could not be read.")
+        return result
+
+    def _research_set_items_from_cache(self, cache: JsonCache) -> list[ResearchSetItem]:
+        items: list[ResearchSetItem] = []
+        position = 0
+        for entry in cache.list_case_entries():
+            cluster_id = str(entry.get("cluster_id", "")).strip()
+            if not cluster_id:
+                continue
+            cluster = cache.read_cached_cluster(cluster_id)
+            if not isinstance(cluster, dict):
+                continue
+            self.upsert_cluster(cluster)
+            opinion_ids = [
+                str(value).strip()
+                for value in entry.get("opinion_ids", [])
+                if str(value).strip()
+            ] if isinstance(entry.get("opinion_ids"), list) else []
+            saved_opinion_ids: list[str] = []
+            for opinion_id in opinion_ids:
+                opinion = cache.read_resource("opinions", opinion_id)
+                if isinstance(opinion, dict):
+                    saved_id = self.upsert_opinion(opinion, cluster=cluster)
+                    if saved_id:
+                        saved_opinion_ids.append(saved_id)
+            if saved_opinion_ids:
+                self.update_case_opinion_ids(cluster_id, saved_opinion_ids)
+            items.append(
+                ResearchSetItem(
+                    item_type="case",
+                    authority_id=cluster_id,
+                    title=str(entry.get("title") or _cluster_title(cluster)),
+                    citation=str(entry.get("citation_text") or _cluster_citation_line(cluster)),
+                    payload=cluster,
+                    position=position,
+                    agent_selected=bool(entry.get("agent_selected")),
+                )
+            )
+            position += 1
+        for entry in cache.list_statute_entries():
+            statute_id = str(entry.get("statute_id", "")).strip()
+            if not statute_id:
+                continue
+            statute = cache.read_cached_statute(statute_id)
+            if not isinstance(statute, dict):
+                continue
+            items.append(
+                ResearchSetItem(
+                    item_type="statute",
+                    authority_id=statute_id,
+                    title=str(entry.get("title") or statute.get("title") or ""),
+                    citation=str(entry.get("citation") or statute.get("citation") or ""),
+                    payload=statute,
+                    position=position,
+                    agent_selected=bool(entry.get("agent_selected")),
+                )
+            )
+            position += 1
+        for entry in cache.list_rule_entries():
+            rule_id = str(entry.get("rule_id", "")).strip()
+            if not rule_id:
+                continue
+            rule = cache.read_cached_rule(rule_id)
+            if not isinstance(rule, dict):
+                continue
+            items.append(
+                ResearchSetItem(
+                    item_type="rule",
+                    authority_id=rule_id,
+                    title=str(entry.get("title") or rule.get("title") or ""),
+                    citation=str(entry.get("citation") or rule.get("citation") or ""),
+                    payload=rule,
+                    position=position,
+                    agent_selected=bool(entry.get("agent_selected")),
+                )
+            )
+            position += 1
+        return items
+
+    def list_research_sets(self) -> list[ResearchSet]:
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT set_id, name, created_at, updated_at, last_accessed
+                FROM research_sets
+                ORDER BY updated_at DESC, name COLLATE NOCASE
+                """
+            ).fetchall()
+        sets: list[ResearchSet] = []
+        for row in rows:
+            research_set = self._research_set_from_row(row, include_items=False)
+            if research_set is not None:
+                sets.append(research_set)
+        return sets
+
+    def read_research_set(self, name_or_id: str | int) -> ResearchSet | None:
+        with self.connection() as conn:
+            if isinstance(name_or_id, int) or str(name_or_id).strip().isdigit():
+                row = conn.execute(
+                    """
+                    SELECT set_id, name, created_at, updated_at, last_accessed
+                    FROM research_sets
+                    WHERE set_id = ?
+                    """,
+                    (int(name_or_id),),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT set_id, name, created_at, updated_at, last_accessed
+                    FROM research_sets
+                    WHERE normalized_name = ?
+                    """,
+                    (_research_set_normalized_name(str(name_or_id)),),
+                ).fetchone()
+        if row is None:
+            return None
+        return self._research_set_from_row(row, include_items=True)
+
+    def _research_set_from_row(
+        self,
+        row: sqlite3.Row,
+        *,
+        include_items: bool,
+    ) -> ResearchSet | None:
+        set_id = int(row["set_id"])
+        items = self._research_set_items(set_id) if include_items else []
+        counts = self._research_set_counts(set_id)
+        return ResearchSet(
+            set_id=set_id,
+            name=str(row["name"]),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+            last_accessed=str(row["last_accessed"]),
+            item_count=sum(counts.values()),
+            case_count=counts.get("case", 0),
+            statute_count=counts.get("statute", 0),
+            rule_count=counts.get("rule", 0),
+            items=items,
+        )
+
+    def _research_set_counts(self, set_id: int) -> dict[str, int]:
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT item_type, COUNT(*) AS count
+                FROM research_set_items
+                WHERE set_id = ?
+                GROUP BY item_type
+                """,
+                (set_id,),
+            ).fetchall()
+        return {str(row["item_type"]): int(row["count"]) for row in rows}
+
+    def _research_set_items(self, set_id: int) -> list[ResearchSetItem]:
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT item_type, authority_id, title, citation, payload_json,
+                       position, agent_selected
+                FROM research_set_items
+                WHERE set_id = ?
+                ORDER BY position, item_type, title COLLATE NOCASE
+                """,
+                (set_id,),
+            ).fetchall()
+        items: list[ResearchSetItem] = []
+        for row in rows:
+            try:
+                payload = _json_loads(str(row["payload_json"]))
+            except json.JSONDecodeError:
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            items.append(
+                ResearchSetItem(
+                    item_type=str(row["item_type"]),
+                    authority_id=str(row["authority_id"]),
+                    title=str(row["title"]),
+                    citation=str(row["citation"]),
+                    payload=payload,
+                    position=int(row["position"]),
+                    agent_selected=bool(row["agent_selected"]),
+                )
+            )
+        return items
+
+    def delete_research_set(self, name_or_id: str | int) -> bool:
+        research_set = self.read_research_set(name_or_id)
+        if research_set is None:
+            return False
+        with self.connection() as conn:
+            conn.execute("DELETE FROM research_sets WHERE set_id = ?", (research_set.set_id,))
+        return True
+
+    def load_research_set_into_cache(self, name_or_id: str | int, cache: JsonCache) -> ResearchSet:
+        research_set = self.read_research_set(name_or_id)
+        if research_set is None:
+            raise ValueError(f"Research set not found: {name_or_id}")
+        cache.clear()
+        for item in research_set.items:
+            if item.item_type == "case":
+                cluster_id = cache.upsert_cluster(item.payload)
+                if item.agent_selected:
+                    cache.set_agent_selected(cluster_id or item.authority_id, True)
+            elif item.item_type == "statute":
+                statute_id = cache.upsert_statute(item.payload)
+                if item.agent_selected:
+                    cache.set_statute_agent_selected(statute_id or item.authority_id, True)
+            elif item.item_type == "rule":
+                rule_id = cache.upsert_rule(item.payload)
+                if item.agent_selected:
+                    cache.set_rule_agent_selected(rule_id or item.authority_id, True)
+        with self.connection() as conn:
+            conn.execute(
+                "UPDATE research_sets SET last_accessed = ? WHERE set_id = ?",
+                (_utc_now(), research_set.set_id),
+            )
+        updated = self.read_research_set(research_set.set_id)
+        if updated is None:
+            raise RuntimeError("Loaded research set could not be read.")
+        return updated
 
     def official_pagination_audit(self) -> list[LibraryPruneCandidate]:
         from .quality import official_pagination_quality

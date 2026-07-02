@@ -278,6 +278,38 @@ def _cmd_clear_cache(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_show_research_sets(_args: argparse.Namespace) -> int:
+    library = CaseLibrary.default()
+    research_sets = library.list_research_sets()
+    if not research_sets:
+        print("No saved research sets.")
+        return 0
+    for research_set in research_sets:
+        print(
+            f"{research_set.name} | id {research_set.set_id} | "
+            f"{research_set.item_count} authorities "
+            f"({research_set.case_count} cases, {research_set.statute_count} statutes, "
+            f"{research_set.rule_count} rules) | updated {research_set.updated_at}"
+        )
+    return 0
+
+
+def _cmd_save_research_set(args: argparse.Namespace) -> int:
+    library = CaseLibrary.default()
+    cache = JsonCache.default()
+    research_set = library.save_research_set(args.name, cache, replace=args.replace)
+    print(f"Saved research set: {research_set.name} ({research_set.item_count} authorities)")
+    return 0
+
+
+def _cmd_load_research_set(args: argparse.Namespace) -> int:
+    library = CaseLibrary.default()
+    cache = JsonCache.default()
+    research_set = library.load_research_set_into_cache(args.name_or_id, cache)
+    print(f"Loaded research set: {research_set.name} ({research_set.item_count} authorities)")
+    return 0
+
+
 def _cmd_cache_dir(_args: argparse.Namespace) -> int:
     print(JsonCache.default().root)
     return 0
@@ -400,6 +432,31 @@ def build_parser() -> argparse.ArgumentParser:
 
     clear_cache_parser = subparsers.add_parser("clear-cache", help="delete Research Cache data")
     clear_cache_parser.set_defaults(func=_cmd_clear_cache)
+
+    show_research_sets_parser = subparsers.add_parser(
+        "show-research-sets",
+        help="list saved named Research Cache sets",
+    )
+    show_research_sets_parser.set_defaults(func=_cmd_show_research_sets)
+
+    save_research_set_parser = subparsers.add_parser(
+        "save-research-set",
+        help="save the current Research Cache as a named set",
+    )
+    save_research_set_parser.add_argument("name")
+    save_research_set_parser.add_argument(
+        "--replace",
+        action="store_true",
+        help="replace an existing research set with the same name",
+    )
+    save_research_set_parser.set_defaults(func=_cmd_save_research_set)
+
+    load_research_set_parser = subparsers.add_parser(
+        "load-research-set",
+        help="replace the Research Cache with a saved research set",
+    )
+    load_research_set_parser.add_argument("name_or_id")
+    load_research_set_parser.set_defaults(func=_cmd_load_research_set)
 
     cache_dir_parser = subparsers.add_parser("cache-dir", help="print the cache directory")
     cache_dir_parser.set_defaults(func=_cmd_cache_dir)

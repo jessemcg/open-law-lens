@@ -23,6 +23,15 @@ class CliCommandTests(unittest.TestCase):
         self.assertEqual(parser.parse_args(["extract-case", "13 Cal.4th 952"]).command, "extract-case")
         self.assertEqual(parser.parse_args(["open", "13 Cal.4th 952"]).command, "open")
         self.assertEqual(parser.parse_args(["open-selected"]).command, "open-selected")
+        self.assertEqual(parser.parse_args(["show-research-sets"]).command, "show-research-sets")
+        self.assertEqual(
+            parser.parse_args(["save-research-set", "Case_research"]).command,
+            "save-research-set",
+        )
+        self.assertEqual(
+            parser.parse_args(["load-research-set", "Case_research"]).command,
+            "load-research-set",
+        )
         self.assertEqual(
             parser.parse_args(["app", "--open-authority", "13 Cal.4th 952"]).open_authority,
             "13 Cal.4th 952",

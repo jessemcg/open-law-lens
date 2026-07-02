@@ -5,6 +5,7 @@ import os
 import re
 import signal
 import shutil
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -101,7 +102,7 @@ from .external_import import (
     normalize_official_citation,
 )
 from .launch_request import pop_open_authority_request
-from .library import DisplayText, PageMarker, opinion_display_text
+from .library import DisplayText, PageMarker, ResearchSet, opinion_display_text
 from .quality import official_pagination_quality
 from .scholar_search import (
     ScholarSearchError,
@@ -786,6 +787,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._settings_window: SettingsWindow | None = None
         self._dbus_commands_window: DbusCommandsWindow | None = None
         self._cli_commands_window: CliCommandsWindow | None = None
+        self._research_sets_window: Gtk.Window | None = None
         self._shortcuts_window: Gtk.ShortcutsWindow | None = None
         self._case_suggestions: list[CaseSuggestion] = []
         self._case_suggestions_loaded = False
@@ -814,6 +816,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         clear_cache = Gio.SimpleAction.new("clear_cache", None)
         clear_cache.connect("activate", self._on_clear_cache)
         self.add_action(clear_cache)
+        save_research_set = Gio.SimpleAction.new("save_research_set", None)
+        save_research_set.connect("activate", self._on_save_research_set)
+        self.add_action(save_research_set)
+        open_research_set = Gio.SimpleAction.new("open_research_set", None)
+        open_research_set.connect("activate", self._on_open_research_set)
+        self.add_action(open_research_set)
         show_dbus_commands = Gio.SimpleAction.new("show_dbus_commands", None)
         show_dbus_commands.connect("activate", self._on_show_dbus_commands)
         self.add_action(show_dbus_commands)
@@ -1145,6 +1153,22 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         heading.add_css_class("heading")
         heading.set_hexpand(True)
         header.append(heading)
+
+        save_button = Gtk.Button(icon_name="document-save-symbolic")
+        save_button.add_css_class("flat")
+        save_button.add_css_class("case-row-icon-button")
+        save_button.set_action_name("win.save_research_set")
+        save_button.set_tooltip_text("Save Research Set")
+        save_button.set_valign(Gtk.Align.CENTER)
+        header.append(save_button)
+
+        open_button = Gtk.Button(icon_name="folder-open-symbolic")
+        open_button.add_css_class("flat")
+        open_button.add_css_class("case-row-icon-button")
+        open_button.set_action_name("win.open_research_set")
+        open_button.set_tooltip_text("Open Research Set")
+        open_button.set_valign(Gtk.Align.CENTER)
+        header.append(open_button)
 
         clear_button = Gtk.Button(icon_name="user-trash-symbolic")
         clear_button.add_css_class("flat")
@@ -2859,6 +2883,251 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             shutil.rmtree(trash_path)
         except OSError as exc:
             GLib.idle_add(self._set_status, f"Research Cache cleared, but old files remain: {exc}")
+
+    def _research_cache_authority_count(self) -> int:
+        return (
+            len(self.client.cache.list_case_entries())
+            + len(self.client.cache.list_statute_entries())
+            + len(self.client.cache.list_rule_entries())
+        )
+
+    def _on_save_research_set(
+        self,
+        _action: Gio.SimpleAction,
+        _parameter: GLib.Variant | None,
+    ) -> None:
+        if self._research_cache_authority_count() == 0:
+            self._set_status("Research Cache is empty.")
+            return
+        window = Gtk.Window(title="Save Research Set")
+        window.set_transient_for(self)
+        window.set_modal(True)
+        window.set_default_size(420, 120)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        box.set_margin_top(12)
+        box.set_margin_bottom(12)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+
+        entry = Gtk.Entry()
+        entry.set_placeholder_text("Research set name")
+        entry.set_activates_default(True)
+        box.append(entry)
+
+        button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        button_box.set_halign(Gtk.Align.END)
+        cancel_button = Gtk.Button(label="Cancel")
+        save_button = Gtk.Button(label="Save")
+        save_button.add_css_class("suggested-action")
+        save_button.set_receives_default(True)
+        cancel_button.connect("clicked", lambda *_args: window.close())
+        save_button.connect("clicked", self._on_save_research_set_confirmed, window, entry)
+        button_box.append(cancel_button)
+        button_box.append(save_button)
+        box.append(button_box)
+
+        window.set_child(box)
+        window.set_default_widget(save_button)
+        window.present()
+        entry.grab_focus()
+
+    def _on_save_research_set_confirmed(
+        self,
+        _button: Gtk.Button,
+        window: Gtk.Window,
+        entry: Gtk.Entry,
+    ) -> None:
+        name = entry.get_text().strip()
+        if not name:
+            self._set_status("Research set name is required.")
+            return
+        existing = self.client.library.read_research_set(name)
+        if existing is not None:
+            self._show_replace_research_set_confirm(name, window)
+            return
+        self._save_research_set(name, replace=False)
+        window.close()
+
+    def _show_replace_research_set_confirm(self, name: str, parent: Gtk.Window) -> None:
+        window = Gtk.Window(title="Replace Research Set")
+        window.set_transient_for(parent)
+        window.set_modal(True)
+        window.set_default_size(420, 120)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        box.set_margin_top(12)
+        box.set_margin_bottom(12)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+
+        label = Gtk.Label(label=f"Replace existing research set '{name}'?", xalign=0)
+        label.set_wrap(True)
+        box.append(label)
+
+        button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        button_box.set_halign(Gtk.Align.END)
+        cancel_button = Gtk.Button(label="Cancel")
+        replace_button = Gtk.Button(label="Replace")
+        replace_button.add_css_class("destructive-action")
+        cancel_button.connect("clicked", lambda *_args: window.close())
+        replace_button.connect(
+            "clicked",
+            self._on_replace_research_set_confirmed,
+            window,
+            parent,
+            name,
+        )
+        button_box.append(cancel_button)
+        button_box.append(replace_button)
+        box.append(button_box)
+
+        window.set_child(box)
+        window.present()
+
+    def _on_replace_research_set_confirmed(
+        self,
+        _button: Gtk.Button,
+        confirm_window: Gtk.Window,
+        save_window: Gtk.Window,
+        name: str,
+    ) -> None:
+        self._save_research_set(name, replace=True)
+        confirm_window.close()
+        save_window.close()
+
+    def _save_research_set(self, name: str, *, replace: bool) -> None:
+        try:
+            research_set = self.client.library.save_research_set(
+                name,
+                self.client.cache,
+                replace=replace,
+            )
+        except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+            self._set_status(f"Unable to save Research Set: {exc}")
+            return
+        self._set_status(
+            f"Saved Research Set '{research_set.name}' with {research_set.item_count} authority item(s)."
+        )
+
+    def _on_open_research_set(
+        self,
+        _action: Gio.SimpleAction,
+        _parameter: GLib.Variant | None,
+    ) -> None:
+        self._show_research_sets_window()
+
+    def _show_research_sets_window(self) -> None:
+        if self._research_sets_window is not None:
+            self._research_sets_window.close()
+        window = Gtk.Window(title="Research Sets")
+        window.set_transient_for(self)
+        window.set_modal(False)
+        window.set_default_size(560, 360)
+        window.connect("close-request", self._on_research_sets_window_closed)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_top(12)
+        box.set_margin_bottom(12)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+
+        list_box = Gtk.ListBox()
+        list_box.add_css_class("case-list")
+        list_box.set_selection_mode(Gtk.SelectionMode.NONE)
+        research_sets = self.client.library.list_research_sets()
+        if not research_sets:
+            empty = Gtk.Label(label="No saved research sets.", xalign=0)
+            empty.add_css_class("dim-label")
+            box.append(empty)
+        else:
+            for research_set in research_sets:
+                list_box.append(self._build_research_set_row(research_set))
+            scroller = Gtk.ScrolledWindow()
+            scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            scroller.set_child(list_box)
+            scroller.set_vexpand(True)
+            box.append(scroller)
+
+        window.set_child(box)
+        self._research_sets_window = window
+        window.present()
+
+    def _on_research_sets_window_closed(self, _window: Gtk.Window) -> bool:
+        self._research_sets_window = None
+        return False
+
+    def _build_research_set_row(self, research_set: ResearchSet) -> Gtk.ListBoxRow:
+        row = Gtk.ListBoxRow()
+        row.set_selectable(False)
+        row.set_activatable(False)
+        row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        row_box.set_margin_top(8)
+        row_box.set_margin_bottom(8)
+        row_box.set_margin_start(8)
+        row_box.set_margin_end(8)
+
+        text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        text_box.set_hexpand(True)
+        title = Gtk.Label(label=research_set.name, xalign=0)
+        title.set_wrap(True)
+        title.add_css_class("heading")
+        text_box.append(title)
+        summary = Gtk.Label(
+            label=(
+                f"{research_set.item_count} authorities | "
+                f"{research_set.case_count} cases, {research_set.statute_count} statutes, "
+                f"{research_set.rule_count} rules"
+            ),
+            xalign=0,
+        )
+        summary.add_css_class("dim-label")
+        summary.set_wrap(True)
+        text_box.append(summary)
+        row_box.append(text_box)
+
+        open_button = Gtk.Button(icon_name="folder-open-symbolic")
+        open_button.add_css_class("flat")
+        open_button.add_css_class("case-row-icon-button")
+        open_button.set_tooltip_text("Open Research Set")
+        open_button.connect("clicked", self._on_load_research_set_clicked, research_set.set_id)
+        row_box.append(open_button)
+
+        delete_button = Gtk.Button(icon_name="user-trash-symbolic")
+        delete_button.add_css_class("flat")
+        delete_button.add_css_class("case-row-icon-button")
+        delete_button.set_tooltip_text("Delete Research Set")
+        delete_button.connect("clicked", self._on_delete_research_set_clicked, research_set.set_id)
+        row_box.append(delete_button)
+
+        row.set_child(row_box)
+        return row
+
+    def _on_load_research_set_clicked(self, _button: Gtk.Button, set_id: int) -> None:
+        try:
+            research_set = self.client.library.load_research_set_into_cache(set_id, self.client.cache)
+        except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+            self._set_status(f"Unable to open Research Set: {exc}")
+            return
+        self._set_sidebar_authorities(
+            self.client.cached_clusters(),
+            self.client.cached_statutes(),
+            self.client.cached_rules(),
+            select_first=True,
+        )
+        self._refresh_case_suggestion_index_async(force=True)
+        if self._research_sets_window is not None:
+            self._research_sets_window.close()
+        self._set_status(
+            f"Opened Research Set '{research_set.name}' with {research_set.item_count} authority item(s)."
+        )
+
+    def _on_delete_research_set_clicked(self, _button: Gtk.Button, set_id: int) -> None:
+        if not self.client.library.delete_research_set(set_id):
+            self._set_status("Research Set was not found.")
+            return
+        self._set_status("Deleted Research Set.")
+        self._show_research_sets_window()
 
     def _on_open_official_search(
         self,

@@ -54,6 +54,24 @@ CLI_COMMANDS: tuple[CliCommand, ...] = (
         description="Print available Open Law Lens CLI commands and examples.",
         example="uv run open-law-lens commands",
     ),
+    CliCommand(
+        name="show-research-sets",
+        title="Show Research Sets",
+        description="List saved named Research Cache sets.",
+        example="uv run open-law-lens show-research-sets",
+    ),
+    CliCommand(
+        name="save-research-set",
+        title="Save Research Set",
+        description="Save the current Research Cache as a named set.",
+        example='uv run open-law-lens save-research-set "Case Name_research"',
+    ),
+    CliCommand(
+        name="load-research-set",
+        title="Load Research Set",
+        description="Replace the current Research Cache with a saved set.",
+        example='uv run open-law-lens load-research-set "Case Name_research"',
+    ),
 )
 
 

@@ -123,6 +123,106 @@ class LibraryTests(unittest.TestCase):
 
             self.assertEqual(cache.list_case_entries()[0]["title"], "In re K.C.")
 
+    def test_research_set_saves_whole_cache_and_load_replaces_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            library = CaseLibrary(root / "library.sqlite3")
+            library.ensure()
+            cache = JsonCache(root / "cache")
+            cache.ensure()
+            cache.upsert_cluster(
+                {
+                    "id": 42,
+                    "case_name": "Example v. State",
+                    "citations": [{"volume": 1, "reporter": "Cal.", "page": "2"}],
+                }
+            )
+            cache.write_resource(
+                "opinions",
+                "10",
+                {
+                    "id": 10,
+                    "cluster_id": 42,
+                    "plain_text": "Example opinion text.",
+                },
+            )
+            cache.update_case_opinions({"id": 42, "case_name": "Example v. State"}, ["10"])
+            cache.set_agent_selected("42", True)
+            cache.upsert_statute(
+                {
+                    "statute_id": "WIC:300",
+                    "law_code": "WIC",
+                    "section": "300",
+                    "title": "Welfare and Institutions Code section 300",
+                    "citation": "Welf. & Inst. Code, § 300",
+                    "text": "300. A child comes within jurisdiction.",
+                }
+            )
+            cache.upsert_rule(
+                {
+                    "rule_id": "CRC:8.11",
+                    "rule_number": "8.11",
+                    "title": "California Rules of Court, rule 8.11",
+                    "citation": "Cal. Rules of Court, rule 8.11",
+                    "text": "Rule 8.11. Scope.",
+                }
+            )
+            cache.set_rule_agent_selected("CRC:8.11", True)
+
+            saved = library.save_research_set("Example_research", cache)
+
+            self.assertEqual(saved.name, "Example_research")
+            self.assertEqual(saved.item_count, 3)
+            self.assertEqual(saved.case_count, 1)
+            self.assertEqual(saved.statute_count, 1)
+            self.assertEqual(saved.rule_count, 1)
+            self.assertIsNotNone(library.read_opinion("10"))
+
+            cache.clear()
+            cache.upsert_cluster({"id": 99, "case_name": "Other v. State"})
+
+            loaded = library.load_research_set_into_cache("Example_research", cache)
+
+            self.assertEqual(loaded.set_id, saved.set_id)
+            self.assertEqual([entry["cluster_id"] for entry in cache.list_case_entries()], ["42"])
+            self.assertEqual([entry["statute_id"] for entry in cache.list_statute_entries()], ["WIC:300"])
+            self.assertEqual([entry["rule_id"] for entry in cache.list_rule_entries()], ["CRC:8.11"])
+            self.assertTrue(cache.is_agent_selected("42"))
+            self.assertTrue(cache.is_rule_agent_selected("CRC:8.11"))
+
+    def test_research_set_duplicate_requires_replace(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            library = CaseLibrary(root / "library.sqlite3")
+            library.ensure()
+            cache = JsonCache(root / "cache")
+            cache.upsert_cluster({"id": 42, "case_name": "Example v. State"})
+
+            first = library.save_research_set("Example_research", cache)
+            with self.assertRaises(ValueError):
+                library.save_research_set("Example_research", cache)
+
+            cache.upsert_cluster({"id": 43, "case_name": "Second v. State"})
+            replaced = library.save_research_set("Example_research", cache, replace=True)
+
+            self.assertEqual(replaced.set_id, first.set_id)
+            self.assertEqual(replaced.case_count, 2)
+
+    def test_research_sets_survive_cache_clear_and_can_be_deleted(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            library = CaseLibrary(root / "library.sqlite3")
+            library.ensure()
+            cache = JsonCache(root / "cache")
+            cache.upsert_cluster({"id": 42, "case_name": "Example v. State"})
+
+            saved = library.save_research_set("Example_research", cache)
+            cache.clear()
+
+            self.assertEqual(library.list_research_sets()[0].set_id, saved.set_id)
+            self.assertTrue(library.delete_research_set(saved.set_id))
+            self.assertEqual(library.list_research_sets(), [])
+
     def test_library_case_index_uses_extracted_adoption_title(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
