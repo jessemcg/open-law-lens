@@ -45,6 +45,8 @@ SEARCH_URL = f"{API_BASE}/search/"
 RATE_LIMIT_RETRY_ATTEMPTS = 3
 RATE_LIMIT_RETRY_BUFFER_SECONDS = 1.0
 RATE_LIMIT_RETRY_MAX_SECONDS = 90.0
+TRANSIENT_HTTP_RETRY_STATUSES = {502, 503, 504}
+TRANSIENT_HTTP_RETRY_SECONDS = (1.0, 2.5)
 CITED_BY_PAGE_SIZE = 8
 CASE_SEARCH_DEFAULT_PAGE_SIZE = 10
 CASE_SEARCH_MAX_PAGE_SIZE = 25
@@ -102,6 +104,17 @@ class CourtListenerSearchPage:
     results: list[CourtListenerSearchResult]
     count: int
     next_url: str
+
+
+@dataclass(frozen=True)
+class PublishedCitingCaseResult:
+    cluster: dict[str, Any]
+    result: CourtListenerSearchResult
+    score: int
+    cite_count: int
+    max_depth: int
+    rows_scanned: int
+    pages_scanned: int
 
 
 class _TextExtractor(HTMLParser):
@@ -415,6 +428,18 @@ def dedupe_case_clusters(clusters: list[dict[str, Any]]) -> list[dict[str, Any]]
     return [cluster for _, cluster in sorted(keep, key=lambda item: item[0])]
 
 
+def _published_citing_case_rank_key(
+    cluster: dict[str, Any],
+    score: dict[str, int],
+) -> tuple[int, int, int, str]:
+    return (
+        score.get("score", 0),
+        score.get("cite_count", 0),
+        score.get("max_depth", 0),
+        cluster_id_from_cluster(cluster),
+    )
+
+
 def _api_resource_url(value: object, kind: str) -> str:
     if isinstance(value, str):
         stripped = value.strip()
@@ -503,7 +528,19 @@ class CourtListenerClient:
                 ):
                     time.sleep(wait_seconds)
                     continue
-                message = f"CourtListener returned HTTP {exc.code}"
+                if (
+                    exc.code in TRANSIENT_HTTP_RETRY_STATUSES
+                    and attempt < RATE_LIMIT_RETRY_ATTEMPTS - 1
+                ):
+                    time.sleep(TRANSIENT_HTTP_RETRY_SECONDS[attempt])
+                    continue
+                if exc.code in TRANSIENT_HTTP_RETRY_STATUSES:
+                    message = (
+                        f"CourtListener returned HTTP {exc.code} after retrying. "
+                        "This is usually a temporary CourtListener gateway failure; try again."
+                    )
+                else:
+                    message = f"CourtListener returned HTTP {exc.code}"
                 try:
                     parsed = json.loads(body)
                 except json.JSONDecodeError:
@@ -723,6 +760,103 @@ class CourtListenerClient:
             next_url=next_url,
         )
 
+    def best_published_citing_case(
+        self,
+        cluster: dict[str, Any],
+        *,
+        page_size: int = 25,
+    ) -> PublishedCitingCaseResult | None:
+        opinions = self.fetch_cluster_opinions(cluster, persist_to_library=False)
+        opinion_ids = [
+            str(opinion.get("id") or "").strip()
+            for opinion in opinions
+            if str(opinion.get("id") or "").strip()
+        ]
+        if not opinion_ids:
+            return None
+
+        scores: dict[str, dict[str, int]] = {}
+        clusters: dict[str, dict[str, Any]] = {}
+        request = Request(
+            _opinions_cited_url(opinion_ids[0], page_size),
+            headers=self._headers(),
+            method="GET",
+        )
+        result = self._request_json(request)
+        if not isinstance(result, dict):
+            raise CourtListenerError("CourtListener cited-by lookup returned unexpected JSON.")
+        rows = result.get("results")
+        if not isinstance(rows, list):
+            raise CourtListenerError("CourtListener cited-by lookup returned unexpected results.")
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            citing_opinion = row.get("citing_opinion")
+            if isinstance(citing_opinion, dict):
+                opinion = citing_opinion
+            else:
+                citing_url = _api_resource_url(citing_opinion, "opinions")
+                if not citing_url:
+                    continue
+                opinion = self.fetch_url(citing_url, kind="opinions")
+            cluster_url = _api_resource_url(opinion.get("cluster"), "clusters")
+            if cluster_url:
+                citing_cluster = self.fetch_url(cluster_url, kind="clusters")
+            else:
+                cluster_id = str(opinion.get("cluster_id") or "").strip()
+                if not cluster_id:
+                    continue
+                citing_cluster = self.fetch_url(
+                    f"/api/rest/v4/clusters/{cluster_id}/",
+                    kind="clusters",
+                )
+            if not isinstance(citing_cluster, dict):
+                continue
+            if str(citing_cluster.get("precedential_status") or "").strip() != "Published":
+                continue
+            citing_cluster_id = cluster_id_from_cluster(citing_cluster)
+            if not citing_cluster_id:
+                continue
+            depth = max(1, _int_value(row.get("depth"), 1))
+            current = scores.setdefault(
+                citing_cluster_id,
+                {"score": 0, "cite_count": 0, "max_depth": 0},
+            )
+            current["score"] += depth
+            current["cite_count"] += 1
+            current["max_depth"] = max(current["max_depth"], depth)
+            clusters[citing_cluster_id] = citing_cluster
+
+        if not scores:
+            return None
+        best_cluster_id = max(
+            scores,
+            key=lambda cluster_id: _published_citing_case_rank_key(
+                clusters[cluster_id],
+                scores[cluster_id],
+            ),
+        )
+        score = scores[best_cluster_id]
+        best_cluster = clusters[best_cluster_id]
+        normalized = normalize_cluster_search_result(
+            best_cluster,
+            snippet=(
+                f"Citation depth total: {score['score']} "
+                f"across {score['cite_count']} citation graph reference(s)"
+            ),
+        )
+        if normalized is None:
+            return None
+        return PublishedCitingCaseResult(
+            cluster=best_cluster,
+            result=normalized,
+            score=score["score"],
+            cite_count=score["cite_count"],
+            max_depth=score["max_depth"],
+            rows_scanned=len(rows),
+            pages_scanned=1,
+        )
+
     def fetch_url(self, url: str, *, kind: str, refresh: bool = False) -> dict[str, Any]:
         full_url = url if url.startswith("http") else f"{BASE_URL}{url}"
         resource_id = resource_id_from_url(full_url)
@@ -746,7 +880,11 @@ class CourtListenerClient:
         return result
 
     def fetch_cluster_opinions(
-        self, cluster: dict[str, Any], *, refresh: bool = False
+        self,
+        cluster: dict[str, Any],
+        *,
+        refresh: bool = False,
+        persist_to_library: bool = True,
     ) -> list[dict[str, Any]]:
         self.last_opinion_source = ""
         cluster_id = cluster_id_from_cluster(cluster)
@@ -762,7 +900,8 @@ class CourtListenerClient:
         urls = cluster.get("sub_opinions")
         if not isinstance(urls, list):
             self.cache.upsert_cluster(cluster)
-            self.save_case_if_official_paginated(cluster, [])
+            if persist_to_library:
+                self.save_case_if_official_paginated(cluster, [])
             self.last_opinion_source = "Lookup"
             return []
         opinions: list[dict[str, Any]] = []
@@ -775,7 +914,8 @@ class CourtListenerClient:
                 if opinion_id:
                     opinion_ids.append(opinion_id)
         self.cache.update_case_opinions(cluster, opinion_ids)
-        self.save_case_if_official_paginated(cluster, opinions)
+        if persist_to_library:
+            self.save_case_if_official_paginated(cluster, opinions)
         self.last_opinion_source = "Fetched"
         return opinions
 

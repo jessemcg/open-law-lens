@@ -31,6 +31,12 @@ CLI_COMMANDS: tuple[CliCommand, ...] = (
         example='uv run open-law-lens case-search "beneficial relationship exception"',
     ),
     CliCommand(
+        name="best-published-citing-case",
+        title="Best Published Citing Case",
+        description="Find the strongest published citing case from the first CourtListener cited-by page.",
+        example="uv run open-law-lens best-published-citing-case --cluster-id 6240402 --json",
+    ),
+    CliCommand(
         name="extract-statute",
         title="Extract Statute",
         description="Look up a supported California statute citation and print JSON.",

@@ -11,7 +11,9 @@ from urllib.request import Request
 from open_law_lens.cache import JsonCache
 from open_law_lens.client import (
     CourtListenerClient,
+    CourtListenerError,
     RATE_LIMIT_RETRY_BUFFER_SECONDS,
+    TRANSIENT_HTTP_RETRY_SECONDS,
     CourtListenerSearchResult,
     cluster_short_title,
     cluster_citation_line,
@@ -213,6 +215,78 @@ class ClientTests(unittest.TestCase):
 
         self.assertEqual(result, {"ok": True})
         sleep_mock.assert_called_once_with(2 + RATE_LIMIT_RETRY_BUFFER_SECONDS)
+
+    def test_request_json_retries_transient_gateway_error(self) -> None:
+        class FakeResponse:
+            def __init__(self, payload: bytes) -> None:
+                self.payload = payload
+
+            def __enter__(self):  # type: ignore[no-untyped-def]
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):  # type: ignore[no-untyped-def]
+                return False
+
+            def read(self) -> bytes:
+                return self.payload
+
+        gateway_error = HTTPError(
+            "https://example.test/api/",
+            502,
+            "Bad Gateway",
+            {},
+            BytesIO(b""),
+        )
+        responses = [gateway_error, FakeResponse(b'{"ok": true}')]
+
+        def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+            response = responses.pop(0)
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            client = CourtListenerClient(
+                cache=JsonCache(temp_path / "cache"),
+                library=CaseLibrary(temp_path / "library.sqlite3"),
+            )
+
+            with (
+                patch("open_law_lens.client.urlopen", fake_urlopen),
+                patch("open_law_lens.client.time.sleep") as sleep_mock,
+            ):
+                result = client._request_json(Request("https://example.test/api/"))
+
+        self.assertEqual(result, {"ok": True})
+        sleep_mock.assert_called_once_with(TRANSIENT_HTTP_RETRY_SECONDS[0])
+
+    def test_request_json_exhausted_gateway_error_explains_retry(self) -> None:
+        def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+            raise HTTPError(
+                "https://example.test/api/",
+                502,
+                "Bad Gateway",
+                {},
+                BytesIO(b""),
+            )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            client = CourtListenerClient(
+                cache=JsonCache(temp_path / "cache"),
+                library=CaseLibrary(temp_path / "library.sqlite3"),
+            )
+
+            with (
+                patch("open_law_lens.client.urlopen", fake_urlopen),
+                patch("open_law_lens.client.time.sleep"),
+            ):
+                with self.assertRaises(CourtListenerError) as raised:
+                    client._request_json(Request("https://example.test/api/"))
+
+        self.assertIn("after retrying", str(raised.exception))
+        self.assertIn("temporary CourtListener gateway failure", str(raised.exception))
 
     def test_html_to_text_keeps_paragraph_breaks(self) -> None:
         self.assertEqual(html_to_text("<p>First</p><p>Second <b>line</b></p>"), "First\n\nSecond line")
@@ -827,6 +901,199 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(page.count, 0)
         self.assertEqual(page.next_url, "")
 
+    def test_best_published_citing_case_ranks_by_total_citation_depth(self) -> None:
+        class FakeCitingClient(CourtListenerClient):
+            def __init__(self) -> None:
+                self.request_urls: list[str] = []
+
+            def _headers(self) -> dict[str, str]:
+                return {}
+
+            def fetch_cluster_opinions(
+                self,
+                cluster,
+                *,
+                refresh=False,
+                persist_to_library=True,
+            ):  # type: ignore[no-untyped-def]
+                return [{"id": 10}]
+
+            def fetch_url(self, url, *, kind, refresh=False):  # type: ignore[no-untyped-def]
+                if kind == "opinions":
+                    opinion_id = str(url).rstrip("/").split("/")[-1]
+                    return {
+                        "id": int(opinion_id),
+                        "cluster": {
+                            "20": "/api/rest/v4/clusters/200/",
+                            "21": "/api/rest/v4/clusters/210/",
+                            "22": "/api/rest/v4/clusters/200/",
+                        }[opinion_id],
+                    }
+                cluster_id = str(url).rstrip("/").split("/")[-1]
+                return {
+                    "id": int(cluster_id),
+                    "case_name": {
+                        "200": "Most Citing v. Case",
+                        "210": "Deep Published Cite v. Case",
+                        "220": "Unpublished Deep Cite v. Case",
+                    }[cluster_id],
+                    "date_filed": {
+                        "200": "2024-01-02",
+                        "210": "2025-01-02",
+                        "220": "2026-01-02",
+                    }[cluster_id],
+                    "precedential_status": {
+                        "200": "Published",
+                        "210": "Published",
+                        "220": "Unpublished",
+                    }[cluster_id],
+                    "citations": [
+                        {
+                            "volume": "1",
+                            "reporter": "Cal.App.5th",
+                            "page": cluster_id,
+                        }
+                    ],
+                }
+
+            def _request_json(self, request):  # type: ignore[no-untyped-def]
+                self.request_urls.append(request.full_url)
+                return {
+                    "count": 3,
+                    "next": "",
+                    "results": [
+                        {
+                            "citing_opinion": "/api/rest/v4/opinions/20/",
+                            "cited_opinion": "/api/rest/v4/opinions/10/",
+                            "depth": 2,
+                        },
+                        {
+                            "citing_opinion": "/api/rest/v4/opinions/21/",
+                            "cited_opinion": "/api/rest/v4/opinions/10/",
+                            "depth": 7,
+                        },
+                        {
+                            "citing_opinion": {
+                                "id": 22,
+                                "cluster": "/api/rest/v4/clusters/220/",
+                            },
+                            "cited_opinion": "/api/rest/v4/opinions/10/",
+                            "depth": 20,
+                        },
+                        {
+                            "citing_opinion": "/api/rest/v4/opinions/22/",
+                            "cited_opinion": "/api/rest/v4/opinions/10/",
+                            "depth": 4,
+                        },
+                    ],
+                }
+
+        result = FakeCitingClient().best_published_citing_case({"id": 100})
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.cluster["id"], 210)
+        self.assertEqual(result.score, 7)
+        self.assertEqual(result.cite_count, 1)
+        self.assertEqual(result.max_depth, 7)
+        self.assertEqual(result.pages_scanned, 1)
+        self.assertEqual(result.rows_scanned, 4)
+        self.assertEqual(result.result.status, "Published")
+
+    def test_best_published_citing_case_uses_stable_tiebreak(self) -> None:
+        class FakeCitingClient(CourtListenerClient):
+            def __init__(self) -> None:
+                pass
+
+            def _headers(self) -> dict[str, str]:
+                return {}
+
+            def fetch_cluster_opinions(
+                self,
+                cluster,
+                *,
+                refresh=False,
+                persist_to_library=True,
+            ):  # type: ignore[no-untyped-def]
+                return [{"id": 10}]
+
+            def fetch_url(self, url, *, kind, refresh=False):  # type: ignore[no-untyped-def]
+                if kind == "opinions":
+                    opinion_id = str(url).rstrip("/").split("/")[-1]
+                    return {
+                        "id": int(opinion_id),
+                        "cluster": f"/api/rest/v4/clusters/{opinion_id}0/",
+                    }
+                cluster_id = str(url).rstrip("/").split("/")[-1]
+                return {
+                    "id": int(cluster_id),
+                    "case_name": f"Later {cluster_id}",
+                    "precedential_status": "Published",
+                }
+
+            def _request_json(self, request):  # type: ignore[no-untyped-def]
+                return {
+                    "count": 2,
+                    "next": "",
+                    "results": [
+                        {"citing_opinion": "/api/rest/v4/opinions/20/", "depth": 3},
+                        {"citing_opinion": "/api/rest/v4/opinions/21/", "depth": 3},
+                    ],
+                }
+
+        result = FakeCitingClient().best_published_citing_case({"id": 100})
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.cluster["id"], 210)
+
+    def test_best_published_citing_case_returns_none_without_target_opinions(self) -> None:
+        class FakeCitingClient(CourtListenerClient):
+            def __init__(self) -> None:
+                pass
+
+            def fetch_cluster_opinions(
+                self,
+                cluster,
+                *,
+                refresh=False,
+                persist_to_library=True,
+            ):  # type: ignore[no-untyped-def]
+                return []
+
+        self.assertIsNone(FakeCitingClient().best_published_citing_case({"id": 100}))
+
+    def test_best_published_citing_case_returns_none_without_published_rows(self) -> None:
+        class FakeCitingClient(CourtListenerClient):
+            def __init__(self) -> None:
+                pass
+
+            def _headers(self) -> dict[str, str]:
+                return {}
+
+            def fetch_cluster_opinions(
+                self,
+                cluster,
+                *,
+                refresh=False,
+                persist_to_library=True,
+            ):  # type: ignore[no-untyped-def]
+                return [{"id": 10}]
+
+            def fetch_url(self, url, *, kind, refresh=False):  # type: ignore[no-untyped-def]
+                if kind == "opinions":
+                    return {"id": 20, "cluster": "/api/rest/v4/clusters/200/"}
+                return {"id": 200, "case_name": "Unpublished Case", "precedential_status": "Unpublished"}
+
+            def _request_json(self, request):  # type: ignore[no-untyped-def]
+                return {
+                    "count": 1,
+                    "next": "",
+                    "results": [{"citing_opinion": "/api/rest/v4/opinions/20/", "depth": 10}],
+                }
+
+        self.assertIsNone(FakeCitingClient().best_published_citing_case({"id": 100}))
+
     def test_search_result_full_citation_uses_year_and_official_reporter(self) -> None:
         result = CourtListenerSearchResult(
             cluster_id="4378636",
@@ -973,6 +1240,30 @@ class ClientTests(unittest.TestCase):
 
             self.assertEqual(library.saved_clusters()[0]["case_name"], "Example v. State")
             self.assertEqual(library.read_case_opinion_ids("42"), ["10"])
+            self.assertEqual(client.last_opinion_source, "Fetched")
+
+    def test_fetch_cluster_opinions_can_skip_library_persistence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir) / "cache")
+            cache.write_resource(
+                "opinions",
+                "10",
+                {"id": 10, "cluster_id": 42, "plain_text": "[*25]Opening.\n\n[*26]Next."},
+            )
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            client = CourtListenerClient(cache=cache, library=library)
+            cluster = {
+                "id": 42,
+                "case_name": "Example v. State",
+                "citations": [{"volume": "10", "reporter": "Cal.App.5th", "page": "25"}],
+                "sub_opinions": ["/api/rest/v4/opinions/10/"],
+            }
+
+            client.fetch_cluster_opinions(cluster, persist_to_library=False)
+
+            self.assertEqual(library.saved_clusters(), [])
+            self.assertEqual(cache.list_case_entries()[0]["opinion_ids"], ["10"])
             self.assertEqual(client.last_opinion_source, "Fetched")
 
     def test_fetch_cluster_opinions_reports_library_source(self) -> None:

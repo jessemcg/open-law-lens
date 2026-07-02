@@ -11,7 +11,12 @@ from . import APP_ID
 from .authority_resolver import extract_authority, extract_case_by_cluster_id, read_selected_text_from_os
 from .cache import JsonCache
 from .cli_commands import build_cli_commands_text
-from .client import CALIFORNIA_CASE_COURT_IDS, CourtListenerClient, CourtListenerError
+from .client import (
+    CALIFORNIA_CASE_COURT_IDS,
+    CourtListenerClient,
+    CourtListenerError,
+    search_result_full_citation,
+)
 from .launch_request import discard_open_authority_request, write_open_authority_request
 from .library import CaseLibrary, LibraryPruneCandidate
 from .rules import CaliforniaRulesError
@@ -205,6 +210,97 @@ def _cmd_case_search(args: argparse.Namespace) -> int:
                 for index, result in enumerate(page.results, start=1)
             ],
         }
+    )
+    return 0
+
+
+def _published_citing_case_json(
+    *,
+    cluster_id: str,
+    page_size: int,
+    result: Any | None,
+) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "ok": result is not None,
+        "target_cluster_id": cluster_id,
+        "pages_scanned": 1 if result is not None else 0,
+        "page_size": page_size,
+        "result": None,
+    }
+    if result is None:
+        return base
+    search_result = result.result
+    base["pages_scanned"] = result.pages_scanned
+    base["rows_scanned"] = result.rows_scanned
+    base["result"] = {
+        "cluster_id": search_result.cluster_id,
+        "case_name": search_result.case_name,
+        "official_citation": search_result.citation,
+        "full_citation": search_result_full_citation(search_result),
+        "date_filed": search_result.date_filed,
+        "status": search_result.status,
+        "score": result.score,
+        "cite_count": result.cite_count,
+        "max_depth": result.max_depth,
+        "extract_command": (
+            "uv run open-law-lens extract-case "
+            f"--cluster-id {search_result.cluster_id}"
+        ),
+        "open_command": (
+            "uv run open-law-lens open "
+            f"{json.dumps(search_result_full_citation(search_result))}"
+        ),
+    }
+    return base
+
+
+def _cmd_best_published_citing_case(args: argparse.Namespace) -> int:
+    cluster_id = str(args.cluster_id or "").strip()
+    if not cluster_id:
+        print("CourtListener cluster id is required.", file=sys.stderr)
+        return 1
+    client = CourtListenerClient.default()
+    try:
+        cluster = client.fetch_url(
+            f"/api/rest/v4/clusters/{cluster_id}/",
+            kind="clusters",
+            refresh=getattr(args, "refresh", False),
+        )
+        result = client.best_published_citing_case(
+            cluster,
+            page_size=getattr(args, "page_size", 25),
+        )
+    except (CourtListenerError, ValueError) as exc:
+        if getattr(args, "json", False):
+            _print_json(
+                {
+                    "ok": False,
+                    "target_cluster_id": cluster_id,
+                    "pages_scanned": 0,
+                    "page_size": getattr(args, "page_size", 25),
+                    "result": None,
+                    "error": str(exc),
+                }
+            )
+            return 1
+        print(str(exc), file=sys.stderr)
+        return 1
+    payload = _published_citing_case_json(
+        cluster_id=cluster_id,
+        page_size=getattr(args, "page_size", 25),
+        result=result,
+    )
+    if getattr(args, "json", False):
+        _print_json(payload)
+        return 0 if result is not None else 1
+    if result is None:
+        print("No published citing case found in the first cited-by page.")
+        return 1
+    assert payload["result"] is not None
+    print(payload["result"]["full_citation"])
+    print(
+        f"Total citation depth {result.score}; "
+        f"{result.cite_count} citation graph reference(s)."
     )
     return 0
 
@@ -518,6 +614,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="do not apply the default California court filter",
     )
     case_search_parser.set_defaults(func=_cmd_case_search)
+
+    helper_parser = subparsers.add_parser(
+        "best-published-citing-case",
+        help="find the best published citing case from the first cited-by page",
+    )
+    helper_parser.add_argument("--cluster-id", required=True, help="target CourtListener cluster id")
+    helper_parser.add_argument(
+        "--page-size",
+        type=int,
+        default=25,
+        help="cited-by page size to request",
+    )
+    helper_parser.add_argument("--refresh", action="store_true", help="bypass cached cluster data")
+    helper_parser.add_argument("--json", action="store_true", help="print structured JSON")
+    helper_parser.set_defaults(func=_cmd_best_published_citing_case)
 
     extract_statute_parser = subparsers.add_parser("extract-statute", help="extract a California statute")
     extract_statute_parser.add_argument("value")

@@ -781,6 +781,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_citation_click_gesture: Gtk.GestureClick | None = None
         self._reader_header_citation: FormattedCitation | None = None
         self.reader_selection_pinpoint_button: Gtk.Button | None = None
+        self.reader_helper_case_button: Gtk.Button | None = None
         self._reader_has_official_pagination = False
         self._case_load_generation = 0
         self._last_lookup_text = ""
@@ -1534,6 +1535,19 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         )
         self.reader_header_box.append(self.reader_selection_pinpoint_button)
 
+        self.reader_helper_case_button = Gtk.Button(icon_name="go-jump-symbolic")
+        self.reader_helper_case_button.add_css_class("case-reader-copy-button")
+        self.reader_helper_case_button.set_tooltip_text(
+            "Load best citing helper case"
+        )
+        self.reader_helper_case_button.set_valign(Gtk.Align.CENTER)
+        self.reader_helper_case_button.set_sensitive(False)
+        self.reader_helper_case_button.connect(
+            "clicked",
+            self._on_helper_case_clicked,
+        )
+        self.reader_header_box.append(self.reader_helper_case_button)
+
         self.reader_header_cited_by_button = Gtk.Button(icon_name="edit-find-symbolic")
         self.reader_header_cited_by_button.add_css_class("case-reader-copy-button")
         self.reader_header_cited_by_button.set_tooltip_text("Show later citing cases")
@@ -1965,6 +1979,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 bool(header and has_selected_authority)
             )
             self._update_reader_selection_pinpoint_button()
+        if self.reader_helper_case_button is not None:
+            self.reader_helper_case_button.set_visible(
+                bool(header and self._helper_case_available())
+            )
+            self._update_reader_selection_pinpoint_button()
         self.reader_header_cited_by_button.set_visible(
             bool(header and self._selected_cluster)
         )
@@ -1991,16 +2010,30 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._update_reader_selection_pinpoint_button()
 
     def _update_reader_selection_pinpoint_button(self) -> None:
-        if self.reader_selection_pinpoint_button is None:
-            return
         has_authority = (
             getattr(self, "_selected_cluster", None) is not None
             or getattr(self, "_selected_statute", None) is not None
             or getattr(self, "_selected_rule", None) is not None
         )
-        self.reader_selection_pinpoint_button.set_sensitive(
-            bool(has_authority and self._reader_selection_bounds() is not None)
-        )
+        has_selection = self._reader_selection_bounds() is not None
+        if self.reader_selection_pinpoint_button is not None:
+            self.reader_selection_pinpoint_button.set_sensitive(
+                bool(has_authority and has_selection)
+            )
+        if self.reader_helper_case_button is not None:
+            available = self._helper_case_available()
+            self.reader_helper_case_button.set_visible(available)
+            self.reader_helper_case_button.set_sensitive(available)
+
+    def _helper_case_available(self) -> bool:
+        cluster = getattr(self, "_selected_cluster", None)
+        if cluster is None:
+            return False
+        if getattr(self, "_reader_has_official_pagination", False):
+            return False
+        if not getattr(self, "_reader_text", "").strip():
+            return False
+        return bool(cluster_citation_line(cluster))
 
     def _reader_selection_bounds(self) -> tuple[int, int, str] | None:
         bounds = self.reader_buffer.get_selection_bounds()
@@ -2050,6 +2083,80 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         )
         if self._set_formatted_clipboard(payload, "Could not copy selected text."):
             self._set_status("Selected text and pinpoint citation copied.")
+
+    def _on_helper_case_clicked(self, _button: Gtk.Button) -> None:
+        cluster = self._selected_cluster
+        if cluster is None:
+            self._set_status("Select a case before asking Codex for a helper case.")
+            return
+        cluster_id = cluster_id_from_cluster(cluster)
+        if not cluster_id:
+            self._set_status("Selected case has no CourtListener cluster id.")
+            return
+        target_citation = cluster_citation_line(cluster)
+        if not target_citation:
+            self._set_status("No official reporter citation is available for this case.")
+            return
+        OpenLawLensWindow._start_helper_case_agent(
+            self,
+            cluster,
+            cluster_id,
+            target_citation,
+        )
+
+    def _start_helper_case_agent(
+        self,
+        cluster: dict[str, Any],
+        cluster_id: str,
+        target_citation: str,
+    ) -> None:
+        if Vte is None or self._agent_terminal is None:
+            self._set_status("Embedded terminal is unavailable.")
+            return
+        prompt = OpenLawLensWindow._compose_helper_case_agent_prompt(
+            self,
+            cluster,
+            cluster_id,
+            target_citation,
+        )
+        prompt_path = self._write_prompt_file(prompt)
+        try:
+            workspace = self._create_agent_workspace()
+        except OSError as exc:
+            self._set_status(f"Unable to create agent workspace: {exc}")
+            return
+        self._set_agent_mode(AGENT_MODE_GENERAL)
+        self._case_agent_text_sources = []
+        self._agent_mode = AGENT_MODE_GENERAL
+        self._launch_agent_with_prompt(prompt_path, workspace, AGENT_MODE_GENERAL)
+
+    def _compose_helper_case_agent_prompt(
+        self,
+        cluster: dict[str, Any],
+        cluster_id: str,
+        target_citation: str,
+    ) -> str:
+        title = cluster_short_title(cluster)
+        command = (
+            "uv run --no-sync open-law-lens best-published-citing-case "
+            f"--cluster-id {cluster_id} --json"
+        )
+        return (
+            "Find the best published helper case for pinpointing the currently "
+            "viewed case.\n\n"
+            f"Target case: {title}\n"
+            f"Target official citation: {target_citation}\n"
+            f"CourtListener cluster id: {cluster_id}\n\n"
+            "Run exactly this bounded OpenLawLens CLI command:\n"
+            f"{command}\n\n"
+            "Use only that command's first-page published citing-case result. "
+            "Do not continue crawling CourtListener unless the user asks. "
+            "If the JSON says ok=false or has no result, say that no published "
+            "helper case was found in the first cited-by page. Otherwise return "
+            "only the best published helper case citation in a form the app can "
+            "link, followed by one short sentence explaining the total citation "
+            "depth and citation-reference count."
+        )
 
     def _reader_selection_pinpoint_citation(self, start_offset: int, end_offset: int) -> str:
         formatted = OpenLawLensWindow._reader_selection_pinpoint_formatted_citation(
@@ -4506,6 +4613,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             )
         elif reason:
             self._set_status(f"Transient view only: {reason} Use Find Official Text or Import Official Text.")
+        self._update_reader_selection_pinpoint_button()
         return False
 
     def _official_pagination_status(self, source: str) -> str:
