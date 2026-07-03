@@ -130,6 +130,17 @@ class CitationLinkTests(unittest.TestCase):
             "Adoption of Kelsey S. (1992) 1 Cal.4th 816",
         )
 
+    def test_cited_case_links_find_conservatorship_case_names(self) -> None:
+        text = "The court cited Conservatorship of O.B. (2020) 9 Cal.5th 989."
+
+        links = cited_case_links(text)
+
+        self.assertEqual([link.lookup_text for link in links], ["9 Cal.5th 989"])
+        self.assertEqual(
+            text[links[0].start_offset:links[0].end_offset],
+            "Conservatorship of O.B. (2020) 9 Cal.5th 989",
+        )
+
     def test_citation_italic_spans_cover_case_names_in_full_citations(self) -> None:
         text = (
             "The rule follows In re Alexis E. (2009) 171 Cal.App.4th 438 "
@@ -151,6 +162,16 @@ class CitationLinkTests(unittest.TestCase):
         self.assertEqual(
             [text[span.start_offset:span.end_offset] for span in spans],
             ["In re Caden C."],
+        )
+
+    def test_citation_italic_spans_cover_conservatorship_case_names(self) -> None:
+        text = "The court cited Conservatorship of O.B. (2020) 9 Cal.5th 989."
+
+        spans = citation_italic_spans(text)
+
+        self.assertEqual(
+            [text[span.start_offset:span.end_offset] for span in spans],
+            ["Conservatorship of O.B."],
         )
 
     def test_citation_italic_spans_exclude_signal_phrases(self) -> None:
@@ -190,6 +211,16 @@ class CitationLinkTests(unittest.TestCase):
         self.assertEqual(
             [text[span.start_offset:span.end_offset] for span in spans],
             ["In re L. Y. L.", "supra", "County of Alameda v. Carleson", "supra"],
+        )
+
+    def test_citation_italic_spans_cover_conservatorship_names_before_supra(self) -> None:
+        text = "Conservatorship of O.B., supra, at page 1011."
+
+        spans = citation_italic_spans(text)
+
+        self.assertEqual(
+            [text[span.start_offset:span.end_offset] for span in spans],
+            ["Conservatorship of O.B.", "supra"],
         )
 
     def test_citation_italic_spans_cover_shorthand_terms(self) -> None:

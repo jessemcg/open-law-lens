@@ -21,6 +21,7 @@ REPORTER_CITATION_PATTERN = (
 CASE_NAME_PATTERN = (
     r"In\s+re\s+[A-Z][^();\n]{1,100}?"
     r"|Adoption\s+of\s+[A-Z][^();\n]{1,100}?"
+    r"|Conservatorship\s+of\s+[A-Z][^();\n]{1,100}?"
     r"|[A-Z][A-Za-z0-9&.' -]{1,80}\s+v\.\s+"
     r"[A-Z][A-Za-z0-9&.' -]{1,80}(?:\s+\([A-Za-z][^)]+\))?"
 )
