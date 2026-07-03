@@ -3,15 +3,19 @@
 <img src="open-law-lens-icon.png" alt="Open Law Lens icon" width="128" align="left">
 
 Open Law Lens is a practical legal research app for working with public legal
-authority through open tools. It is built around CourtListener, local caching,
-an inspectable SQLite library, a GTK/Libadwaita reader, and terminal-friendly
-CLI commands that can be used directly by people or by Codex.
+authority through open tools. The app currently focuses on California state
+law, with first-class workflows for California cases, California statutes, and
+the California Rules of Court. The scope may expand in the future. It is built
+around CourtListener, local caching, an inspectable SQLite library, a
+GTK/Libadwaita reader, and terminal-friendly CLI commands that can be used
+directly by people or by Codex.
 
 The goal is to make legal authority easier to inspect, reuse, and
-research without depending on large commercial platforms. Court
-opinions, statutes, and court rules are public legal materials. Open Law Lens is
-intended to help lawyers, researchers, and technically curious users work with
-those materials in a transparent local workflow.
+research without depending on large commercial platforms. Court opinions,
+statutes, and court rules are public legal materials. Open Law Lens is intended
+to help lawyers, researchers, and technically curious users work with those
+materials in a transparent local workflow, starting with California state-law
+research.
 
 ## CourtListener and Free Law Project
 
@@ -43,7 +47,7 @@ Or save it in the app menu under Settings. The Settings path writes a local
 ## Features
 
 - GTK4/Libadwaita desktop app with a quiet reader-focused interface.
-- Citation lookup for cases through CourtListener.
+- Citation lookup for California cases through CourtListener.
 - California statute and California Rules of Court lookup.
 - Research Cache sidebar for the authorities currently in view.
 - Durable SQLite library at `library/open_law_lens.sqlite3` for saved authority
@@ -117,11 +121,11 @@ Show the agent-oriented command list with examples:
 uv run open-law-lens --list-cli-commands
 ```
 
-Common examples:
+Common California-focused examples:
 
 ```bash
-uv run open-law-lens lookup-citation "576 U.S. 644"
-uv run open-law-lens lookup-citation "576 U.S. 644" --text
+uv run open-law-lens lookup-citation "11 Cal.5th 614"
+uv run open-law-lens lookup-citation "11 Cal.5th 614" --text
 uv run open-law-lens extract-case "13 Cal.4th 952"
 uv run open-law-lens case-search "beneficial relationship exception"
 uv run open-law-lens extract-statute "Welf. & Inst. Code, § 300"
