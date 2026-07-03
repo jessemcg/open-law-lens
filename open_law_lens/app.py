@@ -131,6 +131,7 @@ from .statutes import (
     statute_subdivisions_for_range,
 )
 from .text_search import literal_match_ranges
+from .text_formatting import smart_quote_display_text
 from .web_import import ExtractedWebpage, extract_webpage_text
 
 
@@ -306,7 +307,7 @@ def build_case_reader_payload(
             )
             for marker in display.page_markers
         )
-    text = "".join(text_parts) or "No opinion text found."
+    text = smart_quote_display_text("".join(text_parts) or "No opinion text found.")
     quality = official_pagination_quality(cluster, displays)
     return CaseReaderPayload(
         generation=generation,
@@ -1920,6 +1921,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         text: str,
         page_markers: list[PageMarker] | None = None,
     ) -> bool:
+        text = smart_quote_display_text(text)
         self._set_reader_busy(False)
         self._close_reader_find(clear_entry=True)
         self._reader_text = text

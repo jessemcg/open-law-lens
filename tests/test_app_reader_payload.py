@@ -120,6 +120,33 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertTrue(payload.italic_spans)
         self.assertEqual(payload.cited_links[0].lookup_text, "2 Cal.5th 10")
 
+    def test_payload_uses_smart_quotes_without_shifting_offsets(self) -> None:
+        cluster = {
+            "id": 42,
+            "case_name": "Example v. State",
+            "citations": [{"volume": "1", "reporter": "Cal.5th", "page": "1"}],
+        }
+        display = DisplayText(
+            text='[*2] The parent said, "I don\'t agree." See Other v. Case (2020) 2 Cal.5th 10.',
+            source_field="plain_text",
+            page_markers=[
+                PageMarker(
+                    page_label="2",
+                    marker_text="[*2]",
+                    start_offset=0,
+                    end_offset=4,
+                    source_field="plain_text",
+                )
+            ],
+        )
+
+        payload = build_case_reader_payload(cluster, [display])
+
+        self.assertIn("\u201cI don\u2019t agree.\u201d", payload.text)
+        self.assertEqual(len(payload.text), len(display.text))
+        self.assertEqual(payload.text[payload.page_markers[0].start_offset:payload.page_markers[0].end_offset], "[*2]")
+        self.assertEqual(payload.cited_links[0].lookup_text, "2 Cal.5th 10")
+
     def test_ineligible_loaded_case_starts_scholar_with_transient_notice_mode(self) -> None:
         class DummyWindow:
             def __init__(self) -> None:
