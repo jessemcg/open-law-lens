@@ -65,7 +65,11 @@ def cluster_id_from_cluster(cluster: dict[str, Any]) -> str:
 
 
 def _utc_now() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat()
+    return datetime.now(UTC).isoformat()
+
+
+def _cache_sort_timestamp(entry: dict[str, Any]) -> str:
+    return str(entry.get("loaded_at") or entry.get("added_at") or "")
 
 
 def _opinion_import_text(opinion: dict[str, Any]) -> str:
@@ -227,6 +231,7 @@ class JsonCache:
             "opinion_ids": existing_opinion_ids if isinstance(existing_opinion_ids, list) else [],
             "agent_selected": bool(existing.get("agent_selected", False)),
             "added_at": existing.get("added_at", now),
+            "loaded_at": now,
             "last_accessed": now,
         }
         self.write_case_index(index)
@@ -268,7 +273,7 @@ class JsonCache:
                 str(item.get("cluster_id", "")),
             )
         )
-        normalized_entries.sort(key=lambda item: str(item.get("added_at", "")), reverse=True)
+        normalized_entries.sort(key=_cache_sort_timestamp, reverse=True)
         return normalized_entries
 
     def read_cached_cluster(self, cluster_id: str) -> dict[str, Any] | None:
@@ -377,6 +382,7 @@ class JsonCache:
             "statute_path": str(self.statute_path(statute_id)),
             "agent_selected": bool(existing.get("agent_selected", False)),
             "added_at": existing.get("added_at", now),
+            "loaded_at": now,
             "last_accessed": now,
         }
         self.write_statute_index(index)
@@ -391,7 +397,7 @@ class JsonCache:
                 str(item.get("statute_id", "")),
             )
         )
-        entries.sort(key=lambda item: str(item.get("added_at", "")), reverse=True)
+        entries.sort(key=_cache_sort_timestamp, reverse=True)
         return entries
 
     def read_cached_statute(self, statute_id: str) -> dict[str, Any] | None:
@@ -454,6 +460,7 @@ class JsonCache:
             "rule_path": str(self.rule_path(rule_id)),
             "agent_selected": bool(existing.get("agent_selected", False)),
             "added_at": existing.get("added_at", now),
+            "loaded_at": now,
             "last_accessed": now,
         }
         self.write_rule_index(index)
@@ -468,7 +475,7 @@ class JsonCache:
                 str(item.get("rule_id", "")),
             )
         )
-        entries.sort(key=lambda item: str(item.get("added_at", "")), reverse=True)
+        entries.sort(key=_cache_sort_timestamp, reverse=True)
         return entries
 
     def read_cached_rule(self, rule_id: str) -> dict[str, Any] | None:

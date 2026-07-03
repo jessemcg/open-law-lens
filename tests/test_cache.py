@@ -177,7 +177,7 @@ class CacheTests(unittest.TestCase):
                 ["2", "1"],
             )
 
-    def test_reupsert_preserves_added_at_order(self) -> None:
+    def test_reupsert_preserves_added_at_and_updates_loaded_order(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = JsonCache(Path(temp_dir))
             cache.ensure()
@@ -188,6 +188,7 @@ class CacheTests(unittest.TestCase):
                         "title": "First v. State",
                         "citation_text": "1 Cal. 1",
                         "added_at": "2026-06-01T12:00:00+00:00",
+                        "loaded_at": "2026-06-01T12:00:00+00:00",
                         "last_accessed": "2026-06-01T12:00:00+00:00",
                     },
                     "2": {
@@ -195,17 +196,20 @@ class CacheTests(unittest.TestCase):
                         "title": "Second v. State",
                         "citation_text": "2 Cal. 2",
                         "added_at": "2026-06-02T12:00:00+00:00",
+                        "loaded_at": "2026-06-02T12:00:00+00:00",
                         "last_accessed": "2026-06-02T12:00:00+00:00",
                     },
                 }
             )
 
-            cache.upsert_cluster({"id": 1, "case_name": "First v. State"})
+            with patch("open_law_lens.cache._utc_now", return_value="2026-06-03T12:00:00+00:00"):
+                cache.upsert_cluster({"id": 1, "case_name": "First v. State"})
 
             entries = cache.list_case_entries()
-            self.assertEqual([entry["cluster_id"] for entry in entries], ["2", "1"])
-            self.assertEqual(entries[1]["added_at"], "2026-06-01T12:00:00+00:00")
-            self.assertNotEqual(entries[1]["last_accessed"], entries[1]["added_at"])
+            self.assertEqual([entry["cluster_id"] for entry in entries], ["1", "2"])
+            self.assertEqual(entries[0]["added_at"], "2026-06-01T12:00:00+00:00")
+            self.assertEqual(entries[0]["loaded_at"], "2026-06-03T12:00:00+00:00")
+            self.assertEqual(entries[0]["last_accessed"], "2026-06-03T12:00:00+00:00")
 
     def test_update_case_opinions_merges_ids(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -281,6 +285,44 @@ class CacheTests(unittest.TestCase):
             self.assertTrue(cache.is_statute_agent_selected("WIC:300"))
             self.assertEqual(cache.selected_statute_entries()[0]["statute_id"], "WIC:300")
 
+    def test_statute_reupsert_preserves_added_at_and_updates_loaded_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            first = {
+                "statute_id": "WIC:300",
+                "law_code": "WIC",
+                "section": "300",
+                "title": "Welfare and Institutions Code section 300",
+                "citation": "Welf. & Inst. Code, § 300",
+            }
+            second = {
+                "statute_id": "WIC:301",
+                "law_code": "WIC",
+                "section": "301",
+                "title": "Welfare and Institutions Code section 301",
+                "citation": "Welf. & Inst. Code, § 301",
+            }
+
+            with patch(
+                "open_law_lens.cache._utc_now",
+                side_effect=[
+                    "2026-06-01T12:00:00+00:00",
+                    "2026-06-02T12:00:00+00:00",
+                    "2026-06-03T12:00:00+00:00",
+                ],
+            ):
+                cache.upsert_statute(first)
+                cache.upsert_statute(second)
+                cache.upsert_statute(first)
+
+            entries = cache.list_statute_entries()
+            self.assertEqual([entry["statute_id"] for entry in entries], ["WIC:300", "WIC:301"])
+            self.assertEqual(entries[0]["added_at"], "2026-06-01T12:00:00+00:00")
+            self.assertEqual(entries[0]["loaded_at"], "2026-06-03T12:00:00+00:00")
+            loaded_at = entries[0]["loaded_at"]
+            cache.set_statute_agent_selected("WIC:300", True)
+            self.assertEqual(cache.read_statute_index()["WIC:300"]["loaded_at"], loaded_at)
+
     def test_rule_cache_round_trip_and_selection(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = JsonCache(Path(temp_dir))
@@ -300,6 +342,42 @@ class CacheTests(unittest.TestCase):
             self.assertEqual(cache.read_cached_rule("CRC:8.11"), rule)
             self.assertTrue(cache.is_rule_agent_selected("CRC:8.11"))
             self.assertEqual(cache.selected_rule_entries()[0]["rule_id"], "CRC:8.11")
+
+    def test_rule_reupsert_preserves_added_at_and_updates_loaded_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            first = {
+                "rule_id": "CRC:8.11",
+                "rule_number": "8.11",
+                "title": "California Rules of Court, rule 8.11",
+                "citation": "Cal. Rules of Court, rule 8.11",
+            }
+            second = {
+                "rule_id": "CRC:8.12",
+                "rule_number": "8.12",
+                "title": "California Rules of Court, rule 8.12",
+                "citation": "Cal. Rules of Court, rule 8.12",
+            }
+
+            with patch(
+                "open_law_lens.cache._utc_now",
+                side_effect=[
+                    "2026-06-01T12:00:00+00:00",
+                    "2026-06-02T12:00:00+00:00",
+                    "2026-06-03T12:00:00+00:00",
+                ],
+            ):
+                cache.upsert_rule(first)
+                cache.upsert_rule(second)
+                cache.upsert_rule(first)
+
+            entries = cache.list_rule_entries()
+            self.assertEqual([entry["rule_id"] for entry in entries], ["CRC:8.11", "CRC:8.12"])
+            self.assertEqual(entries[0]["added_at"], "2026-06-01T12:00:00+00:00")
+            self.assertEqual(entries[0]["loaded_at"], "2026-06-03T12:00:00+00:00")
+            loaded_at = entries[0]["loaded_at"]
+            cache.set_rule_agent_selected("CRC:8.11", True)
+            self.assertEqual(cache.read_rule_index()["CRC:8.11"]["loaded_at"], loaded_at)
 
     def test_remove_case_removes_index_cluster_and_unshared_opinions(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

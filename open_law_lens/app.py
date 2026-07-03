@@ -1224,6 +1224,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.case_list = Gtk.ListBox()
         self.case_list.add_css_class("case-list")
         self.case_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self.case_list.set_sort_func(self._sort_research_cache_rows)
         self.case_list.connect("row-selected", self._on_case_selected)
 
         scroller = Gtk.ScrolledWindow()
@@ -4277,6 +4278,18 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         while row := self.case_list.get_row_at_index(0):
             self.case_list.remove(row)
         selected_row: Gtk.ListBoxRow | None = None
+        case_entries = {
+            str(entry.get("cluster_id") or "").strip(): entry
+            for entry in self.client.cache.list_case_entries()
+        }
+        statute_entries = {
+            str(entry.get("statute_id") or "").strip(): entry
+            for entry in self.client.cache.list_statute_entries()
+        }
+        rule_entries = {
+            str(entry.get("rule_id") or "").strip(): entry
+            for entry in self.client.cache.list_rule_entries()
+        }
         for index, cluster in enumerate(clusters):
             row = Gtk.ListBoxRow()
             row.set_selectable(True)
@@ -4326,6 +4339,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             row.set_child(row_box)
             row._open_law_lens_cluster_index = index
             row._open_law_lens_authority_type = "case"
+            row._open_law_lens_cache_sort_key = self._research_cache_row_sort_key(
+                case_entries.get(cluster_id, {}),
+                title_text,
+                official_citation,
+                "case",
+                cluster_id,
+            )
             self.case_list.append(row)
             if select_cluster_id and cluster_id_from_cluster(cluster) == select_cluster_id:
                 selected_row = row
@@ -4373,6 +4393,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             row.set_child(row_box)
             row._open_law_lens_statute_index = index
             row._open_law_lens_authority_type = "statute"
+            row._open_law_lens_cache_sort_key = self._research_cache_row_sort_key(
+                statute_entries.get(statute_id, {}),
+                str(statute.get("title") or "Untitled statute"),
+                citation_text,
+                "statute",
+                statute_id,
+            )
             self.case_list.append(row)
             if select_statute_id and statute_id == select_statute_id:
                 selected_row = row
@@ -4420,6 +4447,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             row.set_child(row_box)
             row._open_law_lens_rule_index = index
             row._open_law_lens_authority_type = "rule"
+            row._open_law_lens_cache_sort_key = self._research_cache_row_sort_key(
+                rule_entries.get(rule_id, {}),
+                str(rule.get("title") or "Untitled rule"),
+                citation_text,
+                "rule",
+                rule_id,
+            )
             self.case_list.append(row)
             if select_rule_id and rule_id == select_rule_id:
                 selected_row = row
@@ -4432,6 +4466,37 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 self.case_list.select_row(selected_row)
             finally:
                 self._suppress_sidebar_selection_lookup = old_suppress
+
+    def _research_cache_row_sort_key(
+        self,
+        entry: dict[str, Any],
+        title: str,
+        citation: str,
+        authority_type: str,
+        authority_id: str,
+    ) -> tuple[str, str, str, str, str]:
+        loaded_at = str(entry.get("loaded_at") or entry.get("added_at") or "")
+        return (
+            loaded_at,
+            title.casefold(),
+            citation.casefold(),
+            authority_type,
+            authority_id,
+        )
+
+    def _sort_research_cache_rows(
+        self,
+        row_a: Gtk.ListBoxRow,
+        row_b: Gtk.ListBoxRow,
+        _user_data: Any = None,
+    ) -> int:
+        key_a = getattr(row_a, "_open_law_lens_cache_sort_key", ("", "", "", "", ""))
+        key_b = getattr(row_b, "_open_law_lens_cache_sort_key", ("", "", "", "", ""))
+        if key_a[0] != key_b[0]:
+            return -1 if key_a[0] > key_b[0] else 1
+        if key_a[1:] == key_b[1:]:
+            return 0
+        return -1 if key_a[1:] < key_b[1:] else 1
 
     def _on_agent_case_toggled(self, button: Gtk.CheckButton, cluster_id: str) -> None:
         self.client.cache.set_agent_selected(cluster_id, button.get_active())
