@@ -1069,6 +1069,18 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
               background-color: alpha(@window_fg_color, 0.08);
               color: alpha(@window_fg_color, 0.75);
             }}
+            button.cache-row-remove-button {{
+              background-color: transparent;
+              color: alpha(@window_fg_color, 0.14);
+            }}
+            list.case-list row.case-cache-row:hover button.cache-row-remove-button,
+            list.case-list row.case-cache-row:selected button.cache-row-remove-button {{
+              color: alpha(@window_fg_color, 0.52);
+            }}
+            button.cache-row-remove-button:hover {{
+              background-color: alpha(@window_fg_color, 0.08);
+              color: alpha(@window_fg_color, 0.78);
+            }}
             checkbutton.neutral-agent-check check:checked {{
               background-color: alpha(@window_fg_color, 0.18);
               color: @window_fg_color;
@@ -1573,6 +1585,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.reader_header_box.set_hexpand(True)
         self.reader_header_box.set_visible(False)
 
+        self.reader_header_leading_spacer = Gtk.Box()
+        self.reader_header_leading_spacer.set_can_target(False)
+        self.reader_header_box.append(self.reader_header_leading_spacer)
+
         self.reader_header_label = Gtk.Label(label="", xalign=0.5)
         self.reader_header_label.add_css_class("case-reader-fixed-header")
         self.reader_header_label.set_wrap(True)
@@ -1581,12 +1597,21 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.reader_header_label.set_hexpand(True)
         self.reader_header_box.append(self.reader_header_label)
 
+        self.reader_header_action_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.reader_header_action_box.set_halign(Gtk.Align.END)
+        self.reader_header_action_box.set_valign(Gtk.Align.CENTER)
+        self.reader_header_box.append(self.reader_header_action_box)
+
+        self.reader_header_size_group = Gtk.SizeGroup(mode=Gtk.SizeGroupMode.HORIZONTAL)
+        self.reader_header_size_group.add_widget(self.reader_header_leading_spacer)
+        self.reader_header_size_group.add_widget(self.reader_header_action_box)
+
         self.reader_header_copy_button = Gtk.Button(icon_name="edit-copy-symbolic")
         self.reader_header_copy_button.add_css_class("case-reader-copy-button")
         self.reader_header_copy_button.set_tooltip_text("Copy citation")
         self.reader_header_copy_button.set_valign(Gtk.Align.CENTER)
         self.reader_header_copy_button.connect("clicked", self._on_copy_reader_citation_clicked)
-        self.reader_header_box.append(self.reader_header_copy_button)
+        self.reader_header_action_box.append(self.reader_header_copy_button)
 
         self.reader_selection_pinpoint_button = Gtk.Button(icon_name="insert-text-symbolic")
         self.reader_selection_pinpoint_button.add_css_class("case-reader-copy-button")
@@ -1599,7 +1624,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             "clicked",
             self._on_copy_reader_selection_pinpoint_clicked,
         )
-        self.reader_header_box.append(self.reader_selection_pinpoint_button)
+        self.reader_header_action_box.append(self.reader_selection_pinpoint_button)
 
         self.reader_helper_case_button = Gtk.Button(icon_name="go-jump-symbolic")
         self.reader_helper_case_button.add_css_class("case-reader-copy-button")
@@ -1612,14 +1637,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             "clicked",
             self._on_helper_case_clicked,
         )
-        self.reader_header_box.append(self.reader_helper_case_button)
+        self.reader_header_action_box.append(self.reader_helper_case_button)
 
         self.reader_header_cited_by_button = Gtk.Button(icon_name="edit-find-symbolic")
         self.reader_header_cited_by_button.add_css_class("case-reader-copy-button")
         self.reader_header_cited_by_button.set_tooltip_text("Show later citing cases")
         self.reader_header_cited_by_button.set_valign(Gtk.Align.CENTER)
         self.reader_header_cited_by_button.connect("clicked", self._on_cited_by_clicked)
-        self.reader_header_box.append(self.reader_header_cited_by_button)
+        self.reader_header_action_box.append(self.reader_header_cited_by_button)
 
         self.reader_view = Gtk.TextView(buffer=self.reader_buffer)
         self.reader_view.set_editable(False)
@@ -4269,6 +4294,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             remove_button = Gtk.Button(icon_name="user-trash-symbolic")
             remove_button.add_css_class("flat")
             remove_button.add_css_class("case-row-icon-button")
+            remove_button.add_css_class("cache-row-remove-button")
             remove_button.set_tooltip_text("Remove from Research Cache")
             remove_button.set_sensitive(bool(cluster_id))
             remove_button.connect("clicked", self._on_remove_cached_case_clicked, cluster_id, cluster)
@@ -4319,6 +4345,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             remove_button = Gtk.Button(icon_name="user-trash-symbolic")
             remove_button.add_css_class("flat")
             remove_button.add_css_class("case-row-icon-button")
+            remove_button.add_css_class("cache-row-remove-button")
             remove_button.set_tooltip_text("Remove from Research Cache")
             remove_button.set_sensitive(bool(statute_id))
             remove_button.connect("clicked", self._on_remove_cached_statute_clicked, statute_id, statute)
@@ -4365,6 +4392,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             remove_button = Gtk.Button(icon_name="user-trash-symbolic")
             remove_button.add_css_class("flat")
             remove_button.add_css_class("case-row-icon-button")
+            remove_button.add_css_class("cache-row-remove-button")
             remove_button.set_tooltip_text("Remove from Research Cache")
             remove_button.set_sensitive(bool(rule_id))
             remove_button.connect("clicked", self._on_remove_cached_rule_clicked, rule_id, rule)
