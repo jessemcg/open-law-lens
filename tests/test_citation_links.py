@@ -85,6 +85,20 @@ class CitationLinkTests(unittest.TestCase):
             "Cesar V. v. Superior Court (2001) 91 Cal.App.4th 1023",
         )
 
+    def test_cited_case_links_exclude_narrative_intro_phrase(self) -> None:
+        text = (
+            "As the California Supreme Court explained in MacPherson v. MacPherson "
+            "(1939) 13 Cal.2d 271 [89 P.2d 382]."
+        )
+
+        links = cited_case_links(text)
+
+        self.assertEqual([link.lookup_text for link in links], ["13 Cal.2d 271"])
+        self.assertEqual(
+            text[links[0].start_offset:links[0].end_offset],
+            "MacPherson v. MacPherson (1939) 13 Cal.2d 271",
+        )
+
     def test_cited_case_links_find_california_supreme_court_cal5th_citations(self) -> None:
         text = (
             "A Law answer may cite In re Caden C. (2021) 11 Cal.5th 614 "
@@ -150,6 +164,19 @@ class CitationLinkTests(unittest.TestCase):
         self.assertEqual(
             [text[span.start_offset:span.end_offset] for span in spans],
             ["Michael M. v. Giovanna F.", "Lehr v. Robertson"],
+        )
+
+    def test_citation_italic_spans_exclude_narrative_intro_phrase(self) -> None:
+        text = (
+            "As the California Supreme Court explained in MacPherson v. MacPherson "
+            "(1939) 13 Cal.2d 271."
+        )
+
+        spans = citation_italic_spans(text)
+
+        self.assertEqual(
+            [text[span.start_offset:span.end_offset] for span in spans],
+            ["MacPherson v. MacPherson"],
         )
 
     def test_citation_italic_spans_cover_case_names_before_supra(self) -> None:

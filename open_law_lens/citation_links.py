@@ -49,7 +49,9 @@ CITATION_SIGNAL_PREFIX_RE = re.compile(
     r"Following|"
     r"Relying\s+(?:on|upon)|"
     r"See(?:\s+also)?|"
-    r"The\s+(?:case|court|decision|holding|opinion)\s+in"
+    r"The\s+(?:case|court|decision|holding|opinion)\s+in|"
+    r"As\s+(?:the\s+)?[A-Z][A-Za-z\s]{1,80}?\s+"
+    r"(?:explained|held|stated|observed|noted|recognized|reasoned)\s+in"
     r")\s+"
 )
 
