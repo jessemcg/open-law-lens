@@ -17,9 +17,19 @@ from .citation_model import (
     canonicalize_lookup_result,
     official_citation_from_cluster,
 )
+from .external_import import repair_reporter_only_imported_cluster
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PROJECT_CACHE_DIR = PROJECT_ROOT / "cache"
+OPINION_TEXT_FIELDS = (
+    "html_with_citations",
+    "plain_text",
+    "html",
+    "html_lawbox",
+    "html_columbia",
+    "html_anon_2020",
+    "xml_harvard",
+)
 
 
 def normalize_citation(value: str) -> str:
@@ -58,6 +68,44 @@ def _utc_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
+def _opinion_import_text(opinion: dict[str, Any]) -> str:
+    for field in OPINION_TEXT_FIELDS:
+        value = opinion.get(field)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def _repair_lookup_result_clusters(
+    data: Any,
+    repaired_clusters: dict[str, dict[str, Any]],
+) -> Any | None:
+    if not isinstance(data, list):
+        return None
+    changed = False
+    repaired_items: list[Any] = []
+    for item in data:
+        if not isinstance(item, dict):
+            repaired_items.append(item)
+            continue
+        clusters = item.get("clusters")
+        if not isinstance(clusters, list):
+            repaired_items.append(item)
+            continue
+        repaired_item_clusters: list[Any] = []
+        for cluster in clusters:
+            if isinstance(cluster, dict):
+                cluster_id = cluster_id_from_cluster(cluster)
+                repaired = repaired_clusters.get(cluster_id)
+                if repaired is not None:
+                    repaired_item_clusters.append(repaired)
+                    changed = True
+                    continue
+            repaired_item_clusters.append(cluster)
+        repaired_items.append({**item, "clusters": repaired_item_clusters})
+    return canonicalize_lookup_result(repaired_items) if changed else None
+
+
 @dataclass
 class JsonCache:
     root: Path
@@ -69,6 +117,7 @@ class JsonCache:
     def ensure(self) -> None:
         for name in ("lookups", "clusters", "opinions", "statutes", "rules"):
             (self.root / name).mkdir(parents=True, exist_ok=True)
+        self.repair_reporter_only_imported_case_names()
 
     def case_index_path(self) -> Path:
         return self.root / "cases_index.json"
@@ -225,6 +274,38 @@ class JsonCache:
     def read_cached_cluster(self, cluster_id: str) -> dict[str, Any] | None:
         data = self.read_resource("clusters", cluster_id)
         return canonicalize_cluster_citations(data) if isinstance(data, dict) else None
+
+    def repair_reporter_only_imported_case_names(self) -> int:
+        repaired_clusters: dict[str, dict[str, Any]] = {}
+        index = self.read_case_index()
+        for cluster_id, entry in index.items():
+            cluster = self.read_cached_cluster(cluster_id)
+            if cluster is None:
+                continue
+            opinion_ids = entry.get("opinion_ids")
+            if not isinstance(opinion_ids, list):
+                continue
+            for opinion_id in opinion_ids:
+                opinion = self.read_resource("opinions", str(opinion_id))
+                if not isinstance(opinion, dict):
+                    continue
+                repaired = repair_reporter_only_imported_cluster(cluster, _opinion_import_text(opinion))
+                if repaired is None:
+                    continue
+                repaired_clusters[cluster_id] = repaired
+                self.upsert_cluster(repaired)
+                break
+        if not repaired_clusters:
+            return 0
+        self._repair_lookup_clusters(repaired_clusters)
+        return len(repaired_clusters)
+
+    def _repair_lookup_clusters(self, repaired_clusters: dict[str, dict[str, Any]]) -> None:
+        for lookup_path in self.list_lookups():
+            data = self.read_json(lookup_path)
+            repaired_data = _repair_lookup_result_clusters(data, repaired_clusters)
+            if repaired_data is not None:
+                self.write_json(lookup_path, repaired_data)
 
     def is_agent_selected(self, cluster_id: str) -> bool:
         entry = self.read_case_index().get(cluster_id)

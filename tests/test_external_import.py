@@ -60,11 +60,36 @@ In re CLAUDIA R. et al., Persons Coming Under the Juvenile Court Law.
 The notice requirement is at the heart of ICWA. (In re Antonio R. (2022) 76 Cal.App.5th 421, 429 [291 Cal.Rptr.3d 520].)
 """
 
+B_D_TEXT = """110 Cal.App.5th 1132 (2025)
+
+B.D., Petitioner,
+
+v.
+
+THE SUPERIOR COURT OF CONTRA COSTA COUNTY, Respondent;
+
+CONTRA COSTA COUNTY CHILDREN AND FAMILY SERVICES BUREAU, Real Party in Interest.
+
+No. A172485.
+
+Court of Appeals of California, First District, Division Three.
+
+April 30, 2025.
+
+*1140 Appeal from the Superior Court of Contra Costa County.
+
+OPINION
+"""
+
 
 class ExternalImportTests(unittest.TestCase):
     def test_imported_case_name_from_google_scholar_text(self) -> None:
         self.assertEqual(imported_case_name_from_text(CADEN_TEXT), "In re Caden C.")
         self.assertEqual(imported_year_from_text(CADEN_TEXT), "2021")
+
+    def test_imported_case_name_from_split_superior_court_writ_caption(self) -> None:
+        self.assertEqual(imported_case_name_from_text(B_D_TEXT), "B.D. v. Superior Court")
+        self.assertEqual(imported_year_from_text(B_D_TEXT), "2025")
 
     def test_clean_imported_opinion_text_removes_google_scholar_account_chrome(self) -> None:
         cleaned = clean_imported_opinion_text(CADEN_TEXT)
@@ -99,6 +124,17 @@ class ExternalImportTests(unittest.TestCase):
         self.assertEqual(cluster["date_filed"], "2021")
         self.assertEqual(cluster["official_citation"], "11 Cal.5th 614")
         self.assertEqual(cluster["citations"], [{"volume": "11", "reporter": "Cal.5th", "page": "614"}])
+
+    def test_build_external_import_cluster_replaces_reporter_only_name_from_caption(self) -> None:
+        cluster = build_external_import_cluster(
+            case_name="110 Cal.App.5th 1132",
+            official_citation="110 Cal.App.5th 1132",
+            imported_text=B_D_TEXT,
+        )
+
+        self.assertEqual(cluster["case_name"], "B.D. v. Superior Court")
+        self.assertEqual(cluster["case_name_short"], "B.D. v. Superior Court")
+        self.assertEqual(cluster["date_filed"], "2025")
 
     def test_imported_citations_ignore_body_citations(self) -> None:
         citations = imported_citations_from_text(CLAUDIA_TEXT, "115 Cal.App.5th 76")

@@ -20,13 +20,16 @@ from .citation_model import (
     official_citation_from_cluster,
     official_citation_parts_from_text,
 )
+from .external_import import repair_reporter_only_imported_cluster
 from .import_text import clean_imported_opinion_text
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PROJECT_LIBRARY_DIR = PROJECT_ROOT / "library"
 DEFAULT_LIBRARY_DB = PROJECT_LIBRARY_DIR / "open_law_lens.sqlite3"
 SCHEMA_VERSION = "2"
 OFFICIAL_CITATION_ONLY_NORMALIZED_KEY = "official_citation_only_normalized_v2"
 CASE_TITLES_NORMALIZED_KEY = "case_titles_normalized_v1"
+REPORTER_ONLY_IMPORTED_NAMES_NORMALIZED_KEY = "reporter_only_imported_names_normalized_v1"
 TEXT_FIELDS = (
     "html_with_citations",
     "plain_text",
@@ -95,6 +98,44 @@ def _json_loads(value: str) -> Any:
 
 def decode_cp1252_control_chars(value: str) -> str:
     return value.translate(CP1252_CONTROL_TRANSLATION)
+
+
+def _opinion_import_text(opinion: dict[str, Any]) -> str:
+    for field in TEXT_FIELDS:
+        value = opinion.get(field)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def _repair_lookup_result_clusters(
+    data: Any,
+    repaired_clusters: dict[str, dict[str, Any]],
+) -> Any | None:
+    if not isinstance(data, list):
+        return None
+    changed = False
+    repaired_items: list[Any] = []
+    for item in data:
+        if not isinstance(item, dict):
+            repaired_items.append(item)
+            continue
+        clusters = item.get("clusters")
+        if not isinstance(clusters, list):
+            repaired_items.append(item)
+            continue
+        repaired_item_clusters: list[Any] = []
+        for cluster in clusters:
+            if isinstance(cluster, dict):
+                cluster_id = cluster_id_from_cluster(cluster)
+                repaired = repaired_clusters.get(cluster_id)
+                if repaired is not None:
+                    repaired_item_clusters.append(repaired)
+                    changed = True
+                    continue
+            repaired_item_clusters.append(cluster)
+        repaired_items.append({**item, "clusters": repaired_item_clusters})
+    return canonicalize_lookup_result(repaired_items) if changed else None
 
 
 def _cluster_title(cluster: dict[str, Any]) -> str:
@@ -607,6 +648,7 @@ class CaseLibrary:
             )
             self._normalize_official_citation_only(conn)
             self._normalize_case_titles(conn)
+            self._normalize_reporter_only_imported_case_names(conn)
 
     def _drop_legacy_statute_rule_tables(self, conn: sqlite3.Connection) -> None:
         conn.executescript(
@@ -720,6 +762,90 @@ class CaseLibrary:
             "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
             (CASE_TITLES_NORMALIZED_KEY, _utc_now()),
         )
+
+    def _normalize_reporter_only_imported_case_names(self, conn: sqlite3.Connection) -> None:
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key = ?",
+            (REPORTER_ONLY_IMPORTED_NAMES_NORMALIZED_KEY,),
+        ).fetchone()
+        if row is not None:
+            return
+        repaired_clusters: dict[str, dict[str, Any]] = {}
+        rows = conn.execute(
+            "SELECT cluster_id, cluster_json, opinion_ids_json FROM cases"
+        ).fetchall()
+        for row in rows:
+            cluster_id = str(row["cluster_id"])
+            try:
+                cluster = _json_loads(str(row["cluster_json"]))
+                opinion_ids = _json_loads(str(row["opinion_ids_json"]))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(cluster, dict) or not isinstance(opinion_ids, list):
+                continue
+            for opinion_id in opinion_ids:
+                opinion_row = conn.execute(
+                    "SELECT opinion_json FROM opinions WHERE opinion_id = ?",
+                    (str(opinion_id),),
+                ).fetchone()
+                if opinion_row is None:
+                    continue
+                try:
+                    opinion = _json_loads(str(opinion_row["opinion_json"]))
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(opinion, dict):
+                    continue
+                repaired = repair_reporter_only_imported_cluster(
+                    cluster,
+                    _opinion_import_text(opinion),
+                )
+                if repaired is None:
+                    continue
+                canonical = canonicalize_cluster_citations(repaired)
+                title = _cluster_title(canonical)
+                citation_text = _cluster_citation_line(canonical)
+                conn.execute(
+                    """
+                    UPDATE cases
+                    SET title = ?, citation_text = ?, cluster_json = ?, last_accessed = ?
+                    WHERE cluster_id = ?
+                    """,
+                    (title, citation_text, _json_dumps(canonical), _utc_now(), cluster_id),
+                )
+                repaired_clusters[cluster_id] = canonical
+                break
+        if repaired_clusters:
+            self._normalize_lookup_clusters(conn, repaired_clusters)
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+            (REPORTER_ONLY_IMPORTED_NAMES_NORMALIZED_KEY, _utc_now()),
+        )
+
+    def _normalize_lookup_clusters(
+        self,
+        conn: sqlite3.Connection,
+        repaired_clusters: dict[str, dict[str, Any]],
+    ) -> None:
+        rows = conn.execute(
+            "SELECT normalized_citation, result_json FROM lookup_results"
+        ).fetchall()
+        for row in rows:
+            try:
+                result = _json_loads(str(row["result_json"]))
+            except json.JSONDecodeError:
+                continue
+            repaired = _repair_lookup_result_clusters(result, repaired_clusters)
+            if repaired is None:
+                continue
+            conn.execute(
+                """
+                UPDATE lookup_results
+                SET result_json = ?
+                WHERE normalized_citation = ?
+                """,
+                (_json_dumps(repaired), str(row["normalized_citation"])),
+            )
 
     def import_json_cache_once(self, cache: JsonCache) -> None:
         with self.connection() as conn:

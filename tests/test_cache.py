@@ -17,6 +17,20 @@ from open_law_lens.cache import (
 )
 
 
+B_D_TEXT = """110 Cal.App.5th 1132 (2025)
+
+B.D., Petitioner,
+
+v.
+
+THE SUPERIOR COURT OF CONTRA COSTA COUNTY, Respondent;
+
+No. A172485.
+
+OPINION
+"""
+
+
 class CacheTests(unittest.TestCase):
     def test_normalize_citation_collapses_spaces(self) -> None:
         self.assertEqual(normalize_citation("  576   U.S.   644  "), "576 U.S. 644")
@@ -210,6 +224,43 @@ class CacheTests(unittest.TestCase):
             cache.upsert_cluster(cluster)
             self.assertTrue(cache.is_agent_selected("42"))
             self.assertEqual(cache.selected_case_entries()[0]["cluster_id"], "42")
+
+    def test_repair_reporter_only_imported_case_name_updates_cache_and_lookup(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cache.ensure()
+            cluster = {
+                "id": "external-110",
+                "case_name": "110 Cal.App.5th 1132",
+                "case_name_short": "110 Cal.App.5th 1132",
+                "case_name_full": "110 Cal.App.5th 1132",
+                "official_citation": "110 Cal.App.5th 1132",
+                "citations": [{"volume": "110", "reporter": "Cal.App.5th", "page": "1132"}],
+                "source_type": "user_imported_external_case",
+            }
+            opinion = {
+                "id": "official-import-external-110",
+                "cluster_id": "external-110",
+                "plain_text": B_D_TEXT,
+                "source_type": "user_imported_official_text",
+            }
+            cache.upsert_cluster(cluster)
+            cache.write_resource("opinions", "official-import-external-110", opinion)
+            cache.update_case_opinions(cluster, ["official-import-external-110"])
+            cache.set_agent_selected("external-110", True)
+            cache.write_lookup("110 Cal.App.5th 1132", [{"status": 200, "clusters": [cluster]}])
+
+            self.assertEqual(cache.repair_reporter_only_imported_case_names(), 1)
+
+            repaired = cache.read_cached_cluster("external-110")
+            assert repaired is not None
+            self.assertEqual(repaired["case_name"], "B.D. v. Superior Court")
+            entry = cache.list_case_entries()[0]
+            self.assertEqual(entry["title"], "B.D. v. Superior Court")
+            self.assertEqual(entry["opinion_ids"], ["official-import-external-110"])
+            self.assertTrue(cache.is_agent_selected("external-110"))
+            lookup = cache.read_lookup("110 Cal.App.5th 1132")
+            self.assertEqual(lookup[0]["clusters"][0]["case_name"], "B.D. v. Superior Court")
 
     def test_statute_cache_round_trip_and_selection(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

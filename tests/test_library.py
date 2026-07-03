@@ -9,6 +9,20 @@ from open_law_lens.cache import JsonCache
 from open_law_lens.library import CaseLibrary, opinion_display_text
 
 
+B_D_TEXT = """110 Cal.App.5th 1132 (2025)
+
+B.D., Petitioner,
+
+v.
+
+THE SUPERIOR COURT OF CONTRA COSTA COUNTY, Respondent;
+
+No. A172485.
+
+OPINION
+"""
+
+
 class LibraryTests(unittest.TestCase):
     def test_ensure_drops_legacy_statute_and_rule_tables(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -107,6 +121,45 @@ class LibraryTests(unittest.TestCase):
             library.ensure()
 
             self.assertEqual(library.list_case_entries()[0]["title"], "In re Michael V.")
+
+    def test_ensure_repairs_reporter_only_imported_superior_court_writ_title(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            cluster = {
+                "id": "external-110",
+                "case_name": "110 Cal.App.5th 1132",
+                "case_name_short": "110 Cal.App.5th 1132",
+                "case_name_full": "110 Cal.App.5th 1132",
+                "official_citation": "110 Cal.App.5th 1132",
+                "citations": [{"volume": "110", "reporter": "Cal.App.5th", "page": "1132"}],
+                "source_type": "user_imported_external_case",
+            }
+            opinion = {
+                "id": "official-import-external-110",
+                "cluster_id": "external-110",
+                "plain_text": B_D_TEXT,
+                "source_type": "user_imported_official_text",
+            }
+            library.upsert_cluster(cluster)
+            library.upsert_opinion(opinion)
+            library.update_case_opinion_ids("external-110", ["official-import-external-110"])
+            library.upsert_lookup("110 Cal.App.5th 1132", [{"status": 200, "clusters": [cluster]}])
+            with library.connection() as conn:
+                conn.execute(
+                    "DELETE FROM meta WHERE key = ?",
+                    ("reporter_only_imported_names_normalized_v1",),
+                )
+
+            library.ensure()
+
+            repaired = library.read_cluster("external-110")
+            assert repaired is not None
+            self.assertEqual(repaired["case_name"], "B.D. v. Superior Court")
+            self.assertEqual(library.list_case_entries()[0]["title"], "B.D. v. Superior Court")
+            lookup = library.read_lookup("110 Cal.App.5th 1132")
+            assert lookup is not None
+            self.assertEqual(lookup[0]["clusters"][0]["case_name"], "B.D. v. Superior Court")
 
     def test_json_cache_case_index_uses_extracted_in_re_initial_title(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
