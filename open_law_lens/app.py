@@ -2182,7 +2182,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return row
 
     def _build_appeal_issue_menu_button(self) -> Gtk.MenuButton:
-        button = Gtk.MenuButton(icon_name="document-edit-symbolic")
+        button = Gtk.MenuButton(icon_name="cafe-symbolic")
         button.add_css_class("flat")
         button.set_tooltip_text("Assess appeal issue")
         self._appeal_issue_menu_button = button

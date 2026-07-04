@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from importlib import resources
 from pathlib import Path
 from unittest.mock import patch
 
@@ -226,6 +227,25 @@ class AppReaderPayloadTests(unittest.TestCase):
             appeal_issue_menu_label("This issue description is too long", max_length=18),
             "This issue desc...",
         )
+
+    def test_appeal_issue_button_uses_bundled_cafe_icon(self) -> None:
+        class DummyWindow:
+            def _refresh_appeal_issue_menu(self) -> None:
+                pass
+
+        button = OpenLawLensWindow._build_appeal_issue_menu_button(  # type: ignore[arg-type]
+            DummyWindow(),
+        )
+        icon_ref = resources.files("open_law_lens").joinpath(
+            "icons",
+            "hicolor",
+            "scalable",
+            "actions",
+            "cafe-symbolic.svg",
+        )
+
+        self.assertEqual(button.get_icon_name(), "cafe-symbolic")
+        self.assertTrue(icon_ref.is_file())
 
     def test_appeal_issue_by_index_uses_current_fact_pattern(self) -> None:
         class DummyWindow:
