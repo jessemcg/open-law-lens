@@ -10,6 +10,7 @@ from open_law_lens.app import (
     SCHOLAR_FALLBACK_TRANSIENT_NOTICE,
     OpenLawLensApp,
     OpenLawLensWindow,
+    appeal_issue_menu_label,
     build_agent_launch_env,
     build_case_reader_payload,
 )
@@ -214,6 +215,75 @@ class AppReaderPayloadTests(unittest.TestCase):
             window.launches,
             [(Path("/tmp/prompt.txt"), Path("/tmp/workspace"), "appeal")],
         )
+
+    def test_appeal_issue_menu_label_uses_first_nonblank_line_and_truncates(self) -> None:
+        self.assertEqual(
+            appeal_issue_menu_label("\n  First issue line.  \nSecond line."),
+            "First issue line.",
+        )
+        self.assertEqual(appeal_issue_menu_label("", max_length=12), "Untitled issue")
+        self.assertEqual(
+            appeal_issue_menu_label("This issue description is too long", max_length=18),
+            "This issue desc...",
+        )
+
+    def test_appeal_issue_by_index_uses_current_fact_pattern(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self._appeal_fact_pattern_path_override = Path("/tmp/facts.odt")
+                self.statuses: list[str] = []
+                self.launches: list[tuple[str, Path]] = []
+
+            def _set_status(self, status: str) -> None:
+                self.statuses.append(status)
+
+            def _appeal_fact_pattern_path(self) -> Path | None:
+                return OpenLawLensWindow._appeal_fact_pattern_path(self)  # type: ignore[arg-type]
+
+            def start_appeal_issue_assessment(self, issue: str, fact_pattern_path: Path) -> bool:
+                self.launches.append((issue, fact_pattern_path))
+                return True
+
+        window = DummyWindow()
+
+        with (
+            patch("open_law_lens.app.load_config", return_value=AppConfig(appeal_issue_presets=["Issue one"])),
+            patch.object(Path, "is_file", return_value=True),
+        ):
+            OpenLawLensWindow._start_appeal_issue_assessment_by_index(  # type: ignore[arg-type]
+                window,
+                0,
+            )
+
+        self.assertEqual(window.launches, [("Issue one", Path("/tmp/facts.odt"))])
+
+    def test_appeal_issue_by_index_reports_missing_fact_pattern(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self._appeal_fact_pattern_path_override = Path("/tmp/missing.odt")
+                self.statuses: list[str] = []
+
+            def _set_status(self, status: str) -> None:
+                self.statuses.append(status)
+
+            def _appeal_fact_pattern_path(self) -> Path | None:
+                return OpenLawLensWindow._appeal_fact_pattern_path(self)  # type: ignore[arg-type]
+
+            def start_appeal_issue_assessment(self, issue: str, fact_pattern_path: Path) -> bool:
+                raise AssertionError("assessment should not launch")
+
+        window = DummyWindow()
+
+        with (
+            patch("open_law_lens.app.load_config", return_value=AppConfig(appeal_issue_presets=["Issue one"])),
+            patch.object(Path, "is_file", return_value=False),
+        ):
+            OpenLawLensWindow._start_appeal_issue_assessment_by_index(  # type: ignore[arg-type]
+                window,
+                0,
+            )
+
+        self.assertEqual(window.statuses, ["Fact pattern file not found: /tmp/missing.odt"])
 
     def test_payload_combines_displays_and_offsets_page_markers(self) -> None:
         cluster = {
