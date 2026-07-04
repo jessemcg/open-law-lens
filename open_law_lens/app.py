@@ -2198,6 +2198,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         box.set_margin_bottom(6)
         box.set_margin_start(6)
         box.set_margin_end(6)
+        custom_button = Gtk.Button(label="Custom claim...")
+        custom_button.add_css_class("flat")
+        custom_button.set_halign(Gtk.Align.FILL)
+        custom_button.set_hexpand(True)
+        custom_button.connect("clicked", self._on_custom_appeal_issue_clicked, popover)
+        box.append(custom_button)
+        separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        box.append(separator)
         issues = load_config().appeal_issue_presets
         for index, issue in enumerate(issues):
             issue_button = Gtk.Button(label=appeal_issue_menu_label(issue))
@@ -2206,8 +2214,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             issue_button.set_hexpand(True)
             issue_button.connect("clicked", self._on_appeal_issue_menu_item_clicked, index, popover)
             box.append(issue_button)
-        separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
-        box.append(separator)
+        settings_separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        box.append(settings_separator)
         settings_button = Gtk.Button(label="Edit appeal issues...")
         settings_button.add_css_class("flat")
         settings_button.set_halign(Gtk.Align.FILL)
@@ -3425,6 +3433,68 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         popover.popdown()
         self._on_open_settings(self.lookup_action("settings"), None)
 
+    def _on_custom_appeal_issue_clicked(
+        self,
+        _button: Gtk.Button,
+        popover: Gtk.Popover,
+    ) -> None:
+        popover.popdown()
+        self._show_custom_appeal_issue_window()
+
+    def _show_custom_appeal_issue_window(self) -> None:
+        window = Gtk.Window(title="Custom Claim")
+        window.set_transient_for(self)
+        window.set_modal(True)
+        window.set_default_size(560, 300)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_top(12)
+        box.set_margin_bottom(12)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+
+        text_buffer = Gtk.TextBuffer()
+        text_view = Gtk.TextView(buffer=text_buffer)
+        text_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        text_view.set_vexpand(True)
+        text_view.set_hexpand(True)
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_child(text_view)
+        scroller.set_vexpand(True)
+        scroller.set_hexpand(True)
+        box.append(scroller)
+
+        button_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        button_row.set_halign(Gtk.Align.END)
+        cancel_button = Gtk.Button(label="Cancel")
+        cancel_button.connect("clicked", lambda _button: window.close())
+        button_row.append(cancel_button)
+        assess_button = Gtk.Button(label="Assess")
+        assess_button.connect(
+            "clicked",
+            self._on_custom_appeal_issue_assess_clicked,
+            window,
+            text_buffer,
+        )
+        button_row.append(assess_button)
+        box.append(button_row)
+
+        window.set_child(box)
+        window.present()
+        text_view.grab_focus()
+
+    def _on_custom_appeal_issue_assess_clicked(
+        self,
+        _button: Gtk.Button,
+        window: Gtk.Window,
+        text_buffer: Gtk.TextBuffer,
+    ) -> None:
+        start = text_buffer.get_start_iter()
+        end = text_buffer.get_end_iter()
+        issue = text_buffer.get_text(start, end, True).strip()
+        if self._start_custom_appeal_issue_assessment(issue):
+            window.close()
+
     def _on_appeal_issue_menu_item_clicked(
         self,
         _button: Gtk.Button,
@@ -3455,6 +3525,19 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._set_status(f"Fact pattern file not found: {fact_pattern_path}")
             return
         self.start_appeal_issue_assessment(issues[index], fact_pattern_path)
+
+    def _start_custom_appeal_issue_assessment(self, issue: str) -> bool:
+        issue = issue.strip()
+        if not issue:
+            self._set_status("Enter an issue to assess.")
+            return False
+        fact_pattern_path = self._appeal_fact_pattern_path()
+        if fact_pattern_path is None:
+            return False
+        if not fact_pattern_path.is_file():
+            self._set_status(f"Fact pattern file not found: {fact_pattern_path}")
+            return False
+        return self.start_appeal_issue_assessment(issue, fact_pattern_path)
 
     def _on_clear_cache(self, _action: Gio.SimpleAction, _parameter: GLib.Variant | None) -> None:
         try:

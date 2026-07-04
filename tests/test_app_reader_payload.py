@@ -9,6 +9,7 @@ from unittest.mock import patch
 from open_law_lens.app import (
     SCHOLAR_FALLBACK_NOTICE_ONLY,
     SCHOLAR_FALLBACK_TRANSIENT_NOTICE,
+    Gtk,
     OpenLawLensApp,
     OpenLawLensWindow,
     appeal_issue_menu_label,
@@ -247,6 +248,44 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(button.get_icon_name(), "cafe-symbolic")
         self.assertTrue(icon_ref.is_file())
 
+    def test_appeal_issue_menu_includes_custom_claim_action(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self._appeal_issue_menu_button = None
+
+            def _on_custom_appeal_issue_clicked(self, *_args: object) -> None:
+                pass
+
+            def _on_appeal_issue_menu_item_clicked(self, *_args: object) -> None:
+                pass
+
+            def _on_appeal_issue_settings_clicked(self, *_args: object) -> None:
+                pass
+
+        def labels(widget: object) -> list[str]:
+            found: list[str] = []
+            child = widget.get_first_child() if hasattr(widget, "get_first_child") else None
+            while child is not None:
+                if isinstance(child, Gtk.Button):
+                    label = child.get_label()
+                    if label:
+                        found.append(label)
+                else:
+                    found.extend(labels(child))
+                child = child.get_next_sibling()
+            return found
+
+        window = DummyWindow()
+        window._appeal_issue_menu_button = Gtk.MenuButton()
+
+        with patch("open_law_lens.app.load_config", return_value=AppConfig(appeal_issue_presets=["Issue one"])):
+            OpenLawLensWindow._refresh_appeal_issue_menu(window)  # type: ignore[arg-type]
+
+        popover = window._appeal_issue_menu_button.get_popover()
+        self.assertIsNotNone(popover)
+        assert popover is not None
+        self.assertEqual(labels(popover), ["Custom claim...", "Issue one", "Edit appeal issues..."])
+
     def test_appeal_issue_by_index_uses_current_fact_pattern(self) -> None:
         class DummyWindow:
             def __init__(self) -> None:
@@ -303,6 +342,75 @@ class AppReaderPayloadTests(unittest.TestCase):
                 0,
             )
 
+        self.assertEqual(window.statuses, ["Fact pattern file not found: /tmp/missing.odt"])
+
+    def test_custom_appeal_issue_uses_current_fact_pattern(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.launches: list[tuple[str, Path]] = []
+
+            def _appeal_fact_pattern_path(self) -> Path | None:
+                return Path("/tmp/facts.odt")
+
+            def start_appeal_issue_assessment(self, issue: str, fact_pattern_path: Path) -> bool:
+                self.launches.append((issue, fact_pattern_path))
+                return True
+
+        window = DummyWindow()
+
+        with patch.object(Path, "is_file", return_value=True):
+            result = OpenLawLensWindow._start_custom_appeal_issue_assessment(  # type: ignore[arg-type]
+                window,
+                "  Strange one-off claim.  ",
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(window.launches, [("Strange one-off claim.", Path("/tmp/facts.odt"))])
+
+    def test_custom_appeal_issue_reports_blank_issue(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.statuses: list[str] = []
+
+            def _set_status(self, status: str) -> None:
+                self.statuses.append(status)
+
+            def _appeal_fact_pattern_path(self) -> Path | None:
+                raise AssertionError("blank issue should stop before fact-pattern lookup")
+
+        window = DummyWindow()
+
+        result = OpenLawLensWindow._start_custom_appeal_issue_assessment(  # type: ignore[arg-type]
+            window,
+            "   ",
+        )
+
+        self.assertFalse(result)
+        self.assertEqual(window.statuses, ["Enter an issue to assess."])
+
+    def test_custom_appeal_issue_reports_missing_fact_pattern(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.statuses: list[str] = []
+
+            def _set_status(self, status: str) -> None:
+                self.statuses.append(status)
+
+            def _appeal_fact_pattern_path(self) -> Path | None:
+                return Path("/tmp/missing.odt")
+
+            def start_appeal_issue_assessment(self, issue: str, fact_pattern_path: Path) -> bool:
+                raise AssertionError("assessment should not launch")
+
+        window = DummyWindow()
+
+        with patch.object(Path, "is_file", return_value=False):
+            result = OpenLawLensWindow._start_custom_appeal_issue_assessment(  # type: ignore[arg-type]
+                window,
+                "Issue",
+            )
+
+        self.assertFalse(result)
         self.assertEqual(window.statuses, ["Fact pattern file not found: /tmp/missing.odt"])
 
     def test_payload_combines_displays_and_offsets_page_markers(self) -> None:
