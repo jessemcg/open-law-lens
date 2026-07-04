@@ -17,6 +17,7 @@ from open_law_lens.cache import JsonCache
 from open_law_lens.citation_links import CitedCaseLink
 from open_law_lens.client import FormattedCitation
 from open_law_lens.config import AppConfig
+from open_law_lens.fact_patterns import FactPatternExport
 from open_law_lens.library import DisplayText, PageMarker
 from open_law_lens.web_import import ExtractedWebpage
 
@@ -69,6 +70,150 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(env["OPEN_LAW_LENS_CODEX_SANDBOX"], "danger-full-access")
         self.assertEqual(env["OPEN_LAW_LENS_CODEX_APPROVAL"], "never")
         self.assertNotIn("OPEN_LAW_LENS_LIBRARY_DB", env)
+
+    def test_appeal_issue_prompt_includes_issue_fact_pattern_and_cli_guidance(self) -> None:
+        class DummyWindow:
+            def _format_agent_prompt(
+                self,
+                template: str,
+                fallback: str,
+                values: dict[str, object],
+            ) -> str:
+                return OpenLawLensWindow._format_agent_prompt(  # type: ignore[arg-type]
+                    self,
+                    template,
+                    fallback,
+                    values,
+                )
+
+        window = DummyWindow()
+        export = FactPatternExport(
+            source_path=Path("/case/facts.odt"),
+            source_copy_path=Path("/tmp/workspace/fact_pattern/facts.odt"),
+            text_path=Path("/tmp/workspace/fact_pattern/facts_extracted.txt"),
+            text="Fact text.",
+        )
+
+        prompt = OpenLawLensWindow._compose_appeal_issue_agent_prompt(  # type: ignore[arg-type]
+            window,
+            "The court applied the wrong standard.",
+            export,
+        )
+
+        self.assertIn("The court applied the wrong standard.", prompt)
+        self.assertIn("/tmp/workspace/fact_pattern/facts_extracted.txt", prompt)
+        self.assertIn("uv run open-law-lens case-search", prompt)
+        self.assertIn("Rating: Strong, Medium, Weak, or Frivolous", prompt)
+
+    def test_appeal_issue_start_requires_embedded_terminal(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self._agent_terminal = None
+                self.statuses: list[str] = []
+
+            def _set_status(self, status: str) -> None:
+                self.statuses.append(status)
+
+            def _prepare_appeal_issue_worker(
+                self,
+                issue: str,
+                fact_pattern_path: Path,
+                workspace: Path,
+            ) -> None:
+                pass
+
+        window = DummyWindow()
+
+        with patch("open_law_lens.app.Vte", None):
+            result = OpenLawLensWindow.start_appeal_issue_assessment(  # type: ignore[arg-type]
+                window,
+                "Issue",
+                Path("/tmp/facts.odt"),
+            )
+
+        self.assertFalse(result)
+        self.assertEqual(window.statuses, ["Embedded terminal is unavailable."])
+
+    def test_appeal_issue_start_creates_workspace_and_thread(self) -> None:
+        class DummyThread:
+            created: list[tuple[object, tuple[object, ...]]] = []
+
+            def __init__(self, target: object, args: tuple[object, ...], daemon: bool) -> None:
+                self.target = target
+                self.args = args
+                self.daemon = daemon
+                DummyThread.created.append((target, args))
+                self.started = False
+
+            def start(self) -> None:
+                self.started = True
+
+        class DummyWindow:
+            def __init__(self) -> None:
+                self._agent_terminal = object()
+                self.statuses: list[str] = []
+
+            def _create_agent_workspace(self) -> Path:
+                return Path("/tmp/appeal-workspace")
+
+            def _set_status(self, status: str) -> None:
+                self.statuses.append(status)
+
+            def _prepare_appeal_issue_worker(
+                self,
+                issue: str,
+                fact_pattern_path: Path,
+                workspace: Path,
+            ) -> None:
+                pass
+
+        window = DummyWindow()
+
+        with patch("open_law_lens.app.Vte", object()):
+            with patch("open_law_lens.app.threading.Thread", DummyThread):
+                result = OpenLawLensWindow.start_appeal_issue_assessment(  # type: ignore[arg-type]
+                    window,
+                    "Issue",
+                    Path("/tmp/facts.odt"),
+                )
+
+        self.assertTrue(result)
+        self.assertEqual(window.statuses, ["Preparing appeal issue assessment..."])
+        self.assertEqual(
+            DummyThread.created[0][1],
+            ("Issue", Path("/tmp/facts.odt"), Path("/tmp/appeal-workspace")),
+        )
+
+    def test_appeal_issue_finish_launches_appeal_mode(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self._case_agent_text_sources = ["old"]
+                self._agent_mode = "general"
+                self.launches: list[tuple[Path, Path, str]] = []
+
+            def _launch_agent_with_prompt(
+                self,
+                prompt_path: Path,
+                workspace: Path,
+                mode: str,
+            ) -> None:
+                self.launches.append((prompt_path, workspace, mode))
+
+        window = DummyWindow()
+
+        result = OpenLawLensWindow._finish_appeal_issue_prepare(  # type: ignore[arg-type]
+            window,
+            Path("/tmp/prompt.txt"),
+            Path("/tmp/workspace"),
+        )
+
+        self.assertFalse(result)
+        self.assertEqual(window._case_agent_text_sources, [])
+        self.assertEqual(window._agent_mode, "appeal")
+        self.assertEqual(
+            window.launches,
+            [(Path("/tmp/prompt.txt"), Path("/tmp/workspace"), "appeal")],
+        )
 
     def test_payload_combines_displays_and_offsets_page_markers(self) -> None:
         cluster = {

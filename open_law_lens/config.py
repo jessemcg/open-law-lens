@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +14,8 @@ CONFIG_KEY_COURTLISTENER_TOKEN = "courtlistener_token"
 CONFIG_KEY_CONCORDANCE_FILE_PATH = "concordance_file_path"
 CONFIG_KEY_GENERAL_AGENT_PROMPT_TEMPLATE = "general_agent_prompt_template"
 CONFIG_KEY_CASE_AGENT_PROMPT_TEMPLATE = "case_agent_prompt_template"
+CONFIG_KEY_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE = "appeal_issue_agent_prompt_template"
+CONFIG_KEY_APPEAL_ISSUE_PRESETS = "appeal_issue_presets"
 CONFIG_KEY_READER_FONT_SIZE_PT = "reader_font_size_pt"
 CONFIG_KEY_READER_FONT_FAMILY = "reader_font_family"
 CONFIG_KEY_DEFAULT_BARE_STATUTE_LAW_CODE = "default_bare_statute_law_code"
@@ -83,6 +85,38 @@ Selected authority text directory:
 
 Selected authority count: {case_count}"""
 
+DEFAULT_APPEAL_ISSUE_PRESETS: tuple[str, ...] = (
+    "Substantial evidence does not support the challenged finding.",
+    "The trial court abused its discretion in making the challenged order.",
+    "The trial court applied the wrong legal standard.",
+    "The appellant was denied due process, notice, or a meaningful opportunity to be heard.",
+    "The error was prejudicial and not harmless under the applicable appellate standard.",
+)
+
+DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens Appeal Issue Assessment Agent.
+
+Assess one possible California appellate issue against the user's fact pattern. Use Open Law Lens CLI commands tied directly to CourtListener APIs for legal authority and legal research.
+
+Read the extracted fact-pattern text first:
+{fact_pattern_path}
+
+Original fact-pattern file:
+{fact_pattern_source_path}
+
+Issue to assess:
+{issue}
+
+Research California law with Open Law Lens CLI commands. For case-law discovery, start with `uv run open-law-lens case-search "<query>"`. Treat search results as leads only. Extract the most relevant candidate opinions with `uv run open-law-lens extract-case --cluster-id <cluster_id>` before relying on a case. Use `uv run open-law-lens extract-statute "<citation>"` and `uv run open-law-lens extract-rule "<citation>"` when statutes or rules matter.
+
+Confine research to California state law unless the issue explicitly requires federal law. Prefer published California Supreme Court and California Court of Appeal authority. Use unpublished cases only for context, not as controlling authority.
+
+Analyze preservation, standard of review, factual support, governing law, prejudice, likely respondent arguments, and missing record facts that could change the assessment.
+
+End with a rating line exactly in this form:
+Rating: Strong, Medium, Weak, or Frivolous
+
+Use Frivolous only when the issue is clearly foreclosed or lacks any nonfrivolous factual or legal basis. Otherwise choose Strong, Medium, or Weak."""
+
 
 @dataclass(frozen=True)
 class AppConfig:
@@ -90,6 +124,10 @@ class AppConfig:
     concordance_file_path: str = ""
     general_agent_prompt_template: str = DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE
     case_agent_prompt_template: str = DEFAULT_CASE_AGENT_PROMPT_TEMPLATE
+    appeal_issue_agent_prompt_template: str = DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
+    appeal_issue_presets: list[str] = field(
+        default_factory=lambda: list(DEFAULT_APPEAL_ISSUE_PRESETS)
+    )
     reader_font_size_pt: int = DEFAULT_READER_FONT_SIZE_PT
     reader_font_family: str = DEFAULT_READER_FONT_FAMILY
     default_bare_statute_law_code: str = DEFAULT_BARE_STATUTE_LAW_CODE
@@ -129,6 +167,20 @@ def normalize_agent_permission_mode(value: Any) -> str:
     return DEFAULT_AGENT_PERMISSION_MODE
 
 
+def normalize_appeal_issue_presets(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return list(DEFAULT_APPEAL_ISSUE_PRESETS)
+    presets: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        text = str(item or "").strip()
+        key = text.casefold()
+        if text and key not in seen:
+            presets.append(text)
+            seen.add(key)
+    return presets or list(DEFAULT_APPEAL_ISSUE_PRESETS)
+
+
 def reader_font_css(font_family: str) -> str:
     normalized = normalize_reader_font_family(font_family)
     for name, css in READER_FONT_FAMILY_OPTIONS:
@@ -159,6 +211,10 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
         CONFIG_KEY_CASE_AGENT_PROMPT_TEMPLATE,
         DEFAULT_CASE_AGENT_PROMPT_TEMPLATE,
     )
+    appeal_issue_agent_prompt = raw.get(
+        CONFIG_KEY_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
+        DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
+    )
     return AppConfig(
         courtlistener_token=str(token).strip(),
         concordance_file_path=str(concordance_path).strip(),
@@ -167,6 +223,13 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
         ),
         case_agent_prompt_template=(
             str(case_agent_prompt).strip() or DEFAULT_CASE_AGENT_PROMPT_TEMPLATE
+        ),
+        appeal_issue_agent_prompt_template=(
+            str(appeal_issue_agent_prompt).strip()
+            or DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
+        ),
+        appeal_issue_presets=normalize_appeal_issue_presets(
+            raw.get(CONFIG_KEY_APPEAL_ISSUE_PRESETS)
         ),
         reader_font_size_pt=coerce_reader_font_size(raw.get(CONFIG_KEY_READER_FONT_SIZE_PT)),
         reader_font_family=normalize_reader_font_family(raw.get(CONFIG_KEY_READER_FONT_FAMILY)),
@@ -188,6 +251,13 @@ def save_config(config: AppConfig, path: Path = CONFIG_PATH) -> None:
         ),
         CONFIG_KEY_CASE_AGENT_PROMPT_TEMPLATE: (
             config.case_agent_prompt_template.strip() or DEFAULT_CASE_AGENT_PROMPT_TEMPLATE
+        ),
+        CONFIG_KEY_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE: (
+            config.appeal_issue_agent_prompt_template.strip()
+            or DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
+        ),
+        CONFIG_KEY_APPEAL_ISSUE_PRESETS: normalize_appeal_issue_presets(
+            config.appeal_issue_presets
         ),
         CONFIG_KEY_READER_FONT_SIZE_PT: coerce_reader_font_size(config.reader_font_size_pt),
         CONFIG_KEY_READER_FONT_FAMILY: normalize_reader_font_family(config.reader_font_family),

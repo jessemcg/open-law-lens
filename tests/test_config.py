@@ -10,6 +10,8 @@ from unittest.mock import patch
 from open_law_lens.config import (
     AGENT_PERMISSION_MODE_FULL_ACCESS,
     AppConfig,
+    DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
+    DEFAULT_APPEAL_ISSUE_PRESETS,
     DEFAULT_CASE_AGENT_PROMPT_TEMPLATE,
     DEFAULT_AGENT_PERMISSION_MODE,
     DEFAULT_BARE_STATUTE_LAW_CODE,
@@ -29,6 +31,11 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.concordance_file_path, "")
             self.assertEqual(config.general_agent_prompt_template, DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE)
             self.assertEqual(config.case_agent_prompt_template, DEFAULT_CASE_AGENT_PROMPT_TEMPLATE)
+            self.assertEqual(
+                config.appeal_issue_agent_prompt_template,
+                DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
+            )
+            self.assertEqual(config.appeal_issue_presets, list(DEFAULT_APPEAL_ISSUE_PRESETS))
             self.assertEqual(config.reader_font_size_pt, DEFAULT_READER_FONT_SIZE_PT)
             self.assertEqual(config.reader_font_family, DEFAULT_READER_FONT_FAMILY)
             self.assertEqual(config.default_bare_statute_law_code, DEFAULT_BARE_STATUTE_LAW_CODE)
@@ -43,6 +50,8 @@ class ConfigTests(unittest.TestCase):
                     concordance_file_path=" /tmp/Concordance_File.sdi ",
                     general_agent_prompt_template=" General {question} ",
                     case_agent_prompt_template=" Case {question} ",
+                    appeal_issue_agent_prompt_template=" Appeal {issue} ",
+                    appeal_issue_presets=[" Issue One ", "Issue Two", "Issue One"],
                     reader_font_size_pt=14,
                     reader_font_family="Georgia",
                     default_bare_statute_law_code="FAM",
@@ -55,6 +64,8 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.concordance_file_path, "/tmp/Concordance_File.sdi")
             self.assertEqual(config.general_agent_prompt_template, "General {question}")
             self.assertEqual(config.case_agent_prompt_template, "Case {question}")
+            self.assertEqual(config.appeal_issue_agent_prompt_template, "Appeal {issue}")
+            self.assertEqual(config.appeal_issue_presets, ["Issue One", "Issue Two"])
             self.assertEqual(config.reader_font_size_pt, 14)
             self.assertEqual(config.reader_font_family, "Georgia")
             self.assertEqual(config.default_bare_statute_law_code, "FAM")
@@ -110,6 +121,16 @@ class ConfigTests(unittest.TestCase):
             save_config(AppConfig(agent_permission_mode="unsupported"), path)
 
             self.assertEqual(load_config(path).agent_permission_mode, DEFAULT_AGENT_PERMISSION_MODE)
+
+    def test_appeal_issue_presets_fall_back_when_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text(
+                json.dumps({"appeal_issue_presets": ["", "   "]}),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(load_config(path).appeal_issue_presets, list(DEFAULT_APPEAL_ISSUE_PRESETS))
 
     def test_reader_font_settings_are_coerced(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

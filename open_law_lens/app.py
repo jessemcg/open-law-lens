@@ -85,6 +85,8 @@ from .config import (
     AGENT_PERMISSION_MODE_SANDBOXED,
     AppConfig,
     BARE_STATUTE_LAW_CODE_OPTIONS,
+    DEFAULT_APPEAL_ISSUE_PRESETS,
+    DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
     DEFAULT_CASE_AGENT_PROMPT_TEMPLATE,
     DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE,
     concordance_file_path,
@@ -105,6 +107,7 @@ from .external_import import (
     imported_case_name_from_text,
     normalize_official_citation,
 )
+from .fact_patterns import FactPatternError, FactPatternExport, export_fact_pattern
 from .launch_request import pop_open_authority_request
 from .library import DisplayText, PageMarker, ResearchSet, opinion_display_text
 from .quality import official_pagination_quality
@@ -148,6 +151,7 @@ AGENT_SUBVIEW_ANSWER = "answer"
 AGENT_SUBVIEW_SESSION = "session"
 AGENT_MODE_GENERAL = "general"
 AGENT_MODE_CASE = "case"
+AGENT_MODE_APPEAL = "appeal"
 AGENT_MODE_ICONS = {
     AGENT_MODE_GENERAL: "license-symbolic",
     AGENT_MODE_CASE: "file-cabinet-symbolic",
@@ -631,6 +635,13 @@ class SettingsWindow(Adw.ApplicationWindow):
             config.case_agent_prompt_template,
         )
         prompt_box.append(case_scroller)
+        appeal_label = Gtk.Label(label="Appeal issue assessment prompt", xalign=0)
+        appeal_label.add_css_class("dim-label")
+        prompt_box.append(appeal_label)
+        appeal_scroller, self.appeal_issue_agent_prompt_buffer = self._build_prompt_editor(
+            config.appeal_issue_agent_prompt_template,
+        )
+        prompt_box.append(appeal_scroller)
         prompt_group.add(prompt_box)
         outer.append(prompt_group)
 
@@ -720,6 +731,11 @@ class SettingsWindow(Adw.ApplicationWindow):
                     self._prompt_text(self.case_agent_prompt_buffer).strip()
                     or DEFAULT_CASE_AGENT_PROMPT_TEMPLATE
                 ),
+                appeal_issue_agent_prompt_template=(
+                    self._prompt_text(self.appeal_issue_agent_prompt_buffer).strip()
+                    or DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
+                ),
+                appeal_issue_presets=load_config().appeal_issue_presets,
                 reader_font_size_pt=coerce_reader_font_size(
                     int(round(self.reader_font_size_row.get_value()))
                 ),
@@ -770,6 +786,222 @@ class SettingsWindow(Adw.ApplicationWindow):
 
     def _on_clear_concordance_file(self, _button: Gtk.Button) -> None:
         self.concordance_row.set_text("")
+
+
+class AppealIssueAssessmentWindow(Gtk.Window):
+    def __init__(self, parent_window: "OpenLawLensWindow") -> None:
+        super().__init__(title="Assess Appeal Issue")
+        self.parent_window = parent_window
+        self.set_transient_for(parent_window)
+        self.set_modal(False)
+        self.set_default_size(720, 560)
+        self._fact_pattern_path = ""
+        self._presets = list(load_config().appeal_issue_presets)
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        outer.set_margin_top(12)
+        outer.set_margin_bottom(12)
+        outer.set_margin_start(12)
+        outer.set_margin_end(12)
+
+        file_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.file_entry = Gtk.Entry()
+        self.file_entry.set_hexpand(True)
+        self.file_entry.set_placeholder_text("Fact pattern ODT or PDF")
+        file_row.append(self.file_entry)
+        choose_button = Gtk.Button(icon_name="document-open-symbolic")
+        choose_button.set_tooltip_text("Choose fact pattern")
+        choose_button.connect("clicked", self._on_choose_fact_pattern)
+        file_row.append(choose_button)
+        outer.append(file_row)
+
+        body = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+        body.set_vexpand(True)
+        body.set_hexpand(True)
+
+        presets_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.issue_list = Gtk.ListBox()
+        self.issue_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self.issue_list.connect("row-selected", self._on_issue_row_selected)
+        issue_scroller = Gtk.ScrolledWindow()
+        issue_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        issue_scroller.set_min_content_width(260)
+        issue_scroller.set_child(self.issue_list)
+        presets_box.append(issue_scroller)
+
+        issue_buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        add_button = Gtk.Button(icon_name="list-add-symbolic")
+        add_button.set_tooltip_text("Add issue")
+        add_button.connect("clicked", self._on_add_issue)
+        issue_buttons.append(add_button)
+        delete_button = Gtk.Button(icon_name="user-trash-symbolic")
+        delete_button.set_tooltip_text("Delete issue")
+        delete_button.connect("clicked", self._on_delete_issue)
+        issue_buttons.append(delete_button)
+        presets_box.append(issue_buttons)
+        body.set_start_child(presets_box)
+
+        self.issue_buffer = Gtk.TextBuffer()
+        self.issue_view = Gtk.TextView(buffer=self.issue_buffer)
+        self.issue_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        self.issue_view.set_left_margin(8)
+        self.issue_view.set_right_margin(8)
+        self.issue_view.set_top_margin(8)
+        self.issue_view.set_bottom_margin(8)
+        editor_scroller = Gtk.ScrolledWindow()
+        editor_scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        editor_scroller.set_child(self.issue_view)
+        body.set_end_child(editor_scroller)
+        body.set_position(280)
+        outer.append(body)
+
+        actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        actions.set_halign(Gtk.Align.END)
+        save_button = Gtk.Button(label="Save Issues")
+        save_button.connect("clicked", self._on_save_issues)
+        actions.append(save_button)
+        launch_button = Gtk.Button(label="Assess Issue")
+        launch_button.add_css_class("suggested-action")
+        launch_button.connect("clicked", self._on_launch_assessment)
+        actions.append(launch_button)
+        outer.append(actions)
+
+        self.status_label = Gtk.Label(label="", xalign=0)
+        self.status_label.add_css_class("dim-label")
+        outer.append(self.status_label)
+
+        self.set_child(outer)
+        self._reload_issue_rows(select_index=0)
+
+    def _issue_text(self) -> str:
+        start = self.issue_buffer.get_start_iter()
+        end = self.issue_buffer.get_end_iter()
+        return self.issue_buffer.get_text(start, end, True).strip()
+
+    def _set_issue_text(self, text: str) -> None:
+        self.issue_buffer.set_text(text)
+
+    def _selected_issue_index(self) -> int:
+        row = self.issue_list.get_selected_row()
+        if row is None:
+            return -1
+        return row.get_index()
+
+    def _capture_selected_issue(self) -> None:
+        index = self._selected_issue_index()
+        if 0 <= index < len(self._presets):
+            text = self._issue_text()
+            if text:
+                self._presets[index] = text
+
+    def _reload_issue_rows(self, select_index: int = -1) -> None:
+        while True:
+            row = self.issue_list.get_row_at_index(0)
+            if row is None:
+                break
+            self.issue_list.remove(row)
+        for issue in self._presets:
+            row = Gtk.ListBoxRow()
+            label = Gtk.Label(label=issue, xalign=0)
+            label.set_wrap(True)
+            label.set_margin_top(6)
+            label.set_margin_bottom(6)
+            label.set_margin_start(6)
+            label.set_margin_end(6)
+            row.set_child(label)
+            self.issue_list.append(row)
+        if self._presets:
+            index = min(max(select_index, 0), len(self._presets) - 1)
+            row = self.issue_list.get_row_at_index(index)
+            if row is not None:
+                self.issue_list.select_row(row)
+                self._set_issue_text(self._presets[index])
+
+    def _save_presets(self) -> None:
+        self._capture_selected_issue()
+        config = load_config()
+        save_config(
+            AppConfig(
+                courtlistener_token=config.courtlistener_token,
+                concordance_file_path=config.concordance_file_path,
+                general_agent_prompt_template=config.general_agent_prompt_template,
+                case_agent_prompt_template=config.case_agent_prompt_template,
+                appeal_issue_agent_prompt_template=config.appeal_issue_agent_prompt_template,
+                appeal_issue_presets=self._presets,
+                reader_font_size_pt=config.reader_font_size_pt,
+                reader_font_family=config.reader_font_family,
+                default_bare_statute_law_code=config.default_bare_statute_law_code,
+                agent_permission_mode=config.agent_permission_mode,
+            )
+        )
+
+    def _on_issue_row_selected(
+        self,
+        _list_box: Gtk.ListBox,
+        row: Gtk.ListBoxRow | None,
+    ) -> None:
+        if row is None:
+            return
+        index = row.get_index()
+        if 0 <= index < len(self._presets):
+            self._set_issue_text(self._presets[index])
+
+    def _on_add_issue(self, _button: Gtk.Button) -> None:
+        self._capture_selected_issue()
+        text = self._issue_text() or "New appellate issue."
+        self._presets.append(text)
+        self._reload_issue_rows(select_index=len(self._presets) - 1)
+        self._save_presets()
+        self.status_label.set_text("Issue saved.")
+
+    def _on_delete_issue(self, _button: Gtk.Button) -> None:
+        index = self._selected_issue_index()
+        if not (0 <= index < len(self._presets)):
+            self.status_label.set_text("Select an issue to delete.")
+            return
+        del self._presets[index]
+        if not self._presets:
+            self._presets = list(DEFAULT_APPEAL_ISSUE_PRESETS)
+        self._reload_issue_rows(select_index=max(0, index - 1))
+        self._save_presets()
+        self.status_label.set_text("Issue deleted.")
+
+    def _on_save_issues(self, _button: Gtk.Button) -> None:
+        self._save_presets()
+        self.status_label.set_text("Issues saved.")
+
+    def _on_choose_fact_pattern(self, _button: Gtk.Button) -> None:
+        file_dialog_cls = getattr(Gtk, "FileDialog", None)
+        if file_dialog_cls is None:
+            self.status_label.set_text("File chooser is unavailable in this GTK version.")
+            return
+        dialog = file_dialog_cls(title="Choose fact pattern")
+        dialog.open(self, None, self._on_fact_pattern_chosen)
+
+    def _on_fact_pattern_chosen(self, dialog: Any, result: Gio.AsyncResult) -> None:
+        try:
+            file = dialog.open_finish(result)
+        except GLib.Error:
+            return
+        if file is None:
+            return
+        path = file.get_path()
+        if path:
+            self._fact_pattern_path = path
+            self.file_entry.set_text(path)
+
+    def _on_launch_assessment(self, _button: Gtk.Button) -> None:
+        self._save_presets()
+        issue = self._issue_text()
+        fact_pattern_path = self.file_entry.get_text().strip() or self._fact_pattern_path
+        if not fact_pattern_path:
+            self.status_label.set_text("Choose a fact pattern ODT or PDF.")
+            return
+        if not issue:
+            self.status_label.set_text("Enter an issue to assess.")
+            return
+        if self.parent_window.start_appeal_issue_assessment(issue, Path(fact_pattern_path)):
+            self.close()
 
 
 class OpenLawLensWindow(Adw.ApplicationWindow):
@@ -864,6 +1096,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._pending_auto_scholar_query = ""
         self._pending_quote_target: QuoteTarget | None = None
         self._settings_window: SettingsWindow | None = None
+        self._appeal_issue_window: AppealIssueAssessmentWindow | None = None
         self._dbus_commands_window: DbusCommandsWindow | None = None
         self._cli_commands_window: CliCommandsWindow | None = None
         self._research_sets_window: Gtk.Window | None = None
@@ -907,6 +1140,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         show_cli_commands = Gio.SimpleAction.new("show_cli_commands", None)
         show_cli_commands.connect("activate", self._on_show_cli_commands)
         self.add_action(show_cli_commands)
+        assess_appeal_issue = Gio.SimpleAction.new("assess_appeal_issue", None)
+        assess_appeal_issue.connect("activate", self._on_assess_appeal_issue)
+        self.add_action(assess_appeal_issue)
         focus_citation = Gio.SimpleAction.new("focus_citation", None)
         focus_citation.connect("activate", self._on_focus_citation)
         self.add_action(focus_citation)
@@ -1865,6 +2101,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.agent_question_entry.set_placeholder_text("Ask a California law question")
         self.agent_question_entry.connect("activate", self._on_agent_launch)
         row.append(self.agent_question_entry)
+
+        appeal_button = Gtk.Button(icon_name="document-edit-symbolic")
+        appeal_button.add_css_class("flat")
+        appeal_button.set_tooltip_text("Assess appeal issue")
+        appeal_button.connect("clicked", self._on_assess_appeal_issue_clicked)
+        row.append(appeal_button)
 
         collapse_button = Gtk.Button(icon_name="go-up-symbolic")
         collapse_button.add_css_class("flat")
@@ -3067,6 +3309,26 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def _on_settings_closed(self, _window: Gtk.Window) -> bool:
         self._settings_window = None
+        return False
+
+    def _on_assess_appeal_issue(
+        self,
+        _action: Gio.SimpleAction,
+        _parameter: GLib.Variant | None,
+    ) -> None:
+        self._show_appeal_issue_window()
+
+    def _on_assess_appeal_issue_clicked(self, _button: Gtk.Button) -> None:
+        self._show_appeal_issue_window()
+
+    def _show_appeal_issue_window(self) -> None:
+        if self._appeal_issue_window is None:
+            self._appeal_issue_window = AppealIssueAssessmentWindow(self)
+            self._appeal_issue_window.connect("close-request", self._on_appeal_issue_closed)
+        self._appeal_issue_window.present()
+
+    def _on_appeal_issue_closed(self, _window: Gtk.Window) -> bool:
+        self._appeal_issue_window = None
         return False
 
     def _on_clear_cache(self, _action: Gio.SimpleAction, _parameter: GLib.Variant | None) -> None:
@@ -4816,6 +5078,24 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             },
         )
 
+    def _compose_appeal_issue_agent_prompt(
+        self,
+        issue: str,
+        export: FactPatternExport,
+    ) -> str:
+        config = load_config()
+        return self._format_agent_prompt(
+            config.appeal_issue_agent_prompt_template,
+            DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
+            {
+                "issue": issue,
+                "fact_pattern_path": str(export.text_path),
+                "fact_pattern_source_path": str(export.source_copy_path),
+                "fact_pattern_original_path": str(export.source_path),
+                "fact_pattern_source_name": export.source_path.name,
+            },
+        )
+
     def _write_prompt_file(self, prompt: str) -> Path:
         handle = tempfile.NamedTemporaryFile(
             "w",
@@ -4866,6 +5146,49 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             for rule in self.client.cached_rules()
             if str(rule.get("rule_id") or "").strip() in selected_ids
         ]
+
+    def start_appeal_issue_assessment(self, issue: str, fact_pattern_path: Path) -> bool:
+        issue = issue.strip()
+        if not issue:
+            self._set_status("Enter an issue to assess.")
+            return False
+        if Vte is None or self._agent_terminal is None:
+            self._set_status("Embedded terminal is unavailable.")
+            return False
+        try:
+            workspace = self._create_agent_workspace()
+        except OSError as exc:
+            self._set_status(f"Unable to create agent workspace: {exc}")
+            return False
+        self._set_status("Preparing appeal issue assessment...")
+        thread = threading.Thread(
+            target=self._prepare_appeal_issue_worker,
+            args=(issue, fact_pattern_path, workspace),
+            daemon=True,
+        )
+        thread.start()
+        return True
+
+    def _prepare_appeal_issue_worker(
+        self,
+        issue: str,
+        fact_pattern_path: Path,
+        workspace: Path,
+    ) -> None:
+        try:
+            export = export_fact_pattern(fact_pattern_path, workspace / "fact_pattern")
+            prompt_path = self._write_prompt_file(
+                self._compose_appeal_issue_agent_prompt(issue, export)
+            )
+            GLib.idle_add(self._finish_appeal_issue_prepare, prompt_path, workspace)
+        except (FactPatternError, OSError, ValueError) as exc:
+            GLib.idle_add(self._set_status, f"Unable to prepare fact pattern: {exc}")
+
+    def _finish_appeal_issue_prepare(self, prompt_path: Path, workspace: Path) -> bool:
+        self._case_agent_text_sources = []
+        self._agent_mode = AGENT_MODE_APPEAL
+        self._launch_agent_with_prompt(prompt_path, workspace, AGENT_MODE_APPEAL)
+        return False
 
     def _on_agent_launch(self, _widget: Gtk.Widget) -> None:
         mode = self._selected_agent_mode
@@ -5360,7 +5683,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 target = resolve_quote_target(phrase, self._case_agent_text_sources)
                 if target is not None:
                     self._agent_link_lookup[tag] = target
-        if self._agent_mode == AGENT_MODE_GENERAL:
+        if self._agent_mode in {AGENT_MODE_GENERAL, AGENT_MODE_APPEAL}:
             self._apply_agent_citation_links(buffer, rendered)
             self._apply_agent_statute_links(buffer, rendered)
             self._apply_agent_rule_links(buffer, rendered)
