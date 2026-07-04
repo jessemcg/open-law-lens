@@ -20,16 +20,25 @@ def normalize_case_title(title: str) -> str:
         count=1,
         flags=re.IGNORECASE,
     )
+    normalized = re.sub(
+        r"^conservatorship\s+of\b",
+        "Conservatorship of",
+        normalized,
+        count=1,
+        flags=re.IGNORECASE,
+    )
     if normalized.startswith("In re "):
         normalized = _trim_dependency_caption_tail(normalized)
         normalized = _normalize_leading_name_words(normalized, "In re ")
     elif normalized.startswith("Adoption of "):
         normalized = _normalize_leading_name_words(normalized, "Adoption of ")
+    elif normalized.startswith("Conservatorship of "):
+        normalized = _normalize_conservatorship_title(normalized)
     else:
         return _normalize_civil_case_title(normalized)
     normalized = _normalize_initial_spacing(normalized)
     normalized = re.sub(
-        r"^((?:In re|Adoption of) )([A-Z]{2})\.?(?=$|[\s,(])",
+        r"^((?:In re|Adoption of|Conservatorship of) )([A-Z]{2})\.?(?=$|[\s,(])",
         lambda match: f"{match.group(1)}{'.'.join(match.group(2))}.",
         normalized,
     )
@@ -63,6 +72,18 @@ def _normalize_leading_name_words(title: str, prefix: str) -> str:
         return word[0] + word[1:].lower()
 
     return prefix + re.sub(r"\b[A-Z]{2,}\b", replace, body)
+
+
+def _normalize_conservatorship_title(title: str) -> str:
+    body = title.removeprefix("Conservatorship of ")
+    body = re.sub(
+        r"^(?:the\s+)?Person\s+of\s+",
+        "",
+        body,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    return _normalize_leading_name_words(f"Conservatorship of {body}", "Conservatorship of ")
 
 
 def _normalize_civil_case_title(title: str) -> str:

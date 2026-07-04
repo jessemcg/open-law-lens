@@ -549,20 +549,72 @@ class AppReaderPayloadTests(unittest.TestCase):
         class DummyWindow:
             def __init__(self) -> None:
                 self.opened: list[str] = []
+                self.links: list[CitedCaseLink | None] = []
 
-            def _start_lookup(self, citation: str) -> None:
+            def _start_lookup(self, citation: str, *, link: CitedCaseLink | None = None) -> None:
                 self.opened.append(citation)
+                self.links.append(link)
 
             def _open_citation_lookup_link(self, link: CitedCaseLink) -> None:
                 OpenLawLensWindow._open_citation_lookup_link(self, link)  # type: ignore[arg-type]
 
         window = DummyWindow()
-        link = CitedCaseLink(start_offset=0, end_offset=25, lookup_text="11 Cal.5th 614")
+        link = CitedCaseLink(
+            start_offset=0,
+            end_offset=25,
+            lookup_text="11 Cal.5th 614",
+            case_name="In re Caden C.",
+            full_text="In re Caden C. (2021) 11 Cal.5th 614",
+        )
 
         OpenLawLensWindow._open_cited_case_link(window, link)  # type: ignore[arg-type]
         OpenLawLensWindow._open_agent_cited_case_link(window, link)  # type: ignore[arg-type]
 
         self.assertEqual(window.opened, ["11 Cal.5th 614", "11 Cal.5th 614"])
+        self.assertEqual(window.links, [link, link])
+
+    def test_lookup_clusters_for_display_repairs_reporter_only_linked_case_name(self) -> None:
+        window = OpenLawLensWindow.__new__(OpenLawLensWindow)
+        link = CitedCaseLink(
+            start_offset=0,
+            end_offset=44,
+            lookup_text="9 Cal.5th 989",
+            case_name="Conservatorship of O.B.",
+            full_text="Conservatorship of O.B. (2020) 9 Cal.5th 989",
+        )
+        clusters = [
+            {
+                "id": "external-ob",
+                "case_name": "9 Cal.5th 989",
+                "case_name_short": "9 Cal.5th 989",
+                "case_name_full": "9 Cal.5th 989",
+                "official_citation": "9 Cal.5th 989",
+                "citations": [{"volume": "9", "reporter": "Cal.5th", "page": "989"}],
+            }
+        ]
+
+        repaired = OpenLawLensWindow._lookup_clusters_for_display(  # type: ignore[arg-type]
+            window,
+            clusters,
+            link,
+        )
+
+        self.assertEqual(repaired[0]["case_name"], "Conservatorship of O.B.")
+
+    def test_default_import_case_name_uses_last_lookup_full_citation(self) -> None:
+        class DummyEntry:
+            def get_text(self) -> str:
+                return ""
+
+        window = OpenLawLensWindow.__new__(OpenLawLensWindow)
+        window._selected_cluster = None
+        window.citation_entry = DummyEntry()
+        window._last_lookup_text = "Conservatorship of O.B. (2020) 9 Cal.5th 989"
+
+        self.assertEqual(
+            OpenLawLensWindow._default_import_case_name(window),  # type: ignore[arg-type]
+            "Conservatorship of O.B.",
+        )
 
     def test_open_authority_text_uses_first_detected_authority(self) -> None:
         class DummyEntry:

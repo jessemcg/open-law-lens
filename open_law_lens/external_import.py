@@ -36,6 +36,9 @@ def imported_case_name_from_text(text: str) -> str:
     if split_writ_title:
         return split_writ_title
     for line in _meaningful_lines(text):
+        conservatorship_title = _conservatorship_case_name(line)
+        if conservatorship_title:
+            return conservatorship_title
         scholar_title = _scholar_result_case_name(line)
         if scholar_title:
             return scholar_title
@@ -133,6 +136,29 @@ def repair_reporter_only_imported_cluster(
     return repaired
 
 
+def repair_reporter_only_cluster_name(
+    cluster: dict[str, Any],
+    case_name: str,
+) -> dict[str, Any] | None:
+    official_citation = normalize_official_citation(
+        str(cluster.get("official_citation") or official_citation_from_cluster(cluster))
+    )
+    clean_name = normalize_case_title(case_name.strip()) if case_name.strip() else ""
+    if not official_citation or not clean_name or reporter_only_case_name(clean_name, official_citation):
+        return None
+    current_names = [
+        str(cluster.get(key) or "").strip()
+        for key in ("case_name", "case_name_short", "case_name_full")
+    ]
+    if any(name and not reporter_only_case_name(name, official_citation) for name in current_names):
+        return None
+    repaired = dict(cluster)
+    repaired["case_name"] = clean_name
+    repaired["case_name_short"] = clean_name
+    repaired["case_name_full"] = clean_name
+    return repaired
+
+
 def imported_year_from_text(text: str) -> str:
     for line in _meaningful_lines(text):
         match = re.search(r"\b(19|20)\d{2}\b", line)
@@ -222,5 +248,14 @@ def _civil_case_name(line: str) -> str:
     return normalize_case_title(candidate)
 
 
+def _conservatorship_case_name(line: str) -> str:
+    if not re.match(r"^conservatorship\s+of\s+", line, flags=re.IGNORECASE):
+        return ""
+    candidate = re.split(r",|\(\d{4}\)|\d+\s+Cal\.", line, maxsplit=1)[0].strip(" ,")
+    if not candidate:
+        return ""
+    return normalize_case_title(candidate)
+
+
 def _looks_like_case_name(value: str) -> bool:
-    return bool(re.search(r"^(In re|Adoption of)\b|\bv\.\b", value, flags=re.IGNORECASE))
+    return bool(re.search(r"^(In re|Adoption of|Conservatorship of)\b|\bv\.\b", value, flags=re.IGNORECASE))

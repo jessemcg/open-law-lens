@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from .cache import normalize_citation
+from .case_titles import normalize_case_title
 from .citation_model import official_citation_from_cluster
 from .rules import RuleLink, cited_rule_links
 from .statutes import StatuteLink, cited_statute_links
@@ -21,7 +22,7 @@ REPORTER_CITATION_PATTERN = (
 CASE_NAME_PATTERN = (
     r"In\s+re\s+[A-Z][^();\n]{1,100}?"
     r"|Adoption\s+of\s+[A-Z][^();\n]{1,100}?"
-    r"|Conservatorship\s+of\s+[A-Z][^();\n]{1,100}?"
+    r"|Conservatorship\s+of\s+(?:the\s+Person\s+of\s+)?[A-Z][^();\n]{1,100}?"
     r"|[A-Z][A-Za-z0-9&.' -]{1,80}\s+v\.\s+"
     r"[A-Z][A-Za-z0-9&.' -]{1,80}(?:\s+\([A-Za-z][^)]+\))?"
 )
@@ -62,6 +63,8 @@ class CitedCaseLink:
     start_offset: int
     end_offset: int
     lookup_text: str
+    case_name: str = ""
+    full_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -95,6 +98,8 @@ def cited_case_links(
                 start_offset=span[0],
                 end_offset=span[1],
                 lookup_text=citation,
+                case_name=_case_name_without_signal_prefix(match),
+                full_text=text[span[0]:span[1]],
             )
         )
     return links
@@ -130,6 +135,11 @@ def _case_name_span_without_signal_prefix(match: re.Match[str]) -> tuple[int, in
     if prefix is not None:
         start += prefix.end()
     return start, end
+
+
+def _case_name_without_signal_prefix(match: re.Match[str]) -> str:
+    start, end = _case_name_span_without_signal_prefix(match)
+    return normalize_case_title(match.string[start:end].strip())
 
 
 def _dedupe_spans(spans: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:

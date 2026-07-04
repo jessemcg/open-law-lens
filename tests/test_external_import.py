@@ -14,6 +14,7 @@ from open_law_lens.external_import import (
     imported_case_name_from_text,
     imported_year_from_text,
     normalize_official_citation,
+    repair_reporter_only_cluster_name,
 )
 from open_law_lens.library import CaseLibrary, opinion_display_text
 from open_law_lens.quality import official_pagination_quality
@@ -83,9 +84,45 @@ OPINION
 
 
 class ExternalImportTests(unittest.TestCase):
+    def test_repair_reporter_only_cluster_name_uses_linked_case_name(self) -> None:
+        cluster = {
+            "id": "external-ob",
+            "case_name": "9 Cal.5th 989",
+            "case_name_short": "9 Cal.5th 989",
+            "case_name_full": "9 Cal.5th 989",
+            "official_citation": "9 Cal.5th 989",
+            "citations": [{"volume": "9", "reporter": "Cal.5th", "page": "989"}],
+        }
+
+        repaired = repair_reporter_only_cluster_name(cluster, "Conservatorship of O.B.")
+
+        self.assertIsNotNone(repaired)
+        assert repaired is not None
+        self.assertEqual(repaired["case_name"], "Conservatorship of O.B.")
+        self.assertEqual(repaired["case_name_short"], "Conservatorship of O.B.")
+        self.assertEqual(repaired["case_name_full"], "Conservatorship of O.B.")
+
+    def test_repair_reporter_only_cluster_name_keeps_real_case_name(self) -> None:
+        cluster = {
+            "id": "42",
+            "case_name": "Existing v. State",
+            "official_citation": "9 Cal.5th 989",
+            "citations": [{"volume": "9", "reporter": "Cal.5th", "page": "989"}],
+        }
+
+        self.assertIsNone(
+            repair_reporter_only_cluster_name(cluster, "Conservatorship of O.B.")
+        )
+
     def test_imported_case_name_from_google_scholar_text(self) -> None:
         self.assertEqual(imported_case_name_from_text(CADEN_TEXT), "In re Caden C.")
         self.assertEqual(imported_year_from_text(CADEN_TEXT), "2021")
+
+    def test_imported_case_name_from_conservatorship_citation(self) -> None:
+        self.assertEqual(
+            imported_case_name_from_text("Conservatorship of O.B. (2020) 9 Cal.5th 989"),
+            "Conservatorship of O.B.",
+        )
 
     def test_imported_case_name_from_split_superior_court_writ_caption(self) -> None:
         self.assertEqual(imported_case_name_from_text(B_D_TEXT), "B.D. v. Superior Court")

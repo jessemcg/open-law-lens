@@ -381,6 +381,16 @@ class ClientTests(unittest.TestCase):
             "Steven A. v. Adoption of Kelsey S.",
         )
 
+    def test_case_title_normalizes_conservatorship_person_caption(self) -> None:
+        self.assertEqual(
+            normalize_case_title("Conservatorship of the Person of O.B."),
+            "Conservatorship of O.B.",
+        )
+        self.assertEqual(
+            normalize_case_title("CONSERVATORSHIP OF THE PERSON OF OB"),
+            "Conservatorship of O.B.",
+        )
+
     def test_cluster_title_normalizes_in_re_casing(self) -> None:
         cluster = {"case_name": "In Re Emily D.", "case_name_short": "In Re Emily D."}
 
@@ -409,6 +419,14 @@ class ClientTests(unittest.TestCase):
         }
 
         self.assertEqual(cluster_short_title(cluster), "Cesar V. v. Superior Court")
+
+    def test_cluster_short_title_normalizes_conservatorship_person_caption(self) -> None:
+        cluster = {
+            "case_name": "Conservatorship of the Person of O.B.",
+            "case_name_short": "Conservatorship of the Person of O.B.",
+        }
+
+        self.assertEqual(cluster_short_title(cluster), "Conservatorship of O.B.")
 
     def test_cluster_short_title_uses_full_in_re_title_for_bare_initial_short_name(self) -> None:
         cluster = {
@@ -1166,6 +1184,32 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(client.last_lookup_source, "Research Cache")
             self.assertEqual(client.cached_clusters()[0]["case_name"], "Example v. State")
             self.assertEqual(library.saved_clusters(), [])
+
+    def test_lookup_can_read_cache_without_populating_research_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cached_lookup = [
+                {
+                    "status": 200,
+                    "clusters": [
+                        {
+                            "id": 42,
+                            "case_name": "Example v. State",
+                            "citations": [{"volume": 1, "reporter": "Cal.", "page": "2"}],
+                        }
+                    ],
+                }
+            ]
+            cache.write_lookup("1 Cal. 2", cached_lookup)
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            client = CourtListenerClient(cache=cache, library=library)
+
+            result = client.lookup_citation("1 Cal. 2", populate_research_cache=False)
+
+            self.assertEqual(result[0]["clusters"][0]["case_name"], "Example v. State")
+            self.assertEqual(client.last_lookup_source, "Research Cache")
+            self.assertEqual(client.cached_clusters(), [])
 
     def test_cached_clusters_hides_existing_duplicate_official_citation_entries(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

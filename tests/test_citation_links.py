@@ -136,10 +136,23 @@ class CitationLinkTests(unittest.TestCase):
         links = cited_case_links(text)
 
         self.assertEqual([link.lookup_text for link in links], ["9 Cal.5th 989"])
+        self.assertEqual([link.case_name for link in links], ["Conservatorship of O.B."])
+        self.assertEqual(
+            [link.full_text for link in links],
+            ["Conservatorship of O.B. (2020) 9 Cal.5th 989"],
+        )
         self.assertEqual(
             text[links[0].start_offset:links[0].end_offset],
             "Conservatorship of O.B. (2020) 9 Cal.5th 989",
         )
+
+    def test_cited_case_links_normalize_conservatorship_person_caption(self) -> None:
+        text = "The court cited Conservatorship of the Person of O.B. (2020) 9 Cal.5th 989."
+
+        links = cited_case_links(text)
+
+        self.assertEqual([link.lookup_text for link in links], ["9 Cal.5th 989"])
+        self.assertEqual([link.case_name for link in links], ["Conservatorship of O.B."])
 
     def test_citation_italic_spans_cover_case_names_in_full_citations(self) -> None:
         text = (

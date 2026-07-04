@@ -560,7 +560,13 @@ class CourtListenerClient:
                 raise CourtListenerError("CourtListener returned invalid JSON") from exc
         raise CourtListenerError("CourtListener request failed.")
 
-    def lookup_citation(self, citation: str, *, refresh: bool = False) -> list[dict[str, Any]]:
+    def lookup_citation(
+        self,
+        citation: str,
+        *,
+        refresh: bool = False,
+        populate_research_cache: bool = True,
+    ) -> list[dict[str, Any]]:
         normalized = normalize_citation(citation)
         if not normalized:
             raise ValueError("Citation is required.")
@@ -570,7 +576,8 @@ class CourtListenerClient:
             if isinstance(library_result, list):
                 library_result = self._filter_lookup_result_for_citation(normalized, library_result)
                 self.cache.write_lookup(normalized, library_result)
-                self._cache_lookup_clusters(library_result)
+                if populate_research_cache:
+                    self._cache_lookup_clusters(library_result)
                 self.last_lookup_source = "Library"
                 return library_result
             cached = self.cache.read_lookup(normalized)
@@ -578,8 +585,9 @@ class CourtListenerClient:
                 filtered_cached = self._filter_lookup_result_for_citation(normalized, cached)
                 if filtered_cached or not self._lookup_result_had_clusters(cached):
                     self.cache.write_lookup(normalized, filtered_cached)
-                    self._cache_lookup_clusters(filtered_cached)
-                    self._upsert_eligible_lookup(normalized, filtered_cached)
+                    if populate_research_cache:
+                        self._cache_lookup_clusters(filtered_cached)
+                        self._upsert_eligible_lookup(normalized, filtered_cached)
                     self.last_lookup_source = "Research Cache"
                     return filtered_cached
         data = urlencode({"text": normalized}).encode("utf-8")
@@ -596,8 +604,9 @@ class CourtListenerClient:
         if not isinstance(result, list):
             raise CourtListenerError("CourtListener citation lookup returned unexpected JSON.")
         self.cache.write_lookup(normalized, result)
-        self._cache_lookup_clusters(result)
-        self._upsert_eligible_lookup(normalized, result)
+        if populate_research_cache:
+            self._cache_lookup_clusters(result)
+            self._upsert_eligible_lookup(normalized, result)
         self.last_lookup_source = "CourtListener API"
         return result
 

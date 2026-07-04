@@ -108,6 +108,7 @@ from .external_import import (
     clean_imported_opinion_text,
     imported_case_name_from_text,
     normalize_official_citation,
+    repair_reporter_only_cluster_name,
 )
 from .fact_patterns import FactPatternError, FactPatternExport, export_fact_pattern
 from .launch_request import pop_open_authority_request
@@ -2955,7 +2956,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._start_rule_lookup(link.lookup_text)
 
     def _open_citation_lookup_link(self, link: CitedCaseLink) -> None:
-        self._start_lookup(link.lookup_text)
+        self._start_lookup(link.lookup_text, link=link)
 
     def _install_reader_find_key_controller(self, widget: Gtk.Widget) -> None:
         key_controller = Gtk.EventControllerKey()
@@ -4086,7 +4087,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             title = cluster_short_title(self._selected_cluster)
             citation = normalize_official_citation(title)
             return "" if citation and citation == title else title
-        return ""
+        return imported_case_name_from_text(self._official_search_query())
 
     def _default_import_official_citation(self) -> str:
         cluster = self._selected_cluster
@@ -4510,17 +4511,23 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_status(f"{source}: opened {rule.get('citation') or rule_id}.")
         return False
 
-    def _start_lookup(self, citation: str) -> None:
-        self._last_lookup_text = citation.strip()
+    def _start_lookup(self, citation: str, *, link: CitedCaseLink | None = None) -> None:
+        lookup_context = self._lookup_context_text(citation, link)
+        self._last_lookup_text = lookup_context
         self._pending_auto_scholar_cluster_id = ""
         self._pending_auto_scholar_query = ""
         self._hide_case_completion()
-        self._set_status(f"Looking up {citation}...")
+        self._set_status(f"Looking up {lookup_context or citation}...")
         self._set_reader_header("")
         self._set_reader_busy(True, "Looking up...")
         self.reader_buffer.set_text("Loading...")
-        thread = threading.Thread(target=self._lookup_worker, args=(citation,), daemon=True)
+        thread = threading.Thread(target=self._lookup_worker, args=(citation, link), daemon=True)
         thread.start()
+
+    def _lookup_context_text(self, citation: str, link: CitedCaseLink | None = None) -> str:
+        if link is not None:
+            return (link.full_text or link.lookup_text).strip()
+        return citation.strip()
 
     def _set_formatted_clipboard(
         self,
@@ -4553,17 +4560,44 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return
         self._set_status("Official citation copied.")
 
-    def _lookup_worker(self, citation: str) -> None:
+    def _lookup_worker(self, citation: str, link: CitedCaseLink | None = None) -> None:
         try:
-            result = self.client.lookup_citation(citation)
+            result = self.client.lookup_citation(
+                citation,
+                populate_research_cache=link is None,
+            )
             raw_clusters = self.client.clusters_from_lookup(result)
-            shown_clusters = dedupe_case_clusters(raw_clusters)
+            shown_clusters = self._lookup_clusters_for_display(raw_clusters, link)
+            if link is not None and shown_clusters:
+                shown_clusters = shown_clusters[:1]
             status = self._lookup_status_text(result, raw_clusters, shown_clusters)
-            GLib.idle_add(self._apply_lookup_result, result, shown_clusters, status, citation)
+            GLib.idle_add(
+                self._apply_lookup_result,
+                result,
+                shown_clusters,
+                status,
+                self._lookup_context_text(citation, link),
+            )
         except CourtListenerError:
-            GLib.idle_add(self._fallback_lookup_to_scholar, citation)
+            GLib.idle_add(
+                self._fallback_lookup_to_scholar,
+                self._lookup_context_text(citation, link),
+            )
         except ValueError as exc:
             GLib.idle_add(self._apply_error, str(exc))
+
+    def _lookup_clusters_for_display(
+        self,
+        raw_clusters: list[dict[str, Any]],
+        link: CitedCaseLink | None = None,
+    ) -> list[dict[str, Any]]:
+        clusters = dedupe_case_clusters(raw_clusters)
+        if link is None or not link.case_name.strip():
+            return clusters
+        repaired: list[dict[str, Any]] = []
+        for cluster in clusters:
+            repaired.append(repair_reporter_only_cluster_name(cluster, link.case_name) or cluster)
+        return repaired
 
     def _fallback_lookup_to_scholar(self, citation: str) -> bool:
         self._set_reader_header("")
@@ -4991,6 +5025,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if clusters:
             self._pending_auto_scholar_cluster_id = select_cluster_id
             self._pending_auto_scholar_query = citation.strip()
+            for cluster in clusters:
+                self.client.cache.upsert_cluster(cluster)
         else:
             self._pending_auto_scholar_cluster_id = ""
             self._pending_auto_scholar_query = ""
