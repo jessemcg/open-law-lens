@@ -16,6 +16,7 @@ CONFIG_KEY_GENERAL_AGENT_PROMPT_TEMPLATE = "general_agent_prompt_template"
 CONFIG_KEY_CASE_AGENT_PROMPT_TEMPLATE = "case_agent_prompt_template"
 CONFIG_KEY_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE = "appeal_issue_agent_prompt_template"
 CONFIG_KEY_APPEAL_ISSUE_PRESETS = "appeal_issue_presets"
+CONFIG_KEY_APPEAL_ISSUE_LABELS = "appeal_issue_labels"
 CONFIG_KEY_READER_FONT_SIZE_PT = "reader_font_size_pt"
 CONFIG_KEY_READER_FONT_FAMILY = "reader_font_family"
 CONFIG_KEY_DEFAULT_BARE_STATUTE_LAW_CODE = "default_bare_statute_law_code"
@@ -57,6 +58,7 @@ LEGACY_GENERAL_AGENT_PROMPT_SHA256 = "50a9928018ec7d3b06b322db9e5a211e56c7a155b0
 LEGACY_APPEAL_ISSUE_AGENT_PROMPT_SHA256ES = (
     "b57fb338bb6148eaa4937be89de687884b1f42f2ef2d966d9d4a21cb3816d338",
     "89f0c0d29553434588a1060de8d979d91c9a15ca27b214ee16ff3498209b6089",
+    "825b58f274b81af60c7fdd0fb2a55e9a6ad43c8bbd31f6d51f0c632d2c7a5599",
 )
 
 DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens General California Law Agent.
@@ -96,10 +98,17 @@ DEFAULT_APPEAL_ISSUE_PRESETS: tuple[str, ...] = (
     "The appellant was denied due process, notice, or a meaningful opportunity to be heard.",
     "The error was prejudicial and not harmless under the applicable appellate standard.",
 )
+DEFAULT_APPEAL_ISSUE_LABELS: tuple[str, ...] = (
+    "Substantial evidence",
+    "Abuse of discretion",
+    "Wrong legal standard",
+    "Due process",
+    "Prejudice",
+)
 
 DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens Appeal Issue Assessment Agent.
 
-Assess one possible California appellate issue against the user's fact pattern. Use Open Law Lens CLI commands tied directly to CourtListener APIs for legal authority and legal research.
+Assess one possible California appellate argument against the user's fact pattern. Use Open Law Lens CLI commands tied directly to CourtListener APIs for legal authority and legal research.
 
 Read the extracted fact-pattern text first:
 {fact_pattern_path}
@@ -114,12 +123,12 @@ Record citation format for final answers:
 - Combine multiple record citations into one parenthetical only when they support the same point.
 - If the fact-pattern text does not include a usable record citation for an important fact, say that the citation is missing or uncertain instead of inventing one.
 
-Issue to assess:
+Argument to assess:
 {issue}
 
 Research California law with Open Law Lens CLI commands. For case-law discovery, start with `uv run open-law-lens case-search "<query>"`. Treat search results as leads only. Extract the most relevant candidate opinions with `uv run open-law-lens extract-case --cluster-id <cluster_id>` before relying on a case. Use `uv run open-law-lens extract-statute "<citation>"` and `uv run open-law-lens extract-rule "<citation>"` when statutes or rules matter.
 
-Confine research to California state law unless the issue explicitly requires federal law. Prefer published California Supreme Court and California Court of Appeal authority. Use unpublished cases only for context, not as controlling authority.
+Confine research to California state law unless the argument explicitly requires federal law. Prefer published California Supreme Court and California Court of Appeal authority. Use unpublished cases only for context, not as controlling authority.
 
 Analyze preservation, standard of review, factual support, governing law, prejudice, likely respondent arguments, and missing record facts that could change the assessment.
 
@@ -136,6 +145,9 @@ class AppConfig:
     appeal_issue_agent_prompt_template: str = DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
     appeal_issue_presets: list[str] = field(
         default_factory=lambda: list(DEFAULT_APPEAL_ISSUE_PRESETS)
+    )
+    appeal_issue_labels: list[str] = field(
+        default_factory=lambda: list(DEFAULT_APPEAL_ISSUE_LABELS)
     )
     reader_font_size_pt: int = DEFAULT_READER_FONT_SIZE_PT
     reader_font_family: str = DEFAULT_READER_FONT_FAMILY
@@ -190,6 +202,22 @@ def normalize_appeal_issue_presets(value: Any) -> list[str]:
     return presets or list(DEFAULT_APPEAL_ISSUE_PRESETS)
 
 
+def normalize_appeal_issue_labels(value: Any, presets: list[str]) -> list[str]:
+    presets_are_defaults = (
+        len(presets) == len(DEFAULT_APPEAL_ISSUE_PRESETS)
+        and all(left == right for left, right in zip(presets, DEFAULT_APPEAL_ISSUE_PRESETS))
+    )
+    if (
+        value is None
+        and presets_are_defaults
+    ):
+        return list(DEFAULT_APPEAL_ISSUE_LABELS)
+    raw_labels = value if isinstance(value, list) else []
+    labels = [str(item or "").strip() for item in raw_labels[: len(presets)]]
+    labels.extend([""] * (len(presets) - len(labels)))
+    return labels
+
+
 def reader_font_css(font_family: str) -> str:
     normalized = normalize_reader_font_family(font_family)
     for name, css in READER_FONT_FAMILY_OPTIONS:
@@ -229,6 +257,9 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
     ).hexdigest()
     if appeal_prompt_hash in LEGACY_APPEAL_ISSUE_AGENT_PROMPT_SHA256ES:
         appeal_issue_agent_prompt = DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
+    appeal_issue_presets = normalize_appeal_issue_presets(
+        raw.get(CONFIG_KEY_APPEAL_ISSUE_PRESETS)
+    )
     return AppConfig(
         courtlistener_token=str(token).strip(),
         concordance_file_path=str(concordance_path).strip(),
@@ -242,8 +273,10 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
             str(appeal_issue_agent_prompt).strip()
             or DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
         ),
-        appeal_issue_presets=normalize_appeal_issue_presets(
-            raw.get(CONFIG_KEY_APPEAL_ISSUE_PRESETS)
+        appeal_issue_presets=appeal_issue_presets,
+        appeal_issue_labels=normalize_appeal_issue_labels(
+            raw.get(CONFIG_KEY_APPEAL_ISSUE_LABELS),
+            appeal_issue_presets,
         ),
         reader_font_size_pt=coerce_reader_font_size(raw.get(CONFIG_KEY_READER_FONT_SIZE_PT)),
         reader_font_family=normalize_reader_font_family(raw.get(CONFIG_KEY_READER_FONT_FAMILY)),
@@ -257,6 +290,13 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
 
 
 def save_config(config: AppConfig, path: Path = CONFIG_PATH) -> None:
+    appeal_issue_presets = normalize_appeal_issue_presets(config.appeal_issue_presets)
+    appeal_issue_labels = list(config.appeal_issue_labels)
+    if (
+        appeal_issue_labels == list(DEFAULT_APPEAL_ISSUE_LABELS)
+        and appeal_issue_presets != list(DEFAULT_APPEAL_ISSUE_PRESETS)
+    ):
+        appeal_issue_labels = []
     data: dict[str, Any] = {
         CONFIG_KEY_COURTLISTENER_TOKEN: config.courtlistener_token.strip(),
         CONFIG_KEY_CONCORDANCE_FILE_PATH: config.concordance_file_path.strip(),
@@ -270,8 +310,10 @@ def save_config(config: AppConfig, path: Path = CONFIG_PATH) -> None:
             config.appeal_issue_agent_prompt_template.strip()
             or DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
         ),
-        CONFIG_KEY_APPEAL_ISSUE_PRESETS: normalize_appeal_issue_presets(
-            config.appeal_issue_presets
+        CONFIG_KEY_APPEAL_ISSUE_PRESETS: appeal_issue_presets,
+        CONFIG_KEY_APPEAL_ISSUE_LABELS: normalize_appeal_issue_labels(
+            appeal_issue_labels,
+            appeal_issue_presets,
         ),
         CONFIG_KEY_READER_FONT_SIZE_PT: coerce_reader_font_size(config.reader_font_size_pt),
         CONFIG_KEY_READER_FONT_FAMILY: normalize_reader_font_family(config.reader_font_family),

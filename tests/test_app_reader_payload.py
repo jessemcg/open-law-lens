@@ -74,7 +74,7 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(env["OPEN_LAW_LENS_CODEX_APPROVAL"], "never")
         self.assertNotIn("OPEN_LAW_LENS_LIBRARY_DB", env)
 
-    def test_appeal_issue_prompt_includes_issue_fact_pattern_and_cli_guidance(self) -> None:
+    def test_appeal_issue_prompt_includes_argument_fact_pattern_and_cli_guidance(self) -> None:
         class DummyWindow:
             def _format_agent_prompt(
                 self,
@@ -104,6 +104,8 @@ class AppReaderPayloadTests(unittest.TestCase):
         )
 
         self.assertIn("The court applied the wrong standard.", prompt)
+        self.assertIn("Argument to assess:", prompt)
+        self.assertNotIn("Issue to assess:", prompt)
         self.assertIn("/tmp/workspace/fact_pattern/facts_extracted.txt", prompt)
         self.assertIn("uv run open-law-lens case-search", prompt)
         self.assertIn("Record citation format for final answers:", prompt)
@@ -222,12 +224,16 @@ class AppReaderPayloadTests(unittest.TestCase):
             [(Path("/tmp/prompt.txt"), Path("/tmp/workspace"), "appeal")],
         )
 
-    def test_appeal_issue_menu_label_uses_first_nonblank_line_and_truncates(self) -> None:
+    def test_appeal_issue_menu_label_uses_label_then_first_nonblank_line_and_truncates(self) -> None:
+        self.assertEqual(
+            appeal_issue_menu_label("Full argument text.", "  Short label  "),
+            "Short label",
+        )
         self.assertEqual(
             appeal_issue_menu_label("\n  First issue line.  \nSecond line."),
             "First issue line.",
         )
-        self.assertEqual(appeal_issue_menu_label("", max_length=12), "Untitled issue")
+        self.assertEqual(appeal_issue_menu_label("", max_length=12), "Untitled argument")
         self.assertEqual(
             appeal_issue_menu_label("This issue description is too long", max_length=18),
             "This issue desc...",
@@ -252,7 +258,7 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(button.get_icon_name(), "cafe-symbolic")
         self.assertTrue(icon_ref.is_file())
 
-    def test_appeal_issue_menu_includes_custom_claim_action(self) -> None:
+    def test_appeal_issue_menu_includes_custom_argument_action(self) -> None:
         class DummyWindow:
             def __init__(self) -> None:
                 self._appeal_issue_menu_button = None
@@ -282,13 +288,22 @@ class AppReaderPayloadTests(unittest.TestCase):
         window = DummyWindow()
         window._appeal_issue_menu_button = Gtk.MenuButton()
 
-        with patch("open_law_lens.app.load_config", return_value=AppConfig(appeal_issue_presets=["Issue one"])):
+        with patch(
+            "open_law_lens.app.load_config",
+            return_value=AppConfig(
+                appeal_issue_presets=["Full argument one."],
+                appeal_issue_labels=["Short one"],
+            ),
+        ):
             OpenLawLensWindow._refresh_appeal_issue_menu(window)  # type: ignore[arg-type]
 
         popover = window._appeal_issue_menu_button.get_popover()
         self.assertIsNotNone(popover)
         assert popover is not None
-        self.assertEqual(labels(popover), ["Custom claim...", "Issue one", "Edit appeal issues..."])
+        self.assertEqual(
+            labels(popover),
+            ["Custom argument...", "Short one", "Edit appeal arguments..."],
+        )
 
     def test_appeal_issue_by_index_uses_current_fact_pattern(self) -> None:
         class DummyWindow:
@@ -390,7 +405,7 @@ class AppReaderPayloadTests(unittest.TestCase):
         )
 
         self.assertFalse(result)
-        self.assertEqual(window.statuses, ["Enter an issue to assess."])
+        self.assertEqual(window.statuses, ["Enter an argument to assess."])
 
     def test_custom_appeal_issue_reports_missing_fact_pattern(self) -> None:
         class DummyWindow:

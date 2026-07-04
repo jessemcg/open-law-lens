@@ -94,6 +94,7 @@ from .config import (
     courtlistener_token,
     load_config,
     normalize_agent_permission_mode,
+    normalize_appeal_issue_labels,
     normalize_appeal_issue_presets,
     normalize_bare_statute_law_code,
     normalize_reader_font_family,
@@ -192,15 +193,16 @@ AGENT_MARKDOWN_HEADING_SCALES = {
 CODEX_SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
 
 
-def appeal_issue_menu_label(issue: str, max_length: int = 72) -> str:
-    for raw_line in issue.splitlines():
+def appeal_issue_menu_label(issue: str, label: str = "", max_length: int = 72) -> str:
+    source = label.strip() or issue
+    for raw_line in source.splitlines():
         line = re.sub(r"\s+", " ", raw_line).strip()
         if not line:
             continue
         if len(line) <= max_length:
             return line
         return line[: max_length - 3].rstrip() + "..."
-    return "Untitled issue"
+    return "Untitled argument"
 
 
 def build_agent_launch_env(
@@ -687,19 +689,20 @@ class SettingsWindow(Adw.ApplicationWindow):
         appeal_box.append(file_row)
 
         issues_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        issues_label = Gtk.Label(label="Issues to assess", xalign=0)
+        issues_label = Gtk.Label(label="Arguments to assess", xalign=0)
         issues_label.add_css_class("dim-label")
         issues_label.set_hexpand(True)
         issues_header.append(issues_label)
         add_issue_button = Gtk.Button(icon_name="list-add-symbolic")
         add_issue_button.add_css_class("flat")
-        add_issue_button.set_tooltip_text("Add issue")
+        add_issue_button.set_tooltip_text("Add argument")
         add_issue_button.connect("clicked", self._on_add_appeal_issue)
         issues_header.append(add_issue_button)
         appeal_box.append(issues_header)
 
         self.appeal_issue_list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self.appeal_issue_buffers: list[Gtk.TextBuffer] = []
+        self.appeal_issue_label_entries: list[Gtk.Entry] = []
         appeal_box.append(self.appeal_issue_list_box)
         appeal_group.add(appeal_box)
         appeal_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -712,7 +715,10 @@ class SettingsWindow(Adw.ApplicationWindow):
         appeal_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         appeal_scroller.set_vexpand(True)
         appeal_scroller.set_child(appeal_page)
-        self._reload_appeal_issue_editors(config.appeal_issue_presets)
+        self._reload_appeal_issue_editors(
+            config.appeal_issue_presets,
+            config.appeal_issue_labels,
+        )
         self._refresh_appeal_fact_pattern_entry()
 
         general_prompt_page, self.general_agent_prompt_buffer = self._build_prompt_settings_page(
@@ -734,7 +740,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         )
 
         pages = [
-            ("appeal", "Appeal Issues", appeal_scroller),
+            ("appeal", "Appeal Arguments", appeal_scroller),
             ("general_prompt", "General Prompt", general_prompt_page),
             ("cache_prompt", "Research Cache Prompt", case_prompt_page),
             ("appeal_prompt", "Appeal Prompt", appeal_prompt_page),
@@ -874,22 +880,43 @@ class SettingsWindow(Adw.ApplicationWindow):
         end = buffer.get_end_iter()
         return buffer.get_text(start, end, True).strip()
 
-    def _appeal_issue_texts(self) -> list[str]:
-        return normalize_appeal_issue_presets(
-            [self._text_buffer_text(buffer) for buffer in self.appeal_issue_buffers]
-        )
+    def _appeal_issue_data(self) -> tuple[list[str], list[str]]:
+        raw_issues = [self._text_buffer_text(buffer) for buffer in self.appeal_issue_buffers]
+        raw_labels = [entry.get_text() for entry in self.appeal_issue_label_entries]
+        issues: list[str] = []
+        labels: list[str] = []
+        seen: set[str] = set()
+        for index, raw_issue in enumerate(raw_issues):
+            issue = raw_issue.strip()
+            key = issue.casefold()
+            if not issue or key in seen:
+                continue
+            issues.append(issue)
+            labels.append(raw_labels[index].strip() if index < len(raw_labels) else "")
+            seen.add(key)
+        if not issues:
+            issues = list(DEFAULT_APPEAL_ISSUE_PRESETS)
+            labels = normalize_appeal_issue_labels(None, issues)
+        return issues, normalize_appeal_issue_labels(labels, issues)
 
-    def _reload_appeal_issue_editors(self, issues: list[str]) -> None:
+    def _reload_appeal_issue_editors(
+        self,
+        issues: list[str],
+        labels: list[str] | None = None,
+    ) -> None:
         while True:
             child = self.appeal_issue_list_box.get_first_child()
             if child is None:
                 break
             self.appeal_issue_list_box.remove(child)
         self.appeal_issue_buffers = []
-        for index, issue in enumerate(normalize_appeal_issue_presets(issues)):
-            self._append_appeal_issue_editor(index, issue)
+        self.appeal_issue_label_entries = []
+        normalized_issues = normalize_appeal_issue_presets(issues)
+        normalized_labels = normalize_appeal_issue_labels(labels, normalized_issues)
+        for index, issue in enumerate(normalized_issues):
+            self._append_appeal_issue_editor(index, issue, normalized_labels[index])
 
-    def _append_appeal_issue_editor(self, index: int, issue: str) -> None:
+    def _append_appeal_issue_editor(self, index: int, issue: str, label: str) -> None:
         frame = Gtk.Frame()
         frame.set_hexpand(True)
 
@@ -899,17 +926,28 @@ class SettingsWindow(Adw.ApplicationWindow):
         box.set_margin_start(8)
         box.set_margin_end(8)
 
-        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        title = Gtk.Label(label=f"Issue {index + 1}: {appeal_issue_menu_label(issue)}", xalign=0)
-        title.set_hexpand(True)
-        title.set_ellipsize(Pango.EllipsizeMode.END)
-        header.append(title)
+        label_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        label_label = Gtk.Label(label="Short label", xalign=0)
+        label_label.add_css_class("dim-label")
+        label_label.set_hexpand(True)
+        label_header.append(label_label)
         delete_button = Gtk.Button(icon_name="user-trash-symbolic")
         delete_button.add_css_class("flat")
-        delete_button.set_tooltip_text("Delete issue")
+        delete_button.set_tooltip_text("Delete argument")
         delete_button.connect("clicked", self._on_delete_appeal_issue, index)
-        header.append(delete_button)
-        box.append(header)
+        label_header.append(delete_button)
+        box.append(label_header)
+
+        label_entry = Gtk.Entry()
+        label_entry.set_text(label)
+        label_entry.set_placeholder_text("Menu label")
+        label_entry.set_hexpand(True)
+        self.appeal_issue_label_entries.append(label_entry)
+        box.append(label_entry)
+
+        argument_label = Gtk.Label(label="Argument", xalign=0)
+        argument_label.add_css_class("dim-label")
+        box.append(argument_label)
 
         buffer = Gtk.TextBuffer()
         buffer.set_text(issue)
@@ -969,15 +1007,20 @@ class SettingsWindow(Adw.ApplicationWindow):
         self._refresh_appeal_fact_pattern_entry()
 
     def _on_add_appeal_issue(self, _button: Gtk.Button) -> None:
-        issues = self._appeal_issue_texts()
-        issues.append("New appellate issue.")
-        self._reload_appeal_issue_editors(issues)
+        issues, labels = self._appeal_issue_data()
+        issues.append("New appellate argument.")
+        labels.append("")
+        self._reload_appeal_issue_editors(issues, labels)
 
     def _on_delete_appeal_issue(self, _button: Gtk.Button, index: int) -> None:
-        issues = self._appeal_issue_texts()
+        issues, labels = self._appeal_issue_data()
         if 0 <= index < len(issues):
             del issues[index]
-        self._reload_appeal_issue_editors(issues or list(DEFAULT_APPEAL_ISSUE_PRESETS))
+            del labels[index]
+        if issues:
+            self._reload_appeal_issue_editors(issues, labels)
+        else:
+            self._reload_appeal_issue_editors(list(DEFAULT_APPEAL_ISSUE_PRESETS))
 
     def _on_save_clicked(self, _button: Gtk.Button) -> None:
         token = self.token_row.get_text().strip()
@@ -999,6 +1042,7 @@ class SettingsWindow(Adw.ApplicationWindow):
             ]
         else:
             agent_permission_mode = AGENT_PERMISSION_MODE_SANDBOXED
+        appeal_issue_presets, appeal_issue_labels = self._appeal_issue_data()
         save_config(
             AppConfig(
                 courtlistener_token=token,
@@ -1015,7 +1059,8 @@ class SettingsWindow(Adw.ApplicationWindow):
                     self._prompt_text(self.appeal_issue_agent_prompt_buffer).strip()
                     or DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
                 ),
-                appeal_issue_presets=self._appeal_issue_texts(),
+                appeal_issue_presets=appeal_issue_presets,
+                appeal_issue_labels=appeal_issue_labels,
                 reader_font_size_pt=coerce_reader_font_size(
                     int(round(self.reader_font_size_row.get_value()))
                 ),
@@ -2184,7 +2229,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _build_appeal_issue_menu_button(self) -> Gtk.MenuButton:
         button = Gtk.MenuButton(icon_name="cafe-symbolic")
         button.add_css_class("flat")
-        button.set_tooltip_text("Assess appeal issue")
+        button.set_tooltip_text("Assess appeal argument")
         self._appeal_issue_menu_button = button
         self._refresh_appeal_issue_menu()
         return button
@@ -2198,7 +2243,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         box.set_margin_bottom(6)
         box.set_margin_start(6)
         box.set_margin_end(6)
-        custom_button = Gtk.Button(label="Custom claim...")
+        custom_button = Gtk.Button(label="Custom argument...")
         custom_button.add_css_class("flat")
         custom_button.set_halign(Gtk.Align.FILL)
         custom_button.set_hexpand(True)
@@ -2206,9 +2251,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         box.append(custom_button)
         separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
         box.append(separator)
-        issues = load_config().appeal_issue_presets
+        config = load_config()
+        issues = config.appeal_issue_presets
+        labels = normalize_appeal_issue_labels(config.appeal_issue_labels, issues)
         for index, issue in enumerate(issues):
-            issue_button = Gtk.Button(label=appeal_issue_menu_label(issue))
+            issue_button = Gtk.Button(label=appeal_issue_menu_label(issue, labels[index]))
             issue_button.add_css_class("flat")
             issue_button.set_halign(Gtk.Align.FILL)
             issue_button.set_hexpand(True)
@@ -2216,7 +2263,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             box.append(issue_button)
         settings_separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
         box.append(settings_separator)
-        settings_button = Gtk.Button(label="Edit appeal issues...")
+        settings_button = Gtk.Button(label="Edit appeal arguments...")
         settings_button.add_css_class("flat")
         settings_button.set_halign(Gtk.Align.FILL)
         settings_button.set_hexpand(True)
@@ -3442,7 +3489,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._show_custom_appeal_issue_window()
 
     def _show_custom_appeal_issue_window(self) -> None:
-        window = Gtk.Window(title="Custom Claim")
+        window = Gtk.Window(title="Custom Argument")
         window.set_transient_for(self)
         window.set_modal(True)
         window.set_default_size(560, 300)
@@ -3516,7 +3563,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _start_appeal_issue_assessment_by_index(self, index: int) -> None:
         issues = load_config().appeal_issue_presets
         if not (0 <= index < len(issues)):
-            self._set_status("Choose an issue to assess.")
+            self._set_status("Choose an argument to assess.")
             return
         fact_pattern_path = self._appeal_fact_pattern_path()
         if fact_pattern_path is None:
@@ -3529,7 +3576,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _start_custom_appeal_issue_assessment(self, issue: str) -> bool:
         issue = issue.strip()
         if not issue:
-            self._set_status("Enter an issue to assess.")
+            self._set_status("Enter an argument to assess.")
             return False
         fact_pattern_path = self._appeal_fact_pattern_path()
         if fact_pattern_path is None:
@@ -5393,7 +5440,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def start_appeal_issue_assessment(self, issue: str, fact_pattern_path: Path) -> bool:
         issue = issue.strip()
         if not issue:
-            self._set_status("Enter an issue to assess.")
+            self._set_status("Enter an argument to assess.")
             return False
         if Vte is None or self._agent_terminal is None:
             self._set_status("Embedded terminal is unavailable.")

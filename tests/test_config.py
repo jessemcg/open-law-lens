@@ -11,6 +11,7 @@ from open_law_lens.config import (
     AGENT_PERMISSION_MODE_FULL_ACCESS,
     AppConfig,
     DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
+    DEFAULT_APPEAL_ISSUE_LABELS,
     DEFAULT_APPEAL_ISSUE_PRESETS,
     DEFAULT_CASE_AGENT_PROMPT_TEMPLATE,
     DEFAULT_AGENT_PERMISSION_MODE,
@@ -36,6 +37,7 @@ class ConfigTests(unittest.TestCase):
                 DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
             )
             self.assertEqual(config.appeal_issue_presets, list(DEFAULT_APPEAL_ISSUE_PRESETS))
+            self.assertEqual(config.appeal_issue_labels, list(DEFAULT_APPEAL_ISSUE_LABELS))
             self.assertEqual(config.reader_font_size_pt, DEFAULT_READER_FONT_SIZE_PT)
             self.assertEqual(config.reader_font_family, DEFAULT_READER_FONT_FAMILY)
             self.assertEqual(config.default_bare_statute_law_code, DEFAULT_BARE_STATUTE_LAW_CODE)
@@ -52,6 +54,7 @@ class ConfigTests(unittest.TestCase):
                     case_agent_prompt_template=" Case {question} ",
                     appeal_issue_agent_prompt_template=" Appeal {issue} ",
                     appeal_issue_presets=[" Issue One ", "Issue Two", "Issue One"],
+                    appeal_issue_labels=[" One ", "Two"],
                     reader_font_size_pt=14,
                     reader_font_family="Georgia",
                     default_bare_statute_law_code="FAM",
@@ -66,6 +69,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.case_agent_prompt_template, "Case {question}")
             self.assertEqual(config.appeal_issue_agent_prompt_template, "Appeal {issue}")
             self.assertEqual(config.appeal_issue_presets, ["Issue One", "Issue Two"])
+            self.assertEqual(config.appeal_issue_labels, ["One", "Two"])
             self.assertEqual(config.reader_font_size_pt, 14)
             self.assertEqual(config.reader_font_family, "Georgia")
             self.assertEqual(config.default_bare_statute_law_code, "FAM")
@@ -158,6 +162,8 @@ class ConfigTests(unittest.TestCase):
                 DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
             )
             self.assertIn("Record citation format", config.appeal_issue_agent_prompt_template)
+            self.assertIn("Argument to assess", config.appeal_issue_agent_prompt_template)
+            self.assertNotIn("Issue to assess", config.appeal_issue_agent_prompt_template)
 
     def test_custom_appeal_prompt_is_preserved(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -195,6 +201,35 @@ class ConfigTests(unittest.TestCase):
             )
 
             self.assertEqual(load_config(path).appeal_issue_presets, list(DEFAULT_APPEAL_ISSUE_PRESETS))
+            self.assertEqual(load_config(path).appeal_issue_labels, list(DEFAULT_APPEAL_ISSUE_LABELS))
+
+    def test_appeal_issue_labels_align_with_presets(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "appeal_issue_presets": ["Argument one.", "Argument two."],
+                        "appeal_issue_labels": ["One"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(path)
+
+            self.assertEqual(config.appeal_issue_presets, ["Argument one.", "Argument two."])
+            self.assertEqual(config.appeal_issue_labels, ["One", ""])
+
+    def test_custom_appeal_issue_presets_do_not_inherit_default_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            save_config(AppConfig(appeal_issue_presets=["Custom argument."]), path)
+
+            config = load_config(path)
+
+            self.assertEqual(config.appeal_issue_presets, ["Custom argument."])
+            self.assertEqual(config.appeal_issue_labels, [""])
 
     def test_reader_font_settings_are_coerced(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
