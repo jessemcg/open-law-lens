@@ -861,7 +861,6 @@ class AppealIssueAssessmentWindow(Gtk.Window):
         save_button.connect("clicked", self._on_save_issues)
         actions.append(save_button)
         launch_button = Gtk.Button(label="Assess Issue")
-        launch_button.add_css_class("suggested-action")
         launch_button.connect("clicked", self._on_launch_assessment)
         actions.append(launch_button)
         outer.append(actions)
