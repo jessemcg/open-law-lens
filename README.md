@@ -55,12 +55,15 @@ Or save it in the app menu under Settings. The Settings path writes a local
 - Disposable JSON API cache under `cache/`.
 - Cited By lookup using CourtListener citation graph data, with published cases
   shown first by default.
-- Google Scholar fallback and manual import flow when CourtListener lacks an
-  official reporter copy.
+- Google Scholar fallback and manual import flow for official reporter text and
+  pagination gaps.
 - Reader links for cited cases, statutes, and rules.
 - Named Research Cache sets.
 - Selected-text launcher through `open-law-lens open-selected`.
-- Optional embedded Codex workflow for legal research questions.
+- Optional embedded Codex workflow for legal research questions, selected-cache
+  questions, and appellate issue assessment.
+- Appeal issue assessment from a current-case SOCF or another ODT/PDF fact
+  pattern, with configurable issue presets and custom claims.
 
 ## Requirements
 
@@ -68,13 +71,14 @@ Or save it in the app menu under Settings. The Settings path writes a local
 - `uv`
 - GTK 4, Libadwaita, and PyGObject system packages
 - Optional: GTK VTE packages for the embedded Codex terminal
-- Optional: Codex CLI for agent queries
+- Optional: Codex CLI for agent queries and appeal issue assessment
+- Optional: `pdftotext` for extracting appeal fact patterns from PDF files
 
 Ubuntu/Debian package names vary by release, but the GTK stack is typically
 provided by packages such as:
 
 ```bash
-sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1
+sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 poppler-utils
 ```
 
 Install or sync the Python environment with:
@@ -162,16 +166,48 @@ intentional design choice. The CLI path keeps the app more responsive, easier to
 install, and less dependent on extra runtime services while still tying legal
 authority lookup to CourtListener APIs and the app's local cache/library model.
 
-There are two main agent modes:
+There are three main agent workflows:
 
 - Law: ask a California legal research question. The default prompt directs
   Codex to search and extract authority through Open Law Lens CLI commands.
 - Cache: ask about authorities marked in the current Research Cache. The app
   exports the selected authorities into a temporary workspace and asks Codex to
   answer only from those materials.
+- Appeal Issue Assessment: assess a proposed appellate claim against an ODT or
+  PDF fact pattern. The app extracts the fact pattern into a temporary
+  workspace, launches Codex in Appeal mode, and directs it to research
+  California law through Open Law Lens CLI commands.
 
-Agent runtime settings, including the prompt templates and Codex permission
-mode, are available in the app Settings window.
+Agent runtime settings, including prompt templates, appeal issue presets, the
+fact-pattern source, and Codex permission mode, are available in the app
+Settings window.
+
+## Appeal Issue Assessment
+
+The Appeal Issue Assessment workflow is for quickly testing possible appellate
+claims against a fact pattern. It is available from the claim-assessment button
+next to the agent question bar. The menu includes configured issue presets,
+`Custom claim...`, and a shortcut to edit the appeal issue settings.
+
+By default, Open Law Lens tries to use the SOCF ODT for the currently selected
+case. The Settings window can point the workflow at a different fact-pattern
+ODT or PDF. ODT files are read directly; PDF extraction uses the system
+`pdftotext` command.
+
+When an assessment starts, the app copies the source fact pattern into a
+temporary agent workspace, writes an extracted text file, and launches Codex in
+the embedded terminal. The default prompt asks Codex to analyze preservation,
+standard of review, factual support, governing law, prejudice, likely
+respondent arguments, and missing record facts. It also requires a final rating
+line:
+
+```text
+Rating: Strong, Medium, Weak, or Frivolous
+```
+
+The workflow is intentionally research-oriented. Codex is directed to use
+Open Law Lens CLI commands such as `case-search`, `extract-case`,
+`extract-statute`, and `extract-rule` before relying on authority.
 
 ## Library and Cache
 
@@ -199,20 +235,26 @@ uv run open-law-lens show-cache
 
 ## Google Scholar Fallback
 
-When CourtListener cannot return an official reporter citation, the app opens a
-Find Case Online window. Auto-Find on Scholar tries a direct Google Scholar
-case-law search, follows the first case result, and feeds the discovered URL
-into the existing Fetch flow automatically.
+CourtListener is the primary source for case lookup, search, metadata, and
+opinion text. Google Scholar is a fallback for cases where CourtListener cannot
+provide usable official reporter text or embedded reporter pagination.
 
-After a citation lookup, the app also tries this Scholar flow automatically when
-CourtListener has no matching case or returns only a transient copy without
-official reporter pagination. If the Scholar text passes the same official
-pagination check, it is saved to the Library and Research Cache automatically.
-Manual Scholar imports still open for review before saving.
+The manual fallback path opens the Find Case Online window. From there you can
+open a Google Scholar case-law search in the browser, use Auto-Find on Scholar
+to search directly and fetch the first case result, paste a Scholar case URL,
+or import official text after review.
 
-If Scholar blocks the direct request, returns a CAPTCHA, or has no readable case
-result, the app opens the Scholar search in your browser so you can paste a case
-URL manually.
+The app also tries Scholar automatically in limited fallback situations, such
+as when CourtListener has no matching case or the loaded text is only a
+transient copy without official reporter pagination. Automatic imports are saved
+to the Library and Research Cache only when the imported text passes the same
+official-citation and embedded-pagination quality checks used elsewhere in the
+app.
+
+Scholar can return CAPTCHA pages, no-result pages, no-content pages, or text
+without usable reporter pagination. In those cases Open Law Lens does not treat
+the Scholar result as authoritative. It shows an official-pagination notice or
+routes you back to manual review, depending on the lookup path.
 
 ## Project Layout
 
@@ -225,6 +267,10 @@ URL manually.
 - `open_law_lens/library.py`: durable SQLite library, display text, page
   markers, and Research Cache sets.
 - `open_law_lens/config.py`: local settings, including the CourtListener token.
+- `open_law_lens/fact_patterns.py`: ODT/PDF fact-pattern extraction for appeal
+  issue assessment.
+- `open_law_lens/quality.py`: official reporter citation and pagination quality
+  checks.
 - `scripts/open-law-lens-codex-agent-vte.sh`: embedded Codex terminal launcher.
 
 ## Local Files and Credentials
