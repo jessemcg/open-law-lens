@@ -108,6 +108,70 @@ class ConfigTests(unittest.TestCase):
 
             self.assertEqual(load_config(path).general_agent_prompt_template, "Custom {question}")
 
+    def test_legacy_appeal_prompt_migrates_to_new_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "appeal_issue_agent_prompt_template": (
+                            "You are the Open Law Lens Appeal Issue Assessment Agent.\n\n"
+                            "Assess one possible California appellate issue against the user's "
+                            "fact pattern. Use Open Law Lens CLI commands tied directly to "
+                            "CourtListener APIs for legal authority and legal research.\n\n"
+                            "Read the extracted fact-pattern text first:\n"
+                            "{fact_pattern_path}\n\n"
+                            "Original fact-pattern file:\n"
+                            "{fact_pattern_source_path}\n\n"
+                            "Issue to assess:\n"
+                            "{issue}\n\n"
+                            "Research California law with Open Law Lens CLI commands. For "
+                            "case-law discovery, start with `uv run open-law-lens case-search "
+                            "\"<query>\"`. Treat search results as leads only. Extract the "
+                            "most relevant candidate opinions with `uv run open-law-lens "
+                            "extract-case --cluster-id <cluster_id>` before relying on a case. "
+                            "Use `uv run open-law-lens extract-statute \"<citation>\"` and "
+                            "`uv run open-law-lens extract-rule \"<citation>\"` when statutes "
+                            "or rules matter.\n\n"
+                            "Confine research to California state law unless the issue "
+                            "explicitly requires federal law. Prefer published California "
+                            "Supreme Court and California Court of Appeal authority. Use "
+                            "unpublished cases only for context, not as controlling authority.\n\n"
+                            "Analyze preservation, standard of review, factual support, "
+                            "governing law, prejudice, likely respondent arguments, and "
+                            "missing record facts that could change the assessment.\n\n"
+                            "End with a rating line exactly in this form:\n"
+                            "Rating: Strong, Medium, Weak, or Frivolous\n\n"
+                            "Use Frivolous only when the issue is clearly foreclosed or lacks "
+                            "any nonfrivolous factual or legal basis. Otherwise choose Strong, "
+                            "Medium, or Weak."
+                        )
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(path)
+
+            self.assertEqual(
+                config.appeal_issue_agent_prompt_template,
+                DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
+            )
+            self.assertIn("Record citation format", config.appeal_issue_agent_prompt_template)
+
+    def test_custom_appeal_prompt_is_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            save_config(
+                AppConfig(appeal_issue_agent_prompt_template="Custom appeal {issue}"),
+                path,
+            )
+
+            self.assertEqual(
+                load_config(path).appeal_issue_agent_prompt_template,
+                "Custom appeal {issue}",
+            )
+
     def test_bare_statute_law_code_falls_back_to_wic(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "config.json"

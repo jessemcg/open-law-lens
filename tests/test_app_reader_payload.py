@@ -106,7 +106,11 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertIn("The court applied the wrong standard.", prompt)
         self.assertIn("/tmp/workspace/fact_pattern/facts_extracted.txt", prompt)
         self.assertIn("uv run open-law-lens case-search", prompt)
+        self.assertIn("Record citation format for final answers:", prompt)
+        self.assertIn("Do not cite local paths", prompt)
+        self.assertIn("(RT 6, 34; CT 140, 190.)", prompt)
         self.assertIn("Rating: Strong, Medium, Weak, or Frivolous", prompt)
+        self.assertNotIn("Use Frivolous only when", prompt)
 
     def test_appeal_issue_start_requires_embedded_terminal(self) -> None:
         class DummyWindow:
