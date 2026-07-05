@@ -1294,19 +1294,20 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
               background-color: {READER_BG};
             }}
             box.case-reader-fixed-header {{
-              background-color: {READER_BG};
-              padding: 4px 12px 8px 12px;
+              background-color: #fafafa;
+              border-bottom: 1px solid #e6e6e6;
+              padding: 6px 12px 8px 12px;
             }}
             label.case-reader-fixed-header {{
               color: {READER_FG};
-              background-color: {READER_BG};
+              background-color: #fafafa;
               font-family: {reader_font_css(config.reader_font_family)};
               font-size: {config.reader_font_size_pt}pt;
               font-weight: bold;
             }}
-            button.case-reader-copy-button {{
+            button.case-reader-header-action-button {{
               color: {READER_FG};
-              background-color: {READER_BG};
+              background-color: transparent;
               background-image: none;
               border: none;
               box-shadow: none;
@@ -1314,10 +1315,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
               min-width: 28px;
               min-height: 28px;
             }}
-            button.case-reader-copy-button:hover {{
+            button.case-reader-header-action-button:hover {{
               background-color: #eeeeee;
             }}
-            button.case-reader-copy-button:active {{
+            button.case-reader-header-action-button:active {{
               background-color: #dddddd;
             }}
             textview.case-reader {{
@@ -1962,14 +1963,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.reader_header_size_group.add_widget(self.reader_header_action_box)
 
         self.reader_header_copy_button = Gtk.Button(icon_name="edit-copy-symbolic")
-        self.reader_header_copy_button.add_css_class("case-reader-copy-button")
+        self.reader_header_copy_button.add_css_class("case-reader-header-action-button")
         self.reader_header_copy_button.set_tooltip_text("Copy citation")
         self.reader_header_copy_button.set_valign(Gtk.Align.CENTER)
         self.reader_header_copy_button.connect("clicked", self._on_copy_reader_citation_clicked)
         self.reader_header_action_box.append(self.reader_header_copy_button)
 
         self.reader_selection_pinpoint_button = Gtk.Button(icon_name="insert-text-symbolic")
-        self.reader_selection_pinpoint_button.add_css_class("case-reader-copy-button")
+        self.reader_selection_pinpoint_button.add_css_class("case-reader-header-action-button")
         self.reader_selection_pinpoint_button.set_tooltip_text(
             "Copy selected text with pinpoint citation"
         )
@@ -1982,7 +1983,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.reader_header_action_box.append(self.reader_selection_pinpoint_button)
 
         self.reader_helper_case_button = Gtk.Button(icon_name="go-jump-symbolic")
-        self.reader_helper_case_button.add_css_class("case-reader-copy-button")
+        self.reader_helper_case_button.add_css_class("case-reader-header-action-button")
         self.reader_helper_case_button.set_tooltip_text(
             "Load best citing helper case"
         )
@@ -1995,7 +1996,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.reader_header_action_box.append(self.reader_helper_case_button)
 
         self.reader_header_cited_by_button = Gtk.Button(icon_name="edit-find-symbolic")
-        self.reader_header_cited_by_button.add_css_class("case-reader-copy-button")
+        self.reader_header_cited_by_button.add_css_class("case-reader-header-action-button")
         self.reader_header_cited_by_button.set_tooltip_text("Show later citing cases")
         self.reader_header_cited_by_button.set_valign(Gtk.Align.CENTER)
         self.reader_header_cited_by_button.connect("clicked", self._on_cited_by_clicked)
