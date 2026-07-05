@@ -19,12 +19,29 @@ REPORTER_CITATION_PATTERN = (
     r")"
     r"\s+\d+"
 )
-CASE_NAME_PATTERN = (
+PROCEEDING_CASE_NAME_PATTERN = (
     r"In\s+re\s+[A-Z][^();\n]{1,100}?"
+    r"|Ex\s+parte\s+[A-Z][^();\n]{1,100}?"
     r"|Adoption\s+of\s+[A-Z][^();\n]{1,100}?"
+    r"|Application\s+of\s+[A-Z][^();\n]{1,100}?"
+    r"|Estate\s+of\s+[A-Z][^();\n]{1,100}?"
+    r"|Guardianship\s+of\s+(?:the\s+Person\s+of\s+)?[A-Z][^();\n]{1,100}?"
     r"|Conservatorship\s+of\s+(?:the\s+Person\s+of\s+)?[A-Z][^();\n]{1,100}?"
-    r"|[A-Z][A-Za-z0-9&.' -]{1,80}\s+v\.\s+"
+    r"|Marriage\s+of\s+[A-Z][^();\n]{1,100}?"
+    r"|Matter\s+of\s+[A-Z][^();\n]{1,100}?"
+    r"|Petition\s+of\s+[A-Z][^();\n]{1,100}?"
+)
+ADVERSARIAL_CASE_NAME_PATTERN = (
+    r"[A-Z][A-Za-z0-9&.' -]{1,80}\s+v\.\s+"
     r"[A-Z][A-Za-z0-9&.' -]{1,80}(?:\s+\([A-Za-z][^)]+\))?"
+)
+CASE_NAME_PATTERN = (
+    rf"{PROCEEDING_CASE_NAME_PATTERN}"
+    rf"|{ADVERSARIAL_CASE_NAME_PATTERN}"
+)
+SHORT_FORM_CASE_NAME_PATTERN = (
+    r"[A-Z][A-Za-z&.'-]*"
+    r"(?:\s+(?:[A-Z][A-Za-z&.'-]*|of|the|and|&)){0,7}"
 )
 
 FULL_OFFICIAL_CITATION_RE = re.compile(
@@ -35,7 +52,7 @@ FULL_OFFICIAL_CITATION_RE = re.compile(
     r")\b",
 )
 SUPRA_CASE_NAME_RE = re.compile(
-    rf"\b(?P<name>{CASE_NAME_PATTERN})\s*,\s*supra\b"
+    rf"\b(?P<name>{CASE_NAME_PATTERN}|{SHORT_FORM_CASE_NAME_PATTERN})\s*,\s*supra\b"
 )
 SHORTHAND_CITATION_TERM_RE = re.compile(
     r"\b(?:Id|Ibid)\.?(?![A-Za-z])|\bsupra\b",

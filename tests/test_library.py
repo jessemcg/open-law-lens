@@ -761,6 +761,34 @@ class LibraryTests(unittest.TestCase):
 
         self.assertEqual(display.text, "Alpha \u2014 beta.")
 
+    def test_plain_opinion_display_text_collapses_malformed_quote_stacks(self) -> None:
+        opinion = {"id": 10, "plain_text": 'Proof "`"disappears"\'" on appeal.'}
+
+        display = opinion_display_text(opinion)
+
+        self.assertEqual(display.text, 'Proof "`disappears\'" on appeal.')
+
+    def test_html_opinion_display_text_collapses_malformed_quote_stacks(self) -> None:
+        opinion = {"id": 10, "html_with_citations": '<p>Proof "`"disappears"\'" on appeal.</p>'}
+
+        display = opinion_display_text(opinion)
+
+        self.assertEqual(display.text, 'Proof "`disappears\'" on appeal.')
+
+    def test_opinion_display_text_translates_markers_after_quote_stack_collapse(self) -> None:
+        opinion = {
+            "id": 10,
+            "html_with_citations": (
+                'Proof "`"disappears"\'" '
+                '<page-number label="373">*373</page-number> after.'
+            ),
+        }
+
+        display = opinion_display_text(opinion)
+
+        self.assertEqual(display.text, 'Proof "`disappears\'" [*373] after.')
+        self.assertEqual(display.text[display.page_markers[0].start_offset:display.page_markers[0].end_offset], "[*373]")
+
     def test_plain_opinion_display_text_normalizes_raw_star_page_markers(self) -> None:
         opinion = {
             "id": 10,
@@ -876,6 +904,45 @@ class LibraryTests(unittest.TestCase):
             self.assertIsNotNone(display)
             assert display is not None
             self.assertEqual(display.text, "Alpha [*373] beta.")
+            self.assertEqual(display.text[display.page_markers[0].start_offset:display.page_markers[0].end_offset], "[*373]")
+
+    def test_read_opinion_display_collapses_stored_quote_stacks_and_translates_offsets(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            stored_text = 'Proof "`"disappears"\'" [*373] after.'
+            marker_start = stored_text.index("[*373]")
+            with library.connection() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO opinions(
+                        opinion_id, cluster_id, opinion_json, display_text, source_field, added_at, last_accessed
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "10",
+                        "42",
+                        "null",
+                        stored_text,
+                        "plain_text",
+                        "2026-01-01T00:00:00+00:00",
+                        "2026-01-01T00:00:00+00:00",
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO page_markers(
+                        opinion_id, marker_index, page_label, marker_text, start_offset, end_offset, source_field
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    ("10", 0, "373", "[*373]", marker_start, marker_start + len("[*373]"), "plain_text"),
+                )
+
+            display = library.read_opinion_display("10")
+
+            self.assertIsNotNone(display)
+            assert display is not None
+            self.assertEqual(display.text, 'Proof "`disappears\'" [*373] after.')
             self.assertEqual(display.text[display.page_markers[0].start_offset:display.page_markers[0].end_offset], "[*373]")
 
     def test_read_opinion_display_regenerates_from_stored_opinion_json(self) -> None:

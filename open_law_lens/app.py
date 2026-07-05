@@ -113,7 +113,13 @@ from .external_import import (
 )
 from .fact_patterns import FactPatternError, FactPatternExport, export_fact_pattern
 from .launch_request import pop_open_authority_request
-from .library import DisplayText, PageMarker, ResearchSet, opinion_display_text
+from .library import (
+    DisplayText,
+    PageMarker,
+    ResearchSet,
+    normalize_display_quote_stacks,
+    opinion_display_text,
+)
 from .quality import official_pagination_quality
 from .scholar_search import (
     ScholarSearchError,
@@ -138,7 +144,7 @@ from .statutes import (
     statute_subdivisions_for_range,
 )
 from .text_search import literal_match_ranges
-from .text_formatting import smart_quote_display_text
+from .text_formatting import normalize_malformed_quote_stacks, smart_quote_display_text
 from .web_import import ExtractedWebpage, extract_webpage_text
 
 
@@ -309,6 +315,7 @@ def build_case_reader_payload(
     page_markers: list[PageMarker] = []
     text_length = 0
     for display in displays:
+        display = normalize_display_quote_stacks(display)
         if not display.text:
             continue
         if text_parts:
@@ -2316,6 +2323,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         text: str,
         page_markers: list[PageMarker] | None = None,
     ) -> bool:
+        if page_markers:
+            display = normalize_display_quote_stacks(
+                DisplayText(text=text, source_field="", page_markers=list(page_markers))
+            )
+            text = display.text
+            page_markers = display.page_markers
+        else:
+            text = normalize_malformed_quote_stacks(text)
         text = smart_quote_display_text(text)
         self._set_reader_busy(False)
         self._close_reader_find(clear_entry=True)

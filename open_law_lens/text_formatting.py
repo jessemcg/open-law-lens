@@ -1,10 +1,43 @@
 from __future__ import annotations
 
+import re
+from typing import Iterable
+
 
 OPEN_DOUBLE_QUOTE = "\u201c"
 CLOSE_DOUBLE_QUOTE = "\u201d"
 OPEN_SINGLE_QUOTE = "\u2018"
 CLOSE_SINGLE_QUOTE = "\u2019"
+QUOTE_STACK_REPLACEMENT = tuple[int, int, str]
+MALFORMED_QUOTE_STACK_RE = re.compile(
+    r"(?P<outer_open>[\"\u201c\u201d])"
+    r"(?P<inner_open>[`'\u2018])"
+    r"(?P<extra_open>[\"\u201c\u201d])"
+    r"(?P<body>[^\"`'\u2018\u2019\u201c\u201d\n]{1,200}?)"
+    r"(?P<extra_close>[\"\u201c\u201d])"
+    r"(?P<inner_close>['\u2019])"
+    r"(?P<outer_close>[\"\u201c\u201d])"
+)
+
+
+def malformed_quote_stack_replacements(text: str) -> list[QUOTE_STACK_REPLACEMENT]:
+    if not text:
+        return []
+    return [
+        (
+            match.start(),
+            match.end(),
+            f"\"`{match.group('body')}'\"",
+        )
+        for match in MALFORMED_QUOTE_STACK_RE.finditer(text)
+    ]
+
+
+def normalize_malformed_quote_stacks(text: str) -> str:
+    replacements = malformed_quote_stack_replacements(text)
+    if not replacements:
+        return text
+    return _apply_replacements(text, replacements)
 
 
 def smart_quote_display_text(text: str) -> str:
@@ -60,12 +93,12 @@ def _is_opening_context(chars: list[str], index: int) -> bool:
     next_char = _next_nonspace_char(chars, index)
     if previous_char is None:
         return True
-    if previous_char in "([{<\u2018\u201c":
+    if previous_char in "([{<\u2018\u201c\"`":
         return True
     if not next_char:
         return False
     if immediate_previous_char is not None and immediate_previous_char.isspace():
-        return next_char.isalnum() or next_char in "[({<\u2018\u201c"
+        return next_char.isalnum() or next_char in "[({<\u2018\u201c'\"`"
     if not next_char.isalnum():
         return False
     return bool(
@@ -101,4 +134,19 @@ def _next_nonspace_char(chars: list[str], index: int) -> str | None:
     return None
 
 
-__all__ = ["smart_quote_display_text"]
+def _apply_replacements(text: str, replacements: Iterable[QUOTE_STACK_REPLACEMENT]) -> str:
+    parts: list[str] = []
+    position = 0
+    for start, end, replacement in replacements:
+        parts.append(text[position:start])
+        parts.append(replacement)
+        position = end
+    parts.append(text[position:])
+    return "".join(parts)
+
+
+__all__ = [
+    "malformed_quote_stack_replacements",
+    "normalize_malformed_quote_stacks",
+    "smart_quote_display_text",
+]

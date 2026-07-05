@@ -22,6 +22,7 @@ from .citation_model import (
 )
 from .external_import import repair_reporter_only_imported_cluster
 from .import_text import clean_imported_opinion_text
+from .text_formatting import malformed_quote_stack_replacements
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PROJECT_LIBRARY_DIR = PROJECT_ROOT / "library"
@@ -510,6 +511,52 @@ def _normalize_raw_star_page_markers(display: DisplayText) -> DisplayText:
     return DisplayText(text=text, source_field=display.source_field, page_markers=page_markers)
 
 
+def normalize_display_quote_stacks(display: DisplayText) -> DisplayText:
+    if not display.text:
+        return display
+    replacements = malformed_quote_stack_replacements(display.text)
+    if not replacements:
+        return display
+    parts: list[str] = []
+    position = 0
+    for start, end, replacement in replacements:
+        parts.append(display.text[position:start])
+        parts.append(replacement)
+        position = end
+    parts.append(display.text[position:])
+    text = "".join(parts)
+
+    def translated_offset(offset: int) -> int:
+        translated = offset
+        for start, end, replacement in replacements:
+            delta = len(replacement) - (end - start)
+            if end <= offset:
+                translated += delta
+                continue
+            if start < offset < end:
+                return start + max(0, min(offset - start, len(replacement)))
+        return translated
+
+    return DisplayText(
+        text=text,
+        source_field=display.source_field,
+        page_markers=[
+            PageMarker(
+                page_label=marker.page_label,
+                marker_text=marker.marker_text,
+                start_offset=translated_offset(marker.start_offset),
+                end_offset=translated_offset(marker.end_offset),
+                source_field=marker.source_field,
+            )
+            for marker in display.page_markers
+        ],
+    )
+
+
+def _normalize_opinion_display(display: DisplayText) -> DisplayText:
+    return _normalize_raw_star_page_markers(normalize_display_quote_stacks(display))
+
+
 def opinion_display_text(opinion: dict[str, Any]) -> DisplayText:
     for field in TEXT_FIELDS:
         value = opinion.get(field)
@@ -521,11 +568,9 @@ def opinion_display_text(opinion: dict[str, Any]) -> DisplayText:
             parser = _DisplayTextExtractor(field)
             parser.feed(value)
             parser.close()
-            return _normalize_raw_star_page_markers(parser.display_text())
+            return _normalize_opinion_display(parser.display_text())
         text = decode_cp1252_control_chars(value).strip()
-        return _normalize_raw_star_page_markers(
-            DisplayText(text=text, source_field=field, page_markers=[])
-        )
+        return _normalize_opinion_display(DisplayText(text=text, source_field=field, page_markers=[]))
     return DisplayText(text="", source_field="", page_markers=[])
 
 
@@ -1125,19 +1170,21 @@ class CaseLibrary:
             display = opinion_display_text(opinion)
             if display.text:
                 return display
-        return DisplayText(
-            text=str(row["display_text"]),
-            source_field=str(row["source_field"]),
-            page_markers=[
-                PageMarker(
-                    page_label=str(marker["page_label"]),
-                    marker_text=str(marker["marker_text"]),
-                    start_offset=int(marker["start_offset"]),
-                    end_offset=int(marker["end_offset"]),
-                    source_field=str(marker["source_field"]),
-                )
-                for marker in marker_rows
-            ],
+        return normalize_display_quote_stacks(
+            DisplayText(
+                text=str(row["display_text"]),
+                source_field=str(row["source_field"]),
+                page_markers=[
+                    PageMarker(
+                        page_label=str(marker["page_label"]),
+                        marker_text=str(marker["marker_text"]),
+                        start_offset=int(marker["start_offset"]),
+                        end_offset=int(marker["end_offset"]),
+                        source_field=str(marker["source_field"]),
+                    )
+                    for marker in marker_rows
+                ],
+            )
         )
 
     def update_case_opinions(self, cluster: dict[str, Any], opinion_ids: list[str]) -> None:

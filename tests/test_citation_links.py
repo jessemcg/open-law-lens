@@ -130,6 +130,18 @@ class CitationLinkTests(unittest.TestCase):
             "Adoption of Kelsey S. (1992) 1 Cal.4th 816",
         )
 
+    def test_cited_case_links_find_estate_case_names(self) -> None:
+        text = "The rule follows Estate of Teed (1952) 112 Cal.App.2d 638."
+
+        links = cited_case_links(text)
+
+        self.assertEqual([link.lookup_text for link in links], ["112 Cal.App.2d 638"])
+        self.assertEqual([link.case_name for link in links], ["Estate of Teed"])
+        self.assertEqual(
+            text[links[0].start_offset:links[0].end_offset],
+            "Estate of Teed (1952) 112 Cal.App.2d 638",
+        )
+
     def test_cited_case_links_find_conservatorship_case_names(self) -> None:
         text = "The court cited Conservatorship of O.B. (2020) 9 Cal.5th 989."
 
@@ -187,6 +199,20 @@ class CitationLinkTests(unittest.TestCase):
             ["Conservatorship of O.B."],
         )
 
+    def test_citation_italic_spans_cover_additional_proceeding_case_names(self) -> None:
+        text = (
+            "The court cited Estate of Teed (1952) 112 Cal.App.2d 638, "
+            "Guardianship of Ann S. (2009) 45 Cal.4th 1110, "
+            "and Matter of Acosta (1985) 480 U.S. 421."
+        )
+
+        spans = citation_italic_spans(text)
+
+        self.assertEqual(
+            [text[span.start_offset:span.end_offset] for span in spans],
+            ["Estate of Teed", "Guardianship of Ann S.", "Matter of Acosta"],
+        )
+
     def test_citation_italic_spans_exclude_signal_phrases(self) -> None:
         text = (
             "Relying on Michael M. v. Giovanna F. (1992) 5 Cal.App.4th 1272. "
@@ -234,6 +260,29 @@ class CitationLinkTests(unittest.TestCase):
         self.assertEqual(
             [text[span.start_offset:span.end_offset] for span in spans],
             ["Conservatorship of O.B.", "supra"],
+        )
+
+    def test_citation_italic_spans_cover_estate_names_before_supra(self) -> None:
+        text = "(Estate of Teed, supra, 112 Cal.App.2d at p. 644.)"
+
+        spans = citation_italic_spans(text)
+
+        self.assertEqual(
+            [text[span.start_offset:span.end_offset] for span in spans],
+            ["Estate of Teed", "supra"],
+        )
+
+    def test_citation_italic_spans_cover_short_case_names_before_supra(self) -> None:
+        text = (
+            "Caden C., supra, 11 Cal.5th at p. 625; "
+            "Lehr, supra, 463 U.S. at p. 260."
+        )
+
+        spans = citation_italic_spans(text)
+
+        self.assertEqual(
+            [text[span.start_offset:span.end_offset] for span in spans],
+            ["Caden C.", "supra", "Lehr", "supra"],
         )
 
     def test_citation_italic_spans_cover_shorthand_terms(self) -> None:

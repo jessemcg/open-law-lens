@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from open_law_lens.text_formatting import smart_quote_display_text
+from open_law_lens.text_formatting import normalize_malformed_quote_stacks, smart_quote_display_text
 
 
 class TextFormattingTests(unittest.TestCase):
@@ -36,6 +36,30 @@ class TextFormattingTests(unittest.TestCase):
         self.assertEqual(
             smart_quote_display_text('"The parent said, \'yes.\'"'),
             "\u201cThe parent said, \u2018yes.\u2019\u201d",
+        )
+
+    def test_smart_quote_display_text_handles_adjacent_nested_quotes(self) -> None:
+        self.assertEqual(
+            smart_quote_display_text('The court said "\'disappears\'" on appeal.'),
+            "The court said \u201c\u2018disappears\u2019\u201d on appeal.",
+        )
+
+    def test_normalize_malformed_quote_stacks_collapses_duplicate_quote_marks(self) -> None:
+        text = 'proof "`"disappears"\'" on appeal'
+        normalized = normalize_malformed_quote_stacks(text)
+
+        self.assertEqual(normalized, 'proof "`disappears\'" on appeal')
+        self.assertEqual(
+            smart_quote_display_text(normalized),
+            "proof \u201c\u2018disappears\u2019\u201d on appeal",
+        )
+
+    def test_normalize_malformed_quote_stacks_collapses_curly_duplicate_quote_marks(self) -> None:
+        text = "proof \u201d\u2018\u201ddisappears\u201d\u2019\u201d on appeal"
+
+        self.assertEqual(
+            smart_quote_display_text(normalize_malformed_quote_stacks(text)),
+            "proof \u201c\u2018disappears\u2019\u201d on appeal",
         )
 
     def test_smart_quote_display_text_opens_after_prose_word(self) -> None:
