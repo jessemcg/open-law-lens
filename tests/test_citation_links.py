@@ -43,6 +43,32 @@ class CitationLinkTests(unittest.TestCase):
     def test_cited_case_links_ignore_shorthand_only_references(self) -> None:
         self.assertEqual(cited_case_links("Id. at p. 12; ibid.; supra."), [])
 
+    def test_cited_case_links_do_not_include_preceding_sentence_words(self) -> None:
+        text = (
+            "We faced a somewhat similar problem in Daniels v. Department "
+            "of Motor Vehicles (1983) 33 Cal.3d 532"
+        )
+
+        links = cited_case_links(text)
+
+        self.assertEqual([link.lookup_text for link in links], ["33 Cal.3d 532"])
+        self.assertEqual([link.case_name for link in links], ["Daniels v. Department of Motor Vehicles"])
+        self.assertEqual(
+            text[links[0].start_offset:links[0].end_offset],
+            "Daniels v. Department of Motor Vehicles (1983) 33 Cal.3d 532",
+        )
+
+    def test_cited_case_links_do_not_include_narrative_citation_verb(self) -> None:
+        text = "The court cited Daniels v. Department of Motor Vehicles (1983) 33 Cal.3d 532."
+
+        links = cited_case_links(text)
+
+        self.assertEqual([link.lookup_text for link in links], ["33 Cal.3d 532"])
+        self.assertEqual(
+            text[links[0].start_offset:links[0].end_offset],
+            "Daniels v. Department of Motor Vehicles (1983) 33 Cal.3d 532",
+        )
+
     def test_cited_case_links_do_not_cross_supra_separator(self) -> None:
         text = (
             "In re L. Y. L., supra, at p. 948; see County of Alameda v. "
@@ -97,6 +123,17 @@ class CitationLinkTests(unittest.TestCase):
         self.assertEqual(
             text[links[0].start_offset:links[0].end_offset],
             "MacPherson v. MacPherson (1939) 13 Cal.2d 271",
+        )
+
+    def test_cited_case_links_find_adversarial_parenthetical_case_names(self) -> None:
+        text = "The rule follows People v. Superior Court (Romero) (1996) 13 Cal.4th 497."
+
+        links = cited_case_links(text)
+
+        self.assertEqual([link.lookup_text for link in links], ["13 Cal.4th 497"])
+        self.assertEqual(
+            text[links[0].start_offset:links[0].end_offset],
+            "People v. Superior Court (Romero) (1996) 13 Cal.4th 497",
         )
 
     def test_cited_case_links_find_california_supreme_court_cal5th_citations(self) -> None:
@@ -237,6 +274,19 @@ class CitationLinkTests(unittest.TestCase):
         self.assertEqual(
             [text[span.start_offset:span.end_offset] for span in spans],
             ["MacPherson v. MacPherson"],
+        )
+
+    def test_citation_italic_spans_exclude_sentence_words_before_case_name(self) -> None:
+        text = (
+            "We faced a somewhat similar problem in Daniels v. Department "
+            "of Motor Vehicles (1983) 33 Cal.3d 532."
+        )
+
+        spans = citation_italic_spans(text)
+
+        self.assertEqual(
+            [text[span.start_offset:span.end_offset] for span in spans],
+            ["Daniels v. Department of Motor Vehicles"],
         )
 
     def test_citation_italic_spans_cover_case_names_before_supra(self) -> None:

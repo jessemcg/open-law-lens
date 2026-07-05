@@ -31,9 +31,18 @@ PROCEEDING_CASE_NAME_PATTERN = (
     r"|Matter\s+of\s+[A-Z][^();\n]{1,100}?"
     r"|Petition\s+of\s+[A-Z][^();\n]{1,100}?"
 )
+CAPITALIZED_CASE_NAME_TOKEN_PATTERN = r"[A-Z][A-Za-z0-9&.'-]*"
+LOWERCASE_CASE_NAME_PARTICLE_PATTERN = (
+    r"of|the|and|for|to|in|on|by|a|an|ex|rel\.|de|del|la|&|No\."
+)
+ADVERSARIAL_PARTY_NAME_PATTERN = (
+    rf"{CAPITALIZED_CASE_NAME_TOKEN_PATTERN}"
+    rf"(?:\s+(?:{CAPITALIZED_CASE_NAME_TOKEN_PATTERN}|"
+    rf"{LOWERCASE_CASE_NAME_PARTICLE_PATTERN})){{0,14}}"
+)
 ADVERSARIAL_CASE_NAME_PATTERN = (
-    r"[A-Z][A-Za-z0-9&.' -]{1,80}\s+v\.\s+"
-    r"[A-Z][A-Za-z0-9&.' -]{1,80}(?:\s+\([A-Za-z][^)]+\))?"
+    rf"{ADVERSARIAL_PARTY_NAME_PATTERN}\s+v\.\s+"
+    rf"{ADVERSARIAL_PARTY_NAME_PATTERN}(?:\s+\([A-Za-z][^)]+\))?"
 )
 CASE_NAME_PATTERN = (
     rf"{PROCEEDING_CASE_NAME_PATTERN}"
