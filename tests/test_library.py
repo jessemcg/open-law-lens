@@ -789,6 +789,20 @@ class LibraryTests(unittest.TestCase):
         self.assertEqual(display.text, 'Proof "`disappears\'" [*373] after.')
         self.assertEqual(display.text[display.page_markers[0].start_offset:display.page_markers[0].end_offset], "[*373]")
 
+    def test_opinion_display_text_translates_markers_after_nested_wrapper_collapse(self) -> None:
+        opinion = {
+            "id": 10,
+            "html_with_citations": (
+                'The court said "\'must apply "substantial evidence".\'" '
+                '<page-number label="997">*997</page-number> after.'
+            ),
+        }
+
+        display = opinion_display_text(opinion)
+
+        self.assertEqual(display.text, 'The court said "must apply `substantial evidence\'." [*997] after.')
+        self.assertEqual(display.text[display.page_markers[0].start_offset:display.page_markers[0].end_offset], "[*997]")
+
     def test_plain_opinion_display_text_normalizes_raw_star_page_markers(self) -> None:
         opinion = {
             "id": 10,

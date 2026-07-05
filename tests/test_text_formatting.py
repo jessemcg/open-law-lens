@@ -39,9 +39,11 @@ class TextFormattingTests(unittest.TestCase):
         )
 
     def test_smart_quote_display_text_handles_adjacent_nested_quotes(self) -> None:
+        normalized = normalize_malformed_quote_stacks('The court said "\'disappears\'" on appeal.')
+
         self.assertEqual(
-            smart_quote_display_text('The court said "\'disappears\'" on appeal.'),
-            "The court said \u201c\u2018disappears\u2019\u201d on appeal.",
+            smart_quote_display_text(normalized),
+            "The court said \u201cdisappears\u201d on appeal.",
         )
 
     def test_normalize_malformed_quote_stacks_collapses_duplicate_quote_marks(self) -> None:
@@ -60,6 +62,60 @@ class TextFormattingTests(unittest.TestCase):
         self.assertEqual(
             smart_quote_display_text(normalize_malformed_quote_stacks(text)),
             "proof \u201c\u2018disappears\u2019\u201d on appeal",
+        )
+
+    def test_normalize_malformed_quote_stacks_collapses_nested_wrappers(self) -> None:
+        text = (
+            'argued that the Court of Appeal "\'must apply the same standard '
+            'in determining whether "substantial evidence" supports the judgment.\'"'
+        )
+        normalized = normalize_malformed_quote_stacks(text)
+
+        self.assertEqual(
+            normalized,
+            (
+                'argued that the Court of Appeal "must apply the same standard '
+                "in determining whether `substantial evidence' supports the judgment.\""
+            ),
+        )
+        self.assertEqual(
+            smart_quote_display_text(normalized),
+            (
+                "argued that the Court of Appeal \u201cmust apply the same standard "
+                "in determining whether \u2018substantial evidence\u2019 supports the judgment.\u201d"
+            ),
+        )
+
+    def test_normalize_malformed_quote_stacks_collapses_curly_nested_wrappers(self) -> None:
+        text = (
+            "observed that \u201c\u2018The \u201cclear and convincing\u201d standard "
+            "is for the trial court.\u2019\u201d"
+        )
+
+        self.assertEqual(
+            smart_quote_display_text(normalize_malformed_quote_stacks(text)),
+            (
+                "observed that \u201cThe \u2018clear and convincing\u2019 standard "
+                "is for the trial court.\u201d"
+            ),
+        )
+
+    def test_normalize_malformed_quote_stacks_collapses_long_legal_quote_stack(self) -> None:
+        text = (
+            'observed that, contrary to O.B.\'s position, "\'The "clear and convincing" standard '
+            'is for the trial court. [Citations.] "\'The sufficiency of evidence is primarily a '
+            'question for the trial court.\' [Citations.]" [Citation.] Thus, "the clear and '
+            'convincing test disappears."\'" (Id., at pp. 633-634.)'
+        )
+
+        self.assertEqual(
+            smart_quote_display_text(normalize_malformed_quote_stacks(text)),
+            (
+                "observed that, contrary to O.B.\u2019s position, \u201cThe \u2018clear and convincing\u2019 "
+                "standard is for the trial court. [Citations.] \u2018The sufficiency of evidence "
+                "is primarily a question for the trial court. [Citations.]\u2019 [Citation.] Thus, "
+                "\u2018the clear and convincing test disappears.\u2019\u201d (Id., at pp. 633-634.)"
+            ),
         )
 
     def test_smart_quote_display_text_opens_after_prose_word(self) -> None:

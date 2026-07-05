@@ -18,6 +18,14 @@ MALFORMED_QUOTE_STACK_RE = re.compile(
     r"(?P<inner_close>['\u2019])"
     r"(?P<outer_close>[\"\u201c\u201d])"
 )
+ADJACENT_NESTED_QUOTE_RE = re.compile(
+    r"(?P<outer_open>[\"\u201c\u201d])"
+    r"(?P<inner_open>[`'\u2018])"
+    r"(?P<body>[^\n]{1,1200}?)"
+    r"(?P<inner_close>['\u2019])"
+    r"(?P<outer_close>[\"\u201c\u201d])"
+)
+DOUBLE_QUOTE_CHARS = {'"', OPEN_DOUBLE_QUOTE, CLOSE_DOUBLE_QUOTE}
 
 
 def malformed_quote_stack_replacements(text: str) -> list[QUOTE_STACK_REPLACEMENT]:
@@ -33,8 +41,24 @@ def malformed_quote_stack_replacements(text: str) -> list[QUOTE_STACK_REPLACEMEN
     ]
 
 
-def normalize_malformed_quote_stacks(text: str) -> str:
+def quote_stack_replacements(text: str) -> list[QUOTE_STACK_REPLACEMENT]:
+    if not text:
+        return []
     replacements = malformed_quote_stack_replacements(text)
+    covered_ranges = [(start, end) for start, end, _replacement in replacements]
+    for match in ADJACENT_NESTED_QUOTE_RE.finditer(text):
+        start, end = match.span()
+        if any(start < covered_end and end > covered_start for covered_start, covered_end in covered_ranges):
+            continue
+        body = _demote_inner_double_quote_pairs(match.group("body"))
+        replacements.append((start, end, f'"{body}"'))
+        covered_ranges.append((start, end))
+    replacements.sort(key=lambda replacement: replacement[0])
+    return replacements
+
+
+def normalize_malformed_quote_stacks(text: str) -> str:
+    replacements = quote_stack_replacements(text)
     if not replacements:
         return text
     return _apply_replacements(text, replacements)
@@ -134,6 +158,20 @@ def _next_nonspace_char(chars: list[str], index: int) -> str | None:
     return None
 
 
+def _demote_inner_double_quote_pairs(text: str) -> str:
+    chars = list(text)
+    quote_indexes = [index for index, char in enumerate(chars) if char in DOUBLE_QUOTE_CHARS]
+    for pair_index, quote_index in enumerate(quote_indexes):
+        chars[quote_index] = "`" if pair_index % 2 == 0 else "'"
+    demoted = "".join(chars)
+    demoted = re.sub(
+        r"`'(?P<body>[^`\n]{1,800}?)'\s+(?P<cites>(?:\[[^\]\n]{1,100}\]\s*)+)'",
+        lambda match: f"`{match.group('body')} {match.group('cites').strip()}'",
+        demoted,
+    )
+    return demoted.replace("`'", "`")
+
+
 def _apply_replacements(text: str, replacements: Iterable[QUOTE_STACK_REPLACEMENT]) -> str:
     parts: list[str] = []
     position = 0
@@ -148,5 +186,6 @@ def _apply_replacements(text: str, replacements: Iterable[QUOTE_STACK_REPLACEMEN
 __all__ = [
     "malformed_quote_stack_replacements",
     "normalize_malformed_quote_stacks",
+    "quote_stack_replacements",
     "smart_quote_display_text",
 ]

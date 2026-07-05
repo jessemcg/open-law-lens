@@ -22,7 +22,7 @@ from .citation_model import (
 )
 from .external_import import repair_reporter_only_imported_cluster
 from .import_text import clean_imported_opinion_text
-from .text_formatting import malformed_quote_stack_replacements
+from .text_formatting import quote_stack_replacements
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PROJECT_LIBRARY_DIR = PROJECT_ROOT / "library"
@@ -514,7 +514,7 @@ def _normalize_raw_star_page_markers(display: DisplayText) -> DisplayText:
 def normalize_display_quote_stacks(display: DisplayText) -> DisplayText:
     if not display.text:
         return display
-    replacements = malformed_quote_stack_replacements(display.text)
+    replacements = quote_stack_replacements(display.text)
     if not replacements:
         return display
     parts: list[str] = []
