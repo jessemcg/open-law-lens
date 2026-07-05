@@ -285,6 +285,17 @@ class AppReaderPayloadTests(unittest.TestCase):
                 child = child.get_next_sibling()
             return found
 
+        def button_label_xaligns(widget: object) -> list[float]:
+            found: list[float] = []
+            child = widget.get_first_child() if hasattr(widget, "get_first_child") else None
+            while child is not None:
+                if isinstance(child, Gtk.Button) and isinstance(child.get_child(), Gtk.Label):
+                    found.append(child.get_child().get_xalign())
+                else:
+                    found.extend(button_label_xaligns(child))
+                child = child.get_next_sibling()
+            return found
+
         window = DummyWindow()
         window._appeal_issue_menu_button = Gtk.MenuButton()
 
@@ -304,6 +315,7 @@ class AppReaderPayloadTests(unittest.TestCase):
             labels(popover),
             ["Custom argument...", "Short one", "Edit appeal arguments..."],
         )
+        self.assertEqual(button_label_xaligns(popover), [0.0, 0.0, 0.0])
 
     def test_appeal_issue_by_index_uses_current_fact_pattern(self) -> None:
         class DummyWindow:

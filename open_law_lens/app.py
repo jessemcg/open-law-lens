@@ -2252,9 +2252,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         box.set_margin_start(6)
         box.set_margin_end(6)
         custom_button = Gtk.Button(label="Custom argument...")
-        custom_button.add_css_class("flat")
-        custom_button.set_halign(Gtk.Align.FILL)
-        custom_button.set_hexpand(True)
+        OpenLawLensWindow._style_appeal_issue_menu_button(custom_button)
         custom_button.connect("clicked", self._on_custom_appeal_issue_clicked, popover)
         box.append(custom_button)
         separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
@@ -2264,21 +2262,26 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         labels = normalize_appeal_issue_labels(config.appeal_issue_labels, issues)
         for index, issue in enumerate(issues):
             issue_button = Gtk.Button(label=appeal_issue_menu_label(issue, labels[index]))
-            issue_button.add_css_class("flat")
-            issue_button.set_halign(Gtk.Align.FILL)
-            issue_button.set_hexpand(True)
+            OpenLawLensWindow._style_appeal_issue_menu_button(issue_button)
             issue_button.connect("clicked", self._on_appeal_issue_menu_item_clicked, index, popover)
             box.append(issue_button)
         settings_separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
         box.append(settings_separator)
         settings_button = Gtk.Button(label="Edit appeal arguments...")
-        settings_button.add_css_class("flat")
-        settings_button.set_halign(Gtk.Align.FILL)
-        settings_button.set_hexpand(True)
+        OpenLawLensWindow._style_appeal_issue_menu_button(settings_button)
         settings_button.connect("clicked", self._on_appeal_issue_settings_clicked, popover)
         box.append(settings_button)
         popover.set_child(box)
         self._appeal_issue_menu_button.set_popover(popover)
+
+    @staticmethod
+    def _style_appeal_issue_menu_button(button: Gtk.Button) -> None:
+        button.add_css_class("flat")
+        button.set_halign(Gtk.Align.FILL)
+        button.set_hexpand(True)
+        child = button.get_child()
+        if isinstance(child, Gtk.Label):
+            child.set_xalign(0)
 
     def _build_agent_mode_button(self, mode: str) -> Gtk.ToggleButton:
         button = Gtk.ToggleButton()
