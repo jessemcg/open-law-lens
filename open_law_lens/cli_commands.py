@@ -37,6 +37,12 @@ CLI_COMMANDS: tuple[CliCommand, ...] = (
         example="uv run open-law-lens best-published-citing-case --cluster-id 6240402 --json",
     ),
     CliCommand(
+        name="published-citing-cases",
+        title="Published Citing Cases",
+        description="List ranked published citing cases from the first CourtListener cited-by page.",
+        example="uv run open-law-lens published-citing-cases --cluster-id 6240402 --limit 10 --json",
+    ),
+    CliCommand(
         name="extract-statute",
         title="Extract Statute",
         description="Look up a supported California statute citation and print JSON.",

@@ -46,7 +46,6 @@ from .cli_commands import CLI_COMMANDS
 from .client import (
     CourtListenerClient,
     CourtListenerError,
-    CourtListenerSearchPage,
     CourtListenerSearchResult,
     FormattedCitation,
     cluster_short_title,
@@ -89,6 +88,7 @@ from .config import (
     DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
     DEFAULT_CASE_AGENT_PROMPT_TEMPLATE,
     DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE,
+    DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
     concordance_file_path,
     coerce_reader_font_size,
     courtlistener_token,
@@ -178,10 +178,7 @@ OFFICIAL_PAGINATION_NOT_FOUND_MESSAGE = (
 OFFICIAL_PAGINATION_NOT_FOUND_ONLY_MESSAGE = (
     "A version of this case with pagination from the official reporter was not found."
 )
-AGENT_MODE_RESULTS = "results"
 SEARCH_NEXT_PAGE_TARGET = "search-next-page"
-CITED_BY_INCLUDE_UNPUBLISHED_TARGET = "cited-by-include-unpublished"
-CITED_BY_PUBLISHED_ONLY_TARGET = "cited-by-published-only"
 AGENT_ANSWER_FONT_SIZE_PT = 14
 SEARCH_RESULTS_FONT_SIZE_PT = 11
 AGENT_ANSWER_LINE_HEIGHT = 1.25
@@ -745,12 +742,20 @@ class SettingsWindow(Adw.ApplicationWindow):
                 config.appeal_issue_agent_prompt_template,
             )
         )
+        later_treatment_prompt_page, self.later_treatment_agent_prompt_buffer = (
+            self._build_prompt_settings_page(
+                "Subsequent Treatment Prompt",
+                "Prompt",
+                config.later_treatment_agent_prompt_template,
+            )
+        )
 
         pages = [
             ("appeal", "Appeal Arguments", appeal_scroller),
             ("general_prompt", "General Prompt", general_prompt_page),
             ("cache_prompt", "Research Cache Prompt", case_prompt_page),
             ("appeal_prompt", "Appeal Prompt", appeal_prompt_page),
+            ("later_treatment_prompt", "Subsequent Treatment Prompt", later_treatment_prompt_page),
         ]
         first_row: Gtk.ListBoxRow | None = None
         for key, title, page in pages:
@@ -1066,6 +1071,10 @@ class SettingsWindow(Adw.ApplicationWindow):
                     self._prompt_text(self.appeal_issue_agent_prompt_buffer).strip()
                     or DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
                 ),
+                later_treatment_agent_prompt_template=(
+                    self._prompt_text(self.later_treatment_agent_prompt_buffer).strip()
+                    or DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE
+                ),
                 appeal_issue_presets=appeal_issue_presets,
                 appeal_issue_labels=appeal_issue_labels,
                 reader_font_size_pt=coerce_reader_font_size(
@@ -1195,7 +1204,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_citation_motion_controller: Gtk.EventControllerMotion | None = None
         self._reader_citation_click_gesture: Gtk.GestureClick | None = None
         self._reader_header_citation: FormattedCitation | None = None
+        self._reader_display_cluster: dict[str, Any] | None = None
         self.reader_selection_pinpoint_button: Gtk.Button | None = None
+        self.reader_subsequent_treatment_button: Gtk.Button | None = None
         self.reader_helper_case_button: Gtk.Button | None = None
         self._reader_has_official_pagination = False
         self._case_load_generation = 0
@@ -1982,25 +1993,28 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         )
         self.reader_header_action_box.append(self.reader_selection_pinpoint_button)
 
+        self.reader_subsequent_treatment_button = Gtk.Button(icon_name="go-next-symbolic")
+        self.reader_subsequent_treatment_button.add_css_class("case-reader-header-action-button")
+        self.reader_subsequent_treatment_button.set_tooltip_text("Analyze subsequent treatment")
+        self.reader_subsequent_treatment_button.set_valign(Gtk.Align.CENTER)
+        self.reader_subsequent_treatment_button.set_visible(False)
+        self.reader_subsequent_treatment_button.connect(
+            "clicked",
+            self._on_later_treatment_clicked,
+        )
+        self.reader_header_action_box.append(self.reader_subsequent_treatment_button)
+
         self.reader_helper_case_button = Gtk.Button(icon_name="go-jump-symbolic")
         self.reader_helper_case_button.add_css_class("case-reader-header-action-button")
-        self.reader_helper_case_button.set_tooltip_text(
-            "Load best citing helper case"
-        )
+        self.reader_helper_case_button.set_tooltip_text("Find helper citing case")
         self.reader_helper_case_button.set_valign(Gtk.Align.CENTER)
+        self.reader_helper_case_button.set_visible(False)
         self.reader_helper_case_button.set_sensitive(False)
         self.reader_helper_case_button.connect(
             "clicked",
             self._on_helper_case_clicked,
         )
         self.reader_header_action_box.append(self.reader_helper_case_button)
-
-        self.reader_header_cited_by_button = Gtk.Button(icon_name="edit-find-symbolic")
-        self.reader_header_cited_by_button.add_css_class("case-reader-header-action-button")
-        self.reader_header_cited_by_button.set_tooltip_text("Show later citing cases")
-        self.reader_header_cited_by_button.set_valign(Gtk.Align.CENTER)
-        self.reader_header_cited_by_button.connect("clicked", self._on_cited_by_clicked)
-        self.reader_header_action_box.append(self.reader_header_cited_by_button)
 
         self.reader_view = Gtk.TextView(buffer=self.reader_buffer)
         self.reader_view.set_editable(False)
@@ -2472,14 +2486,17 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self,
         text: str,
         citation: FormattedCitation | None = None,
+        cluster: dict[str, Any] | None = None,
     ) -> None:
         header = text.strip()
         self._reader_header_citation = citation
+        self._reader_display_cluster = cluster
         self.reader_header_label.set_text(header)
         self.reader_header_copy_button.set_visible(citation is not None)
         if self.reader_selection_pinpoint_button is not None:
             has_selected_authority = (
-                self._selected_cluster is not None
+                self._reader_display_cluster is not None
+                or self._selected_cluster is not None
                 or self._selected_statute is not None
                 or self._selected_rule is not None
             )
@@ -2487,14 +2504,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 bool(header and has_selected_authority)
             )
             self._update_reader_selection_pinpoint_button()
-        if self.reader_helper_case_button is not None:
-            self.reader_helper_case_button.set_visible(
-                bool(header and self._helper_case_available())
+        if self.reader_subsequent_treatment_button is not None:
+            self.reader_subsequent_treatment_button.set_visible(
+                bool(header and self._reader_display_cluster is not None)
             )
-            self._update_reader_selection_pinpoint_button()
-        self.reader_header_cited_by_button.set_visible(
-            bool(header and self._selected_cluster)
-        )
+            self.reader_subsequent_treatment_button.set_sensitive(
+                self._reader_display_cluster is not None
+            )
+        self._update_reader_helper_case_button()
         self.reader_header_box.set_visible(bool(header))
 
     def _case_header_text(self, cluster: dict[str, Any]) -> str:
@@ -2519,7 +2536,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def _update_reader_selection_pinpoint_button(self) -> None:
         has_authority = (
-            getattr(self, "_selected_cluster", None) is not None
+            getattr(self, "_reader_display_cluster", None) is not None
+            or getattr(self, "_selected_cluster", None) is not None
             or getattr(self, "_selected_statute", None) is not None
             or getattr(self, "_selected_rule", None) is not None
         )
@@ -2528,13 +2546,20 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self.reader_selection_pinpoint_button.set_sensitive(
                 bool(has_authority and has_selection)
             )
-        if self.reader_helper_case_button is not None:
-            available = self._helper_case_available()
-            self.reader_helper_case_button.set_visible(available)
-            self.reader_helper_case_button.set_sensitive(available)
+        self._update_reader_helper_case_button()
+
+    def _update_reader_helper_case_button(self) -> None:
+        if self.reader_helper_case_button is None:
+            return
+        available = self._helper_case_available()
+        self.reader_helper_case_button.set_visible(available)
+        self.reader_helper_case_button.set_sensitive(available)
 
     def _helper_case_available(self) -> bool:
-        cluster = getattr(self, "_selected_cluster", None)
+        cluster = (
+            getattr(self, "_reader_display_cluster", None)
+            or getattr(self, "_selected_cluster", None)
+        )
         if cluster is None:
             return False
         if getattr(self, "_reader_has_official_pagination", False):
@@ -2592,8 +2617,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if self._set_formatted_clipboard(payload, "Could not copy selected text."):
             self._set_status("Selected text and pinpoint citation copied.")
 
-    def _on_helper_case_clicked(self, _button: Gtk.Button) -> None:
-        cluster = self._selected_cluster
+    def _on_helper_case_clicked(
+        self,
+        _button: Gtk.Button,
+    ) -> None:
+        cluster = (
+            getattr(self, "_reader_display_cluster", None)
+            or getattr(self, "_selected_cluster", None)
+        )
         if cluster is None:
             self._set_status("Select a case before asking Codex for a helper case.")
             return
@@ -2610,6 +2641,54 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             cluster,
             cluster_id,
             target_citation,
+        )
+
+    def _start_later_treatment_agent(
+        self,
+        cluster: dict[str, Any],
+        cluster_id: str,
+        target_citation: str,
+    ) -> None:
+        if Vte is None or self._agent_terminal is None:
+            self._set_status("Embedded terminal is unavailable.")
+            return
+        prompt = OpenLawLensWindow._compose_later_treatment_agent_prompt(
+            self,
+            cluster,
+            cluster_id,
+            target_citation,
+        )
+        prompt_path = self._write_prompt_file(prompt)
+        try:
+            workspace = self._create_agent_workspace()
+        except OSError as exc:
+            self._set_status(f"Unable to create agent workspace: {exc}")
+            return
+        self._set_agent_mode(AGENT_MODE_GENERAL)
+        self._case_agent_text_sources = []
+        self._agent_mode = AGENT_MODE_GENERAL
+        self._launch_agent_with_prompt(prompt_path, workspace, AGENT_MODE_GENERAL)
+
+    def _compose_later_treatment_agent_prompt(
+        self,
+        cluster: dict[str, Any],
+        cluster_id: str,
+        target_citation: str,
+    ) -> str:
+        command = (
+            "uv run --no-sync open-law-lens published-citing-cases "
+            f"--cluster-id {cluster_id} --limit 10 --json"
+        )
+        config = load_config()
+        return self._format_agent_prompt(
+            config.later_treatment_agent_prompt_template,
+            DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
+            {
+                "target_title": cluster_short_title(cluster),
+                "target_citation": target_citation,
+                "cluster_id": cluster_id,
+                "published_citing_cases_command": command,
+            },
         )
 
     def _start_helper_case_agent(
@@ -2679,7 +2758,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         start_offset: int,
         end_offset: int,
     ) -> FormattedCitation | None:
-        selected_cluster = getattr(self, "_selected_cluster", None)
+        selected_cluster = (
+            getattr(self, "_reader_display_cluster", None)
+            or getattr(self, "_selected_cluster", None)
+        )
         selected_statute = getattr(self, "_selected_statute", None)
         selected_rule = getattr(self, "_selected_rule", None)
         if selected_cluster is not None:
@@ -2847,12 +2929,31 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             ),
         )
 
-    def _on_cited_by_clicked(self, _button: Gtk.Button) -> None:
-        cluster = self._selected_cluster
+    def _on_later_treatment_clicked(
+        self,
+        _button: Gtk.Button,
+    ) -> None:
+        cluster = (
+            getattr(self, "_reader_display_cluster", None)
+            or getattr(self, "_selected_cluster", None)
+        )
         if cluster is None:
             self._set_status("Select a case first.")
             return
-        self._start_cited_by_lookup(cluster)
+        cluster_id = cluster_id_from_cluster(cluster)
+        if not cluster_id:
+            self._set_status("Selected case has no CourtListener cluster id.")
+            return
+        target_citation = cluster_citation_line(cluster)
+        if not target_citation:
+            self._set_status("No reporter citation is available for this case.")
+            return
+        OpenLawLensWindow._start_later_treatment_agent(
+            self,
+            cluster,
+            cluster_id,
+            target_citation,
+        )
 
     def _apply_reader_citation_links(self, text: str) -> None:
         self._clear_reader_citation_links()
@@ -3185,9 +3286,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 "Show agent output" if self._agent_output_collapsed else "Hide agent output"
             )
         if self._agent_subview_strip is not None:
-            self._agent_subview_strip.set_visible(
-                output_visible and self._agent_mode != AGENT_MODE_RESULTS
-            )
+            self._agent_subview_strip.set_visible(output_visible)
         if self._agent_answer_scroller is not None:
             self._agent_answer_scroller.set_visible(
                 output_visible and self._agent_subview_name == AGENT_SUBVIEW_ANSWER
@@ -4553,6 +4652,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_reader_header(
             self._case_header_text(cluster),
             self._case_header_citation(cluster),
+            cluster,
         )
         self._set_reader_text(display.text, display.page_markers)
         self._set_status(success_status)
@@ -5285,6 +5385,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_reader_header(
             self._case_header_text(cluster),
             self._case_header_citation(cluster),
+            cluster,
         )
         title = cluster_title(cluster)
         self.reader_buffer.set_text("")
@@ -5553,114 +5654,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.agent_question_entry.set_text(question)
         self.agent_question_entry.set_position(-1)
         self._on_agent_launch(self.agent_question_entry)
-
-    def _start_cited_by_lookup(self, cluster: dict[str, Any]) -> None:
-        self._stop_agent()
-        self._stop_agent_answer_polling()
-        self._clear_agent_answer()
-        title = cluster_short_title(cluster)
-        self._agent_output_collapsed = False
-        self._agent_search_output_visible = True
-        self._agent_search_query = title
-        self._agent_search_results = []
-        self._agent_search_next_url = ""
-        self._agent_cited_by_published_only = True
-        self._agent_cited_by_total_count = 0
-        self._agent_search_heading = f"Cited By: {title}"
-        self._agent_search_scope_text = (
-            "CourtListener Citation Graph | Later citing cases, not legal-treatment signals"
-        )
-        self._agent_mode = AGENT_MODE_RESULTS
-        self._set_agent_subview(AGENT_SUBVIEW_ANSWER)
-        self._set_status(f"Finding cases that cite {title}...")
-        if self._agent_answer_buffer is not None:
-            self._agent_answer_buffer.set_text("Finding later citing cases...")
-        thread = threading.Thread(
-            target=self._cited_by_worker,
-            args=(cluster, ""),
-            daemon=True,
-        )
-        thread.start()
-
-    def _cited_by_worker(self, cluster: dict[str, Any], next_url: str) -> None:
-        try:
-            page = self.client.citing_opinions(cluster, url=next_url)
-            GLib.idle_add(
-                self._finish_cited_by_lookup,
-                cluster_short_title(cluster),
-                page,
-                bool(next_url),
-            )
-        except (CourtListenerError, ValueError) as exc:
-            GLib.idle_add(self._apply_search_error, str(exc))
-
-    def _finish_cited_by_lookup(
-        self,
-        title: str,
-        page: CourtListenerSearchPage,
-        append: bool,
-    ) -> bool:
-        if not append:
-            self._agent_search_results = []
-        self._agent_search_results.extend(page.results)
-        self._agent_search_next_url = page.next_url
-        self._agent_cited_by_total_count = max(
-            self._agent_cited_by_total_count,
-            page.count,
-            len(self._agent_search_results),
-        )
-        self._agent_search_heading = f"Cited By: {title}"
-        self._agent_search_scope_text = (
-            "CourtListener Citation Graph | Later citing cases, not legal-treatment signals"
-        )
-        self._render_cited_by_results(title)
-        return False
-
-    def _published_cited_by_results(self) -> list[CourtListenerSearchResult]:
-        return [
-            result
-            for result in self._agent_search_results
-            if result.status == "Published"
-        ]
-
-    def _render_cited_by_results(self, title: str) -> None:
-        published_results = self._published_cited_by_results()
-        unpublished_count = len(self._agent_search_results) - len(published_results)
-        if self._agent_cited_by_published_only:
-            rendered_results = published_results
-            mode_text = "Published citing cases"
-            action_text = "Include unpublished" if unpublished_count else ""
-            action_target = (
-                CITED_BY_INCLUDE_UNPUBLISHED_TARGET if unpublished_count else ""
-            )
-        else:
-            rendered_results = self._agent_search_results
-            mode_text = "Published and unpublished citing cases"
-            action_text = "Show published only" if unpublished_count else ""
-            action_target = CITED_BY_PUBLISHED_ONLY_TARGET if unpublished_count else ""
-        loaded_count = len(self._agent_search_results)
-        summary_text = (
-            f"{mode_text} | Showing {len(rendered_results)} of "
-            f"{loaded_count} loaded"
-        )
-        self._render_search_results(
-            title,
-            rendered_results,
-            True,
-            self._agent_cited_by_total_count or loaded_count,
-            self._agent_search_next_url,
-            heading=self._agent_search_heading,
-            summary_text=summary_text,
-            action_text=action_text,
-            action_target=action_target,
-        )
-        if self._agent_cited_by_published_only:
-            self._set_status(
-                f"Cited By: showing {len(rendered_results)} published citing case(s), "
-                f"{loaded_count} loaded."
-            )
-        else:
-            self._set_status(f"Cited By: showing {loaded_count} citing case(s).")
 
     def _apply_search_error(self, message: str) -> bool:
         self._set_status(message)
@@ -6505,13 +6498,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return
         target = self._agent_link_at_coords(x, y)
         if target == SEARCH_NEXT_PAGE_TARGET:
-            self._load_next_search_results()
-        elif target in {
-            CITED_BY_INCLUDE_UNPUBLISHED_TARGET,
-            CITED_BY_PUBLISHED_ONLY_TARGET,
-        }:
-            self._toggle_cited_by_publication_filter(str(target))
-        elif isinstance(target, CourtListenerSearchResult):
+            return
+        if isinstance(target, CourtListenerSearchResult):
             self._open_search_result(target)
         elif isinstance(target, CitedCaseLink):
             self._open_agent_cited_case_link(target)
@@ -6521,34 +6509,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._open_rule_link(target)
         elif target is not None:
             self._open_quote_target(target)
-
-    def _toggle_cited_by_publication_filter(self, target: str) -> None:
-        if not self._agent_search_heading.startswith("Cited By:"):
-            return
-        self._agent_cited_by_published_only = (
-            target == CITED_BY_PUBLISHED_ONLY_TARGET
-        )
-        title = self._agent_search_heading.removeprefix("Cited By:").strip()
-        self._render_cited_by_results(title)
-
-    def _load_next_search_results(self) -> None:
-        if not self._agent_search_next_url:
-            return
-        next_url = self._agent_search_next_url
-        self._agent_search_next_url = ""
-        if (
-            self._agent_search_heading.startswith("Cited By:")
-            and self._selected_cluster is not None
-        ):
-            self._set_status("Loading more citing cases...")
-            thread = threading.Thread(
-                target=self._cited_by_worker,
-                args=(self._selected_cluster, next_url),
-                daemon=True,
-            )
-        else:
-            return
-        thread.start()
 
     def _open_search_result(self, result: CourtListenerSearchResult) -> None:
         self._set_status(f"Opening {result.case_name}...")

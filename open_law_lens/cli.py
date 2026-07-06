@@ -254,6 +254,83 @@ def _published_citing_case_json(
     return base
 
 
+def _published_citing_case_result_json(result: Any, rank: int) -> dict[str, Any]:
+    search_result = result.result
+    full_citation = search_result_full_citation(search_result)
+    return {
+        "rank": rank,
+        "cluster_id": search_result.cluster_id,
+        "case_name": search_result.case_name,
+        "official_citation": search_result.citation,
+        "full_citation": full_citation,
+        "date_filed": search_result.date_filed,
+        "court": search_result.court,
+        "court_id": search_result.court_id,
+        "status": search_result.status,
+        "score": result.score,
+        "cite_count": result.cite_count,
+        "max_depth": result.max_depth,
+        "extract_command": (
+            "uv run open-law-lens extract-case "
+            f"--cluster-id {search_result.cluster_id}"
+        ),
+        "open_command": (
+            "uv run open-law-lens open "
+            f"{json.dumps(full_citation)}"
+        ),
+    }
+
+
+def _cmd_published_citing_cases(args: argparse.Namespace) -> int:
+    cluster_id = str(args.cluster_id or "").strip()
+    if not cluster_id:
+        print("CourtListener cluster id is required.", file=sys.stderr)
+        return 1
+    page_size = getattr(args, "page_size", 25)
+    limit = getattr(args, "limit", 10)
+    client = CourtListenerClient.default()
+    try:
+        cluster = client.fetch_url(
+            f"/api/rest/v4/clusters/{cluster_id}/",
+            kind="clusters",
+            refresh=getattr(args, "refresh", False),
+        )
+        results = client.published_citing_cases(
+            cluster,
+            page_size=page_size,
+            limit=limit,
+        )
+    except (CourtListenerError, ValueError) as exc:
+        _print_json(
+            {
+                "ok": False,
+                "target_cluster_id": cluster_id,
+                "pages_scanned": 0,
+                "page_size": page_size,
+                "limit": limit,
+                "result_count": 0,
+                "results": [],
+                "error": str(exc),
+            }
+        )
+        return 1
+    payload = {
+        "ok": bool(results),
+        "target_cluster_id": cluster_id,
+        "pages_scanned": max((result.pages_scanned for result in results), default=0),
+        "rows_scanned": max((result.rows_scanned for result in results), default=0),
+        "page_size": page_size,
+        "limit": limit,
+        "result_count": len(results),
+        "results": [
+            _published_citing_case_result_json(result, index)
+            for index, result in enumerate(results, start=1)
+        ],
+    }
+    _print_json(payload)
+    return 0 if results else 1
+
+
 def _cmd_best_published_citing_case(args: argparse.Namespace) -> int:
     cluster_id = str(args.cluster_id or "").strip()
     if not cluster_id:
@@ -629,6 +706,27 @@ def build_parser() -> argparse.ArgumentParser:
     helper_parser.add_argument("--refresh", action="store_true", help="bypass cached cluster data")
     helper_parser.add_argument("--json", action="store_true", help="print structured JSON")
     helper_parser.set_defaults(func=_cmd_best_published_citing_case)
+
+    citing_cases_parser = subparsers.add_parser(
+        "published-citing-cases",
+        help="list ranked published citing cases from the first cited-by page",
+    )
+    citing_cases_parser.add_argument("--cluster-id", required=True, help="target CourtListener cluster id")
+    citing_cases_parser.add_argument(
+        "--limit",
+        type=int,
+        default=10,
+        help="maximum published citing cases to return",
+    )
+    citing_cases_parser.add_argument(
+        "--page-size",
+        type=int,
+        default=25,
+        help="cited-by page size to request",
+    )
+    citing_cases_parser.add_argument("--refresh", action="store_true", help="bypass cached cluster data")
+    citing_cases_parser.add_argument("--json", action="store_true", help="accepted for compatibility")
+    citing_cases_parser.set_defaults(func=_cmd_published_citing_cases)
 
     extract_statute_parser = subparsers.add_parser("extract-statute", help="extract a California statute")
     extract_statute_parser.add_argument("value")

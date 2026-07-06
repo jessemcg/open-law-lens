@@ -15,6 +15,8 @@ CONFIG_KEY_CONCORDANCE_FILE_PATH = "concordance_file_path"
 CONFIG_KEY_GENERAL_AGENT_PROMPT_TEMPLATE = "general_agent_prompt_template"
 CONFIG_KEY_CASE_AGENT_PROMPT_TEMPLATE = "case_agent_prompt_template"
 CONFIG_KEY_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE = "appeal_issue_agent_prompt_template"
+CONFIG_KEY_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE = "subsequent_treatment_agent_prompt_template"
+CONFIG_KEY_LEGACY_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE = "later_treatment_agent_prompt_template"
 CONFIG_KEY_APPEAL_ISSUE_PRESETS = "appeal_issue_presets"
 CONFIG_KEY_APPEAL_ISSUE_LABELS = "appeal_issue_labels"
 CONFIG_KEY_READER_FONT_SIZE_PT = "reader_font_size_pt"
@@ -135,6 +137,28 @@ Analyze preservation, standard of review, factual support, governing law, prejud
 End with a rating line exactly in this form:
 Rating: Strong, Medium, Weak, or Frivolous"""
 
+DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens Subsequent Treatment Agent.
+
+Analyze how subsequent published California cases treated the currently viewed case. Use Open Law Lens CLI commands for CourtListener-backed discovery and extraction, but use judgment about which commands and searches will best answer the treatment question.
+
+Target case: {target_title}
+Target official citation: {target_citation}
+CourtListener cluster id: {cluster_id}
+
+Start with this Open Law Lens citing-cases command when the cluster id is accepted:
+{published_citing_cases_command}
+
+If that command fails, returns no useful leads, or the cluster id appears to be a local external id, recover with targeted Open Law Lens case searches using the target case name, official citation, and distinctive citation phrases. Treat search results as leads only.
+
+Choose only the most significant published subsequent cases, usually 3 to 5 when that many exist. Before relying on any selected case, extract it with:
+uv run --no-sync open-law-lens extract-case --cluster-id <cluster_id>
+
+If CourtListener extraction lacks an official reporter citation or official text for a selected subsequent case, use Google Scholar, California Courts, or Codex web search only as a fallback to verify or fill in that citation/text. State when a citation remains uncertain.
+
+For each selected subsequent case, explain how it used the target case: agreed with it, distinguished it, limited it, extended it to a different fact pattern, criticized it, or used it in another identifiable way. If a citation lead exists but extracted or verified text does not support a treatment characterization, say that plainly.
+
+Prefer California Supreme Court and published California Court of Appeal decisions. Do not use unpublished cases as controlling treatment. Keep the answer concise and include the official citation for each later case. In the final answer, use normal legal prose for case names and citations; reserve backticks for CLI commands, file paths, and other literal technical text."""
+
 
 @dataclass(frozen=True)
 class AppConfig:
@@ -143,6 +167,7 @@ class AppConfig:
     general_agent_prompt_template: str = DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE
     case_agent_prompt_template: str = DEFAULT_CASE_AGENT_PROMPT_TEMPLATE
     appeal_issue_agent_prompt_template: str = DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
+    later_treatment_agent_prompt_template: str = DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE
     appeal_issue_presets: list[str] = field(
         default_factory=lambda: list(DEFAULT_APPEAL_ISSUE_PRESETS)
     )
@@ -252,6 +277,13 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
         CONFIG_KEY_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
         DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
     )
+    later_treatment_agent_prompt = raw.get(
+        CONFIG_KEY_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
+        raw.get(
+            CONFIG_KEY_LEGACY_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
+            DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
+        ),
+    )
     appeal_prompt_hash = hashlib.sha256(
         str(appeal_issue_agent_prompt).strip().encode()
     ).hexdigest()
@@ -272,6 +304,10 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
         appeal_issue_agent_prompt_template=(
             str(appeal_issue_agent_prompt).strip()
             or DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
+        ),
+        later_treatment_agent_prompt_template=(
+            str(later_treatment_agent_prompt).strip()
+            or DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE
         ),
         appeal_issue_presets=appeal_issue_presets,
         appeal_issue_labels=normalize_appeal_issue_labels(
@@ -309,6 +345,10 @@ def save_config(config: AppConfig, path: Path = CONFIG_PATH) -> None:
         CONFIG_KEY_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE: (
             config.appeal_issue_agent_prompt_template.strip()
             or DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
+        ),
+        CONFIG_KEY_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE: (
+            config.later_treatment_agent_prompt_template.strip()
+            or DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE
         ),
         CONFIG_KEY_APPEAL_ISSUE_PRESETS: appeal_issue_presets,
         CONFIG_KEY_APPEAL_ISSUE_LABELS: normalize_appeal_issue_labels(

@@ -32,6 +32,12 @@ class CliCommandTests(unittest.TestCase):
             ).command,
             "best-published-citing-case",
         )
+        self.assertEqual(
+            parser.parse_args(
+                ["published-citing-cases", "--cluster-id", "6240402", "--json"]
+            ).command,
+            "published-citing-cases",
+        )
         self.assertEqual(parser.parse_args(["open", "13 Cal.4th 952"]).command, "open")
         self.assertEqual(parser.parse_args(["open-selected"]).command, "open-selected")
         self.assertEqual(parser.parse_args(["show-research-sets"]).command, "show-research-sets")
@@ -155,6 +161,47 @@ class CliCommandTests(unittest.TestCase):
         self.assertIn('"target_cluster_id": "6240402"', output.getvalue())
         self.assertIn('"full_citation": "Later Published Case (2024) 20 Cal.App.5th 1"', output.getvalue())
         self.assertIn('"score": 8', output.getvalue())
+
+    def test_published_citing_cases_prints_json(self) -> None:
+        search_result = MagicMock()
+        search_result.cluster_id = "999"
+        search_result.case_name = "Later Published Case"
+        search_result.citation = "20 Cal.App.5th 1"
+        search_result.date_filed = "2024-01-02"
+        search_result.court = "California Court of Appeal"
+        search_result.court_id = "calctapp"
+        search_result.status = "Published"
+        result = MagicMock()
+        result.result = search_result
+        result.score = 8
+        result.cite_count = 2
+        result.max_depth = 5
+        result.rows_scanned = 25
+        result.pages_scanned = 1
+        client = MagicMock()
+        client.fetch_url.return_value = {"id": 6240402}
+        client.published_citing_cases.return_value = [result]
+        output = StringIO()
+        with (
+            patch("open_law_lens.cli.CourtListenerClient.default", return_value=client),
+            redirect_stdout(output),
+        ):
+            status = main([
+                "published-citing-cases",
+                "--cluster-id",
+                "6240402",
+                "--limit",
+                "3",
+                "--json",
+            ])
+
+        self.assertEqual(status, 0)
+        client.fetch_url.assert_called_once()
+        client.published_citing_cases.assert_called_once()
+        self.assertIn('"target_cluster_id": "6240402"', output.getvalue())
+        self.assertIn('"result_count": 1', output.getvalue())
+        self.assertIn('"full_citation": "Later Published Case (2024) 20 Cal.App.5th 1"', output.getvalue())
+        self.assertIn('"extract_command": "uv run open-law-lens extract-case --cluster-id 999"', output.getvalue())
 
     def test_open_dispatches_to_running_app_without_launching(self) -> None:
         with (

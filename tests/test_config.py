@@ -17,6 +17,7 @@ from open_law_lens.config import (
     DEFAULT_AGENT_PERMISSION_MODE,
     DEFAULT_BARE_STATUTE_LAW_CODE,
     DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE,
+    DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
     DEFAULT_READER_FONT_FAMILY,
     DEFAULT_READER_FONT_SIZE_PT,
     load_config,
@@ -36,6 +37,10 @@ class ConfigTests(unittest.TestCase):
                 config.appeal_issue_agent_prompt_template,
                 DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
             )
+            self.assertEqual(
+                config.later_treatment_agent_prompt_template,
+                DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
+            )
             self.assertEqual(config.appeal_issue_presets, list(DEFAULT_APPEAL_ISSUE_PRESETS))
             self.assertEqual(config.appeal_issue_labels, list(DEFAULT_APPEAL_ISSUE_LABELS))
             self.assertEqual(config.reader_font_size_pt, DEFAULT_READER_FONT_SIZE_PT)
@@ -53,6 +58,7 @@ class ConfigTests(unittest.TestCase):
                     general_agent_prompt_template=" General {question} ",
                     case_agent_prompt_template=" Case {question} ",
                     appeal_issue_agent_prompt_template=" Appeal {issue} ",
+                    later_treatment_agent_prompt_template=" Subsequent {cluster_id} ",
                     appeal_issue_presets=[" Issue One ", "Issue Two", "Issue One"],
                     appeal_issue_labels=[" One ", "Two"],
                     reader_font_size_pt=14,
@@ -68,6 +74,10 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.general_agent_prompt_template, "General {question}")
             self.assertEqual(config.case_agent_prompt_template, "Case {question}")
             self.assertEqual(config.appeal_issue_agent_prompt_template, "Appeal {issue}")
+            self.assertEqual(
+                config.later_treatment_agent_prompt_template,
+                "Subsequent {cluster_id}",
+            )
             self.assertEqual(config.appeal_issue_presets, ["Issue One", "Issue Two"])
             self.assertEqual(config.appeal_issue_labels, ["One", "Two"])
             self.assertEqual(config.reader_font_size_pt, 14)
@@ -176,6 +186,40 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(
                 load_config(path).appeal_issue_agent_prompt_template,
                 "Custom appeal {issue}",
+            )
+
+    def test_custom_later_treatment_prompt_is_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            save_config(
+                AppConfig(
+                    later_treatment_agent_prompt_template="Custom later {cluster_id}"
+                ),
+                path,
+            )
+
+            self.assertEqual(
+                load_config(path).later_treatment_agent_prompt_template,
+                "Custom later {cluster_id}",
+            )
+
+    def test_legacy_later_treatment_prompt_key_is_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "later_treatment_agent_prompt_template": (
+                            "Legacy later {cluster_id}"
+                        )
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                load_config(path).later_treatment_agent_prompt_template,
+                "Legacy later {cluster_id}",
             )
 
     def test_bare_statute_law_code_falls_back_to_wic(self) -> None:

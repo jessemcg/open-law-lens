@@ -1438,7 +1438,43 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertIn("Do not continue crawling CourtListener", prompt)
         self.assertIn("Target official citation: 10 Cal.App.5th 25", prompt)
 
-    def test_helper_case_button_does_not_require_selection(self) -> None:
+    def test_later_treatment_agent_prompt_uses_published_citing_cases_command(self) -> None:
+        class DummyWindow:
+            def _format_agent_prompt(
+                self,
+                template: str,
+                fallback: str,
+                values: dict[str, object],
+            ) -> str:
+                return OpenLawLensWindow._format_agent_prompt(  # type: ignore[arg-type]
+                    self,
+                    template,
+                    fallback,
+                    values,
+                )
+
+        window = DummyWindow()
+        with patch("open_law_lens.app.load_config", return_value=AppConfig()):
+            prompt = OpenLawLensWindow._compose_later_treatment_agent_prompt(  # type: ignore[arg-type]
+                window,
+                {
+                    "id": 42,
+                    "case_name_short": "Target Case",
+                    "citations": [{"volume": "10", "reporter": "Cal.App.5th", "page": "25"}],
+                },
+                "42",
+                "10 Cal.App.5th 25",
+            )
+
+        self.assertIn("published-citing-cases --cluster-id 42 --limit 10 --json", prompt)
+        self.assertIn("extract-case --cluster-id <cluster_id>", prompt)
+        self.assertIn("Google Scholar", prompt)
+        self.assertIn("citation remains uncertain", prompt)
+        self.assertIn("use normal legal prose for case names and citations", prompt)
+        self.assertIn("agreed with it, distinguished it, limited it", prompt)
+        self.assertIn("Target official citation: 10 Cal.App.5th 25", prompt)
+
+    def test_reader_helper_button_follows_helper_availability(self) -> None:
         class DummyButton:
             def __init__(self) -> None:
                 self.visible = False
@@ -1471,6 +1507,9 @@ class AppReaderPayloadTests(unittest.TestCase):
             def _helper_case_available(self) -> bool:
                 return OpenLawLensWindow._helper_case_available(self)  # type: ignore[arg-type]
 
+            def _update_reader_helper_case_button(self) -> None:
+                OpenLawLensWindow._update_reader_helper_case_button(self)  # type: ignore[arg-type]
+
         window = DummyWindow()
 
         OpenLawLensWindow._update_reader_selection_pinpoint_button(window)  # type: ignore[arg-type]
@@ -1482,6 +1521,63 @@ class AppReaderPayloadTests(unittest.TestCase):
 
         self.assertFalse(window.reader_helper_case_button.visible)
         self.assertFalse(window.reader_helper_case_button.sensitive)
+
+    def test_case_header_shows_subsequent_treatment_button_for_displayed_cluster(self) -> None:
+        class DummyLabel:
+            def __init__(self) -> None:
+                self.text = ""
+
+            def set_text(self, value: str) -> None:
+                self.text = value
+
+        class DummyButton:
+            def __init__(self) -> None:
+                self.visible = False
+                self.sensitive = False
+
+            def set_visible(self, value: bool) -> None:
+                self.visible = value
+
+            def set_sensitive(self, value: bool) -> None:
+                self.sensitive = value
+
+        class DummyWindow:
+            def __init__(self) -> None:
+                self._selected_cluster: dict[str, object] | None = {}
+                self._reader_display_cluster: dict[str, object] | None = None
+                self._selected_statute = None
+                self._selected_rule = None
+                self._reader_header_citation = None
+                self.reader_header_label = DummyLabel()
+                self.reader_header_copy_button = DummyButton()
+                self.reader_selection_pinpoint_button = DummyButton()
+                self.reader_subsequent_treatment_button = DummyButton()
+                self.reader_helper_case_button = DummyButton()
+                self.reader_header_box = DummyButton()
+
+            def _reader_selection_bounds(self) -> None:
+                return None
+
+            def _update_reader_selection_pinpoint_button(self) -> None:
+                OpenLawLensWindow._update_reader_selection_pinpoint_button(self)  # type: ignore[arg-type]
+
+            def _helper_case_available(self) -> bool:
+                return False
+
+            def _update_reader_helper_case_button(self) -> None:
+                OpenLawLensWindow._update_reader_helper_case_button(self)  # type: ignore[arg-type]
+
+        window = DummyWindow()
+
+        OpenLawLensWindow._set_reader_header(  # type: ignore[arg-type]
+            window,
+            "Displayed Case",
+            cluster={},
+        )
+
+        self.assertTrue(window.reader_subsequent_treatment_button.visible)
+        self.assertTrue(window.reader_subsequent_treatment_button.sensitive)
+        self.assertFalse(window.reader_helper_case_button.visible)
 
     def test_helper_case_click_launches_general_agent_prompt(self) -> None:
         class DummyWindow:
@@ -1533,6 +1629,74 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(
             window.launches,
             [(Path("/tmp/helper-prompt.txt"), Path("/tmp/helper-workspace"), "general")],
+        )
+
+    def test_later_treatment_click_launches_general_agent_prompt(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self._selected_cluster = {
+                    "id": 42,
+                    "case_name_short": "Target Case",
+                    "citations": [{"volume": "10", "reporter": "Cal.App.5th", "page": "25"}],
+                }
+                self._agent_terminal = object()
+                self._case_agent_text_sources = ["old"]
+                self._agent_mode = "case"
+                self.statuses: list[str] = []
+                self.prompt = ""
+                self.selected_modes: list[str] = []
+                self.launches: list[tuple[Path, Path, str]] = []
+
+            def _set_status(self, status: str) -> None:
+                self.statuses.append(status)
+
+            def _write_prompt_file(self, prompt: str) -> Path:
+                self.prompt = prompt
+                return Path("/tmp/later-prompt.txt")
+
+            def _create_agent_workspace(self) -> Path:
+                return Path("/tmp/later-workspace")
+
+            def _set_agent_mode(self, mode: str) -> None:
+                self.selected_modes.append(mode)
+
+            def _format_agent_prompt(
+                self,
+                template: str,
+                fallback: str,
+                values: dict[str, object],
+            ) -> str:
+                return OpenLawLensWindow._format_agent_prompt(  # type: ignore[arg-type]
+                    self,
+                    template,
+                    fallback,
+                    values,
+                )
+
+            def _launch_agent_with_prompt(
+                self,
+                prompt_path: Path,
+                workspace: Path,
+                mode: str,
+            ) -> None:
+                self.launches.append((prompt_path, workspace, mode))
+
+        window = DummyWindow()
+
+        with (
+            patch("open_law_lens.app.Vte", object()),
+            patch("open_law_lens.app.load_config", return_value=AppConfig()),
+        ):
+            OpenLawLensWindow._on_later_treatment_clicked(window, object())  # type: ignore[arg-type]
+
+        self.assertEqual(window.statuses, [])
+        self.assertIn("published-citing-cases --cluster-id 42 --limit 10 --json", window.prompt)
+        self.assertEqual(window.selected_modes, ["general"])
+        self.assertEqual(window._case_agent_text_sources, [])
+        self.assertEqual(window._agent_mode, "general")
+        self.assertEqual(
+            window.launches,
+            [(Path("/tmp/later-prompt.txt"), Path("/tmp/later-workspace"), "general")],
         )
 
     def test_case_clipboard_text_strips_reader_page_markers(self) -> None:

@@ -775,6 +775,16 @@ class CourtListenerClient:
         *,
         page_size: int = 25,
     ) -> PublishedCitingCaseResult | None:
+        results = self.published_citing_cases(cluster, page_size=page_size, limit=1)
+        return results[0] if results else None
+
+    def published_citing_cases(
+        self,
+        cluster: dict[str, Any],
+        *,
+        page_size: int = 25,
+        limit: int = 10,
+    ) -> list[PublishedCitingCaseResult]:
         opinions = self.fetch_cluster_opinions(cluster, persist_to_library=False)
         opinion_ids = [
             str(opinion.get("id") or "").strip()
@@ -782,7 +792,7 @@ class CourtListenerClient:
             if str(opinion.get("id") or "").strip()
         ]
         if not opinion_ids:
-            return None
+            return []
 
         scores: dict[str, dict[str, int]] = {}
         clusters: dict[str, dict[str, Any]] = {}
@@ -837,34 +847,40 @@ class CourtListenerClient:
             clusters[citing_cluster_id] = citing_cluster
 
         if not scores:
-            return None
-        best_cluster_id = max(
+            return []
+        ranked_cluster_ids = sorted(
             scores,
             key=lambda cluster_id: _published_citing_case_rank_key(
                 clusters[cluster_id],
                 scores[cluster_id],
             ),
+            reverse=True,
         )
-        score = scores[best_cluster_id]
-        best_cluster = clusters[best_cluster_id]
-        normalized = normalize_cluster_search_result(
-            best_cluster,
-            snippet=(
-                f"Citation depth total: {score['score']} "
-                f"across {score['cite_count']} citation graph reference(s)"
-            ),
-        )
-        if normalized is None:
-            return None
-        return PublishedCitingCaseResult(
-            cluster=best_cluster,
-            result=normalized,
-            score=score["score"],
-            cite_count=score["cite_count"],
-            max_depth=score["max_depth"],
-            rows_scanned=len(rows),
-            pages_scanned=1,
-        )
+        results: list[PublishedCitingCaseResult] = []
+        for cluster_id in ranked_cluster_ids[: max(1, min(limit, page_size))]:
+            score = scores[cluster_id]
+            citing_cluster = clusters[cluster_id]
+            normalized = normalize_cluster_search_result(
+                citing_cluster,
+                snippet=(
+                    f"Citation depth total: {score['score']} "
+                    f"across {score['cite_count']} citation graph reference(s)"
+                ),
+            )
+            if normalized is None:
+                continue
+            results.append(
+                PublishedCitingCaseResult(
+                    cluster=citing_cluster,
+                    result=normalized,
+                    score=score["score"],
+                    cite_count=score["cite_count"],
+                    max_depth=score["max_depth"],
+                    rows_scanned=len(rows),
+                    pages_scanned=1,
+                )
+            )
+        return results
 
     def fetch_url(self, url: str, *, kind: str, refresh: bool = False) -> dict[str, Any]:
         full_url = url if url.startswith("http") else f"{BASE_URL}{url}"

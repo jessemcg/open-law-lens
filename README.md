@@ -53,8 +53,7 @@ Or save it in the app menu under Settings. The Settings path writes a local
 - Durable SQLite library at `library/open_law_lens.sqlite3` for saved authority
   data, display text, and reporter page-marker metadata.
 - Disposable JSON API cache under `cache/`.
-- Cited By lookup using CourtListener citation graph data, with published cases
-  shown first by default.
+- Subsequent-treatment agent workflow using Open Law Lens CLI citation-graph leads.
 - Google Scholar fallback and manual import flow for official reporter text and
   pagination gaps.
 - Reader links for cited cases, statutes, and rules.
@@ -135,6 +134,7 @@ uv run open-law-lens case-search "beneficial relationship exception"
 uv run open-law-lens extract-statute "Welf. & Inst. Code, § 300"
 uv run open-law-lens extract-rule "Cal. Rules of Court, rule 8.1115"
 uv run open-law-lens best-published-citing-case --cluster-id 6240402 --json
+uv run open-law-lens published-citing-cases --cluster-id 6240402 --limit 10 --json
 ```
 
 Maintenance and inspection commands:
