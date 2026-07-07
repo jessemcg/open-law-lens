@@ -60,7 +60,10 @@ READER_FONT_FAMILY_OPTIONS: tuple[tuple[str, str], ...] = (
 DEFAULT_READER_FONT_FAMILY = READER_FONT_FAMILY_OPTIONS[0][0]
 LEGACY_READER_FONT_FAMILY_ALIASES: dict[str, str] = {}
 
-LEGACY_GENERAL_AGENT_PROMPT_SHA256 = "50a9928018ec7d3b06b322db9e5a211e56c7a155b09537d1f7057906fb6a14e4"
+LEGACY_GENERAL_AGENT_PROMPT_SHA256ES = (
+    "50a9928018ec7d3b06b322db9e5a211e56c7a155b09537d1f7057906fb6a14e4",
+    "5d787ed00945b45a32f60026679908a718fc7d174080951f5f3bbe5e70921dc6",
+)
 LEGACY_CASE_AGENT_PROMPT_SHA256ES = (
     "90bd5ba6984eb91b4b7c72c3a33617896ed2b6279ce3bdd5592f07f15fc73f9b",
     "58395b3951138bf6ebdc383a5f52366ca7f7c81e0fcd6b1b75b6095c36a5f3d8",
@@ -82,6 +85,8 @@ For California case-law discovery, start with `uv run open-law-lens case-search 
 Confine research to California state law unless the user's question explicitly requires federal law. Prefer published California Supreme Court and California Court of Appeal authority when available. Use `case-search --include-unpublished` only when unpublished cases are useful for context, not as controlling authority.
 
 Use Google Scholar or Codex web search only as a fallback to verify or fill in an official reporter citation or official text when CourtListener metadata is missing or suspect. State when a citation remains uncertain.
+
+In the final answer, use normal legal prose for case names, statutes, rules, and citations. Do not wrap legal authorities or citations in backticks. Reserve backticks only for CLI commands, file paths, and other literal technical text.
 
 Question:
 {question}"""
@@ -300,7 +305,7 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
         DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE,
     )
     prompt_hash = hashlib.sha256(str(general_agent_prompt).strip().encode()).hexdigest()
-    if prompt_hash == LEGACY_GENERAL_AGENT_PROMPT_SHA256:
+    if prompt_hash in LEGACY_GENERAL_AGENT_PROMPT_SHA256ES:
         general_agent_prompt = DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE
     case_agent_prompt = raw.get(
         CONFIG_KEY_CASE_AGENT_PROMPT_TEMPLATE,

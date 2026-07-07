@@ -15,6 +15,7 @@ from open_law_lens.app import (
     appeal_issue_menu_label,
     build_agent_launch_env,
     build_case_reader_payload,
+    strip_agent_legal_authority_backticks,
 )
 from open_law_lens.cache import JsonCache
 from open_law_lens.citation_links import CitedCaseLink
@@ -26,6 +27,28 @@ from open_law_lens.web_import import ExtractedWebpage
 
 
 class AppReaderPayloadTests(unittest.TestCase):
+    def test_strip_agent_legal_authority_backticks_preserves_commands(self) -> None:
+        text = (
+            "See `DKN Holdings LLC v. Faerber (2015) 61 Cal.4th 813`, "
+            "`Lucido v. Superior Court (1990) 51 Cal.3d 335`, "
+            "`Fam. Code, § 7612`, and `Cal. Rules of Court, rule 8.204`. "
+            "Run `uv run open-law-lens extract-case \"61 Cal.4th 813\"` "
+            "from `/tmp/workspace`."
+        )
+
+        cleaned = strip_agent_legal_authority_backticks(text)
+
+        self.assertIn("DKN Holdings LLC v. Faerber (2015) 61 Cal.4th 813", cleaned)
+        self.assertIn("Lucido v. Superior Court (1990) 51 Cal.3d 335", cleaned)
+        self.assertIn("Fam. Code, § 7612", cleaned)
+        self.assertIn("Cal. Rules of Court, rule 8.204", cleaned)
+        self.assertNotIn("`DKN Holdings LLC", cleaned)
+        self.assertNotIn("`Lucido", cleaned)
+        self.assertNotIn("`Fam. Code", cleaned)
+        self.assertNotIn("`Cal. Rules", cleaned)
+        self.assertIn('`uv run open-law-lens extract-case "61 Cal.4th 813"`', cleaned)
+        self.assertIn("`/tmp/workspace`", cleaned)
+
     def test_agent_launch_env_defaults_to_workspace_sandbox(self) -> None:
         class DummyCache:
             root = Path("/tmp/open-law-lens-cache")
@@ -47,7 +70,7 @@ class AppReaderPayloadTests(unittest.TestCase):
 
         self.assertEqual(env["OPEN_LAW_LENS_CODEX_SANDBOX"], "workspace-write")
         self.assertEqual(env["OPEN_LAW_LENS_CODEX_APPROVAL"], "")
-        self.assertEqual(env["OPEN_LAW_LENS_CACHE_DIR"], "/tmp/open-law-lens-cache")
+        self.assertEqual(env["OPEN_LAW_LENS_CACHE_DIR"], "/tmp/workspace/research-cache")
         self.assertEqual(
             env["OPEN_LAW_LENS_LIBRARY_DB"],
             "/tmp/open-law-lens-library/library.sqlite3",
@@ -1016,23 +1039,32 @@ class AppReaderPayloadTests(unittest.TestCase):
                 self.cache = cache
 
             def cached_clusters(self) -> list[dict[str, object]]:
-                return []
+                raise AssertionError("save should preserve visible cases, not reload cache")
 
             def cached_statutes(self) -> list[dict[str, object]]:
-                return []
+                raise AssertionError("save should preserve visible statutes, not reload cache")
 
             def cached_rules(self) -> list[dict[str, object]]:
-                return []
+                raise AssertionError("save should preserve visible rules, not reload cache")
 
         class DummyWindow:
             def __init__(self, cache: JsonCache) -> None:
                 self.client = DummyClient(cache)
-                self._agent_last_answer_text = "Final assessment text."
+                self._agent_last_answer_text = (
+                    "See `In re Caden C. (2021) 11 Cal.5th 614`, "
+                    "`Welf. & Inst. Code, section 300`, and "
+                    "`Cal. Rules of Court, rule 8.204`."
+                )
                 self._agent_mode = "appeal"
+                self._clusters = [{"id": "visible-case"}]
+                self._statutes = [{"statute_id": "VISIBLE:300"}]
+                self._rules = [{"rule_id": "VISIBLE:8.204"}]
+                self.sidebar_args: tuple[object, ...] = ()
                 self.sidebar_kwargs: dict[str, object] = {}
                 self.statuses: list[str] = []
 
             def _set_sidebar_authorities(self, *args: object, **kwargs: object) -> None:
+                self.sidebar_args = args
                 self.sidebar_kwargs = kwargs
 
             def _set_status(self, status: str) -> None:
@@ -1040,13 +1072,39 @@ class AppReaderPayloadTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = JsonCache(Path(temp_dir))
+            cache.upsert_cluster({"id": "background-case", "case_name": "Background Case"})
+            cache.upsert_statute(
+                {
+                    "statute_id": "BACKGROUND:7612",
+                    "title": "Background statute",
+                    "citation": "Fam. Code, § 7612",
+                    "text": "Background statute text.",
+                }
+            )
+            cache.upsert_rule(
+                {
+                    "rule_id": "BACKGROUND:8.204",
+                    "title": "Background rule",
+                    "citation": "Cal. Rules of Court, rule 8.204",
+                    "text": "Background rule text.",
+                }
+            )
             window = DummyWindow(cache)
 
             OpenLawLensWindow._on_save_agent_answer_clicked(window, object())  # type: ignore[arg-type]
 
             entries = cache.list_agent_answer_entries()
+            saved = cache.read_agent_answer(entries[0]["answer_id"])
 
         self.assertEqual(len(entries), 1)
+        self.assertEqual(window.sidebar_args[0], [{"id": "visible-case"}])
+        self.assertEqual(window.sidebar_args[1], [{"statute_id": "VISIBLE:300"}])
+        self.assertEqual(window.sidebar_args[2], [{"rule_id": "VISIBLE:8.204"}])
+        self.assertIsNotNone(saved)
+        assert saved is not None
+        self.assertNotIn("`In re Caden", saved["text"])
+        self.assertNotIn("`Welf.", saved["text"])
+        self.assertNotIn("`Cal. Rules", saved["text"])
         self.assertEqual(window.sidebar_kwargs["select_agent_answer_id"], entries[0]["answer_id"])
         self.assertEqual(window.statuses[-1], "Saved agent answer to Research Cache. Library preserved.")
 
@@ -1066,6 +1124,7 @@ class AppReaderPayloadTests(unittest.TestCase):
                 self._reader_page_markers = [object()]
                 self.headers: list[str] = []
                 self.reader_texts: list[str] = []
+                self.reader_markdown_flags: list[bool] = []
                 self.statuses: list[str] = []
                 self.busy = True
 
@@ -1075,8 +1134,14 @@ class AppReaderPayloadTests(unittest.TestCase):
             def _set_reader_header(self, text: str, *_args: object) -> None:
                 self.headers.append(text)
 
-            def _set_reader_text(self, text: str, *_args: object) -> bool:
+            def _set_reader_text(
+                self,
+                text: str,
+                *_args: object,
+                apply_markdown: bool = False,
+            ) -> bool:
                 self.reader_texts.append(text)
+                self.reader_markdown_flags.append(apply_markdown)
                 return False
 
             def _set_status(self, status: str) -> None:
@@ -1104,7 +1169,38 @@ class AppReaderPayloadTests(unittest.TestCase):
             window.reader_texts,
             ["See In re Caden C. (2021) 11 Cal.5th 614 and Welf. & Inst. Code, § 300."],
         )
+        self.assertEqual(window.reader_markdown_flags, [True])
         self.assertEqual(window.statuses[-1], "Loaded saved answer: Saved issue")
+
+    def test_reader_markdown_spans_apply_bold_to_saved_answer_text(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.reader_buffer = Gtk.TextBuffer()
+
+            def _render_inline_markdown(
+                self,
+                text: str,
+                base_offset: int,
+            ) -> tuple[str, list[tuple[int, int, str]], list[int]]:
+                return OpenLawLensWindow._render_inline_markdown(  # type: ignore[arg-type]
+                    self,
+                    text,
+                    base_offset,
+                )
+
+        window = DummyWindow()
+        rendered, spans, _offset_map = OpenLawLensWindow._render_markdown_text(  # type: ignore[arg-type]
+            window,
+            "- **Claim preclusion**: bars relitigation.",
+        )
+        window.reader_buffer.set_text(rendered)
+
+        OpenLawLensWindow._apply_reader_markdown_spans(window, spans)  # type: ignore[arg-type]
+
+        self.assertEqual(rendered, "- Claim preclusion: bars relitigation.")
+        iter_ = window.reader_buffer.get_iter_at_offset(rendered.index("Claim"))
+        tag_names = {tag.props.name for tag in iter_.get_tags()}
+        self.assertIn("reader-md-bold", tag_names)
 
     def test_apply_statute_lookup_opens_fetched_result_without_sidebar_relookup(self) -> None:
         class DummyClient:

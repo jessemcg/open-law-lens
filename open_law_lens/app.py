@@ -232,7 +232,7 @@ def build_agent_launch_env(
         "OPEN_LAW_LENS_AGENT_PROMPT_FILE": str(prompt_path),
         "OPEN_LAW_LENS_AGENT_WORKSPACE": str(workspace),
         "OPEN_LAW_LENS_AGENT_MODE": mode,
-        "OPEN_LAW_LENS_CACHE_DIR": str(client.cache.root),
+        "OPEN_LAW_LENS_CACHE_DIR": str(workspace / "research-cache"),
         "OPEN_LAW_LENS_CODEX_SANDBOX": sandbox_mode,
         "OPEN_LAW_LENS_CODEX_APPROVAL": approval_policy,
         "CODEX_BIN": os.environ.get("OPEN_LAW_LENS_CODEX_BIN", DEFAULT_CODEX_BIN),
@@ -247,6 +247,7 @@ def build_agent_launch_env(
 
 
 MARKDOWN_TOKEN_RE = re.compile(r"(\*\*([^*\n]+)\*\*|\*([^*\n]+)\*)")
+BACKTICK_TOKEN_RE = re.compile(r"`([^`\n]+)`")
 TERMINAL_DARK_FOREGROUND = "#f2f4f8"
 TERMINAL_DARK_BACKGROUND = "#3d3d3d"
 TERMINAL_LIGHT_FOREGROUND = "#20242c"
@@ -310,6 +311,21 @@ class LibrarySuggestionOpenResult:
     lookup_text: str
     cluster: dict[str, Any]
     cache_generation: int
+
+
+def strip_agent_legal_authority_backticks(text: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        content = match.group(1)
+        if (
+            cited_case_links(content)
+            or cited_statute_links(content)
+            or cited_rule_links(content)
+            or citation_italic_spans(content)
+        ):
+            return content
+        return match.group(0)
+
+    return BACKTICK_TOKEN_RE.sub(replace, text)
 
 
 def build_case_reader_payload(
@@ -2409,6 +2425,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self,
         text: str,
         page_markers: list[PageMarker] | None = None,
+        *,
+        apply_markdown: bool = False,
     ) -> bool:
         if page_markers:
             display = normalize_display_quote_stacks(
@@ -2418,6 +2436,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             page_markers = display.page_markers
         else:
             text = normalize_malformed_quote_stacks(text)
+        markdown_spans: list[tuple[int, int, str]] = []
+        if apply_markdown:
+            text, markdown_spans, _offset_map = self._render_markdown_text(text)
         text = smart_quote_display_text(text)
         self._set_reader_busy(False)
         self._close_reader_find(clear_entry=True)
@@ -2436,6 +2457,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                     self.reader_buffer.get_iter_at_offset(start),
                     self.reader_buffer.get_iter_at_offset(end),
                 )
+        self._apply_reader_markdown_spans(markdown_spans)
         self._apply_reader_citation_italics(text)
         self._apply_reader_citation_links(text)
         if self._pending_quote_target is not None:
@@ -3044,6 +3066,31 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         for index, link in enumerate(cited_rule_links(text), start=offset):
             self._apply_reader_rule_link(index, link)
 
+    def _apply_reader_markdown_spans(self, spans: list[tuple[int, int, str]]) -> None:
+        if not spans:
+            return
+        table = self.reader_buffer.get_tag_table()
+        if table is None:
+            return
+
+        def ensure_tag(name: str, **props: object) -> Gtk.TextTag:
+            tag = table.lookup(name)
+            if tag is None:
+                tag = self.reader_buffer.create_tag(name, **props)
+            return tag
+
+        bold_tag = ensure_tag("reader-md-bold", weight=Pango.Weight.BOLD)
+        italic_tag = ensure_tag("reader-md-italic", style=Pango.Style.ITALIC)
+        for start, end, kind in spans:
+            if end <= start:
+                continue
+            start_iter = self.reader_buffer.get_iter_at_offset(start)
+            end_iter = self.reader_buffer.get_iter_at_offset(end)
+            if kind == "bold":
+                self.reader_buffer.apply_tag(bold_tag, start_iter, end_iter)
+            elif kind == "italic":
+                self.reader_buffer.apply_tag(italic_tag, start_iter, end_iter)
+
     def _clear_reader_citation_links(self) -> None:
         table = self.reader_buffer.get_tag_table()
         if table is not None:
@@ -3454,18 +3501,19 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_agent_subview(subview_name)
 
     def _on_save_agent_answer_clicked(self, _button: Gtk.Button) -> None:
-        text = self._agent_last_answer_text.strip()
+        text = strip_agent_legal_authority_backticks(self._agent_last_answer_text).strip()
         if not text:
             self._set_status("No agent final answer to save.")
             return
+        self._agent_last_answer_text = text
         answer_id = self.client.cache.save_agent_answer(text, mode=self._agent_mode)
         if not answer_id:
             self._set_status("No agent final answer to save.")
             return
         self._set_sidebar_authorities(
-            self.client.cached_clusters(),
-            self.client.cached_statutes(),
-            self.client.cached_rules(),
+            self._clusters,
+            self._statutes,
+            self._rules,
             select_agent_answer_id=answer_id,
         )
         self._set_status("Saved agent answer to Research Cache. Library preserved.")
@@ -4869,7 +4917,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_page_markers = []
         self._set_reader_busy(False)
         self._set_reader_header(title)
-        self._set_reader_text(text)
+        self._set_reader_text(text, apply_markdown=True)
         self._set_status(f"Loaded saved answer: {title}")
 
     def _rule_lookup_worker(self, citation: str) -> None:
@@ -6191,7 +6239,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 workspace,
             )
         if self._agent_session_log_path is not None:
-            answer = extract_latest_codex_final_answer_from_jsonl(self._agent_session_log_path)
+            answer = strip_agent_legal_authority_backticks(
+                extract_latest_codex_final_answer_from_jsonl(self._agent_session_log_path)
+            )
             if answer and answer != self._agent_last_answer_text:
                 self._agent_last_answer_text = answer
                 self._render_agent_answer(answer)
@@ -6236,11 +6286,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             content_start = line_start + prefix_len
             line_text = text[content_start:line_start + len(content)]
             if re.match(r"\s*[-*]\s+", line_text):
-                bullet_start = line_text.find("-")
-                if bullet_start < 0:
-                    bullet_start = line_text.find("*")
-                if bullet_start >= 0:
-                    line_text = f"{line_text[:bullet_start]}*{line_text[bullet_start + 1:]}"
+                bullet_match = re.match(r"(\s*)\*\s+", line_text)
+                if bullet_match:
+                    line_text = f"{bullet_match.group(1)}- {line_text[bullet_match.end():]}"
             line_out, line_spans, line_map = self._render_inline_markdown(line_text, clean_offset)
             out.append(line_out)
             for idx in range(len(line_text) + 1):
@@ -6327,6 +6375,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _render_agent_answer(self, text: str) -> None:
         if self._agent_answer_buffer is None:
             return
+        text = strip_agent_legal_authority_backticks(text)
         buffer = self._agent_answer_buffer
         table = buffer.get_tag_table()
         if table is not None:

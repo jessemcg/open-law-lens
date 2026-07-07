@@ -41,6 +41,10 @@ class ConfigTests(unittest.TestCase):
                 config.later_treatment_agent_prompt_template,
                 DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
             )
+            self.assertIn(
+                "Do not wrap legal authorities or citations in backticks",
+                config.general_agent_prompt_template,
+            )
             self.assertFalse(config.general_agent_xhigh_reasoning)
             self.assertFalse(config.case_agent_xhigh_reasoning)
             self.assertFalse(config.appeal_issue_xhigh_reasoning)
@@ -126,6 +130,34 @@ class ConfigTests(unittest.TestCase):
 
             self.assertEqual(config.general_agent_prompt_template, DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE)
             self.assertNotIn("CourtListener " + "MCP server only", config.general_agent_prompt_template)
+
+    def test_prior_default_general_prompt_migrates_to_no_backtick_guidance(self) -> None:
+        previous_default = """You are the Open Law Lens General California Law Agent.
+
+Answer only legal questions about California law. Use Open Law Lens CLI commands tied directly to CourtListener APIs for legal authority and legal research.
+
+For California case-law discovery, start with `uv run open-law-lens case-search "<query>"`. Treat search results as leads only. Extract the most relevant candidate opinions with `uv run open-law-lens extract-case --cluster-id <cluster_id>` before relying on a case in the answer.
+
+Confine research to California state law unless the user's question explicitly requires federal law. Prefer published California Supreme Court and California Court of Appeal authority when available. Use `case-search --include-unpublished` only when unpublished cases are useful for context, not as controlling authority.
+
+Use Google Scholar or Codex web search only as a fallback to verify or fill in an official reporter citation or official text when CourtListener metadata is missing or suspect. State when a citation remains uncertain.
+
+Question:
+{question}"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text(
+                json.dumps({"general_agent_prompt_template": previous_default}),
+                encoding="utf-8",
+            )
+
+            config = load_config(path)
+
+            self.assertEqual(config.general_agent_prompt_template, DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE)
+            self.assertIn(
+                "Do not wrap legal authorities or citations in backticks",
+                config.general_agent_prompt_template,
+            )
 
     def test_custom_general_prompt_is_preserved(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
