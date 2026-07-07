@@ -2228,12 +2228,17 @@ class AppReaderPayloadTests(unittest.TestCase):
         header = OpenLawLensWindow._build_research_cache_header(DummyWindow())  # type: ignore[arg-type]
         header_row = header.get_first_child()
         heading = header_row.get_first_child()
+        save_button = heading.get_next_sibling()
+        research_sets_button = save_button.get_next_sibling()
         clear_button = header_row.get_last_child()
         set_label = header.get_last_child()
 
         self.assertEqual(heading.get_text(), "Research Cache")
         self.assertEqual(set_label.get_text(), "")
         self.assertFalse(set_label.get_visible())
+        self.assertIsInstance(research_sets_button, Gtk.MenuButton)
+        self.assertEqual(research_sets_button.get_tooltip_text(), "Open Research Set")
+        self.assertIsNotNone(research_sets_button.get_popover())
         self.assertEqual(clear_button.get_action_name(), "win.clear_cache")
         self.assertEqual(clear_button.get_tooltip_text(), "Clear Research Cache")
 
@@ -2246,6 +2251,104 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertNotIn("Clear Research Cache", labels)
         self.assertNotIn("Find Official Text", labels)
         self.assertNotIn("Import Official Text", labels)
+
+    def test_research_sets_dropdown_lists_saved_sets(self) -> None:
+        research_set = ResearchSet(
+            set_id=7,
+            name="Dependency appeal",
+            created_at="",
+            updated_at="",
+            last_accessed="",
+            item_count=3,
+            case_count=1,
+            statute_count=1,
+            rule_count=0,
+            agent_answer_count=1,
+            items=[],
+        )
+
+        class DummyLibrary:
+            def list_research_sets(self) -> list[ResearchSet]:
+                return [research_set]
+
+        class DummyClient:
+            def __init__(self) -> None:
+                self.library = DummyLibrary()
+
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.client = DummyClient()
+                self._research_sets_menu_button = Gtk.MenuButton()
+
+        window = DummyWindow()
+        OpenLawLensWindow._refresh_research_sets_menu(window)  # type: ignore[arg-type]
+
+        def first_descendant(widget: Gtk.Widget, widget_type: type[Gtk.Widget]) -> Gtk.Widget | None:
+            child = widget.get_first_child()
+            while child is not None:
+                if isinstance(child, widget_type):
+                    return child
+                descendant = first_descendant(child, widget_type)
+                if descendant is not None:
+                    return descendant
+                child = child.get_next_sibling()
+            return None
+
+        popover = window._research_sets_menu_button.get_popover()
+        list_box = first_descendant(popover, Gtk.ListBox)
+        self.assertIsNotNone(list_box)
+        self.assertIsNone(first_descendant(popover, Gtk.ScrolledWindow))
+        row = list_box.get_first_child()
+        row_box = row.get_child()
+        name_button = row_box.get_first_child()
+        delete_button = row_box.get_last_child()
+
+        self.assertEqual(name_button.get_label(), "Dependency appeal")
+        self.assertEqual(name_button.get_tooltip_text(), "Open Research Set")
+        self.assertIs(delete_button.get_prev_sibling(), name_button)
+        self.assertEqual(delete_button.get_tooltip_text(), "Delete Research Set")
+
+    def test_research_set_delete_from_dropdown_is_immediate(self) -> None:
+        class DummyLibrary:
+            def __init__(self) -> None:
+                self.deleted: list[int] = []
+
+            def delete_research_set(self, set_id: int) -> bool:
+                self.deleted.append(set_id)
+                return True
+
+            def list_research_sets(self) -> list[ResearchSet]:
+                return []
+
+        class DummyClient:
+            def __init__(self) -> None:
+                self.library = DummyLibrary()
+
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.client = DummyClient()
+                self._active_research_set_id = 7
+                self._active_research_set_name = "Dependency appeal"
+                self._active_research_set_dirty = False
+                self._research_set_label = None
+                self._research_sets_menu_button = None
+                self.statuses: list[str] = []
+
+            def _set_status(self, status: str) -> None:
+                self.statuses.append(status)
+
+            def _set_active_research_set(self, research_set: ResearchSet | None) -> None:
+                OpenLawLensWindow._set_active_research_set(self, research_set)  # type: ignore[arg-type]
+
+            def _refresh_research_sets_menu(self) -> None:
+                OpenLawLensWindow._refresh_research_sets_menu(self)  # type: ignore[arg-type]
+
+        window = DummyWindow()
+        OpenLawLensWindow._on_delete_research_set_clicked(window, Gtk.Button(), 7)  # type: ignore[arg-type]
+
+        self.assertEqual(window.client.library.deleted, [7])
+        self.assertIsNone(window._active_research_set_id)
+        self.assertEqual(window.statuses, ["Deleted Research Set."])
 
     def test_reader_statute_selection_pinpoint_uses_inferred_subdivision(self) -> None:
         class DummyWindow:

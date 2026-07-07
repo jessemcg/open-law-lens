@@ -1308,6 +1308,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._active_research_set_name = ""
         self._active_research_set_dirty = False
         self._research_set_label: Gtk.Label | None = None
+        self._research_sets_menu_button: Gtk.MenuButton | None = None
         self.reader_selection_pinpoint_button: Gtk.Button | None = None
         self.reader_subsequent_treatment_button: Gtk.Button | None = None
         self.reader_helper_case_button: Gtk.Button | None = None
@@ -1334,7 +1335,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._appeal_issue_menu_button: Gtk.MenuButton | None = None
         self._dbus_commands_window: DbusCommandsWindow | None = None
         self._cli_commands_window: CliCommandsWindow | None = None
-        self._research_sets_window: Gtk.Window | None = None
         self._shortcuts_window: Gtk.ShortcutsWindow | None = None
         self._case_suggestions: list[CaseSuggestion] = []
         self._case_suggestions_loaded = False
@@ -1531,6 +1531,20 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             }}
             list.case-list row:selected label {{
               color: @window_fg_color;
+            }}
+            list.research-set-menu {{
+              background-color: transparent;
+            }}
+            list.research-set-menu row {{
+              background-color: transparent;
+              border-radius: 6px;
+              margin: 0;
+            }}
+            list.research-set-menu row > box {{
+              padding: 0;
+            }}
+            list.research-set-menu row:hover {{
+              background-color: transparent;
             }}
             button.case-row-icon-button {{
               min-width: 24px;
@@ -1730,15 +1744,16 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         save_button.set_valign(Gtk.Align.CENTER)
         header.append(save_button)
 
-        open_button = Gtk.Button(icon_name="folder-open-symbolic")
+        open_button = Gtk.MenuButton(icon_name="folder-open-symbolic")
         open_button.add_css_class("flat")
         open_button.add_css_class("case-row-icon-button")
-        open_button.set_action_name("win.open_research_set")
         open_button.set_tooltip_text("Open Research Set")
         open_button.set_valign(Gtk.Align.CENTER)
+        self._research_sets_menu_button = open_button
+        OpenLawLensWindow._refresh_research_sets_menu(self)
         header.append(open_button)
 
-        clear_button = Gtk.Button(icon_name="user-trash-symbolic")
+        clear_button = Gtk.Button(icon_name="edit-clear-symbolic")
         clear_button.add_css_class("flat")
         clear_button.add_css_class("case-row-icon-button")
         clear_button.set_action_name("win.clear_cache")
@@ -1752,6 +1767,41 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         box.append(header)
         box.append(self._research_set_label)
         return box
+
+    def _refresh_research_sets_menu(self) -> None:
+        button = getattr(self, "_research_sets_menu_button", None)
+        if button is None:
+            return
+        popover = Gtk.Popover()
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        box.set_margin_top(3)
+        box.set_margin_bottom(3)
+        box.set_margin_start(3)
+        box.set_margin_end(3)
+
+        client = getattr(self, "client", None)
+        if client is None:
+            research_sets: list[ResearchSet] = []
+        else:
+            research_sets = client.library.list_research_sets()
+        if not research_sets:
+            empty = Gtk.Label(label="No saved research sets.", xalign=0)
+            empty.add_css_class("dim-label")
+            empty.set_margin_top(6)
+            empty.set_margin_bottom(6)
+            empty.set_margin_start(6)
+            empty.set_margin_end(6)
+            box.append(empty)
+        else:
+            list_box = Gtk.ListBox()
+            list_box.add_css_class("research-set-menu")
+            list_box.set_selection_mode(Gtk.SelectionMode.NONE)
+            for research_set in research_sets:
+                list_box.append(OpenLawLensWindow._build_research_set_row(self, research_set, popover))
+            box.append(list_box)
+
+        popover.set_child(box)
+        button.set_popover(popover)
 
     def _build_case_completion_results(self) -> Gtk.Widget:
         scroller = Gtk.ScrolledWindow()
@@ -4204,6 +4254,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._set_status(f"Unable to save Research Set: {exc}")
             return
         self._set_active_research_set(research_set)
+        OpenLawLensWindow._refresh_research_sets_menu(self)
         self._set_status(
             f"Saved Research Set '{research_set.name}' with {research_set.item_count} Research Cache item(s)."
         )
@@ -4213,95 +4264,72 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         _action: Gio.SimpleAction,
         _parameter: GLib.Variant | None,
     ) -> None:
-        self._show_research_sets_window()
+        self._refresh_research_sets_menu()
+        if self._research_sets_menu_button is not None:
+            self._research_sets_menu_button.popup()
 
-    def _show_research_sets_window(self) -> None:
-        if self._research_sets_window is not None:
-            self._research_sets_window.close()
-        window = Gtk.Window(title="Research Sets")
-        window.set_transient_for(self)
-        window.set_modal(False)
-        window.set_default_size(560, 360)
-        window.connect("close-request", self._on_research_sets_window_closed)
-
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        box.set_margin_top(12)
-        box.set_margin_bottom(12)
-        box.set_margin_start(12)
-        box.set_margin_end(12)
-
-        list_box = Gtk.ListBox()
-        list_box.add_css_class("case-list")
-        list_box.set_selection_mode(Gtk.SelectionMode.NONE)
-        research_sets = self.client.library.list_research_sets()
-        if not research_sets:
-            empty = Gtk.Label(label="No saved research sets.", xalign=0)
-            empty.add_css_class("dim-label")
-            box.append(empty)
-        else:
-            for research_set in research_sets:
-                list_box.append(self._build_research_set_row(research_set))
-            scroller = Gtk.ScrolledWindow()
-            scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-            scroller.set_child(list_box)
-            scroller.set_vexpand(True)
-            box.append(scroller)
-
-        window.set_child(box)
-        self._research_sets_window = window
-        window.present()
-
-    def _on_research_sets_window_closed(self, _window: Gtk.Window) -> bool:
-        self._research_sets_window = None
-        return False
-
-    def _build_research_set_row(self, research_set: ResearchSet) -> Gtk.ListBoxRow:
+    def _build_research_set_row(
+        self,
+        research_set: ResearchSet,
+        popover: Gtk.Popover | None = None,
+    ) -> Gtk.ListBoxRow:
         row = Gtk.ListBoxRow()
         row.set_selectable(False)
         row.set_activatable(False)
         row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        row_box.set_margin_top(8)
-        row_box.set_margin_bottom(8)
-        row_box.set_margin_start(8)
-        row_box.set_margin_end(8)
+        row_box.set_margin_top(2)
+        row_box.set_margin_bottom(2)
+        row_box.set_margin_start(4)
+        row_box.set_margin_end(4)
 
-        text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        text_box.set_hexpand(True)
-        title = Gtk.Label(label=research_set.name, xalign=0)
-        title.set_wrap(True)
-        title.add_css_class("heading")
-        text_box.append(title)
-        summary = Gtk.Label(
-            label=(
-                f"{research_set.item_count} Research Cache items | "
-                f"{research_set.case_count} cases, {research_set.statute_count} statutes, "
-                f"{research_set.rule_count} rules, {research_set.agent_answer_count} saved answers"
+        name_button = Gtk.Button(label=research_set.name)
+        name_button.add_css_class("flat")
+        name_button.set_halign(Gtk.Align.FILL)
+        name_button.set_hexpand(True)
+        name_button.set_tooltip_text("Open Research Set")
+        child = name_button.get_child()
+        if isinstance(child, Gtk.Label):
+            child.set_xalign(0)
+            child.set_wrap(True)
+        name_button.connect(
+            "clicked",
+            lambda button, set_id=research_set.set_id, row_popover=popover: (
+                OpenLawLensWindow._on_load_research_set_clicked(
+                    self,
+                    button,
+                    set_id,
+                    row_popover,
+                )
             ),
-            xalign=0,
         )
-        summary.add_css_class("dim-label")
-        summary.set_wrap(True)
-        text_box.append(summary)
-        row_box.append(text_box)
-
-        open_button = Gtk.Button(icon_name="folder-open-symbolic")
-        open_button.add_css_class("flat")
-        open_button.add_css_class("case-row-icon-button")
-        open_button.set_tooltip_text("Open Research Set")
-        open_button.connect("clicked", self._on_load_research_set_clicked, research_set.set_id)
-        row_box.append(open_button)
+        row_box.append(name_button)
 
         delete_button = Gtk.Button(icon_name="user-trash-symbolic")
         delete_button.add_css_class("flat")
         delete_button.add_css_class("case-row-icon-button")
         delete_button.set_tooltip_text("Delete Research Set")
-        delete_button.connect("clicked", self._on_delete_research_set_clicked, research_set.set_id)
+        delete_button.connect(
+            "clicked",
+            lambda button, set_id=research_set.set_id, row_popover=popover: (
+                OpenLawLensWindow._on_delete_research_set_clicked(
+                    self,
+                    button,
+                    set_id,
+                    row_popover,
+                )
+            ),
+        )
         row_box.append(delete_button)
 
         row.set_child(row_box)
         return row
 
-    def _on_load_research_set_clicked(self, _button: Gtk.Button, set_id: int) -> None:
+    def _on_load_research_set_clicked(
+        self,
+        _button: Gtk.Button,
+        set_id: int,
+        popover: Gtk.Popover | None = None,
+    ) -> None:
         try:
             research_set = self.client.library.load_research_set_into_cache(set_id, self.client.cache)
         except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
@@ -4316,20 +4344,29 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             select_first=True,
         )
         self._refresh_case_suggestion_index_async(force=True)
-        if self._research_sets_window is not None:
-            self._research_sets_window.close()
+        if popover is not None:
+            popover.popdown()
         self._set_status(
             f"Opened Research Set '{research_set.name}' with {research_set.item_count} Research Cache item(s)."
         )
 
-    def _on_delete_research_set_clicked(self, _button: Gtk.Button, set_id: int) -> None:
+    def _on_delete_research_set_clicked(
+        self,
+        _button: Gtk.Button,
+        set_id: int,
+        popover: Gtk.Popover | None = None,
+    ) -> None:
         if not self.client.library.delete_research_set(set_id):
             self._set_status("Research Set was not found.")
             return
         self._set_status("Deleted Research Set.")
         if self._active_research_set_id == set_id:
             self._set_active_research_set(None)
-        self._show_research_sets_window()
+        self._refresh_research_sets_menu()
+        if popover is not None:
+            popover.popdown()
+            if self._research_sets_menu_button is not None:
+                self._research_sets_menu_button.popup()
 
     def _on_open_official_search(
         self,
