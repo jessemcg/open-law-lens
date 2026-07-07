@@ -85,6 +85,7 @@ from .config import (
     AppConfig,
     BARE_STATUTE_LAW_CODE_OPTIONS,
     DEFAULT_APPEAL_ISSUE_PRESETS,
+    DEFAULT_APPEAL_ARGUMENT_AGENT_PROMPT_TEMPLATE,
     DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
     DEFAULT_CASE_AGENT_PROMPT_TEMPLATE,
     DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE,
@@ -162,6 +163,8 @@ AGENT_SUBVIEW_SESSION = "session"
 AGENT_MODE_GENERAL = "general"
 AGENT_MODE_CASE = "case"
 AGENT_MODE_APPEAL = "appeal"
+AGENT_MODE_APPEAL_ARGUMENT = "appeal_argument"
+CODEX_REASONING_EFFORT_XHIGH = "xhigh"
 AGENT_MODE_ICONS = {
     AGENT_MODE_GENERAL: "license-symbolic",
     AGENT_MODE_CASE: "file-cabinet-symbolic",
@@ -208,12 +211,17 @@ def appeal_issue_menu_label(issue: str, label: str = "", max_length: int = 72) -
     return "Untitled argument"
 
 
+def xhigh_reasoning_effort(enabled: bool) -> str:
+    return CODEX_REASONING_EFFORT_XHIGH if enabled else ""
+
+
 def build_agent_launch_env(
     client: CourtListenerClient,
     prompt_path: Path,
     workspace: Path,
     mode: str,
     config: AppConfig,
+    reasoning_effort: str = "",
 ) -> dict[str, str]:
     permission_mode = normalize_agent_permission_mode(config.agent_permission_mode)
     sandbox_mode = "workspace-write"
@@ -231,6 +239,8 @@ def build_agent_launch_env(
         "OPEN_LAW_LENS_CODEX_APPROVAL": approval_policy,
         "CODEX_BIN": os.environ.get("OPEN_LAW_LENS_CODEX_BIN", DEFAULT_CODEX_BIN),
     }
+    if reasoning_effort == CODEX_REASONING_EFFORT_XHIGH:
+        env["OPEN_LAW_LENS_CODEX_REASONING_EFFORT"] = reasoning_effort
     library = getattr(client, "library", None)
     library_path = getattr(library, "path", None)
     if library_path is not None:
@@ -725,29 +735,55 @@ class SettingsWindow(Adw.ApplicationWindow):
         )
         self._refresh_appeal_fact_pattern_entry()
 
-        general_prompt_page, self.general_agent_prompt_buffer = self._build_prompt_settings_page(
+        (
+            general_prompt_page,
+            self.general_agent_prompt_buffer,
+            self.general_agent_xhigh_switch,
+        ) = self._build_prompt_settings_page(
             "General California Law Prompt",
             "Prompt",
             config.general_agent_prompt_template,
+            config.general_agent_xhigh_reasoning,
         )
-        case_prompt_page, self.case_agent_prompt_buffer = self._build_prompt_settings_page(
+        (
+            case_prompt_page,
+            self.case_agent_prompt_buffer,
+            self.case_agent_xhigh_switch,
+        ) = self._build_prompt_settings_page(
             "Marked Research Cache Authorities Prompt",
             "Prompt",
             config.case_agent_prompt_template,
+            config.case_agent_xhigh_reasoning,
         )
-        appeal_prompt_page, self.appeal_issue_agent_prompt_buffer = (
-            self._build_prompt_settings_page(
-                "Appeal Issue Assessment Prompt",
-                "Prompt",
-                config.appeal_issue_agent_prompt_template,
-            )
+        (
+            appeal_prompt_page,
+            self.appeal_issue_agent_prompt_buffer,
+            self.appeal_issue_xhigh_switch,
+        ) = self._build_prompt_settings_page(
+            "Appeal Issue Assessment Prompt",
+            "Prompt",
+            config.appeal_issue_agent_prompt_template,
+            config.appeal_issue_xhigh_reasoning,
         )
-        later_treatment_prompt_page, self.later_treatment_agent_prompt_buffer = (
-            self._build_prompt_settings_page(
-                "Subsequent Treatment Prompt",
-                "Prompt",
-                config.later_treatment_agent_prompt_template,
-            )
+        (
+            appeal_argument_prompt_page,
+            self.appeal_argument_agent_prompt_buffer,
+            self.appeal_argument_xhigh_switch,
+        ) = self._build_prompt_settings_page(
+            "Appeal Argument Drafting Prompt",
+            "Prompt",
+            config.appeal_argument_agent_prompt_template,
+            config.appeal_argument_xhigh_reasoning,
+        )
+        (
+            later_treatment_prompt_page,
+            self.later_treatment_agent_prompt_buffer,
+            self.later_treatment_xhigh_switch,
+        ) = self._build_prompt_settings_page(
+            "Subsequent Treatment Prompt",
+            "Prompt",
+            config.later_treatment_agent_prompt_template,
+            config.later_treatment_xhigh_reasoning,
         )
 
         pages = [
@@ -755,6 +791,7 @@ class SettingsWindow(Adw.ApplicationWindow):
             ("general_prompt", "General Prompt", general_prompt_page),
             ("cache_prompt", "Research Cache Prompt", case_prompt_page),
             ("appeal_prompt", "Appeal Prompt", appeal_prompt_page),
+            ("appeal_argument_prompt", "Argument Draft Prompt", appeal_argument_prompt_page),
             ("later_treatment_prompt", "Subsequent Treatment Prompt", later_treatment_prompt_page),
         ]
         first_row: Gtk.ListBoxRow | None = None
@@ -807,7 +844,8 @@ class SettingsWindow(Adw.ApplicationWindow):
         title: str,
         label: str,
         text: str,
-    ) -> tuple[Gtk.ScrolledWindow, Gtk.TextBuffer]:
+        xhigh_active: bool,
+    ) -> tuple[Gtk.ScrolledWindow, Gtk.TextBuffer, Gtk.Switch]:
         page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         page_box.set_margin_top(12)
         page_box.set_margin_bottom(12)
@@ -826,6 +864,15 @@ class SettingsWindow(Adw.ApplicationWindow):
         prompt_box.set_margin_bottom(8)
         prompt_box.set_margin_start(8)
         prompt_box.set_margin_end(8)
+        reasoning_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        reasoning_label = Gtk.Label(label="Use xhigh reasoning", xalign=0)
+        reasoning_label.set_hexpand(True)
+        reasoning_row.append(reasoning_label)
+        reasoning_switch = Gtk.Switch()
+        reasoning_switch.set_valign(Gtk.Align.CENTER)
+        reasoning_switch.set_active(bool(xhigh_active))
+        reasoning_row.append(reasoning_switch)
+        prompt_box.append(reasoning_row)
         prompt_label = Gtk.Label(label=label, xalign=0)
         prompt_label.add_css_class("dim-label")
         prompt_box.append(prompt_label)
@@ -838,7 +885,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         scrolled.set_vexpand(True)
         scrolled.set_child(page_box)
-        return scrolled, buffer
+        return scrolled, buffer, reasoning_switch
 
     def _on_settings_page_row_selected(
         self,
@@ -1071,10 +1118,19 @@ class SettingsWindow(Adw.ApplicationWindow):
                     self._prompt_text(self.appeal_issue_agent_prompt_buffer).strip()
                     or DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
                 ),
+                appeal_argument_agent_prompt_template=(
+                    self._prompt_text(self.appeal_argument_agent_prompt_buffer).strip()
+                    or DEFAULT_APPEAL_ARGUMENT_AGENT_PROMPT_TEMPLATE
+                ),
                 later_treatment_agent_prompt_template=(
                     self._prompt_text(self.later_treatment_agent_prompt_buffer).strip()
                     or DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE
                 ),
+                general_agent_xhigh_reasoning=bool(self.general_agent_xhigh_switch.get_active()),
+                case_agent_xhigh_reasoning=bool(self.case_agent_xhigh_switch.get_active()),
+                appeal_issue_xhigh_reasoning=bool(self.appeal_issue_xhigh_switch.get_active()),
+                appeal_argument_xhigh_reasoning=bool(self.appeal_argument_xhigh_switch.get_active()),
+                later_treatment_xhigh_reasoning=bool(self.later_treatment_xhigh_switch.get_active()),
                 appeal_issue_presets=appeal_issue_presets,
                 appeal_issue_labels=appeal_issue_labels,
                 reader_font_size_pt=coerce_reader_font_size(
@@ -2265,20 +2321,43 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         box.set_margin_bottom(6)
         box.set_margin_start(6)
         box.set_margin_end(6)
-        custom_button = Gtk.Button(label="Custom argument...")
-        OpenLawLensWindow._style_appeal_issue_menu_button(custom_button)
-        custom_button.connect("clicked", self._on_custom_appeal_issue_clicked, popover)
-        box.append(custom_button)
+        draft_custom_button = Gtk.Button(label="Draft custom argument...")
+        OpenLawLensWindow._style_appeal_issue_menu_button(draft_custom_button)
+        draft_custom_button.connect(
+            "clicked",
+            self._on_custom_appeal_argument_draft_clicked,
+            popover,
+        )
+        box.append(draft_custom_button)
+        assess_custom_button = Gtk.Button(label="Assess custom argument...")
+        OpenLawLensWindow._style_appeal_issue_menu_button(assess_custom_button)
+        assess_custom_button.connect("clicked", self._on_custom_appeal_issue_clicked, popover)
+        box.append(assess_custom_button)
         separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
         box.append(separator)
         config = load_config()
         issues = config.appeal_issue_presets
         labels = normalize_appeal_issue_labels(config.appeal_issue_labels, issues)
         for index, issue in enumerate(issues):
-            issue_button = Gtk.Button(label=appeal_issue_menu_label(issue, labels[index]))
-            OpenLawLensWindow._style_appeal_issue_menu_button(issue_button)
-            issue_button.connect("clicked", self._on_appeal_issue_menu_item_clicked, index, popover)
-            box.append(issue_button)
+            label = appeal_issue_menu_label(issue, labels[index])
+            draft_button = Gtk.Button(label=f"Draft: {label}")
+            OpenLawLensWindow._style_appeal_issue_menu_button(draft_button)
+            draft_button.connect(
+                "clicked",
+                self._on_appeal_argument_draft_menu_item_clicked,
+                index,
+                popover,
+            )
+            box.append(draft_button)
+            assess_button = Gtk.Button(label=f"Assess: {label}")
+            OpenLawLensWindow._style_appeal_issue_menu_button(assess_button)
+            assess_button.connect(
+                "clicked",
+                self._on_appeal_issue_menu_item_clicked,
+                index,
+                popover,
+            )
+            box.append(assess_button)
         settings_separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
         box.append(settings_separator)
         settings_button = Gtk.Button(label="Edit appeal arguments...")
@@ -2667,7 +2746,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_agent_mode(AGENT_MODE_GENERAL)
         self._case_agent_text_sources = []
         self._agent_mode = AGENT_MODE_GENERAL
-        self._launch_agent_with_prompt(prompt_path, workspace, AGENT_MODE_GENERAL)
+        config = load_config()
+        self._launch_agent_with_prompt(
+            prompt_path,
+            workspace,
+            AGENT_MODE_GENERAL,
+            xhigh_reasoning_effort(config.later_treatment_xhigh_reasoning),
+        )
 
     def _compose_later_treatment_agent_prompt(
         self,
@@ -3604,10 +3689,19 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         popover: Gtk.Popover,
     ) -> None:
         popover.popdown()
-        self._show_custom_appeal_issue_window()
+        self._show_custom_appeal_issue_window("assess")
 
-    def _show_custom_appeal_issue_window(self) -> None:
-        window = Gtk.Window(title="Custom Argument")
+    def _on_custom_appeal_argument_draft_clicked(
+        self,
+        _button: Gtk.Button,
+        popover: Gtk.Popover,
+    ) -> None:
+        popover.popdown()
+        self._show_custom_appeal_issue_window("draft")
+
+    def _show_custom_appeal_issue_window(self, action: str) -> None:
+        is_draft = action == "draft"
+        window = Gtk.Window(title="Draft Argument" if is_draft else "Assess Argument")
         window.set_transient_for(self)
         window.set_modal(True)
         window.set_default_size(560, 300)
@@ -3634,14 +3728,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         cancel_button = Gtk.Button(label="Cancel")
         cancel_button.connect("clicked", lambda _button: window.close())
         button_row.append(cancel_button)
-        assess_button = Gtk.Button(label="Assess")
-        assess_button.connect(
+        action_button = Gtk.Button(label="Draft" if is_draft else "Assess")
+        action_button.connect(
             "clicked",
             self._on_custom_appeal_issue_assess_clicked,
             window,
             text_buffer,
+            action,
         )
-        button_row.append(assess_button)
+        button_row.append(action_button)
         box.append(button_row)
 
         window.set_child(box)
@@ -3653,11 +3748,16 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         _button: Gtk.Button,
         window: Gtk.Window,
         text_buffer: Gtk.TextBuffer,
+        action: str,
     ) -> None:
         start = text_buffer.get_start_iter()
         end = text_buffer.get_end_iter()
         issue = text_buffer.get_text(start, end, True).strip()
-        if self._start_custom_appeal_issue_assessment(issue):
+        if action == "draft":
+            started = self._start_custom_appeal_argument_draft(issue)
+        else:
+            started = self._start_custom_appeal_issue_assessment(issue)
+        if started:
             window.close()
 
     def _on_appeal_issue_menu_item_clicked(
@@ -3668,6 +3768,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     ) -> None:
         popover.popdown()
         self._start_appeal_issue_assessment_by_index(index)
+
+    def _on_appeal_argument_draft_menu_item_clicked(
+        self,
+        _button: Gtk.Button,
+        index: int,
+        popover: Gtk.Popover,
+    ) -> None:
+        popover.popdown()
+        self._start_appeal_argument_draft_by_index(index)
 
     def _appeal_fact_pattern_path(self) -> Path | None:
         if self._appeal_fact_pattern_path_override is not None:
@@ -3691,6 +3800,19 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return
         self.start_appeal_issue_assessment(issues[index], fact_pattern_path)
 
+    def _start_appeal_argument_draft_by_index(self, index: int) -> None:
+        issues = load_config().appeal_issue_presets
+        if not (0 <= index < len(issues)):
+            self._set_status("Choose an argument to draft.")
+            return
+        fact_pattern_path = self._appeal_fact_pattern_path()
+        if fact_pattern_path is None:
+            return
+        if not fact_pattern_path.is_file():
+            self._set_status(f"Fact pattern file not found: {fact_pattern_path}")
+            return
+        self.start_appeal_argument_draft(issues[index], fact_pattern_path)
+
     def _start_custom_appeal_issue_assessment(self, issue: str) -> bool:
         issue = issue.strip()
         if not issue:
@@ -3703,6 +3825,19 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._set_status(f"Fact pattern file not found: {fact_pattern_path}")
             return False
         return self.start_appeal_issue_assessment(issue, fact_pattern_path)
+
+    def _start_custom_appeal_argument_draft(self, argument: str) -> bool:
+        argument = argument.strip()
+        if not argument:
+            self._set_status("Enter an argument to draft.")
+            return False
+        fact_pattern_path = self._appeal_fact_pattern_path()
+        if fact_pattern_path is None:
+            return False
+        if not fact_pattern_path.is_file():
+            self._set_status(f"Fact pattern file not found: {fact_pattern_path}")
+            return False
+        return self.start_appeal_argument_draft(argument, fact_pattern_path)
 
     def _on_clear_cache(self, _action: Gio.SimpleAction, _parameter: GLib.Variant | None) -> None:
         try:
@@ -5506,6 +5641,25 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             },
         )
 
+    def _compose_appeal_argument_agent_prompt(
+        self,
+        argument: str,
+        export: FactPatternExport,
+    ) -> str:
+        config = load_config()
+        return self._format_agent_prompt(
+            config.appeal_argument_agent_prompt_template,
+            DEFAULT_APPEAL_ARGUMENT_AGENT_PROMPT_TEMPLATE,
+            {
+                "argument": argument,
+                "issue": argument,
+                "fact_pattern_path": str(export.text_path),
+                "fact_pattern_source_path": str(export.source_copy_path),
+                "fact_pattern_original_path": str(export.source_path),
+                "fact_pattern_source_name": export.source_path.name,
+            },
+        )
+
     def _write_prompt_file(self, prompt: str) -> Path:
         handle = tempfile.NamedTemporaryFile(
             "w",
@@ -5597,7 +5751,62 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _finish_appeal_issue_prepare(self, prompt_path: Path, workspace: Path) -> bool:
         self._case_agent_text_sources = []
         self._agent_mode = AGENT_MODE_APPEAL
-        self._launch_agent_with_prompt(prompt_path, workspace, AGENT_MODE_APPEAL)
+        config = load_config()
+        self._launch_agent_with_prompt(
+            prompt_path,
+            workspace,
+            AGENT_MODE_APPEAL,
+            xhigh_reasoning_effort(config.appeal_issue_xhigh_reasoning),
+        )
+        return False
+
+    def start_appeal_argument_draft(self, argument: str, fact_pattern_path: Path) -> bool:
+        argument = argument.strip()
+        if not argument:
+            self._set_status("Enter an argument to draft.")
+            return False
+        if Vte is None or self._agent_terminal is None:
+            self._set_status("Embedded terminal is unavailable.")
+            return False
+        try:
+            workspace = self._create_agent_workspace()
+        except OSError as exc:
+            self._set_status(f"Unable to create agent workspace: {exc}")
+            return False
+        self._set_status("Preparing appeal argument draft...")
+        thread = threading.Thread(
+            target=self._prepare_appeal_argument_worker,
+            args=(argument, fact_pattern_path, workspace),
+            daemon=True,
+        )
+        thread.start()
+        return True
+
+    def _prepare_appeal_argument_worker(
+        self,
+        argument: str,
+        fact_pattern_path: Path,
+        workspace: Path,
+    ) -> None:
+        try:
+            export = export_fact_pattern(fact_pattern_path, workspace / "fact_pattern")
+            prompt_path = self._write_prompt_file(
+                self._compose_appeal_argument_agent_prompt(argument, export)
+            )
+            GLib.idle_add(self._finish_appeal_argument_prepare, prompt_path, workspace)
+        except (FactPatternError, OSError, ValueError) as exc:
+            GLib.idle_add(self._set_status, f"Unable to prepare fact pattern: {exc}")
+
+    def _finish_appeal_argument_prepare(self, prompt_path: Path, workspace: Path) -> bool:
+        self._case_agent_text_sources = []
+        self._agent_mode = AGENT_MODE_APPEAL_ARGUMENT
+        config = load_config()
+        self._launch_agent_with_prompt(
+            prompt_path,
+            workspace,
+            AGENT_MODE_APPEAL_ARGUMENT,
+            xhigh_reasoning_effort(config.appeal_argument_xhigh_reasoning),
+        )
         return False
 
     def _on_agent_launch(self, _widget: Gtk.Widget) -> None:
@@ -5632,7 +5841,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         except OSError as exc:
             self._set_status(f"Unable to create agent workspace: {exc}")
             return
-        self._launch_agent_with_prompt(prompt_path, workspace, AGENT_MODE_GENERAL)
+        config = load_config()
+        self._launch_agent_with_prompt(
+            prompt_path,
+            workspace,
+            AGENT_MODE_GENERAL,
+            xhigh_reasoning_effort(config.general_agent_xhigh_reasoning),
+        )
 
     def submit_speech_question(self, mode: str) -> None:
         try:
@@ -5698,10 +5913,22 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     ) -> bool:
         self._case_agent_text_sources = text_sources
         self._agent_mode = AGENT_MODE_CASE
-        self._launch_agent_with_prompt(prompt_path, workspace, AGENT_MODE_CASE)
+        config = load_config()
+        self._launch_agent_with_prompt(
+            prompt_path,
+            workspace,
+            AGENT_MODE_CASE,
+            xhigh_reasoning_effort(config.case_agent_xhigh_reasoning),
+        )
         return False
 
-    def _launch_agent_with_prompt(self, prompt_path: Path, workspace: Path, mode: str) -> None:
+    def _launch_agent_with_prompt(
+        self,
+        prompt_path: Path,
+        workspace: Path,
+        mode: str,
+        reasoning_effort: str = "",
+    ) -> None:
         self._stop_agent()
         self._stop_agent_answer_polling()
         self._clear_agent_answer()
@@ -5711,7 +5938,16 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return
         config = load_config()
         env = os.environ.copy()
-        env.update(build_agent_launch_env(self.client, prompt_path, workspace, mode, config))
+        env.update(
+            build_agent_launch_env(
+                self.client,
+                prompt_path,
+                workspace,
+                mode,
+                config,
+                reasoning_effort,
+            )
+        )
         profile = os.environ.get("OPEN_LAW_LENS_CODEX_PROFILE", "").strip()
         if profile:
             env["CODEX_PROFILE"] = profile
@@ -5985,7 +6221,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 target = resolve_quote_target(phrase, self._case_agent_text_sources)
                 if target is not None:
                     self._agent_link_lookup[tag] = target
-        if self._agent_mode in {AGENT_MODE_GENERAL, AGENT_MODE_APPEAL}:
+        if self._agent_mode in {AGENT_MODE_GENERAL, AGENT_MODE_APPEAL, AGENT_MODE_APPEAL_ARGUMENT}:
             self._apply_agent_citation_links(buffer, rendered)
             self._apply_agent_statute_links(buffer, rendered)
             self._apply_agent_rule_links(buffer, rendered)

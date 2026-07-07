@@ -177,29 +177,34 @@ There are three main agent workflows:
   PDF fact pattern. The app extracts the fact pattern into a temporary
   workspace, launches Codex in Appeal mode, and directs it to research
   California law through Open Law Lens CLI commands.
+- Appeal Argument Drafting: draft appellate argument prose from the same
+  configured argument presets or a custom argument, using the same fact-pattern
+  export and Open Law Lens CLI research workflow.
 
 Agent runtime settings, including prompt templates, appeal issue presets, the
-fact-pattern source, and Codex permission mode, are available in the app
-Settings window.
+fact-pattern source, prompt-level xhigh reasoning toggles, and Codex permission
+mode, are available in the app Settings window.
 
 ## Appeal Issue Assessment
 
-The Appeal Issue Assessment workflow is for quickly testing possible appellate
-claims against a fact pattern. It is available from the claim-assessment button
-next to the agent question bar. The menu includes configured issue presets,
-`Custom claim...`, and a shortcut to edit the appeal issue settings.
+The Appeal Issue Assessment and Argument Drafting workflows are for quickly
+testing or drafting possible appellate claims against a fact pattern. They are
+available from the appeal-argument button next to the agent question bar. The
+menu includes draft and assess actions for configured argument presets, custom
+drafting and assessment actions, and a shortcut to edit the appeal argument
+settings.
 
 By default, Open Law Lens tries to use the SOCF ODT for the currently selected
 case. The Settings window can point the workflow at a different fact-pattern
 ODT or PDF. ODT files are read directly; PDF extraction uses the system
 `pdftotext` command.
 
-When an assessment starts, the app copies the source fact pattern into a
-temporary agent workspace, writes an extracted text file, and launches Codex in
-the embedded terminal. The default prompt asks Codex to analyze preservation,
-standard of review, factual support, governing law, prejudice, likely
-respondent arguments, and missing record facts. It also requires a final rating
-line:
+When an assessment or draft starts, the app copies the source fact pattern into
+a temporary agent workspace, writes an extracted text file, and launches Codex
+in the embedded terminal. The default assessment prompt asks Codex to analyze
+preservation, standard of review, factual support, governing law, prejudice,
+likely respondent arguments, and missing record facts. It also requires a final
+rating line:
 
 ```text
 Rating: Strong, Medium, Weak, or Frivolous
@@ -208,6 +213,10 @@ Rating: Strong, Medium, Weak, or Frivolous
 The workflow is intentionally research-oriented. Codex is directed to use
 Open Law Lens CLI commands such as `case-search`, `extract-case`,
 `extract-statute`, and `extract-rule` before relying on authority.
+
+Each editable agent prompt has a `Use xhigh reasoning` switch in Settings. When
+enabled for that prompt, the embedded Codex launch adds
+`model_reasoning_effort="xhigh"` for that run only.
 
 ## Library and Cache
 

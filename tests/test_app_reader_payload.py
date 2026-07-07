@@ -52,6 +52,7 @@ class AppReaderPayloadTests(unittest.TestCase):
             env["OPEN_LAW_LENS_LIBRARY_DB"],
             "/tmp/open-law-lens-library/library.sqlite3",
         )
+        self.assertNotIn("OPEN_LAW_LENS_CODEX_REASONING_EFFORT", env)
 
     def test_agent_launch_env_full_access_disables_approval_prompts(self) -> None:
         class DummyCache:
@@ -73,6 +74,25 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(env["OPEN_LAW_LENS_CODEX_SANDBOX"], "danger-full-access")
         self.assertEqual(env["OPEN_LAW_LENS_CODEX_APPROVAL"], "never")
         self.assertNotIn("OPEN_LAW_LENS_LIBRARY_DB", env)
+
+    def test_agent_launch_env_passes_xhigh_reasoning_when_enabled(self) -> None:
+        class DummyCache:
+            root = Path("/tmp/open-law-lens-cache")
+
+        class DummyClient:
+            cache = DummyCache()
+            library = None
+
+        env = build_agent_launch_env(
+            DummyClient(),  # type: ignore[arg-type]
+            Path("/tmp/prompt.txt"),
+            Path("/tmp/workspace"),
+            "appeal_argument",
+            AppConfig(),
+            "xhigh",
+        )
+
+        self.assertEqual(env["OPEN_LAW_LENS_CODEX_REASONING_EFFORT"], "xhigh")
 
     def test_appeal_issue_prompt_includes_argument_fact_pattern_and_cli_guidance(self) -> None:
         class DummyWindow:
@@ -113,6 +133,43 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertIn("(RT 6, 34; CT 140, 190.)", prompt)
         self.assertIn("Rating: Strong, Medium, Weak, or Frivolous", prompt)
         self.assertNotIn("Use Frivolous only when", prompt)
+
+    def test_appeal_argument_prompt_drafts_without_rating(self) -> None:
+        class DummyWindow:
+            def _format_agent_prompt(
+                self,
+                template: str,
+                fallback: str,
+                values: dict[str, object],
+            ) -> str:
+                return OpenLawLensWindow._format_agent_prompt(  # type: ignore[arg-type]
+                    self,
+                    template,
+                    fallback,
+                    values,
+                )
+
+        window = DummyWindow()
+        export = FactPatternExport(
+            source_path=Path("/case/facts.odt"),
+            source_copy_path=Path("/tmp/workspace/fact_pattern/facts.odt"),
+            text_path=Path("/tmp/workspace/fact_pattern/facts_extracted.txt"),
+            text="Fact text.",
+        )
+
+        prompt = OpenLawLensWindow._compose_appeal_argument_agent_prompt(  # type: ignore[arg-type]
+            window,
+            "The court applied the wrong standard.",
+            export,
+        )
+
+        self.assertIn("The court applied the wrong standard.", prompt)
+        self.assertIn("Argument to draft:", prompt)
+        self.assertIn("/tmp/workspace/fact_pattern/facts_extracted.txt", prompt)
+        self.assertIn("uv run open-law-lens case-search", prompt)
+        self.assertIn("Record citation format for final answers:", prompt)
+        self.assertIn("Do not rate the argument's strength.", prompt)
+        self.assertNotIn("Rating: Strong, Medium, Weak, or Frivolous", prompt)
 
     def test_appeal_issue_start_requires_embedded_terminal(self) -> None:
         class DummyWindow:
@@ -198,15 +255,16 @@ class AppReaderPayloadTests(unittest.TestCase):
             def __init__(self) -> None:
                 self._case_agent_text_sources = ["old"]
                 self._agent_mode = "general"
-                self.launches: list[tuple[Path, Path, str]] = []
+                self.launches: list[tuple[Path, Path, str, str]] = []
 
             def _launch_agent_with_prompt(
                 self,
                 prompt_path: Path,
                 workspace: Path,
                 mode: str,
+                reasoning_effort: str = "",
             ) -> None:
-                self.launches.append((prompt_path, workspace, mode))
+                self.launches.append((prompt_path, workspace, mode, reasoning_effort))
 
         window = DummyWindow()
 
@@ -221,7 +279,7 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(window._agent_mode, "appeal")
         self.assertEqual(
             window.launches,
-            [(Path("/tmp/prompt.txt"), Path("/tmp/workspace"), "appeal")],
+            [(Path("/tmp/prompt.txt"), Path("/tmp/workspace"), "appeal", "")],
         )
 
     def test_appeal_issue_menu_label_uses_label_then_first_nonblank_line_and_truncates(self) -> None:
@@ -266,7 +324,13 @@ class AppReaderPayloadTests(unittest.TestCase):
             def _on_custom_appeal_issue_clicked(self, *_args: object) -> None:
                 pass
 
+            def _on_custom_appeal_argument_draft_clicked(self, *_args: object) -> None:
+                pass
+
             def _on_appeal_issue_menu_item_clicked(self, *_args: object) -> None:
+                pass
+
+            def _on_appeal_argument_draft_menu_item_clicked(self, *_args: object) -> None:
                 pass
 
             def _on_appeal_issue_settings_clicked(self, *_args: object) -> None:
@@ -313,9 +377,15 @@ class AppReaderPayloadTests(unittest.TestCase):
         assert popover is not None
         self.assertEqual(
             labels(popover),
-            ["Custom argument...", "Short one", "Edit appeal arguments..."],
+            [
+                "Draft custom argument...",
+                "Assess custom argument...",
+                "Draft: Short one",
+                "Assess: Short one",
+                "Edit appeal arguments...",
+            ],
         )
-        self.assertEqual(button_label_xaligns(popover), [0.0, 0.0, 0.0])
+        self.assertEqual(button_label_xaligns(popover), [0.0, 0.0, 0.0, 0.0, 0.0])
 
     def test_appeal_issue_by_index_uses_current_fact_pattern(self) -> None:
         class DummyWindow:
@@ -341,6 +411,36 @@ class AppReaderPayloadTests(unittest.TestCase):
             patch.object(Path, "is_file", return_value=True),
         ):
             OpenLawLensWindow._start_appeal_issue_assessment_by_index(  # type: ignore[arg-type]
+                window,
+                0,
+            )
+
+        self.assertEqual(window.launches, [("Issue one", Path("/tmp/facts.odt"))])
+
+    def test_appeal_argument_draft_by_index_uses_current_fact_pattern(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self._appeal_fact_pattern_path_override = Path("/tmp/facts.odt")
+                self.statuses: list[str] = []
+                self.launches: list[tuple[str, Path]] = []
+
+            def _set_status(self, status: str) -> None:
+                self.statuses.append(status)
+
+            def _appeal_fact_pattern_path(self) -> Path | None:
+                return OpenLawLensWindow._appeal_fact_pattern_path(self)  # type: ignore[arg-type]
+
+            def start_appeal_argument_draft(self, argument: str, fact_pattern_path: Path) -> bool:
+                self.launches.append((argument, fact_pattern_path))
+                return True
+
+        window = DummyWindow()
+
+        with (
+            patch("open_law_lens.app.load_config", return_value=AppConfig(appeal_issue_presets=["Issue one"])),
+            patch.object(Path, "is_file", return_value=True),
+        ):
+            OpenLawLensWindow._start_appeal_argument_draft_by_index(  # type: ignore[arg-type]
                 window,
                 0,
             )
@@ -391,6 +491,29 @@ class AppReaderPayloadTests(unittest.TestCase):
 
         with patch.object(Path, "is_file", return_value=True):
             result = OpenLawLensWindow._start_custom_appeal_issue_assessment(  # type: ignore[arg-type]
+                window,
+                "  Strange one-off claim.  ",
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(window.launches, [("Strange one-off claim.", Path("/tmp/facts.odt"))])
+
+    def test_custom_appeal_argument_draft_uses_current_fact_pattern(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.launches: list[tuple[str, Path]] = []
+
+            def _appeal_fact_pattern_path(self) -> Path | None:
+                return Path("/tmp/facts.odt")
+
+            def start_appeal_argument_draft(self, argument: str, fact_pattern_path: Path) -> bool:
+                self.launches.append((argument, fact_pattern_path))
+                return True
+
+        window = DummyWindow()
+
+        with patch.object(Path, "is_file", return_value=True):
+            result = OpenLawLensWindow._start_custom_appeal_argument_draft(  # type: ignore[arg-type]
                 window,
                 "  Strange one-off claim.  ",
             )
@@ -1613,8 +1736,9 @@ class AppReaderPayloadTests(unittest.TestCase):
                 prompt_path: Path,
                 workspace: Path,
                 mode: str,
+                reasoning_effort: str = "",
             ) -> None:
-                self.launches.append((prompt_path, workspace, mode))
+                self.launches.append((prompt_path, workspace, mode, reasoning_effort))
 
         window = DummyWindow()
 
@@ -1628,7 +1752,7 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(window._agent_mode, "general")
         self.assertEqual(
             window.launches,
-            [(Path("/tmp/helper-prompt.txt"), Path("/tmp/helper-workspace"), "general")],
+            [(Path("/tmp/helper-prompt.txt"), Path("/tmp/helper-workspace"), "general", "")],
         )
 
     def test_later_treatment_click_launches_general_agent_prompt(self) -> None:
@@ -1678,8 +1802,9 @@ class AppReaderPayloadTests(unittest.TestCase):
                 prompt_path: Path,
                 workspace: Path,
                 mode: str,
+                reasoning_effort: str = "",
             ) -> None:
-                self.launches.append((prompt_path, workspace, mode))
+                self.launches.append((prompt_path, workspace, mode, reasoning_effort))
 
         window = DummyWindow()
 
@@ -1696,7 +1821,7 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(window._agent_mode, "general")
         self.assertEqual(
             window.launches,
-            [(Path("/tmp/later-prompt.txt"), Path("/tmp/later-workspace"), "general")],
+            [(Path("/tmp/later-prompt.txt"), Path("/tmp/later-workspace"), "general", "")],
         )
 
     def test_case_clipboard_text_strips_reader_page_markers(self) -> None:

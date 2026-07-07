@@ -10,6 +10,7 @@ codex_bin="${CODEX_BIN:-codex}"
 codex_profile="${CODEX_PROFILE:-}"
 codex_sandbox="${OPEN_LAW_LENS_CODEX_SANDBOX:-workspace-write}"
 codex_approval="${OPEN_LAW_LENS_CODEX_APPROVAL:-}"
+codex_reasoning="${OPEN_LAW_LENS_CODEX_REASONING_EFFORT:-}"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 workspace_parent="${XDG_CACHE_HOME:-${HOME:-}/.cache}/open-law-lens/agent-workspaces"
 
@@ -45,9 +46,19 @@ case "$codex_approval" in
   *) codex_approval="" ;;
 esac
 
+case "$codex_reasoning" in
+  ""|xhigh) ;;
+  *) codex_reasoning="" ;;
+esac
+
 approval_args=()
 if [[ -n "$codex_approval" ]]; then
   approval_args=(--ask-for-approval "$codex_approval")
+fi
+
+reasoning_args=()
+if [[ "$codex_reasoning" == "xhigh" ]]; then
+  reasoning_args=(-c 'model_reasoning_effort="xhigh"')
 fi
 
 cd "$workspace"
@@ -65,6 +76,7 @@ python3 "$script_dir/open-law-lens-codex-agent-pty.py" \
   "${profile_args[@]}" \
   -c 'mcp_servers.openaiDeveloperDocs.enabled=false' \
   -c 'mcp_servers.context7.enabled=false' \
+  "${reasoning_args[@]}" \
   -C "$workspace" \
   --sandbox "$codex_sandbox" \
   "${approval_args[@]}"
