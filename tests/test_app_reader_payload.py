@@ -128,6 +128,11 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertNotIn("Issue to assess:", prompt)
         self.assertIn("/tmp/workspace/fact_pattern/facts_extracted.txt", prompt)
         self.assertIn("uv run open-law-lens case-search", prompt)
+        self.assertIn(
+            'extract-case "<official citation or case name>"` first',
+            prompt,
+        )
+        self.assertIn("extract-case --cluster-id <cluster_id>` only", prompt)
         self.assertIn("Record citation format for final answers:", prompt)
         self.assertIn("Do not cite local paths", prompt)
         self.assertIn("(RT 6, 34; CT 140, 190.)", prompt)

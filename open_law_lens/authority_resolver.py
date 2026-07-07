@@ -246,11 +246,12 @@ def extract_case_by_cluster_id(
         kind="clusters",
         refresh=refresh,
     )
+    source = client.last_resource_source or "CourtListener API"
     title = str(cluster.get("case_name_short") or cluster.get("case_name") or clean_cluster_id)
     return _extract_case_from_cluster(
         cluster,
         resolved=clean_cluster_id,
-        source=client.last_lookup_source or "CourtListener API",
+        source=source,
         refresh=refresh,
         client=client,
         original_input=title,
@@ -269,6 +270,10 @@ def _extract_case_from_cluster(
     warnings: list[str],
 ) -> AuthorityResult:
     opinions = client.reader_opinions(client.fetch_cluster_opinions(cluster, refresh=refresh))
+    if client.last_opinion_source == "Fetched":
+        source = "CourtListener API"
+    elif client.last_opinion_source:
+        source = client.last_opinion_source
     displays = [client.opinion_display(opinion) for opinion in opinions]
     text = "\n\n".join(display.text for display in displays if display.text).strip()
     quality = official_pagination_quality(cluster, displays)

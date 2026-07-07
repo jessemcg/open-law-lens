@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 from open_law_lens.authority_resolver import (
     detect_authority_candidates,
     extract_case,
+    extract_case_by_cluster_id,
     first_authority_candidate,
 )
 
@@ -57,6 +58,45 @@ class AuthorityResolverTests(unittest.TestCase):
             extract_case("In re Example", client=client)
 
         client.lookup_citation.assert_called_once_with("In re Example", refresh=False)
+
+    def test_extract_case_by_cluster_id_reports_library_source(self) -> None:
+        class DummyClient:
+            def __init__(self) -> None:
+                self.last_resource_source = ""
+                self.last_opinion_source = ""
+                self.fetch_urls: list[str] = []
+
+            def fetch_url(self, url: str, *, kind: str, refresh: bool = False) -> dict[str, object]:
+                self.fetch_urls.append(url)
+                self.last_resource_source = "Library"
+                return {
+                    "id": 42,
+                    "case_name": "In re Example",
+                    "case_name_short": "In re Example",
+                    "citations": [{"volume": "1", "reporter": "Cal.App.5th", "page": "2"}],
+                    "sub_opinions": ["/api/rest/v4/opinions/10/"],
+                }
+
+            def fetch_cluster_opinions(self, cluster, *, refresh=False):  # type: ignore[no-untyped-def]
+                self.last_opinion_source = "Library"
+                return [{"id": 10, "plain_text": "[*2]Opinion text."}]
+
+            def reader_opinions(self, opinions):  # type: ignore[no-untyped-def]
+                return opinions
+
+            def opinion_display(self, opinion):  # type: ignore[no-untyped-def]
+                display = MagicMock()
+                display.text = opinion["plain_text"]
+                display.page_markers = []
+                return display
+
+        client = DummyClient()
+
+        result = extract_case_by_cluster_id("42", client=client)  # type: ignore[arg-type]
+
+        self.assertEqual(client.fetch_urls, ["/api/rest/v4/clusters/42/"])
+        self.assertEqual(result.source, "Library")
+        self.assertEqual(result.title, "In re Example")
 
 
 if __name__ == "__main__":

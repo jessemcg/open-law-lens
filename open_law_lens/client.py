@@ -492,6 +492,7 @@ class CourtListenerClient:
     timeout: float = 30.0
     last_lookup_source: str = ""
     last_opinion_source: str = ""
+    last_resource_source: str = ""
 
     def __post_init__(self) -> None:
         if self.library is None:
@@ -885,23 +886,28 @@ class CourtListenerClient:
     def fetch_url(self, url: str, *, kind: str, refresh: bool = False) -> dict[str, Any]:
         full_url = url if url.startswith("http") else f"{BASE_URL}{url}"
         resource_id = resource_id_from_url(full_url)
+        self.last_resource_source = ""
         if not refresh:
             if kind == "opinions":
                 library_opinion = self.library.read_opinion(resource_id)
                 if isinstance(library_opinion, dict):
+                    self.last_resource_source = "Library"
                     return library_opinion
             if kind == "clusters":
                 library_cluster = self.library.read_cluster(resource_id)
                 if isinstance(library_cluster, dict):
+                    self.last_resource_source = "Library"
                     return library_cluster
             cached = self.cache.read_resource(kind, resource_id)
             if isinstance(cached, dict):
+                self.last_resource_source = "Research Cache"
                 return cached
         request = Request(full_url, headers=self._headers(), method="GET")
         result = self._request_json(request)
         if not isinstance(result, dict):
             raise CourtListenerError(f"CourtListener {kind} endpoint returned unexpected JSON.")
         self.cache.write_resource(kind, resource_id, result)
+        self.last_resource_source = "CourtListener API"
         return result
 
     def fetch_cluster_opinions(
@@ -933,10 +939,12 @@ class CourtListenerClient:
             return []
         opinions: list[dict[str, Any]] = []
         opinion_ids: list[str] = []
+        opinion_sources: list[str] = []
         for url in urls:
             if isinstance(url, str) and url:
                 opinion = self.fetch_url(url, kind="opinions", refresh=refresh)
                 opinions.append(opinion)
+                opinion_sources.append(self.last_resource_source)
                 opinion_id = str(opinion.get("id") or resource_id_from_url(url)).strip()
                 if opinion_id:
                     opinion_ids.append(opinion_id)
@@ -944,7 +952,10 @@ class CourtListenerClient:
             self.cache.update_case_opinions(cluster, opinion_ids)
         if persist_to_library:
             self.save_case_if_official_paginated(cluster, opinions)
-        self.last_opinion_source = "Fetched"
+        if opinion_sources and all(source == "Research Cache" for source in opinion_sources):
+            self.last_opinion_source = "Research Cache"
+        else:
+            self.last_opinion_source = "Fetched"
         return opinions
 
     def first_opinion_text(self, cluster: dict[str, Any], *, refresh: bool = False) -> str:

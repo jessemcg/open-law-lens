@@ -185,6 +185,7 @@ class ConfigTests(unittest.TestCase):
             )
             self.assertIn("Record citation format", config.appeal_issue_agent_prompt_template)
             self.assertIn("Argument to assess", config.appeal_issue_agent_prompt_template)
+            self.assertIn("official citation or case name", config.appeal_issue_agent_prompt_template)
             self.assertIn("normal legal prose", config.appeal_issue_agent_prompt_template)
             self.assertNotIn("Issue to assess", config.appeal_issue_agent_prompt_template)
 
