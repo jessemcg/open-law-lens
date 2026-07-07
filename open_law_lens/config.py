@@ -15,13 +15,11 @@ CONFIG_KEY_CONCORDANCE_FILE_PATH = "concordance_file_path"
 CONFIG_KEY_GENERAL_AGENT_PROMPT_TEMPLATE = "general_agent_prompt_template"
 CONFIG_KEY_CASE_AGENT_PROMPT_TEMPLATE = "case_agent_prompt_template"
 CONFIG_KEY_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE = "appeal_issue_agent_prompt_template"
-CONFIG_KEY_APPEAL_ARGUMENT_AGENT_PROMPT_TEMPLATE = "appeal_argument_agent_prompt_template"
 CONFIG_KEY_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE = "subsequent_treatment_agent_prompt_template"
 CONFIG_KEY_LEGACY_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE = "later_treatment_agent_prompt_template"
 CONFIG_KEY_GENERAL_AGENT_XHIGH_REASONING = "general_agent_xhigh_reasoning"
 CONFIG_KEY_CASE_AGENT_XHIGH_REASONING = "case_agent_xhigh_reasoning"
 CONFIG_KEY_APPEAL_ISSUE_XHIGH_REASONING = "appeal_issue_xhigh_reasoning"
-CONFIG_KEY_APPEAL_ARGUMENT_XHIGH_REASONING = "appeal_argument_xhigh_reasoning"
 CONFIG_KEY_LATER_TREATMENT_XHIGH_REASONING = "later_treatment_xhigh_reasoning"
 CONFIG_KEY_APPEAL_ISSUE_PRESETS = "appeal_issue_presets"
 CONFIG_KEY_APPEAL_ISSUE_LABELS = "appeal_issue_labels"
@@ -67,6 +65,7 @@ LEGACY_APPEAL_ISSUE_AGENT_PROMPT_SHA256ES = (
     "b57fb338bb6148eaa4937be89de687884b1f42f2ef2d966d9d4a21cb3816d338",
     "89f0c0d29553434588a1060de8d979d91c9a15ca27b214ee16ff3498209b6089",
     "825b58f274b81af60c7fdd0fb2a55e9a6ad43c8bbd31f6d51f0c632d2c7a5599",
+    "cc5c2ba125d0ee0ff42d65db1b58f0d9e7fc281ad1a12d3693f82caca551af24",
 )
 
 DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens General California Law Agent.
@@ -140,36 +139,10 @@ Confine research to California state law unless the argument explicitly requires
 
 Analyze preservation, standard of review, factual support, governing law, prejudice, likely respondent arguments, and missing record facts that could change the assessment.
 
+In the final answer, use normal legal prose for case names, statutes, rules, and citations. Reserve backticks for CLI commands, file paths, and other literal technical text.
+
 End with a rating line exactly in this form:
 Rating: Strong, Medium, Weak, or Frivolous"""
-
-DEFAULT_APPEAL_ARGUMENT_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens Appeal Argument Drafting Agent.
-
-Draft a California appellate argument from the user's proposed argument and fact pattern. Use Open Law Lens CLI commands tied directly to CourtListener APIs for legal authority and legal research.
-
-Read the extracted fact-pattern text first:
-{fact_pattern_path}
-
-Original fact-pattern file:
-{fact_pattern_source_path}
-
-Record citation format for final answers:
-- Cite factual claims using record citations from the fact-pattern text, the way an appellate lawyer would, such as `(CT 335-343.)`, `(RT 6, 34; CT 140, 190.)`, or `(RT 22-34; CRT 17-22; CT 295-301.)`.
-- Do not cite local paths, extracted-text filenames, raw file pages, or line numbers in the final answer. Use those only as internal search leads.
-- Put record citations in the same sentence or paragraph as the factual claim they support.
-- Combine multiple record citations into one parenthetical only when they support the same point.
-- If the fact-pattern text does not include a usable record citation for an important fact, say that the citation is missing or uncertain instead of inventing one.
-
-Argument to draft:
-{argument}
-
-Research California law with Open Law Lens CLI commands. For case-law discovery, start with `uv run open-law-lens case-search "<query>"`. Treat search results as leads only. Extract the most relevant candidate opinions with `uv run open-law-lens extract-case --cluster-id <cluster_id>` before relying on a case. Use `uv run open-law-lens extract-statute "<citation>"` and `uv run open-law-lens extract-rule "<citation>"` when statutes or rules matter.
-
-Confine research to California state law unless the argument explicitly requires federal law. Prefer published California Supreme Court and California Court of Appeal authority. Use unpublished cases only for context, not as controlling authority.
-
-Draft the legal argument in polished appellate prose. Include a concise heading if one is useful. Address the governing legal standard, application to the cited record facts, prejudice when relevant, and the strongest likely respondent answer if it needs to be handled in the argument.
-
-Do not rate the argument's strength. Do not include drafting notes unless an essential record citation or legal authority is missing."""
 
 DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens Subsequent Treatment Agent.
 
@@ -201,12 +174,10 @@ class AppConfig:
     general_agent_prompt_template: str = DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE
     case_agent_prompt_template: str = DEFAULT_CASE_AGENT_PROMPT_TEMPLATE
     appeal_issue_agent_prompt_template: str = DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
-    appeal_argument_agent_prompt_template: str = DEFAULT_APPEAL_ARGUMENT_AGENT_PROMPT_TEMPLATE
     later_treatment_agent_prompt_template: str = DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE
     general_agent_xhigh_reasoning: bool = False
     case_agent_xhigh_reasoning: bool = False
     appeal_issue_xhigh_reasoning: bool = False
-    appeal_argument_xhigh_reasoning: bool = True
     later_treatment_xhigh_reasoning: bool = False
     appeal_issue_presets: list[str] = field(
         default_factory=lambda: list(DEFAULT_APPEAL_ISSUE_PRESETS)
@@ -334,10 +305,6 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
         CONFIG_KEY_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
         DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
     )
-    appeal_argument_agent_prompt = raw.get(
-        CONFIG_KEY_APPEAL_ARGUMENT_AGENT_PROMPT_TEMPLATE,
-        DEFAULT_APPEAL_ARGUMENT_AGENT_PROMPT_TEMPLATE,
-    )
     later_treatment_agent_prompt = raw.get(
         CONFIG_KEY_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
         raw.get(
@@ -366,10 +333,6 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
             str(appeal_issue_agent_prompt).strip()
             or DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
         ),
-        appeal_argument_agent_prompt_template=(
-            str(appeal_argument_agent_prompt).strip()
-            or DEFAULT_APPEAL_ARGUMENT_AGENT_PROMPT_TEMPLATE
-        ),
         later_treatment_agent_prompt_template=(
             str(later_treatment_agent_prompt).strip()
             or DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE
@@ -385,10 +348,6 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
         appeal_issue_xhigh_reasoning=normalize_bool(
             raw.get(CONFIG_KEY_APPEAL_ISSUE_XHIGH_REASONING),
             False,
-        ),
-        appeal_argument_xhigh_reasoning=normalize_bool(
-            raw.get(CONFIG_KEY_APPEAL_ARGUMENT_XHIGH_REASONING),
-            True,
         ),
         later_treatment_xhigh_reasoning=normalize_bool(
             raw.get(CONFIG_KEY_LATER_TREATMENT_XHIGH_REASONING),
@@ -431,10 +390,6 @@ def save_config(config: AppConfig, path: Path = CONFIG_PATH) -> None:
             config.appeal_issue_agent_prompt_template.strip()
             or DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
         ),
-        CONFIG_KEY_APPEAL_ARGUMENT_AGENT_PROMPT_TEMPLATE: (
-            config.appeal_argument_agent_prompt_template.strip()
-            or DEFAULT_APPEAL_ARGUMENT_AGENT_PROMPT_TEMPLATE
-        ),
         CONFIG_KEY_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE: (
             config.later_treatment_agent_prompt_template.strip()
             or DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE
@@ -442,7 +397,6 @@ def save_config(config: AppConfig, path: Path = CONFIG_PATH) -> None:
         CONFIG_KEY_GENERAL_AGENT_XHIGH_REASONING: bool(config.general_agent_xhigh_reasoning),
         CONFIG_KEY_CASE_AGENT_XHIGH_REASONING: bool(config.case_agent_xhigh_reasoning),
         CONFIG_KEY_APPEAL_ISSUE_XHIGH_REASONING: bool(config.appeal_issue_xhigh_reasoning),
-        CONFIG_KEY_APPEAL_ARGUMENT_XHIGH_REASONING: bool(config.appeal_argument_xhigh_reasoning),
         CONFIG_KEY_LATER_TREATMENT_XHIGH_REASONING: bool(config.later_treatment_xhigh_reasoning),
         CONFIG_KEY_APPEAL_ISSUE_PRESETS: appeal_issue_presets,
         CONFIG_KEY_APPEAL_ISSUE_LABELS: normalize_appeal_issue_labels(

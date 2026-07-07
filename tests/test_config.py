@@ -10,7 +10,6 @@ from unittest.mock import patch
 from open_law_lens.config import (
     AGENT_PERMISSION_MODE_FULL_ACCESS,
     AppConfig,
-    DEFAULT_APPEAL_ARGUMENT_AGENT_PROMPT_TEMPLATE,
     DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
     DEFAULT_APPEAL_ISSUE_LABELS,
     DEFAULT_APPEAL_ISSUE_PRESETS,
@@ -39,17 +38,12 @@ class ConfigTests(unittest.TestCase):
                 DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
             )
             self.assertEqual(
-                config.appeal_argument_agent_prompt_template,
-                DEFAULT_APPEAL_ARGUMENT_AGENT_PROMPT_TEMPLATE,
-            )
-            self.assertEqual(
                 config.later_treatment_agent_prompt_template,
                 DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
             )
             self.assertFalse(config.general_agent_xhigh_reasoning)
             self.assertFalse(config.case_agent_xhigh_reasoning)
             self.assertFalse(config.appeal_issue_xhigh_reasoning)
-            self.assertTrue(config.appeal_argument_xhigh_reasoning)
             self.assertFalse(config.later_treatment_xhigh_reasoning)
             self.assertEqual(config.appeal_issue_presets, list(DEFAULT_APPEAL_ISSUE_PRESETS))
             self.assertEqual(config.appeal_issue_labels, list(DEFAULT_APPEAL_ISSUE_LABELS))
@@ -68,12 +62,10 @@ class ConfigTests(unittest.TestCase):
                     general_agent_prompt_template=" General {question} ",
                     case_agent_prompt_template=" Case {question} ",
                     appeal_issue_agent_prompt_template=" Appeal {issue} ",
-                    appeal_argument_agent_prompt_template=" Draft {argument} ",
                     later_treatment_agent_prompt_template=" Subsequent {cluster_id} ",
                     general_agent_xhigh_reasoning=True,
                     case_agent_xhigh_reasoning=True,
                     appeal_issue_xhigh_reasoning=True,
-                    appeal_argument_xhigh_reasoning=False,
                     later_treatment_xhigh_reasoning=True,
                     appeal_issue_presets=[" Issue One ", "Issue Two", "Issue One"],
                     appeal_issue_labels=[" One ", "Two"],
@@ -90,7 +82,6 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.general_agent_prompt_template, "General {question}")
             self.assertEqual(config.case_agent_prompt_template, "Case {question}")
             self.assertEqual(config.appeal_issue_agent_prompt_template, "Appeal {issue}")
-            self.assertEqual(config.appeal_argument_agent_prompt_template, "Draft {argument}")
             self.assertEqual(
                 config.later_treatment_agent_prompt_template,
                 "Subsequent {cluster_id}",
@@ -98,7 +89,6 @@ class ConfigTests(unittest.TestCase):
             self.assertTrue(config.general_agent_xhigh_reasoning)
             self.assertTrue(config.case_agent_xhigh_reasoning)
             self.assertTrue(config.appeal_issue_xhigh_reasoning)
-            self.assertFalse(config.appeal_argument_xhigh_reasoning)
             self.assertTrue(config.later_treatment_xhigh_reasoning)
             self.assertEqual(config.appeal_issue_presets, ["Issue One", "Issue Two"])
             self.assertEqual(config.appeal_issue_labels, ["One", "Two"])
@@ -195,6 +185,7 @@ class ConfigTests(unittest.TestCase):
             )
             self.assertIn("Record citation format", config.appeal_issue_agent_prompt_template)
             self.assertIn("Argument to assess", config.appeal_issue_agent_prompt_template)
+            self.assertIn("normal legal prose", config.appeal_issue_agent_prompt_template)
             self.assertNotIn("Issue to assess", config.appeal_issue_agent_prompt_template)
 
     def test_custom_appeal_prompt_is_preserved(self) -> None:
