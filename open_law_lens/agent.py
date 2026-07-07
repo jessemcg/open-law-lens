@@ -36,6 +36,7 @@ class CaseTextSource:
     authority_type: str = "case"
     statute_id: str = ""
     rule_id: str = ""
+    agent_answer_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -46,10 +47,11 @@ class CaseExport:
     text_sources: list[CaseTextSource]
     statute_count: int = 0
     rule_count: int = 0
+    agent_answer_count: int = 0
 
     @property
     def authority_count(self) -> int:
-        return self.case_count + self.statute_count + self.rule_count
+        return self.case_count + self.statute_count + self.rule_count + self.agent_answer_count
 
 
 def _json_dumps(value: Any) -> str:
@@ -190,13 +192,16 @@ def export_selected_authorities(
     statutes: list[dict[str, Any]],
     rules: list[dict[str, Any]] | None,
     case_dir: Path,
+    agent_answers: list[dict[str, Any]] | None = None,
 ) -> CaseExport:
     case_dir.mkdir(parents=True, exist_ok=True)
     manifest_cases: list[dict[str, Any]] = []
     manifest_statutes: list[dict[str, Any]] = []
     manifest_rules: list[dict[str, Any]] = []
+    manifest_agent_answers: list[dict[str, Any]] = []
     text_sources: list[CaseTextSource] = []
     rules = rules or []
+    agent_answers = agent_answers or []
 
     for cluster in clusters:
         cluster_id = cluster_id_from_cluster(cluster)
@@ -326,13 +331,55 @@ def export_selected_authorities(
             )
         )
 
+    for answer in agent_answers:
+        answer_id = str(answer.get("answer_id") or "").strip()
+        title = str(answer.get("title") or "").strip()
+        mode = str(answer.get("mode") or "").strip()
+        text = str(answer.get("text") or "").strip()
+        if not answer_id or not text:
+            continue
+        filename = f"agent_answer_{re.sub(r'[^A-Za-z0-9_.-]+', '_', answer_id)}.txt"
+        text_path = case_dir / filename
+        header = (
+            f"Title: {title or 'Saved agent answer'}\n"
+            f"Agent answer ID: {answer_id}\n"
+            f"Agent mode: {mode}\n"
+            f"Saved at: {answer.get('saved_at') or answer.get('added_at') or ''}\n"
+            "Source type: saved agent answer, not legal authority\n\n"
+        )
+        text_path.write_text(header + text, encoding="utf-8")
+        manifest_agent_answers.append(
+            {
+                "answer_id": answer_id,
+                "title": title,
+                "mode": mode,
+                "text_path": str(text_path),
+                "saved_at": str(answer.get("saved_at") or answer.get("added_at") or ""),
+                "source_type": "saved_agent_answer",
+            }
+        )
+        text_sources.append(
+            CaseTextSource(
+                cluster_id="",
+                opinion_id="",
+                title=title,
+                citation="Saved agent answer",
+                text_path=str(text_path),
+                text=text,
+                authority_type="agent_answer",
+                agent_answer_id=answer_id,
+            )
+        )
+
     manifest = {
         "cases": manifest_cases,
         "statutes": manifest_statutes,
         "rules": manifest_rules,
+        "agent_answers": manifest_agent_answers,
         "instructions": (
-            "Use only these selected Open Law Lens Research Cache authorities. "
-            "Quote exact continuous phrases from the text files."
+            "Use only these selected Open Law Lens Research Cache materials. "
+            "Quote exact continuous phrases from the text files. Saved agent answers "
+            "are prior analysis for context, not legal authority."
         ),
     }
     manifest_path = case_dir / "manifest.json"
@@ -343,5 +390,6 @@ def export_selected_authorities(
         case_count=len(manifest_cases),
         statute_count=len(manifest_statutes),
         rule_count=len(manifest_rules),
+        agent_answer_count=len(manifest_agent_answers),
         text_sources=text_sources,
     )

@@ -1185,6 +1185,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._selected_statute: dict[str, Any] | None = None
         self._rules: list[dict[str, Any]] = []
         self._selected_rule: dict[str, Any] | None = None
+        self._agent_answers: list[dict[str, Any]] = []
+        self._selected_agent_answer: dict[str, Any] | None = None
         self._suppress_sidebar_selection_lookup = False
         self._agent_terminal: Any | None = None
         self._agent_pid: int | None = None
@@ -1194,6 +1196,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_answer_view: Gtk.TextView | None = None
         self._agent_answer_button: Gtk.ToggleButton | None = None
         self._agent_session_button: Gtk.ToggleButton | None = None
+        self._agent_save_answer_button: Gtk.Button | None = None
         self._agent_output_toggle_button: Gtk.Button | None = None
         self._agent_subview_strip: Gtk.Widget | None = None
         self._agent_subview_name = AGENT_SUBVIEW_SESSION
@@ -2209,6 +2212,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             "Show the embedded Agent terminal session",
         )
         subview_strip.append(self._agent_session_button)
+        self._agent_save_answer_button = Gtk.Button(icon_name="document-save-symbolic")
+        self._agent_save_answer_button.add_css_class("flat")
+        self._agent_save_answer_button.set_tooltip_text("Save final answer to Research Cache")
+        self._agent_save_answer_button.set_sensitive(False)
+        self._agent_save_answer_button.connect("clicked", self._on_save_agent_answer_clicked)
+        subview_strip.append(self._agent_save_answer_button)
         self._agent_subview_strip = subview_strip
         frame.append(subview_strip)
 
@@ -3187,7 +3196,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._open_cited_case_link(link)
 
     def _open_cited_case_link(self, link: CitedCaseLink) -> None:
-        self._open_citation_lookup_link(link)
+        self._open_citation_lookup_link(
+            link,
+            populate_research_cache=getattr(self, "_selected_agent_answer", None) is None,
+        )
 
     def _open_agent_cited_case_link(self, link: CitedCaseLink) -> None:
         self._open_citation_lookup_link(link)
@@ -3198,8 +3210,17 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _open_rule_link(self, link: RuleLink) -> None:
         self._start_rule_lookup(link.lookup_text)
 
-    def _open_citation_lookup_link(self, link: CitedCaseLink) -> None:
-        self._start_lookup(link.lookup_text, link=link)
+    def _open_citation_lookup_link(
+        self,
+        link: CitedCaseLink,
+        *,
+        populate_research_cache: bool = True,
+    ) -> None:
+        self._start_lookup(
+            link.lookup_text,
+            link=link,
+            populate_research_cache=populate_research_cache,
+        )
 
     def _install_reader_find_key_controller(self, widget: Gtk.Widget) -> None:
         key_controller = Gtk.EventControllerKey()
@@ -3355,6 +3376,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             )
         if self._agent_subview_strip is not None:
             self._agent_subview_strip.set_visible(output_visible)
+        if self._agent_save_answer_button is not None:
+            self._agent_save_answer_button.set_sensitive(bool(self._agent_last_answer_text.strip()))
         if self._agent_answer_scroller is not None:
             self._agent_answer_scroller.set_visible(
                 output_visible and self._agent_subview_name == AGENT_SUBVIEW_ANSWER
@@ -3429,6 +3452,23 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 self._set_agent_subview(subview_name)
             return
         self._set_agent_subview(subview_name)
+
+    def _on_save_agent_answer_clicked(self, _button: Gtk.Button) -> None:
+        text = self._agent_last_answer_text.strip()
+        if not text:
+            self._set_status("No agent final answer to save.")
+            return
+        answer_id = self.client.cache.save_agent_answer(text, mode=self._agent_mode)
+        if not answer_id:
+            self._set_status("No agent final answer to save.")
+            return
+        self._set_sidebar_authorities(
+            self.client.cached_clusters(),
+            self.client.cached_statutes(),
+            self.client.cached_rules(),
+            select_agent_answer_id=answer_id,
+        )
+        self._set_status("Saved agent answer to Research Cache. Library preserved.")
 
     def _set_agent_mode(self, mode: str) -> None:
         self._selected_agent_mode = (
@@ -3817,7 +3857,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         _parameter: GLib.Variant | None,
     ) -> None:
         if self._research_cache_authority_count() == 0:
-            self._set_status("Research Cache is empty.")
+            self._set_status("Research Cache has no legal authorities to save.")
             return
         window = Gtk.Window(title="Save Research Set")
         window.set_transient_for(self)
@@ -4811,6 +4851,27 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._hide_case_completion()
         self._open_rule_in_reader(rule)
 
+    def _open_agent_answer(self, answer_entry: dict[str, Any]) -> None:
+        answer_id = str(answer_entry.get("answer_id") or "").strip()
+        if not answer_id:
+            return
+        answer = self.client.cache.read_agent_answer(answer_id)
+        if not isinstance(answer, dict):
+            self._set_status("Saved answer was not found in Research Cache.")
+            return
+        title = str(answer.get("title") or answer_entry.get("title") or "Saved agent answer")
+        text = str(answer.get("text") or "").strip()
+        self._selected_cluster = None
+        self._selected_statute = None
+        self._selected_rule = None
+        self._selected_agent_answer = answer
+        self._reader_has_official_pagination = False
+        self._reader_page_markers = []
+        self._set_reader_busy(False)
+        self._set_reader_header(title)
+        self._set_reader_text(text)
+        self._set_status(f"Loaded saved answer: {title}")
+
     def _rule_lookup_worker(self, citation: str) -> None:
         try:
             rule = self.client.lookup_rule(citation)
@@ -4833,7 +4894,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_status(f"{source}: opened {rule.get('citation') or rule_id}.")
         return False
 
-    def _start_lookup(self, citation: str, *, link: CitedCaseLink | None = None) -> None:
+    def _start_lookup(
+        self,
+        citation: str,
+        *,
+        link: CitedCaseLink | None = None,
+        populate_research_cache: bool = True,
+    ) -> None:
         lookup_context = self._lookup_context_text(citation, link)
         self._last_lookup_text = lookup_context
         self._pending_auto_scholar_cluster_id = ""
@@ -4846,7 +4913,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         cache_generation = self._research_cache_generation
         thread = threading.Thread(
             target=self._lookup_worker,
-            args=(citation, link, cache_generation),
+            args=(citation, link, cache_generation, populate_research_cache),
             daemon=True,
         )
         thread.start()
@@ -4892,6 +4959,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         citation: str,
         link: CitedCaseLink | None = None,
         cache_generation: int = 0,
+        populate_research_cache: bool = True,
     ) -> None:
         try:
             result = self.client.lookup_citation(
@@ -4910,6 +4978,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 status,
                 self._lookup_context_text(citation, link),
                 cache_generation,
+                populate_research_cache,
             )
         except CourtListenerError:
             GLib.idle_add(
@@ -4991,7 +5060,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         rules = self.client.cached_rules()
         self._set_sidebar_authorities(clusters, statutes, rules)
         self._refresh_case_suggestion_index_async(force=True)
-        count = len(clusters) + len(statutes) + len(rules)
+        count = (
+            len(clusters)
+            + len(statutes)
+            + len(rules)
+            + len(self.client.cache.list_agent_answer_entries())
+        )
         if count:
             self._set_status(f"{count} Research Cache item(s).")
         else:
@@ -5021,15 +5095,18 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         select_cluster_id: str = "",
         select_statute_id: str = "",
         select_rule_id: str = "",
+        select_agent_answer_id: str = "",
         select_first: bool = False,
         suppress_selection_lookup: bool = False,
     ) -> None:
         self._clusters = clusters
         self._statutes = statutes
         self._rules = rules
+        self._agent_answers = self.client.cache.list_agent_answer_entries()
         self._selected_cluster = None
         self._selected_statute = None
         self._selected_rule = None
+        self._selected_agent_answer = None
         while row := self.case_list.get_row_at_index(0):
             self.case_list.remove(row)
         selected_row: Gtk.ListBoxRow | None = None
@@ -5044,6 +5121,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         rule_entries = {
             str(entry.get("rule_id") or "").strip(): entry
             for entry in self.client.cache.list_rule_entries()
+        }
+        answer_entries = {
+            str(entry.get("answer_id") or "").strip(): entry
+            for entry in self._agent_answers
         }
         for index, cluster in enumerate(clusters):
             row = Gtk.ListBoxRow()
@@ -5094,6 +5175,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             row.set_child(row_box)
             row._open_law_lens_cluster_index = index
             row._open_law_lens_authority_type = "case"
+            row._open_law_lens_cache_section = "authority"
             row._open_law_lens_cache_sort_key = self._research_cache_row_sort_key(
                 case_entries.get(cluster_id, {}),
                 title_text,
@@ -5148,6 +5230,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             row.set_child(row_box)
             row._open_law_lens_statute_index = index
             row._open_law_lens_authority_type = "statute"
+            row._open_law_lens_cache_section = "authority"
             row._open_law_lens_cache_sort_key = self._research_cache_row_sort_key(
                 statute_entries.get(statute_id, {}),
                 str(statute.get("title") or "Untitled statute"),
@@ -5202,6 +5285,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             row.set_child(row_box)
             row._open_law_lens_rule_index = index
             row._open_law_lens_authority_type = "rule"
+            row._open_law_lens_cache_section = "authority"
             row._open_law_lens_cache_sort_key = self._research_cache_row_sort_key(
                 rule_entries.get(rule_id, {}),
                 str(rule.get("title") or "Untitled rule"),
@@ -5211,6 +5295,77 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             )
             self.case_list.append(row)
             if select_rule_id and rule_id == select_rule_id:
+                selected_row = row
+        if self._agent_answers:
+            header_row = Gtk.ListBoxRow()
+            header_row.set_selectable(False)
+            header_row.set_activatable(False)
+            header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            header_box.set_margin_top(12)
+            header_box.set_margin_bottom(2)
+            header_box.set_margin_start(8)
+            header_box.set_margin_end(8)
+            header = Gtk.Label(label="Saved Answers", xalign=0)
+            header.add_css_class("dim-label")
+            header_box.append(header)
+            header_row.set_child(header_box)
+            header_row._open_law_lens_cache_section = "agent_answer_header"
+            header_row._open_law_lens_cache_sort_key = ("", "", "", "", "")
+            self.case_list.append(header_row)
+        for index, answer_entry in enumerate(self._agent_answers):
+            row = Gtk.ListBoxRow()
+            row.set_selectable(True)
+            row.set_activatable(True)
+            row.add_css_class("case-cache-row")
+            row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            row_box.set_margin_top(8)
+            row_box.set_margin_bottom(8)
+            row_box.set_margin_start(8)
+            row_box.set_margin_end(8)
+            answer_id = str(answer_entry.get("answer_id") or "").strip()
+            actions_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+            actions_box.set_valign(Gtk.Align.START)
+            remove_button = Gtk.Button(icon_name="user-trash-symbolic")
+            remove_button.add_css_class("flat")
+            remove_button.add_css_class("case-row-icon-button")
+            remove_button.add_css_class("cache-row-remove-button")
+            remove_button.set_tooltip_text("Remove from Research Cache")
+            remove_button.set_sensitive(bool(answer_id))
+            remove_button.connect("clicked", self._on_remove_agent_answer_clicked, answer_id, answer_entry)
+            actions_box.append(remove_button)
+            row_box.append(actions_box)
+            text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            text_box.set_hexpand(True)
+            title_text = str(answer_entry.get("title") or "Saved agent answer")
+            title = Gtk.Label(label=title_text, xalign=0)
+            title.set_wrap(True)
+            text_box.append(title)
+            mode_text = self._agent_answer_mode_label(str(answer_entry.get("mode") or ""))
+            subtitle = Gtk.Label(label=mode_text, xalign=0)
+            subtitle.add_css_class("dim-label")
+            subtitle.set_wrap(True)
+            text_box.append(subtitle)
+            row_box.append(text_box)
+            check = Gtk.CheckButton()
+            check.add_css_class("neutral-agent-check")
+            check.set_valign(Gtk.Align.START)
+            check.set_tooltip_text("Make saved answer available to Cache Agent")
+            check.set_active(self.client.cache.is_agent_answer_selected(answer_id))
+            check.connect("toggled", self._on_agent_answer_toggled, answer_id)
+            row_box.append(check)
+            row.set_child(row_box)
+            row._open_law_lens_agent_answer_index = index
+            row._open_law_lens_authority_type = "agent_answer"
+            row._open_law_lens_cache_section = "agent_answer"
+            row._open_law_lens_cache_sort_key = self._research_cache_row_sort_key(
+                answer_entries.get(answer_id, {}),
+                title_text,
+                mode_text,
+                "agent_answer",
+                answer_id,
+            )
+            self.case_list.append(row)
+            if select_agent_answer_id and answer_id == select_agent_answer_id:
                 selected_row = row
         if selected_row is None and select_first:
             selected_row = self.case_list.get_row_at_index(0)
@@ -5245,6 +5400,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         row_b: Gtk.ListBoxRow,
         _user_data: Any = None,
     ) -> int:
+        section_order = {
+            "authority": 0,
+            "agent_answer_header": 1,
+            "agent_answer": 2,
+        }
+        section_a = section_order.get(getattr(row_a, "_open_law_lens_cache_section", "authority"), 0)
+        section_b = section_order.get(getattr(row_b, "_open_law_lens_cache_section", "authority"), 0)
+        if section_a != section_b:
+            return -1 if section_a < section_b else 1
         key_a = getattr(row_a, "_open_law_lens_cache_sort_key", ("", "", "", "", ""))
         key_b = getattr(row_b, "_open_law_lens_cache_sort_key", ("", "", "", "", ""))
         if key_a[0] != key_b[0]:
@@ -5252,6 +5416,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if key_a[1:] == key_b[1:]:
             return 0
         return -1 if key_a[1:] < key_b[1:] else 1
+
+    @staticmethod
+    def _agent_answer_mode_label(mode: str) -> str:
+        if mode == AGENT_MODE_APPEAL:
+            return "Issue assessment answer"
+        if mode == AGENT_MODE_CASE:
+            return "Research Cache answer"
+        return "General legal answer"
 
     def _on_agent_case_toggled(self, button: Gtk.CheckButton, cluster_id: str) -> None:
         self.client.cache.set_agent_selected(cluster_id, button.get_active())
@@ -5261,6 +5433,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def _on_agent_rule_toggled(self, button: Gtk.CheckButton, rule_id: str) -> None:
         self.client.cache.set_rule_agent_selected(rule_id, button.get_active())
+
+    def _on_agent_answer_toggled(self, button: Gtk.CheckButton, answer_id: str) -> None:
+        self.client.cache.set_agent_answer_selected(answer_id, button.get_active())
 
     def _on_remove_cached_case_clicked(
         self,
@@ -5347,6 +5522,33 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._refresh_case_suggestion_index_async(force=True)
         self._set_status(f"Removed {title} from Research Cache. Library preserved.")
 
+    def _on_remove_agent_answer_clicked(
+        self,
+        _button: Gtk.Button,
+        answer_id: str,
+        answer_entry: dict[str, Any],
+    ) -> None:
+        if not answer_id:
+            self._set_status("Could not remove saved answer from Research Cache.")
+            return
+        current_answer_id = str((self._selected_agent_answer or {}).get("answer_id") or "")
+        removed_selected = current_answer_id == answer_id
+        title = str(answer_entry.get("title") or "Saved agent answer")
+        if not self.client.cache.remove_agent_answer(answer_id):
+            self._set_status("Saved answer was not found in Research Cache.")
+            return
+        if removed_selected:
+            self._selected_agent_answer = None
+            self._set_reader_header("")
+            self.reader_buffer.set_text("")
+            self._set_reader_busy(False)
+        self._set_sidebar_authorities(
+            self.client.cached_clusters(),
+            self.client.cached_statutes(),
+            self.client.cached_rules(),
+        )
+        self._set_status(f"Removed {title} from Research Cache. Library preserved.")
+
     def _apply_lookup_result(
         self,
         _result: list[dict[str, Any]],
@@ -5354,10 +5556,30 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         status: str,
         citation: str = "",
         cache_generation: int | None = None,
+        populate_research_cache: bool = True,
     ) -> bool:
         if cache_generation is not None and cache_generation != self._research_cache_generation:
             return False
         select_cluster_id = cluster_id_from_cluster(clusters[0]) if clusters else ""
+        if not populate_research_cache and not clusters:
+            self._pending_auto_scholar_cluster_id = ""
+            self._pending_auto_scholar_query = ""
+            self._set_reader_header("")
+            self.reader_buffer.set_text(status)
+            self._set_reader_busy(False)
+            self._set_status(status)
+            return False
+        if clusters and not populate_research_cache:
+            self._pending_auto_scholar_cluster_id = ""
+            self._pending_auto_scholar_query = ""
+            generation = self._begin_case_load(clusters[0])
+            thread = threading.Thread(
+                target=self._case_worker,
+                args=(clusters[0], generation, -1),
+                daemon=True,
+            )
+            thread.start()
+            return False
         if clusters:
             self._pending_auto_scholar_cluster_id = select_cluster_id
             self._pending_auto_scholar_query = citation.strip()
@@ -5419,6 +5641,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 return
             self._open_cached_rule(self._rules[index])
             return
+        if authority_type == "agent_answer":
+            index = getattr(row, "_open_law_lens_agent_answer_index", None)
+            if not isinstance(index, int) or index < 0 or index >= len(self._agent_answers):
+                return
+            self._open_agent_answer(self._agent_answers[index])
+            return
         index = getattr(row, "_open_law_lens_cluster_index", None)
         if not isinstance(index, int) or index < 0 or index >= len(self._clusters):
             return
@@ -5437,6 +5665,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._selected_cluster = None
         self._selected_statute = statute
         self._selected_rule = None
+        self._selected_agent_answer = None
         self._reader_has_official_pagination = False
         self._clear_reader_citation_links()
         citation_text = str(statute.get("citation") or "").strip()
@@ -5454,6 +5683,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._selected_cluster = None
         self._selected_statute = None
         self._selected_rule = rule
+        self._selected_agent_answer = None
         self._reader_has_official_pagination = False
         self._clear_reader_citation_links()
         citation_text = str(rule.get("citation") or "").strip()
@@ -5472,6 +5702,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._selected_cluster = cluster
         self._selected_statute = None
         self._selected_rule = None
+        self._selected_agent_answer = None
         self._reader_has_official_pagination = False
         self._reader_page_markers = []
         self._set_reader_header(
@@ -5664,6 +5895,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             if str(rule.get("rule_id") or "").strip() in selected_ids
         ]
 
+    def _selected_agent_answers(self) -> list[dict[str, Any]]:
+        answers: list[dict[str, Any]] = []
+        for entry in self.client.cache.selected_agent_answer_entries():
+            answer_id = str(entry.get("answer_id") or "").strip()
+            answer = self.client.cache.read_agent_answer(answer_id) if answer_id else None
+            if isinstance(answer, dict):
+                answers.append({**entry, **answer})
+        return answers
+
     def start_appeal_issue_assessment(self, issue: str, fact_pattern_path: Path) -> bool:
         issue = issue.strip()
         if not issue:
@@ -5726,13 +5966,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             clusters = self._selected_agent_clusters()
             statutes = self._selected_agent_statutes()
             rules = self._selected_agent_rules()
-            if not clusters and not statutes and not rules:
-                self._set_status("Mark at least one Research Cache authority for the Cache Agent.")
+            agent_answers = self._selected_agent_answers()
+            if not clusters and not statutes and not rules and not agent_answers:
+                self._set_status("Mark at least one Research Cache item for the Cache Agent.")
                 return
             self._set_status("Preparing marked authorities for Cache Agent...")
             thread = threading.Thread(
                 target=self._prepare_case_agent_worker,
-                args=(question, clusters, statutes, rules),
+                args=(question, clusters, statutes, rules, agent_answers),
                 daemon=True,
             )
             thread.start()
@@ -5786,6 +6027,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         clusters: list[dict[str, Any]],
         statutes: list[dict[str, Any]],
         rules: list[dict[str, Any]],
+        agent_answers: list[dict[str, Any]],
     ) -> None:
         try:
             workspace = self._create_agent_workspace()
@@ -5795,6 +6037,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 statutes,
                 rules,
                 workspace / "selected_authorities",
+                agent_answers,
             )
             if export.authority_count == 0:
                 GLib.idle_add(self._set_status, "No text found for marked authorities.")

@@ -61,6 +61,10 @@ DEFAULT_READER_FONT_FAMILY = READER_FONT_FAMILY_OPTIONS[0][0]
 LEGACY_READER_FONT_FAMILY_ALIASES: dict[str, str] = {}
 
 LEGACY_GENERAL_AGENT_PROMPT_SHA256 = "50a9928018ec7d3b06b322db9e5a211e56c7a155b09537d1f7057906fb6a14e4"
+LEGACY_CASE_AGENT_PROMPT_SHA256ES = (
+    "90bd5ba6984eb91b4b7c72c3a33617896ed2b6279ce3bdd5592f07f15fc73f9b",
+    "58395b3951138bf6ebdc383a5f52366ca7f7c81e0fcd6b1b75b6095c36a5f3d8",
+)
 LEGACY_APPEAL_ISSUE_AGENT_PROMPT_SHA256ES = (
     "b57fb338bb6148eaa4937be89de687884b1f42f2ef2d966d9d4a21cb3816d338",
     "89f0c0d29553434588a1060de8d979d91c9a15ca27b214ee16ff3498209b6089",
@@ -82,9 +86,9 @@ Use Google Scholar or Codex web search only as a fallback to verify or fill in a
 Question:
 {question}"""
 
-DEFAULT_CASE_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens Marked Research Cache Authorities Agent.
+DEFAULT_CASE_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens Marked Research Cache Agent.
 
-Answer only from the selected cached authorities exported into this workspace. Do not use web browsing or unselected Open Law Lens authorities. If the exported authorities do not answer the question, say that plainly.
+Answer only from the selected Research Cache materials exported into this workspace. Do not use web browsing or unselected Open Law Lens materials. Treat cases, statutes, and rules as legal authority. Treat saved agent answers as prior analysis for context only, not as legal authority. If the exported materials do not answer the question, say that plainly.
 
 In your answer, include short direct quotes from the record to highlight legally significant statements. Each quote should be only two to five words long, enclosed in quotation marks, and must include continuous phrases exactly as they appear in the source text.
 
@@ -302,6 +306,9 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
         CONFIG_KEY_CASE_AGENT_PROMPT_TEMPLATE,
         DEFAULT_CASE_AGENT_PROMPT_TEMPLATE,
     )
+    case_prompt_hash = hashlib.sha256(str(case_agent_prompt).strip().encode()).hexdigest()
+    if case_prompt_hash in LEGACY_CASE_AGENT_PROMPT_SHA256ES:
+        case_agent_prompt = DEFAULT_CASE_AGENT_PROMPT_TEMPLATE
     appeal_issue_agent_prompt = raw.get(
         CONFIG_KEY_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
         DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,

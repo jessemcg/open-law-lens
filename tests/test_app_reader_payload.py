@@ -742,13 +742,31 @@ class AppReaderPayloadTests(unittest.TestCase):
             def __init__(self) -> None:
                 self.opened: list[str] = []
                 self.links: list[CitedCaseLink | None] = []
+                self.populate_values: list[bool] = []
+                self._selected_agent_answer = None
 
-            def _start_lookup(self, citation: str, *, link: CitedCaseLink | None = None) -> None:
+            def _start_lookup(
+                self,
+                citation: str,
+                *,
+                link: CitedCaseLink | None = None,
+                populate_research_cache: bool = True,
+            ) -> None:
                 self.opened.append(citation)
                 self.links.append(link)
+                self.populate_values.append(populate_research_cache)
 
-            def _open_citation_lookup_link(self, link: CitedCaseLink) -> None:
-                OpenLawLensWindow._open_citation_lookup_link(self, link)  # type: ignore[arg-type]
+            def _open_citation_lookup_link(
+                self,
+                link: CitedCaseLink,
+                *,
+                populate_research_cache: bool = True,
+            ) -> None:
+                OpenLawLensWindow._open_citation_lookup_link(  # type: ignore[arg-type]
+                    self,
+                    link,
+                    populate_research_cache=populate_research_cache,
+                )
 
         window = DummyWindow()
         link = CitedCaseLink(
@@ -763,7 +781,13 @@ class AppReaderPayloadTests(unittest.TestCase):
         OpenLawLensWindow._open_agent_cited_case_link(window, link)  # type: ignore[arg-type]
 
         self.assertEqual(window.opened, ["11 Cal.5th 614", "11 Cal.5th 614"])
+        self.assertEqual(window.populate_values, [True, True])
         self.assertEqual(window.links, [link, link])
+
+        window._selected_agent_answer = {"answer_id": "saved"}
+        OpenLawLensWindow._open_cited_case_link(window, link)  # type: ignore[arg-type]
+
+        self.assertEqual(window.populate_values[-1], False)
 
     def test_lookup_clusters_for_display_repairs_reporter_only_linked_case_name(self) -> None:
         window = OpenLawLensWindow.__new__(OpenLawLensWindow)
@@ -962,6 +986,125 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(statutes[0]["text"], "stale statute text")
         self.assertEqual(rules[0]["citation"], "Cal. Rules of Court, rule 8.11")
         self.assertEqual(rules[0]["text"], "stale rule text")
+
+    def test_selected_agent_answers_use_saved_answer_text(self) -> None:
+        class DummyClient:
+            def __init__(self, cache: JsonCache) -> None:
+                self.cache = cache
+
+        class DummyWindow:
+            def __init__(self, cache: JsonCache) -> None:
+                self.client = DummyClient(cache)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            answer_id = cache.save_agent_answer(
+                "The removal issue is strong.",
+                mode="appeal",
+            )
+            cache.set_agent_answer_selected(answer_id, True)
+            window = DummyWindow(cache)
+
+            answers = OpenLawLensWindow._selected_agent_answers(window)  # type: ignore[arg-type]
+
+        self.assertEqual(answers[0]["answer_id"], answer_id)
+        self.assertEqual(answers[0]["text"], "The removal issue is strong.")
+
+    def test_save_agent_answer_click_writes_to_research_cache_only(self) -> None:
+        class DummyClient:
+            def __init__(self, cache: JsonCache) -> None:
+                self.cache = cache
+
+            def cached_clusters(self) -> list[dict[str, object]]:
+                return []
+
+            def cached_statutes(self) -> list[dict[str, object]]:
+                return []
+
+            def cached_rules(self) -> list[dict[str, object]]:
+                return []
+
+        class DummyWindow:
+            def __init__(self, cache: JsonCache) -> None:
+                self.client = DummyClient(cache)
+                self._agent_last_answer_text = "Final assessment text."
+                self._agent_mode = "appeal"
+                self.sidebar_kwargs: dict[str, object] = {}
+                self.statuses: list[str] = []
+
+            def _set_sidebar_authorities(self, *args: object, **kwargs: object) -> None:
+                self.sidebar_kwargs = kwargs
+
+            def _set_status(self, status: str) -> None:
+                self.statuses.append(status)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            window = DummyWindow(cache)
+
+            OpenLawLensWindow._on_save_agent_answer_clicked(window, object())  # type: ignore[arg-type]
+
+            entries = cache.list_agent_answer_entries()
+
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(window.sidebar_kwargs["select_agent_answer_id"], entries[0]["answer_id"])
+        self.assertEqual(window.statuses[-1], "Saved agent answer to Research Cache. Library preserved.")
+
+    def test_open_agent_answer_uses_reader_text_formatting_path(self) -> None:
+        class DummyClient:
+            def __init__(self, cache: JsonCache) -> None:
+                self.cache = cache
+
+        class DummyWindow:
+            def __init__(self, cache: JsonCache) -> None:
+                self.client = DummyClient(cache)
+                self._selected_cluster = {"id": "old"}
+                self._selected_statute = {"statute_id": "old"}
+                self._selected_rule = {"rule_id": "old"}
+                self._selected_agent_answer: dict[str, object] | None = None
+                self._reader_has_official_pagination = True
+                self._reader_page_markers = [object()]
+                self.headers: list[str] = []
+                self.reader_texts: list[str] = []
+                self.statuses: list[str] = []
+                self.busy = True
+
+            def _set_reader_busy(self, busy: bool, _message: str = "") -> None:
+                self.busy = busy
+
+            def _set_reader_header(self, text: str, *_args: object) -> None:
+                self.headers.append(text)
+
+            def _set_reader_text(self, text: str, *_args: object) -> bool:
+                self.reader_texts.append(text)
+                return False
+
+            def _set_status(self, status: str) -> None:
+                self.statuses.append(status)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            answer_id = cache.save_agent_answer(
+                "See In re Caden C. (2021) 11 Cal.5th 614 and Welf. & Inst. Code, § 300.",
+                mode="appeal",
+                title="Saved issue",
+            )
+            window = DummyWindow(cache)
+
+            OpenLawLensWindow._open_agent_answer(  # type: ignore[arg-type]
+                window,
+                {"answer_id": answer_id, "title": "Saved issue"},
+            )
+
+        self.assertIsNone(window._selected_cluster)
+        self.assertIsNone(window._selected_statute)
+        self.assertIsNone(window._selected_rule)
+        self.assertEqual(window.headers, ["Saved issue"])
+        self.assertEqual(
+            window.reader_texts,
+            ["See In re Caden C. (2021) 11 Cal.5th 614 and Welf. & Inst. Code, § 300."],
+        )
+        self.assertEqual(window.statuses[-1], "Loaded saved answer: Saved issue")
 
     def test_apply_statute_lookup_opens_fetched_result_without_sidebar_relookup(self) -> None:
         class DummyClient:
@@ -1204,6 +1347,78 @@ class AppReaderPayloadTests(unittest.TestCase):
                 [("99", "New Case")],
             )
             self.assertEqual(window.sidebar_snapshots[-1], ["New Case"])
+
+    def test_lookup_result_can_open_case_without_research_cache_population(self) -> None:
+        class ImmediateThread:
+            def __init__(self, *, target: object, args: tuple[object, ...], daemon: bool = False) -> None:
+                self.target = target
+                self.args = args
+                self.daemon = daemon
+
+            def start(self) -> None:
+                self.target(*self.args)  # type: ignore[misc]
+
+        class DummyWindow:
+            def __init__(self, client: CourtListenerClient) -> None:
+                self.client = client
+                self._research_cache_generation = 1
+                self._pending_auto_scholar_cluster_id = "old"
+                self._pending_auto_scholar_query = "old"
+                self.loaded_clusters: list[dict[str, object]] = []
+                self.worker_args: list[tuple[dict[str, object], int, int]] = []
+                self.sidebar_snapshots: list[list[str]] = []
+                self.statuses: list[str] = []
+
+            def _begin_case_load(self, cluster: dict[str, object]) -> int:
+                self.loaded_clusters.append(cluster)
+                return 7
+
+            def _case_worker(
+                self,
+                cluster: dict[str, object],
+                generation: int,
+                cache_generation: int,
+            ) -> None:
+                self.worker_args.append((cluster, generation, cache_generation))
+
+            def _set_sidebar_clusters(self, clusters: list[dict[str, object]], **_kwargs: object) -> None:
+                self.sidebar_snapshots.append([str(cluster.get("case_name") or "") for cluster in clusters])
+
+            def _set_status(self, status: str) -> None:
+                self.statuses.append(status)
+
+            def _refresh_case_suggestion_index_async(self, *, force: bool = False) -> None:
+                pass
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir) / "cache")
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            client = CourtListenerClient(cache=cache, library=library)
+            window = DummyWindow(client)
+            cluster = {
+                "id": 99,
+                "case_name": "New Case",
+                "citations": [{"volume": "99", "reporter": "Cal.App.5th", "page": "1"}],
+            }
+
+            with patch("open_law_lens.app.threading.Thread", ImmediateThread):
+                OpenLawLensWindow._apply_lookup_result(  # type: ignore[arg-type]
+                    window,
+                    [{"status": 200, "clusters": [cluster]}],
+                    [cluster],
+                    "current",
+                    "new lookup",
+                    1,
+                    False,
+                )
+
+        self.assertEqual(cache.list_case_entries(), [])
+        self.assertEqual(window.sidebar_snapshots, [])
+        self.assertEqual(window.loaded_clusters, [cluster])
+        self.assertEqual(window.worker_args, [(cluster, 7, -1)])
+        self.assertEqual(window._pending_auto_scholar_cluster_id, "")
+        self.assertEqual(window._pending_auto_scholar_query, "")
 
     def test_current_linked_lookup_adds_only_displayed_case_to_empty_research_cache(self) -> None:
         class DummyList:

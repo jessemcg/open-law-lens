@@ -229,6 +229,41 @@ class CacheTests(unittest.TestCase):
             self.assertTrue(cache.is_agent_selected("42"))
             self.assertEqual(cache.selected_case_entries()[0]["cluster_id"], "42")
 
+    def test_agent_answer_cache_round_trip_selection_and_remove(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            answer_id = cache.save_agent_answer(
+                "The removal issue is strong.",
+                mode="appeal",
+            )
+
+            self.assertTrue(answer_id)
+            self.assertEqual(cache.list_agent_answer_entries()[0]["answer_id"], answer_id)
+            self.assertEqual(cache.read_agent_answer(answer_id)["text"], "The removal issue is strong.")
+            self.assertFalse(cache.is_agent_answer_selected(answer_id))
+
+            cache.set_agent_answer_selected(answer_id, True)
+
+            self.assertTrue(cache.is_agent_answer_selected(answer_id))
+            self.assertEqual(cache.selected_agent_answer_entries()[0]["answer_id"], answer_id)
+            self.assertTrue(cache.remove_agent_answer(answer_id))
+            self.assertEqual(cache.list_agent_answer_entries(), [])
+            self.assertIsNone(cache.read_agent_answer(answer_id))
+
+    def test_agent_answer_title_uses_short_phrase(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            answer_id = cache.save_agent_answer(
+                "The governing law helps mother. Section 361 required clear and convincing evidence.",
+                mode="appeal",
+            )
+
+            entry = cache.list_agent_answer_entries()[0]
+
+        self.assertEqual(entry["answer_id"], answer_id)
+        self.assertEqual(entry["title"], "The governing law helps mother")
+        self.assertNotIn("Section 361", entry["title"])
+
     def test_repair_reporter_only_imported_case_name_updates_cache_and_lookup(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = JsonCache(Path(temp_dir))
@@ -433,6 +468,7 @@ class CacheTests(unittest.TestCase):
                     "citation": "Cal. Rules of Court, rule 8.11",
                 }
             )
+            cache.save_agent_answer("The cached answer.")
             agent_workspace = root / "agent-workspaces" / "workspace.test"
             agent_workspace.mkdir(parents=True)
             (agent_workspace / "manifest.json").write_text("{}", encoding="utf-8")
@@ -447,15 +483,19 @@ class CacheTests(unittest.TestCase):
             self.assertTrue((trash_path / "opinions" / "10.json").is_file())
             self.assertFalse((trash_path / "statutes").exists())
             self.assertTrue((trash_path / "rules" / "CRC_8.11.json").is_file())
+            self.assertTrue((trash_path / "agent_answers").is_dir())
             self.assertTrue((trash_path / "cases_index.json").is_file())
             self.assertTrue((trash_path / "rules_index.json").is_file())
+            self.assertTrue((trash_path / "agent_answers_index.json").is_file())
             self.assertEqual(cache.list_lookups(), [])
             self.assertEqual(cache.list_case_entries(), [])
+            self.assertEqual(cache.list_agent_answer_entries(), [])
             self.assertFalse(cache.selected_case_entries())
             self.assertTrue((root / "lookups").is_dir())
             self.assertTrue((root / "clusters").is_dir())
             self.assertTrue((root / "opinions").is_dir())
             self.assertTrue((root / "rules").is_dir())
+            self.assertTrue((root / "agent_answers").is_dir())
             self.assertTrue((agent_workspace / "manifest.json").is_file())
 
     def test_clear_removes_resources_and_recreates_directories(self) -> None:
@@ -465,13 +505,17 @@ class CacheTests(unittest.TestCase):
             cache.write_lookup("576 U.S. 644", [{"status": 200}])
             cache.upsert_cluster({"id": 42, "case_name": "Example v. State"})
             cache.write_resource("opinions", "10", {"id": 10})
+            answer_id = cache.save_agent_answer("The answer to save.")
             cache.clear()
             self.assertEqual(cache.list_lookups(), [])
             self.assertEqual(cache.list_case_entries(), [])
+            self.assertEqual(cache.list_agent_answer_entries(), [])
+            self.assertIsNone(cache.read_agent_answer(answer_id))
             self.assertFalse(cache.selected_case_entries())
             self.assertTrue((root / "lookups").is_dir())
             self.assertTrue((root / "clusters").is_dir())
             self.assertTrue((root / "opinions").is_dir())
+            self.assertTrue((root / "agent_answers").is_dir())
             self.assertEqual(list(root.glob(".clear-trash-*")), [])
 
 

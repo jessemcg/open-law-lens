@@ -182,6 +182,37 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(manifest["rules"][0]["rule_id"], "CRC:8.11")
             self.assertIn("Rule 8.11.", Path(export.text_sources[0].text_path).read_text())
 
+    def test_export_selected_authorities_writes_agent_answers_as_context(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            export = export_selected_authorities(
+                DummyClient(),
+                [],
+                [],
+                [],
+                Path(temp_dir) / "selected_authorities",
+                [
+                    {
+                        "answer_id": "abc123",
+                        "title": "Removal assessment",
+                        "mode": "appeal",
+                        "text": "The removal issue is strong.",
+                        "saved_at": "2026-07-06T12:00:00+00:00",
+                    }
+                ],
+            )
+
+            self.assertEqual(export.agent_answer_count, 1)
+            self.assertEqual(export.authority_count, 1)
+            self.assertEqual(export.text_sources[0].authority_type, "agent_answer")
+            self.assertEqual(export.text_sources[0].agent_answer_id, "abc123")
+            manifest = json.loads(export.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["agent_answers"][0]["answer_id"], "abc123")
+            self.assertEqual(manifest["agent_answers"][0]["source_type"], "saved_agent_answer")
+            self.assertIn("not legal authority", manifest["instructions"])
+            answer_text = Path(export.text_sources[0].text_path).read_text(encoding="utf-8")
+            self.assertIn("Source type: saved agent answer, not legal authority", answer_text)
+            self.assertIn("The removal issue is strong.", answer_text)
+
 
 if __name__ == "__main__":
     unittest.main()

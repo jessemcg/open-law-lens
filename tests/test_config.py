@@ -134,6 +134,35 @@ class ConfigTests(unittest.TestCase):
 
             self.assertEqual(load_config(path).general_agent_prompt_template, "Custom {question}")
 
+    def test_legacy_case_prompt_migrates_to_new_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "case_agent_prompt_template": (
+                            "You are the Open Law Lens Marked Research Cache Authorities Agent.\n\n"
+                            "Answer only from the selected cached authorities exported into this workspace. "
+                            "Do not use web browsing or unselected Open Law Lens authorities. If the exported "
+                            "authorities do not answer the question, say that plainly.\n\n"
+                            "In your answer, include short direct quotes from the record to highlight legally "
+                            "significant statements. Each quote should be only two to five words long, enclosed "
+                            "in quotation marks, and must include continuous phrases exactly as they appear in "
+                            "the source text.\n\n"
+                            "Question:\n"
+                            "{question}"
+                        )
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(path)
+
+            self.assertEqual(config.case_agent_prompt_template, DEFAULT_CASE_AGENT_PROMPT_TEMPLATE)
+            self.assertIn("saved agent answers as prior analysis", config.case_agent_prompt_template)
+            self.assertIn("not as legal authority", config.case_agent_prompt_template)
+
     def test_legacy_appeal_prompt_migrates_to_new_default(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "config.json"

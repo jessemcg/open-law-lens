@@ -522,8 +522,9 @@ def _cmd_show_cache(_args: argparse.Namespace) -> int:
     entries = cache.list_case_entries()
     statutes = cache.list_statute_entries()
     rules = cache.list_rule_entries()
-    if not entries and not statutes and not rules:
-        print("No Research Cache authorities.")
+    answers = cache.list_agent_answer_entries()
+    if not entries and not statutes and not rules and not answers:
+        print("No Research Cache items.")
         return 0
     for entry in entries:
         title = str(entry.get("title") or "Untitled case")
@@ -545,6 +546,11 @@ def _cmd_show_cache(_args: argparse.Namespace) -> int:
         rule_id = str(entry.get("rule_id") or "").strip()
         citation_part = f" | {citation}" if citation else ""
         print(f"{title}{citation_part} | rule {rule_id}")
+    for entry in answers:
+        title = str(entry.get("title") or "Saved agent answer")
+        mode = str(entry.get("mode") or "").strip() or "general"
+        answer_id = str(entry.get("answer_id") or "").strip()
+        print(f"{title} | saved answer {answer_id} | mode {mode}")
     return 0
 
 

@@ -72,6 +72,28 @@ def _cache_sort_timestamp(entry: dict[str, Any]) -> str:
     return str(entry.get("loaded_at") or entry.get("added_at") or "")
 
 
+def _agent_answer_title(text: str, mode: str) -> str:
+    explicit_markers = ("# ", "## ", "### ")
+    for line in text.splitlines():
+        raw_title = line.strip()
+        if not raw_title:
+            continue
+        is_explicit = raw_title.startswith(explicit_markers)
+        title = re.sub(r"^[#>*`\s-]+", "", raw_title).strip()
+        title = re.sub(r"\s+", " ", title)
+        if not title:
+            continue
+        sentence = re.split(r"(?<=[.!?])\s+", title, maxsplit=1)[0]
+        sentence = sentence.rstrip(".:;")
+        words = sentence.split()
+        max_words = 10 if is_explicit else 6
+        short = " ".join(words[:max_words]).strip()
+        if short:
+            return short[:64].rstrip(" ,;:.")
+    label = "Assessment" if mode == "appeal" else "Legal answer"
+    return f"Saved {label}"
+
+
 def _opinion_import_text(opinion: dict[str, Any]) -> str:
     for field in OPINION_TEXT_FIELDS:
         value = opinion.get(field)
@@ -119,7 +141,7 @@ class JsonCache:
         return cls(cache_root())
 
     def ensure(self) -> None:
-        for name in ("lookups", "clusters", "opinions", "statutes", "rules"):
+        for name in ("lookups", "clusters", "opinions", "statutes", "rules", "agent_answers"):
             (self.root / name).mkdir(parents=True, exist_ok=True)
         self.repair_reporter_only_imported_case_names()
 
@@ -131,6 +153,9 @@ class JsonCache:
 
     def rule_index_path(self) -> Path:
         return self.root / "rules_index.json"
+
+    def agent_answer_index_path(self) -> Path:
+        return self.root / "agent_answers_index.json"
 
     def lookup_path(self, citation: str) -> Path:
         return self.root / "lookups" / f"{citation_cache_key(citation)}.json"
@@ -149,6 +174,9 @@ class JsonCache:
 
     def rule_path(self, rule_id: str) -> Path:
         return self.resource_path("rules", rule_id.replace(":", "_"))
+
+    def agent_answer_path(self, answer_id: str) -> Path:
+        return self.resource_path("agent_answers", answer_id)
 
     def read_json(self, path: Path) -> Any | None:
         try:
@@ -209,6 +237,15 @@ class JsonCache:
 
     def write_rule_index(self, index: dict[str, dict[str, Any]]) -> None:
         self.write_json(self.rule_index_path(), index)
+
+    def read_agent_answer_index(self) -> dict[str, dict[str, Any]]:
+        data = self.read_json(self.agent_answer_index_path())
+        if not isinstance(data, dict):
+            return {}
+        return {str(key): value for key, value in data.items() if isinstance(value, dict)}
+
+    def write_agent_answer_index(self, index: dict[str, dict[str, Any]]) -> None:
+        self.write_json(self.agent_answer_index_path(), index)
 
     def upsert_cluster(self, cluster: dict[str, Any]) -> str:
         cluster = canonicalize_cluster_citations(cluster)
@@ -516,6 +553,95 @@ class JsonCache:
         self.write_rule_index(index)
         return True
 
+    def save_agent_answer(self, text: str, *, mode: str = "", title: str = "") -> str:
+        clean_text = text.strip()
+        if not clean_text:
+            return ""
+        answer_id = hashlib.sha256(clean_text.encode("utf-8")).hexdigest()[:24]
+        now = _utc_now()
+        index = self.read_agent_answer_index()
+        existing = index.get(answer_id, {})
+        resolved_title = title.strip() or _agent_answer_title(clean_text, mode)
+        answer = {
+            "answer_id": answer_id,
+            "title": resolved_title,
+            "mode": mode.strip(),
+            "text": clean_text,
+            "saved_at": existing.get("saved_at", now),
+            "last_accessed": now,
+        }
+        self.write_json(self.agent_answer_path(answer_id), answer)
+        index[answer_id] = {
+            **existing,
+            "answer_id": answer_id,
+            "title": resolved_title,
+            "mode": mode.strip(),
+            "answer_path": str(self.agent_answer_path(answer_id)),
+            "agent_selected": bool(existing.get("agent_selected", False)),
+            "added_at": existing.get("added_at", now),
+            "loaded_at": now,
+            "last_accessed": now,
+        }
+        self.write_agent_answer_index(index)
+        return answer_id
+
+    def list_agent_answer_entries(self) -> list[dict[str, Any]]:
+        entries = list(self.read_agent_answer_index().values())
+        entries.sort(
+            key=lambda item: (
+                str(item.get("title", "")).casefold(),
+                str(item.get("answer_id", "")),
+            )
+        )
+        entries.sort(key=_cache_sort_timestamp, reverse=True)
+        return entries
+
+    def read_agent_answer(self, answer_id: str) -> dict[str, Any] | None:
+        data = self.read_json(self.agent_answer_path(answer_id))
+        if not isinstance(data, dict):
+            return None
+        index = self.read_agent_answer_index()
+        entry = index.get(answer_id)
+        if isinstance(entry, dict):
+            entry["last_accessed"] = _utc_now()
+            index[answer_id] = entry
+            self.write_agent_answer_index(index)
+        return data
+
+    def is_agent_answer_selected(self, answer_id: str) -> bool:
+        entry = self.read_agent_answer_index().get(answer_id)
+        return bool(entry.get("agent_selected")) if isinstance(entry, dict) else False
+
+    def set_agent_answer_selected(self, answer_id: str, selected: bool) -> None:
+        if not answer_id:
+            return
+        index = self.read_agent_answer_index()
+        entry = index.get(answer_id)
+        if not isinstance(entry, dict):
+            return
+        entry["agent_selected"] = bool(selected)
+        entry["last_accessed"] = _utc_now()
+        index[answer_id] = entry
+        self.write_agent_answer_index(index)
+
+    def selected_agent_answer_entries(self) -> list[dict[str, Any]]:
+        return [
+            entry
+            for entry in self.list_agent_answer_entries()
+            if bool(entry.get("agent_selected"))
+        ]
+
+    def remove_agent_answer(self, answer_id: str) -> bool:
+        if not answer_id:
+            return False
+        index = self.read_agent_answer_index()
+        entry = index.pop(answer_id, None)
+        if not isinstance(entry, dict):
+            return False
+        self.agent_answer_path(answer_id).unlink(missing_ok=True)
+        self.write_agent_answer_index(index)
+        return True
+
     def clear(self) -> None:
         trash_path = self.detach_for_clear()
         if trash_path is not None:
@@ -532,9 +658,11 @@ class JsonCache:
                 self.root / "opinions",
                 self.root / "statutes",
                 self.root / "rules",
+                self.root / "agent_answers",
                 self.case_index_path(),
                 self.statute_index_path(),
                 self.rule_index_path(),
+                self.agent_answer_index_path(),
             ):
                 if not source.exists():
                     continue

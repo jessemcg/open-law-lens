@@ -221,6 +221,10 @@ class LibraryTests(unittest.TestCase):
                 }
             )
             cache.set_rule_agent_selected("CRC:8.11", True)
+            cache.save_agent_answer(
+                "This prior assessment should stay in the disposable Research Cache.",
+                mode="appeal",
+            )
 
             saved = library.save_research_set("Example_research", cache)
 
@@ -240,6 +244,7 @@ class LibraryTests(unittest.TestCase):
             self.assertEqual([entry["cluster_id"] for entry in cache.list_case_entries()], ["42"])
             self.assertEqual([entry["statute_id"] for entry in cache.list_statute_entries()], ["WIC:300"])
             self.assertEqual([entry["rule_id"] for entry in cache.list_rule_entries()], ["CRC:8.11"])
+            self.assertEqual(cache.list_agent_answer_entries(), [])
             self.assertTrue(cache.is_agent_selected("42"))
             self.assertTrue(cache.is_rule_agent_selected("CRC:8.11"))
 
