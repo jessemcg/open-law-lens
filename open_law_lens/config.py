@@ -63,6 +63,7 @@ LEGACY_READER_FONT_FAMILY_ALIASES: dict[str, str] = {}
 LEGACY_GENERAL_AGENT_PROMPT_SHA256ES = (
     "50a9928018ec7d3b06b322db9e5a211e56c7a155b09537d1f7057906fb6a14e4",
     "5d787ed00945b45a32f60026679908a718fc7d174080951f5f3bbe5e70921dc6",
+    "e8da4e994bce96bd6acc337c1361fa225adf62a6cc5f5044ff42ed17c1d14aec",
 )
 LEGACY_CASE_AGENT_PROMPT_SHA256ES = (
     "90bd5ba6984eb91b4b7c72c3a33617896ed2b6279ce3bdd5592f07f15fc73f9b",
@@ -74,6 +75,7 @@ LEGACY_APPEAL_ISSUE_AGENT_PROMPT_SHA256ES = (
     "825b58f274b81af60c7fdd0fb2a55e9a6ad43c8bbd31f6d51f0c632d2c7a5599",
     "cc5c2ba125d0ee0ff42d65db1b58f0d9e7fc281ad1a12d3693f82caca551af24",
     "148e132f9bf9440d84437f2116cb2f2bcc7bbc4654d1508d2644ea8a9dbb3614",
+    "5efdaaf4380c89a75ed1073d8a6476511cd59d58c54837e6d741f8dfa386e8a2",
 )
 
 DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens General California Law Agent.
@@ -85,6 +87,8 @@ For California case-law discovery, start with `uv run open-law-lens case-search 
 Confine research to California state law unless the user's question explicitly requires federal law. Prefer published California Supreme Court and California Court of Appeal authority when available. Use `case-search --include-unpublished` only when unpublished cases are useful for context, not as controlling authority.
 
 Use Google Scholar or Codex web search only as a fallback to verify or fill in an official reporter citation or official text when CourtListener metadata is missing or suspect. State when a citation remains uncertain.
+
+For a recent published California slip opinion with no official reporter citation, a placeholder like `___ Cal.App.5th ___`, or only a docket number, run targeted Google Scholar or web searches using the case name, docket number, filed date, and `Cal.App.5th`. If an official citation is found, retry `uv run open-law-lens extract-case "<official citation>"` and rely on the extracted text, source, warnings, and reporter markers.
 
 In the final answer, use normal legal prose for case names, statutes, rules, and citations. Do not wrap legal authorities or citations in backticks. Reserve backticks only for CLI commands, file paths, and other literal technical text.
 
@@ -144,6 +148,8 @@ Argument to assess:
 {issue}
 
 Research California law with Open Law Lens CLI commands. For case-law discovery, start with `uv run open-law-lens case-search "<query>"`. Treat search results as leads only. When a promising search result has an official citation or recognizable case name, try `uv run open-law-lens extract-case "<official citation or case name>"` first so saved durable-library text can be reused. Use `uv run open-law-lens extract-case --cluster-id <cluster_id>` only when citation/name extraction fails or no reliable citation/name is available. Use `uv run open-law-lens extract-statute "<citation>"` and `uv run open-law-lens extract-rule "<citation>"` when statutes or rules matter.
+
+For a recent published California slip opinion with no official reporter citation, a placeholder like `___ Cal.App.5th ___`, or only a docket number, run targeted Google Scholar or web searches using the case name, docket number, filed date, and `Cal.App.5th`. If an official citation is found, retry `uv run open-law-lens extract-case "<official citation>"` and rely on the extracted text, source, warnings, and reporter markers.
 
 Confine research to California state law unless the argument explicitly requires federal law. Prefer published California Supreme Court and California Court of Appeal authority. Use unpublished cases only for context, not as controlling authority.
 

@@ -7,7 +7,7 @@ import re
 import shutil
 import uuid
 from datetime import UTC, datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -137,6 +137,7 @@ def _repair_lookup_result_clusters(
 @dataclass
 class JsonCache:
     root: Path
+    _dirty_tracking_suppressed: bool = field(default=False, init=False, repr=False)
 
     @classmethod
     def default(cls) -> "JsonCache":
@@ -167,6 +168,9 @@ class JsonCache:
     def agent_answer_index_path(self) -> Path:
         return self.root / "agent_answers_index.json"
 
+    def metadata_path(self) -> Path:
+        return self.root / "metadata.json"
+
     def lookup_path(self, citation: str) -> Path:
         return self.root / "lookups" / f"{citation_cache_key(citation)}.json"
 
@@ -188,6 +192,10 @@ class JsonCache:
     def agent_answer_path(self, answer_id: str) -> Path:
         return self.resource_path("agent_answers", answer_id)
 
+    def slip_opinion_payload_path(self, case_number: str) -> Path:
+        clean_case_number = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(case_number or "").strip().upper())
+        return self.root / "slip_opinions" / f"{clean_case_number}.json"
+
     def read_json(self, path: Path) -> Any | None:
         try:
             return json.loads(path.read_text(encoding="utf-8"))
@@ -200,6 +208,64 @@ class JsonCache:
             json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True),
             encoding="utf-8",
         )
+
+    def read_metadata(self) -> dict[str, Any]:
+        data = self.read_json(self.metadata_path())
+        return data if isinstance(data, dict) else {}
+
+    def write_metadata(self, metadata: dict[str, Any]) -> None:
+        self.write_json(self.metadata_path(), metadata)
+
+    def active_research_set_metadata(self) -> dict[str, Any] | None:
+        metadata = self.read_metadata()
+        set_id = metadata.get("active_research_set_id")
+        name = str(metadata.get("active_research_set_name") or "").strip()
+        if set_id is None or not name:
+            return None
+        try:
+            clean_set_id = int(set_id)
+        except (TypeError, ValueError):
+            return None
+        return {
+            "active_research_set_id": clean_set_id,
+            "active_research_set_name": name,
+            "dirty": bool(metadata.get("dirty")),
+            "updated_at": str(metadata.get("updated_at") or ""),
+        }
+
+    def set_active_research_set(self, set_id: int, name: str, *, dirty: bool = False) -> None:
+        clean_name = str(name or "").strip()
+        if not clean_name:
+            self.clear_active_research_set()
+            return
+        self.write_metadata(
+            {
+                "active_research_set_id": int(set_id),
+                "active_research_set_name": clean_name,
+                "dirty": bool(dirty),
+                "updated_at": _utc_now(),
+            }
+        )
+
+    def clear_active_research_set(self) -> None:
+        self.metadata_path().unlink(missing_ok=True)
+
+    def mark_active_research_set_dirty(self) -> None:
+        if self._dirty_tracking_suppressed:
+            return
+        metadata = self.active_research_set_metadata()
+        if metadata is None:
+            return
+        if metadata.get("dirty"):
+            return
+        self.set_active_research_set(
+            int(metadata["active_research_set_id"]),
+            str(metadata["active_research_set_name"]),
+            dirty=True,
+        )
+
+    def suppress_dirty_tracking(self) -> "_DirtyTrackingSuppression":
+        return _DirtyTrackingSuppression(self)
 
     def read_lookup(self, citation: str) -> Any | None:
         return canonicalize_lookup_result(self.read_json(self.lookup_path(citation)))
@@ -257,6 +323,16 @@ class JsonCache:
     def write_agent_answer_index(self, index: dict[str, dict[str, Any]]) -> None:
         self.write_json(self.agent_answer_index_path(), index)
 
+    def read_slip_opinion_payload(self, case_number: str) -> dict[str, Any] | None:
+        data = self.read_json(self.slip_opinion_payload_path(case_number))
+        return data if isinstance(data, dict) else None
+
+    def write_slip_opinion_payload(self, case_number: str, payload: dict[str, Any]) -> None:
+        if not str(case_number or "").strip():
+            return
+        self.write_json(self.slip_opinion_payload_path(case_number), payload)
+        self.mark_active_research_set_dirty()
+
     def upsert_cluster(self, cluster: dict[str, Any]) -> str:
         cluster = canonicalize_cluster_citations(cluster)
         cluster_id = cluster_id_from_cluster(cluster)
@@ -282,6 +358,7 @@ class JsonCache:
             "last_accessed": now,
         }
         self.write_case_index(index)
+        self.mark_active_research_set_dirty()
         return cluster_id
 
     def update_case_opinions(self, cluster: dict[str, Any], opinion_ids: list[str]) -> None:
@@ -303,6 +380,7 @@ class JsonCache:
         entry["last_accessed"] = _utc_now()
         index[cluster_id] = entry
         self.write_case_index(index)
+        self.mark_active_research_set_dirty()
 
     def list_case_entries(self) -> list[dict[str, Any]]:
         entries = list(self.read_case_index().values())
@@ -374,6 +452,7 @@ class JsonCache:
         entry["last_accessed"] = _utc_now()
         index[cluster_id] = entry
         self.write_case_index(index)
+        self.mark_active_research_set_dirty()
 
     def remove_case(self, cluster_id: str) -> bool:
         if not cluster_id:
@@ -398,6 +477,7 @@ class JsonCache:
             self.opinion_path(opinion_id).unlink(missing_ok=True)
         self.cluster_path(cluster_id).unlink(missing_ok=True)
         self.write_case_index(index)
+        self.mark_active_research_set_dirty()
         return True
 
     def selected_case_entries(self) -> list[dict[str, Any]]:
@@ -433,6 +513,7 @@ class JsonCache:
             "last_accessed": now,
         }
         self.write_statute_index(index)
+        self.mark_active_research_set_dirty()
         return statute_id
 
     def list_statute_entries(self) -> list[dict[str, Any]]:
@@ -466,6 +547,7 @@ class JsonCache:
         entry["last_accessed"] = _utc_now()
         index[statute_id] = entry
         self.write_statute_index(index)
+        self.mark_active_research_set_dirty()
 
     def selected_statute_entries(self) -> list[dict[str, Any]]:
         return [
@@ -483,6 +565,7 @@ class JsonCache:
             return False
         self.statute_path(statute_id).unlink(missing_ok=True)
         self.write_statute_index(index)
+        self.mark_active_research_set_dirty()
         return True
 
     def upsert_rule(self, rule: dict[str, Any]) -> str:
@@ -511,6 +594,7 @@ class JsonCache:
             "last_accessed": now,
         }
         self.write_rule_index(index)
+        self.mark_active_research_set_dirty()
         return rule_id
 
     def list_rule_entries(self) -> list[dict[str, Any]]:
@@ -544,6 +628,7 @@ class JsonCache:
         entry["last_accessed"] = _utc_now()
         index[rule_id] = entry
         self.write_rule_index(index)
+        self.mark_active_research_set_dirty()
 
     def selected_rule_entries(self) -> list[dict[str, Any]]:
         return [
@@ -561,6 +646,7 @@ class JsonCache:
             return False
         self.rule_path(rule_id).unlink(missing_ok=True)
         self.write_rule_index(index)
+        self.mark_active_research_set_dirty()
         return True
 
     def save_agent_answer(self, text: str, *, mode: str = "", title: str = "") -> str:
@@ -593,6 +679,7 @@ class JsonCache:
             "last_accessed": now,
         }
         self.write_agent_answer_index(index)
+        self.mark_active_research_set_dirty()
         return answer_id
 
     def list_agent_answer_entries(self) -> list[dict[str, Any]]:
@@ -633,6 +720,7 @@ class JsonCache:
         entry["last_accessed"] = _utc_now()
         index[answer_id] = entry
         self.write_agent_answer_index(index)
+        self.mark_active_research_set_dirty()
 
     def selected_agent_answer_entries(self) -> list[dict[str, Any]]:
         return [
@@ -650,6 +738,7 @@ class JsonCache:
             return False
         self.agent_answer_path(answer_id).unlink(missing_ok=True)
         self.write_agent_answer_index(index)
+        self.mark_active_research_set_dirty()
         return True
 
     def clear(self) -> None:
@@ -673,6 +762,7 @@ class JsonCache:
                 self.statute_index_path(),
                 self.rule_index_path(),
                 self.agent_answer_index_path(),
+                self.metadata_path(),
             ):
                 if not source.exists():
                     continue
@@ -693,6 +783,19 @@ class JsonCache:
                 shutil.rmtree(trash_path, ignore_errors=True)
             raise
         return trash_path if moved else None
+
+
+class _DirtyTrackingSuppression:
+    def __init__(self, cache: JsonCache) -> None:
+        self.cache = cache
+        self.previous = False
+
+    def __enter__(self) -> None:
+        self.previous = self.cache._dirty_tracking_suppressed
+        self.cache._dirty_tracking_suppressed = True
+
+    def __exit__(self, _exc_type: Any, _exc: Any, _traceback: Any) -> None:
+        self.cache._dirty_tracking_suppressed = self.previous
 
 
 def _cluster_title(cluster: dict[str, Any]) -> str:

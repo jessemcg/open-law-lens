@@ -50,6 +50,45 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertIn('`uv run open-law-lens extract-case "61 Cal.4th 813"`', cleaned)
         self.assertIn("`/tmp/workspace`", cleaned)
 
+    def test_research_cache_case_row_text_uses_slip_placeholder_citation(self) -> None:
+        cluster = {
+            "case_name_short": "In re L.G.",
+            "date_filed": "2026-03-06",
+            "docket": {"docket_number": "A173218"},
+            "precedential_status": "Published",
+        }
+
+        title, citation = OpenLawLensWindow._research_cache_case_row_text(cluster)
+
+        self.assertEqual(title, "In re L.G.")
+        self.assertEqual(citation, "(Mar. 6, 2026, A173218) ___ Cal.App.5th ___")
+
+    def test_research_cache_case_row_text_prefers_official_reporter_citation(self) -> None:
+        cluster = {
+            "case_name_short": "In re L.G.",
+            "date_filed": "2026-03-06",
+            "docket": {"docket_number": "A173218"},
+            "citations": [{"volume": "12", "reporter": "Cal.App.5th", "page": "345"}],
+        }
+
+        title, citation = OpenLawLensWindow._research_cache_case_row_text(cluster)
+
+        self.assertEqual(title, "In re L.G.")
+        self.assertEqual(citation, "(2026) 12 Cal.App.5th 345")
+
+    def test_research_cache_case_row_text_does_not_make_unpublished_placeholder(self) -> None:
+        cluster = {
+            "case_name_short": "In re L.G.",
+            "date_filed": "2026-03-06",
+            "docket": {"docket_number": "A173218"},
+            "precedential_status": "Unpublished",
+        }
+
+        title, citation = OpenLawLensWindow._research_cache_case_row_text(cluster)
+
+        self.assertEqual(title, "In re L.G.")
+        self.assertEqual(citation, "")
+
     def test_agent_launch_env_defaults_to_workspace_sandbox(self) -> None:
         class DummyCache:
             root = Path("/tmp/open-law-lens-cache")
@@ -692,6 +731,70 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertIn("Slip text.", payload.text)
         window.client.fetch_cluster_slip_opinion.assert_called_once()
 
+    def test_case_worker_uses_cached_slip_payload_before_courtlistener_blob(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir) / "cache")
+            cache.write_slip_opinion_payload(
+                "A173218",
+                {
+                    "case_number": "A173218",
+                    "source_url": "https://www4.courts.ca.gov/opinions/archive/A173218.PDF",
+                    "date_filed": "2026-03-06",
+                    "display": {
+                        "text": "[Slip opn. p. 1]\nSaved slip text.",
+                        "source_field": "slip_pdf",
+                        "page_markers": [
+                            {
+                                "page_label": "1",
+                                "marker_text": "[Slip opn. p. 1]",
+                                "start_offset": 0,
+                                "end_offset": 16,
+                                "source_field": "slip_pdf",
+                            }
+                        ],
+                    },
+                },
+            )
+
+            class DummyWindow:
+                def __init__(self) -> None:
+                    self.payloads = []
+                    self.client = MagicMock()
+                    self.client.cache = cache
+                    self.client.fetch_cluster_opinions.side_effect = AssertionError(
+                        "CourtListener opinion blob should not be fetched"
+                    )
+                    self.client.fetch_cluster_slip_opinion.side_effect = AssertionError(
+                        "Slip PDF should already be cached"
+                    )
+
+                def _start_reader_payload_render(self, payload):  # type: ignore[no-untyped-def]
+                    self.payloads.append(payload)
+                    return False
+
+                def _apply_case_error(self, *_args):  # type: ignore[no-untyped-def]
+                    raise AssertionError("case error should not be used")
+
+            window = DummyWindow()
+            cluster = {
+                "id": 42,
+                "case_name_short": "In re L.G.",
+                "precedential_status": "Published",
+                "date_filed": "2026-03-06",
+                "docket": {"docket_number": "A173218", "court": {"id": "calctapp1d"}},
+            }
+
+            with patch("open_law_lens.app.GLib.idle_add", side_effect=lambda func, *args: func(*args)):
+                OpenLawLensWindow._case_worker(window, cluster, 7, 8)  # type: ignore[arg-type]
+
+            window.client.fetch_cluster_opinions.assert_not_called()
+            window.client.fetch_cluster_slip_opinion.assert_not_called()
+            self.assertEqual(len(window.payloads), 1)
+            payload = window.payloads[0]
+            self.assertEqual(payload.pagination_mode, "slip")
+            self.assertEqual(payload.opinion_source, "Research Cache")
+            self.assertIn("Saved slip text.", payload.text)
+
     def test_forced_case_worker_uses_slip_opinion_without_courtlistener_blob_first(self) -> None:
         class DummyWindow:
             def __init__(self) -> None:
@@ -748,13 +851,6 @@ class AppReaderPayloadTests(unittest.TestCase):
         )
 
     def test_start_reader_payload_render_replaces_header_with_slip_citation(self) -> None:
-        class DummyButton:
-            def __init__(self) -> None:
-                self.visible = False
-
-            def set_visible(self, visible: bool) -> None:
-                self.visible = visible
-
         class DummyBuffer:
             def __init__(self) -> None:
                 self.text = ""
@@ -765,7 +861,6 @@ class AppReaderPayloadTests(unittest.TestCase):
         class DummyWindow:
             def __init__(self) -> None:
                 self.client = MagicMock()
-                self.reader_slip_pdf_button = DummyButton()
                 self.reader_buffer = DummyBuffer()
                 self.headers: list[tuple[str, str]] = []
                 self._research_cache_generation = 1
@@ -821,7 +916,6 @@ class AppReaderPayloadTests(unittest.TestCase):
 
         expected = "In re L.G. (Mar. 6, 2026, A173218) ___ Cal.App.5th ___"
         self.assertEqual(window.headers, [(expected, expected)])
-        self.assertTrue(window.reader_slip_pdf_button.visible)
 
     def test_case_number_direct_slip_lookup_uses_pdf_metadata_for_header_citation(self) -> None:
         class EmptySearchPage:

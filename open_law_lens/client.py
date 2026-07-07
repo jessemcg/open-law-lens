@@ -37,6 +37,7 @@ from .slip_opinions import (
     fetch_slip_opinion,
     fetch_slip_opinion_for_cluster,
     normalize_case_number,
+    slip_result_to_payload,
 )
 from .statutes import (
     LegInfoError,
@@ -1034,12 +1035,14 @@ class CourtListenerClient:
         *,
         refresh: bool = False,
     ) -> SlipOpinionResult:
-        return fetch_slip_opinion(
+        result = fetch_slip_opinion(
             case_number,
             self.cache,
             refresh=refresh,
             timeout=self.timeout,
         )
+        self.cache.write_slip_opinion_payload(result.case_number, slip_result_to_payload(result))
+        return result
 
     def fetch_cluster_slip_opinion(
         self,
@@ -1049,7 +1052,7 @@ class CourtListenerClient:
         force: bool = False,
         max_age_days: int = DEFAULT_SLIP_OPINION_MAX_AGE_DAYS,
     ) -> SlipOpinionResult:
-        return fetch_slip_opinion_for_cluster(
+        result = fetch_slip_opinion_for_cluster(
             cluster,
             self.cache,
             refresh=refresh,
@@ -1057,6 +1060,8 @@ class CourtListenerClient:
             max_age_days=max_age_days,
             timeout=self.timeout,
         )
+        self.cache.write_slip_opinion_payload(result.case_number, slip_result_to_payload(result))
+        return result
 
     def first_opinion_text(self, cluster: dict[str, Any], *, refresh: bool = False) -> str:
         opinions = self.reader_opinions(self.fetch_cluster_opinions(cluster, refresh=refresh))

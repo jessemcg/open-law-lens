@@ -130,9 +130,13 @@ from .scholar_search import (
 from .slip_opinions import (
     DEFAULT_SLIP_OPINION_MAX_AGE_DAYS,
     SlipOpinionError,
+    SlipOpinionResult,
     case_number_from_cluster,
+    display_from_payload,
     normalize_case_number,
+    slip_opinion_pdf_path,
     slip_metadata_from_display,
+    slip_result_to_payload,
 )
 from .speech import DEFAULT_SPEECH_QUESTION_FILE, normalize_speech_question_text
 from .rules import (
@@ -1302,6 +1306,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_display_cluster: dict[str, Any] | None = None
         self._active_research_set_id: int | None = None
         self._active_research_set_name = ""
+        self._active_research_set_dirty = False
         self._research_set_label: Gtk.Label | None = None
         self.reader_selection_pinpoint_button: Gtk.Button | None = None
         self.reader_subsequent_treatment_button: Gtk.Button | None = None
@@ -1310,7 +1315,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_pagination_mode = READER_PAGINATION_NONE
         self._reader_slip_source_url = ""
         self._reader_slip_case_number = ""
-        self.reader_slip_pdf_button: Gtk.Button | None = None
         self._case_load_generation = 0
         self._research_cache_generation = 0
         self._last_lookup_text = ""
@@ -1349,6 +1353,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._install_css()
         self._install_actions()
         self.set_content(self._build_ui())
+        self._restore_active_research_set()
         self._load_cached_cases()
         self.add_tick_callback(self._on_window_tick)
 
@@ -2099,14 +2104,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.reader_header_copy_button.connect("clicked", self._on_copy_reader_citation_clicked)
         self.reader_header_action_box.append(self.reader_header_copy_button)
 
-        self.reader_slip_pdf_button = Gtk.Button(icon_name="document-open-symbolic")
-        self.reader_slip_pdf_button.add_css_class("case-reader-header-action-button")
-        self.reader_slip_pdf_button.set_tooltip_text("Open slip opinion PDF")
-        self.reader_slip_pdf_button.set_valign(Gtk.Align.CENTER)
-        self.reader_slip_pdf_button.set_visible(False)
-        self.reader_slip_pdf_button.connect("clicked", self._on_open_slip_pdf_clicked)
-        self.reader_header_action_box.append(self.reader_slip_pdf_button)
-
         self.reader_selection_pinpoint_button = Gtk.Button(icon_name="insert-text-symbolic")
         self.reader_selection_pinpoint_button.add_css_class("case-reader-header-action-button")
         self.reader_selection_pinpoint_button.set_tooltip_text(
@@ -2502,8 +2499,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._reader_pagination_mode = READER_PAGINATION_NONE
             self._reader_slip_source_url = ""
             self._reader_slip_case_number = ""
-            if self.reader_slip_pdf_button is not None:
-                self.reader_slip_pdf_button.set_visible(False)
         self.reader_buffer.set_text(text)
         self._update_reader_selection_pinpoint_button()
         if page_markers:
@@ -2544,8 +2539,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_pagination_mode = payload.pagination_mode
         self._reader_slip_source_url = payload.slip_source_url
         self._reader_slip_case_number = payload.slip_case_number
-        if self.reader_slip_pdf_button is not None:
-            self.reader_slip_pdf_button.set_visible(bool(payload.slip_source_url))
         if payload.pagination_mode == READER_PAGINATION_SLIP:
             formatted = format_published_slip_opinion_citation(
                 payload.cluster,
@@ -2658,9 +2651,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_display_cluster = cluster
         self.reader_header_label.set_text(header)
         self.reader_header_copy_button.set_visible(citation is not None)
-        slip_pdf_button = getattr(self, "reader_slip_pdf_button", None)
-        if slip_pdf_button is not None:
-            slip_pdf_button.set_visible(bool(getattr(self, "_reader_slip_source_url", "")))
         if self.reader_selection_pinpoint_button is not None:
             has_selected_authority = (
                 self._reader_display_cluster is not None
@@ -2698,14 +2688,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._set_status("No citation available to copy.")
             return
         self._copy_formatted_citation(self._reader_header_citation)
-
-    def _on_open_slip_pdf_clicked(self, _button: Gtk.Button) -> None:
-        source_url = getattr(self, "_reader_slip_source_url", "")
-        if not source_url:
-            self._set_status("No slip opinion PDF is available for this case.")
-            return
-        if self._launch_external_url(source_url):
-            self._set_status("Opened slip opinion PDF in browser.")
 
     def _on_reader_selection_changed(self, *_args: object) -> None:
         self._update_reader_selection_pinpoint_button()
@@ -4020,21 +4002,80 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         except OSError as exc:
             GLib.idle_add(self._set_status, f"Research Cache cleared, but old files remain: {exc}")
 
-    def _set_active_research_set(self, research_set: ResearchSet | None) -> None:
+    def _restore_active_research_set(self) -> None:
+        metadata = self.client.cache.active_research_set_metadata()
+        if metadata is not None:
+            research_set = self.client.library.read_research_set(
+                int(metadata["active_research_set_id"])
+            )
+            if research_set is not None:
+                self._set_active_research_set(
+                    research_set,
+                    dirty=bool(metadata.get("dirty")),
+                )
+                return
+            self.client.cache.clear_active_research_set()
+        try:
+            matched = self.client.library.matching_research_set_for_cache(self.client.cache)
+        except (OSError, RuntimeError, sqlite3.Error):
+            matched = None
+        self._set_active_research_set(matched)
+
+    def _set_active_research_set(
+        self,
+        research_set: ResearchSet | None,
+        *,
+        dirty: bool = False,
+    ) -> None:
         if research_set is None:
             self._active_research_set_id = None
             self._active_research_set_name = ""
+            self._active_research_set_dirty = False
         else:
             self._active_research_set_id = research_set.set_id
             self._active_research_set_name = research_set.name
+            self._active_research_set_dirty = bool(dirty)
+        refresh_label = getattr(self, "_refresh_research_set_label", None)
+        if callable(refresh_label):
+            refresh_label()
+            return
+        label = getattr(self, "_research_set_label", None)
+        if label is None:
+            return
+        if self._active_research_set_name:
+            label.set_text(f"Set: {self._active_research_set_name}")
+            label.set_visible(True)
+        else:
+            label.set_text("")
+            label.set_visible(False)
+
+    def _refresh_active_research_set_from_cache(self) -> None:
+        metadata = self.client.cache.active_research_set_metadata()
+        if metadata is None:
+            self._active_research_set_id = None
+            self._active_research_set_name = ""
+            self._active_research_set_dirty = False
+        else:
+            self._active_research_set_id = int(metadata["active_research_set_id"])
+            self._active_research_set_name = str(metadata["active_research_set_name"])
+            self._active_research_set_dirty = bool(metadata.get("dirty"))
+        self._refresh_research_set_label()
+
+    def _refresh_research_set_label(self) -> None:
         if self._research_set_label is None:
             return
         if self._active_research_set_name:
-            self._research_set_label.set_text(f"Set: {self._active_research_set_name}")
+            suffix = " (unsaved changes)" if self._active_research_set_dirty else ""
+            self._research_set_label.set_text(f"Set: {self._active_research_set_name}{suffix}")
             self._research_set_label.set_visible(True)
         else:
-            self._research_set_label.set_text("")
-            self._research_set_label.set_visible(False)
+            count = self._research_cache_authority_count()
+            if count:
+                self._research_set_label.set_text("Unattached Research Cache")
+                self._research_set_label.set_visible(True)
+            else:
+                self._research_set_label.set_text("")
+                self._research_set_label.set_visible(False)
 
     def _research_cache_authority_count(self) -> int:
         return (
@@ -5437,6 +5478,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._statutes = statutes
         self._rules = rules
         self._agent_answers = self.client.cache.list_agent_answer_entries()
+        self._refresh_active_research_set_from_cache()
         self._selected_cluster = None
         self._selected_statute = None
         self._selected_rule = None
@@ -5471,7 +5513,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             row_box.set_margin_start(8)
             row_box.set_margin_end(8)
             cluster_id = cluster_id_from_cluster(cluster)
-            formatted_citation = format_official_california_citation(cluster)
             actions_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
             actions_box.set_valign(Gtk.Align.START)
             remove_button = Gtk.Button(icon_name="user-trash-symbolic")
@@ -5485,16 +5526,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             row_box.append(actions_box)
             text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
             text_box.set_hexpand(True)
-            title_text = cluster_short_title(cluster)
+            title_text, citation_text = self._research_cache_case_row_text(cluster)
             title = Gtk.Label(label=title_text, xalign=0)
             title.set_wrap(True)
             text_box.append(title)
-            official_citation = ""
-            if formatted_citation is not None:
-                title_prefix = f"{title_text} "
-                official_citation = formatted_citation.plain_text.removeprefix(title_prefix)
-            if official_citation:
-                citation = Gtk.Label(label=official_citation, xalign=0)
+            if citation_text:
+                citation = Gtk.Label(label=citation_text, xalign=0)
                 citation.add_css_class("dim-label")
                 citation.set_wrap(True)
                 text_box.append(citation)
@@ -5513,7 +5550,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             row._open_law_lens_cache_sort_key = self._research_cache_row_sort_key(
                 case_entries.get(cluster_id, {}),
                 title_text,
-                official_citation,
+                citation_text,
                 "case",
                 cluster_id,
             )
@@ -5960,6 +5997,22 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.reader_buffer.set_text(message)
         return False
 
+    @staticmethod
+    def _research_cache_case_row_text(cluster: dict[str, Any]) -> tuple[str, str]:
+        title_text = cluster_short_title(cluster)
+        formatted_citation = format_official_california_citation(cluster)
+        if formatted_citation is None:
+            status = str(cluster.get("precedential_status") or cluster.get("status") or "").strip()
+            if status == "Published":
+                formatted_citation = format_published_slip_opinion_citation(cluster)
+        if formatted_citation is None:
+            return title_text, ""
+        title_prefix = f"{title_text} "
+        citation_text = formatted_citation.plain_text.removeprefix(title_prefix).strip()
+        if citation_text == formatted_citation.plain_text and citation_text.startswith(title_text):
+            citation_text = citation_text[len(title_text):].strip()
+        return title_text, citation_text
+
     def _on_case_selected(self, _listbox: Gtk.ListBox, row: Gtk.ListBoxRow | None) -> None:
         if row is None:
             return
@@ -6064,6 +6117,33 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_status(f"Loading {title}...")
         return generation
 
+    def _cached_slip_opinion_for_cluster(self, cluster: dict[str, Any]) -> SlipOpinionResult | None:
+        case_number = case_number_from_cluster(cluster)
+        if not case_number:
+            return None
+        payload = self.client.cache.read_slip_opinion_payload(case_number)
+        if not isinstance(payload, dict):
+            return None
+        display = display_from_payload(payload.get("display"))
+        if display is None:
+            return None
+        return SlipOpinionResult(
+            case_number=str(payload.get("case_number") or case_number),
+            source_url=str(payload.get("source_url") or ""),
+            pdf_path=slip_opinion_pdf_path(self.client.cache, case_number),
+            display=display,
+            date_filed=str(payload.get("date_filed") or cluster.get("date_filed") or ""),
+        )
+
+    def _cache_slip_opinion(self, cluster: dict[str, Any], slip: SlipOpinionResult) -> None:
+        case_number = slip.case_number or case_number_from_cluster(cluster)
+        if not case_number:
+            return
+        payload = slip_result_to_payload(slip)
+        if not payload.get("date_filed") and cluster.get("date_filed"):
+            payload["date_filed"] = str(cluster.get("date_filed") or "")
+        self.client.cache.write_slip_opinion_payload(case_number, payload)
+
     def _case_worker(
         self,
         cluster: dict[str, Any],
@@ -6073,6 +6153,21 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     ) -> None:
         cluster_id = cluster_id_from_cluster(cluster)
         try:
+            cached_slip = OpenLawLensWindow._cached_slip_opinion_for_cluster(self, cluster)
+            if cached_slip is not None:
+                payload = build_case_reader_payload(
+                    cluster,
+                    [cached_slip.display],
+                    generation=generation,
+                    cache_generation=cache_generation,
+                    opinion_ids=(),
+                    opinion_source="Research Cache",
+                    pagination_mode=READER_PAGINATION_SLIP,
+                    slip_source_url=cached_slip.source_url,
+                    slip_case_number=cached_slip.case_number,
+                )
+                GLib.idle_add(self._start_reader_payload_render, payload)
+                return
             if force_slip_opinion:
                 GLib.idle_add(
                     self._set_reader_busy,
@@ -6088,6 +6183,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 except (SlipOpinionError, ValueError, OSError):
                     slip = None
                 if slip is not None:
+                    OpenLawLensWindow._cache_slip_opinion(self, cluster, slip)
                     GLib.idle_add(
                         self._set_reader_busy,
                         True,
@@ -6129,6 +6225,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 except (SlipOpinionError, ValueError, OSError):
                     slip = None
                 if slip is not None:
+                    OpenLawLensWindow._cache_slip_opinion(self, cluster, slip)
                     payload = build_case_reader_payload(
                         cluster,
                         [slip.display],

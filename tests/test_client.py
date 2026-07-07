@@ -1492,6 +1492,10 @@ class ClientTests(unittest.TestCase):
             self.assertIs(result, expected)
             fetch.assert_called_once()
             self.assertEqual(fetch.call_args.args[1], cache)
+            cached_slip = cache.read_slip_opinion_payload("A173218")
+            self.assertIsNotNone(cached_slip)
+            assert cached_slip is not None
+            self.assertEqual(cached_slip["display"]["text"], "Slip text")
             self.assertEqual(library.saved_clusters(), [])
 
     def test_reader_opinions_prefers_combined_opinion(self) -> None:

@@ -232,6 +232,12 @@ class LibraryTests(unittest.TestCase):
             saved = library.save_research_set("Example_research", cache)
 
             self.assertEqual(saved.name, "Example_research")
+            metadata = cache.active_research_set_metadata()
+            self.assertIsNotNone(metadata)
+            assert metadata is not None
+            self.assertEqual(metadata["active_research_set_id"], saved.set_id)
+            self.assertEqual(metadata["active_research_set_name"], "Example_research")
+            self.assertFalse(metadata["dirty"])
             self.assertEqual(saved.item_count, 4)
             self.assertEqual(saved.case_count, 1)
             self.assertEqual(saved.statute_count, 1)
@@ -245,6 +251,12 @@ class LibraryTests(unittest.TestCase):
             loaded = library.load_research_set_into_cache("Example_research", cache)
 
             self.assertEqual(loaded.set_id, saved.set_id)
+            metadata = cache.active_research_set_metadata()
+            self.assertIsNotNone(metadata)
+            assert metadata is not None
+            self.assertEqual(metadata["active_research_set_id"], saved.set_id)
+            self.assertEqual(metadata["active_research_set_name"], "Example_research")
+            self.assertFalse(metadata["dirty"])
             self.assertEqual([entry["cluster_id"] for entry in cache.list_case_entries()], ["42"])
             self.assertEqual([entry["statute_id"] for entry in cache.list_statute_entries()], ["WIC:300"])
             self.assertEqual([entry["rule_id"] for entry in cache.list_rule_entries()], ["CRC:8.11"])
@@ -267,10 +279,90 @@ class LibraryTests(unittest.TestCase):
                 library.save_research_set("Example_research", cache)
 
             cache.upsert_cluster({"id": 43, "case_name": "Second v. State"})
+            self.assertTrue(cache.active_research_set_metadata()["dirty"])
             replaced = library.save_research_set("Example_research", cache, replace=True)
 
             self.assertEqual(replaced.set_id, first.set_id)
             self.assertEqual(replaced.case_count, 2)
+            self.assertFalse(cache.active_research_set_metadata()["dirty"])
+
+    def test_matching_research_set_for_cache_attaches_exact_leftover_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            library = CaseLibrary(root / "library.sqlite3")
+            library.ensure()
+            cache = JsonCache(root / "cache")
+            cache.upsert_cluster({"id": 42, "case_name": "Example v. State"})
+
+            saved = library.save_research_set("Example_research", cache)
+            cache.clear_active_research_set()
+
+            matched = library.matching_research_set_for_cache(cache)
+
+            self.assertIsNotNone(matched)
+            assert matched is not None
+            self.assertEqual(matched.set_id, saved.set_id)
+            metadata = cache.active_research_set_metadata()
+            self.assertIsNotNone(metadata)
+            assert metadata is not None
+            self.assertEqual(metadata["active_research_set_id"], saved.set_id)
+            self.assertFalse(metadata["dirty"])
+
+    def test_matching_research_set_for_cache_ignores_partial_leftover_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            library = CaseLibrary(root / "library.sqlite3")
+            library.ensure()
+            cache = JsonCache(root / "cache")
+            cache.upsert_cluster({"id": 42, "case_name": "Example v. State"})
+            library.save_research_set("Example_research", cache)
+            cache.clear_active_research_set()
+            cache.upsert_cluster({"id": 43, "case_name": "Second v. State"})
+
+            self.assertIsNone(library.matching_research_set_for_cache(cache))
+            self.assertIsNone(cache.active_research_set_metadata())
+
+    def test_research_set_round_trips_cached_slip_opinion_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            library = CaseLibrary(root / "library.sqlite3")
+            library.ensure()
+            cache = JsonCache(root / "cache")
+            cache.ensure()
+            cache.upsert_cluster(
+                {
+                    "id": 42,
+                    "case_name_short": "In re L.G.",
+                    "precedential_status": "Published",
+                    "date_filed": "2026-03-06",
+                    "docket": {"docket_number": "A173218"},
+                }
+            )
+            slip_payload = {
+                "case_number": "A173218",
+                "source_url": "https://www4.courts.ca.gov/opinions/archive/A173218.PDF",
+                "date_filed": "2026-03-06",
+                "display": {
+                    "text": "[Slip opn. p. 1]\nSlip text.",
+                    "source_field": "slip_pdf",
+                    "page_markers": [
+                        {
+                            "page_label": "1",
+                            "marker_text": "[Slip opn. p. 1]",
+                            "start_offset": 0,
+                            "end_offset": 16,
+                            "source_field": "slip_pdf",
+                        }
+                    ],
+                },
+            }
+            cache.write_slip_opinion_payload("A173218", slip_payload)
+
+            saved = library.save_research_set("Example_research", cache)
+            cache.clear()
+            library.load_research_set_into_cache(saved.set_id, cache)
+
+            self.assertEqual(cache.read_slip_opinion_payload("A173218"), slip_payload)
 
     def test_research_sets_survive_cache_clear_and_can_be_deleted(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

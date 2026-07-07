@@ -54,6 +54,65 @@ class SlipOpinionResult:
         return payload
 
 
+def display_to_payload(display: DisplayText) -> dict[str, Any]:
+    return {
+        "text": display.text,
+        "source_field": display.source_field,
+        "page_markers": [
+            {
+                "page_label": marker.page_label,
+                "marker_text": marker.marker_text,
+                "start_offset": marker.start_offset,
+                "end_offset": marker.end_offset,
+                "source_field": marker.source_field,
+            }
+            for marker in display.page_markers
+        ],
+    }
+
+
+def display_from_payload(payload: Any) -> DisplayText | None:
+    if not isinstance(payload, dict):
+        return None
+    text = str(payload.get("text") or "")
+    if not text.strip():
+        return None
+    markers: list[PageMarker] = []
+    raw_markers = payload.get("page_markers")
+    if isinstance(raw_markers, list):
+        for marker in raw_markers:
+            if not isinstance(marker, dict):
+                continue
+            try:
+                start_offset = int(marker.get("start_offset"))
+                end_offset = int(marker.get("end_offset"))
+            except (TypeError, ValueError):
+                continue
+            markers.append(
+                PageMarker(
+                    page_label=str(marker.get("page_label") or ""),
+                    marker_text=str(marker.get("marker_text") or ""),
+                    start_offset=start_offset,
+                    end_offset=end_offset,
+                    source_field=str(marker.get("source_field") or SLIP_PAGE_SOURCE_FIELD),
+                )
+            )
+    return DisplayText(
+        text=text,
+        source_field=str(payload.get("source_field") or SLIP_PAGE_SOURCE_FIELD),
+        page_markers=markers,
+    )
+
+
+def slip_result_to_payload(result: SlipOpinionResult) -> dict[str, Any]:
+    return {
+        "case_number": result.case_number,
+        "source_url": result.source_url,
+        "date_filed": result.date_filed,
+        "display": display_to_payload(result.display),
+    }
+
+
 def slip_opinion_url(case_number: str) -> str:
     clean = normalize_case_number(case_number)
     if not clean:

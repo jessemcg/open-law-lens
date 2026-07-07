@@ -466,10 +466,53 @@ class CacheTests(unittest.TestCase):
 
             self.assertFalse(cache.remove_case("missing"))
 
+    def test_active_research_set_metadata_marks_dirty_on_visible_cache_change(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cache.set_active_research_set(7, "Example_research")
+
+            self.assertFalse(cache.active_research_set_metadata()["dirty"])
+
+            cache.upsert_cluster({"id": 42, "case_name": "Example v. State"})
+
+            metadata = cache.active_research_set_metadata()
+            self.assertIsNotNone(metadata)
+            assert metadata is not None
+            self.assertEqual(metadata["active_research_set_id"], 7)
+            self.assertEqual(metadata["active_research_set_name"], "Example_research")
+            self.assertTrue(metadata["dirty"])
+
+    def test_dirty_tracking_can_be_suppressed_for_clean_loads(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cache.set_active_research_set(7, "Example_research")
+
+            with cache.suppress_dirty_tracking():
+                cache.upsert_cluster({"id": 42, "case_name": "Example v. State"})
+
+            metadata = cache.active_research_set_metadata()
+            self.assertIsNotNone(metadata)
+            assert metadata is not None
+            self.assertFalse(metadata["dirty"])
+
+    def test_slip_opinion_payload_round_trips(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            payload = {
+                "case_number": "A173218",
+                "source_url": "https://www4.courts.ca.gov/opinions/archive/A173218.PDF",
+                "display": {"text": "Slip text.", "page_markers": []},
+            }
+
+            cache.write_slip_opinion_payload("A173218", payload)
+
+            self.assertEqual(cache.read_slip_opinion_payload("A173218"), payload)
+
     def test_detach_for_clear_moves_resources_and_preserves_unrelated_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             cache = JsonCache(root)
+            cache.set_active_research_set(7, "Example_research")
             cache.write_lookup("576 U.S. 644", [{"status": 200}])
             cache.upsert_cluster({"id": 42, "case_name": "Example v. State"})
             cache.write_resource("opinions", "10", {"id": 10})
@@ -500,9 +543,11 @@ class CacheTests(unittest.TestCase):
             self.assertTrue((trash_path / "cases_index.json").is_file())
             self.assertTrue((trash_path / "rules_index.json").is_file())
             self.assertTrue((trash_path / "agent_answers_index.json").is_file())
+            self.assertTrue((trash_path / "metadata.json").is_file())
             self.assertEqual(cache.list_lookups(), [])
             self.assertEqual(cache.list_case_entries(), [])
             self.assertEqual(cache.list_agent_answer_entries(), [])
+            self.assertIsNone(cache.active_research_set_metadata())
             self.assertFalse(cache.selected_case_entries())
             self.assertTrue((root / "lookups").is_dir())
             self.assertTrue((root / "clusters").is_dir())
@@ -519,10 +564,12 @@ class CacheTests(unittest.TestCase):
             cache.upsert_cluster({"id": 42, "case_name": "Example v. State"})
             cache.write_resource("opinions", "10", {"id": 10})
             answer_id = cache.save_agent_answer("The answer to save.")
+            cache.set_active_research_set(7, "Example_research")
             cache.clear()
             self.assertEqual(cache.list_lookups(), [])
             self.assertEqual(cache.list_case_entries(), [])
             self.assertEqual(cache.list_agent_answer_entries(), [])
+            self.assertIsNone(cache.active_research_set_metadata())
             self.assertIsNone(cache.read_agent_answer(answer_id))
             self.assertFalse(cache.selected_case_entries())
             self.assertTrue((root / "lookups").is_dir())

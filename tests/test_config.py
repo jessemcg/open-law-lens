@@ -45,6 +45,11 @@ class ConfigTests(unittest.TestCase):
                 "Do not wrap legal authorities or citations in backticks",
                 config.general_agent_prompt_template,
             )
+            self.assertIn(
+                "recent published California slip opinion",
+                config.general_agent_prompt_template,
+            )
+            self.assertIn("Cal.App.5th", config.general_agent_prompt_template)
             self.assertFalse(config.general_agent_xhigh_reasoning)
             self.assertFalse(config.case_agent_xhigh_reasoning)
             self.assertFalse(config.appeal_issue_xhigh_reasoning)
@@ -159,6 +164,37 @@ Question:
                 config.general_agent_prompt_template,
             )
 
+    def test_prior_default_general_prompt_migrates_to_recent_slip_guidance(self) -> None:
+        previous_default = """You are the Open Law Lens General California Law Agent.
+
+Answer only legal questions about California law. Use Open Law Lens CLI commands tied directly to CourtListener APIs for legal authority and legal research.
+
+For California case-law discovery, start with `uv run open-law-lens case-search "<query>"`. Treat search results as leads only. Extract the most relevant candidate opinions with `uv run open-law-lens extract-case --cluster-id <cluster_id>` before relying on a case in the answer.
+
+Confine research to California state law unless the user's question explicitly requires federal law. Prefer published California Supreme Court and California Court of Appeal authority when available. Use `case-search --include-unpublished` only when unpublished cases are useful for context, not as controlling authority.
+
+Use Google Scholar or Codex web search only as a fallback to verify or fill in an official reporter citation or official text when CourtListener metadata is missing or suspect. State when a citation remains uncertain.
+
+In the final answer, use normal legal prose for case names, statutes, rules, and citations. Do not wrap legal authorities or citations in backticks. Reserve backticks only for CLI commands, file paths, and other literal technical text.
+
+Question:
+{question}"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text(
+                json.dumps({"general_agent_prompt_template": previous_default}),
+                encoding="utf-8",
+            )
+
+            config = load_config(path)
+
+            self.assertEqual(config.general_agent_prompt_template, DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE)
+            self.assertIn(
+                "recent published California slip opinion",
+                config.general_agent_prompt_template,
+            )
+            self.assertIn("Cal.App.5th", config.general_agent_prompt_template)
+
     def test_custom_general_prompt_is_preserved(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "config.json"
@@ -247,8 +283,62 @@ Question:
             self.assertIn("Record citation format", config.appeal_issue_agent_prompt_template)
             self.assertIn("Argument to assess", config.appeal_issue_agent_prompt_template)
             self.assertIn("official citation or case name", config.appeal_issue_agent_prompt_template)
+            self.assertIn(
+                "recent published California slip opinion",
+                config.appeal_issue_agent_prompt_template,
+            )
             self.assertIn("normal legal prose", config.appeal_issue_agent_prompt_template)
             self.assertNotIn("Issue to assess", config.appeal_issue_agent_prompt_template)
+
+    def test_prior_default_appeal_prompt_migrates_to_recent_slip_guidance(self) -> None:
+        previous_default = """You are the Open Law Lens Appeal Issue Assessment Agent.
+
+Assess one possible California appellate argument against the user's fact pattern. Use Open Law Lens CLI commands tied directly to CourtListener APIs for legal authority and legal research.
+
+Read the extracted fact-pattern text first:
+{fact_pattern_path}
+
+Original fact-pattern file:
+{fact_pattern_source_path}
+
+Record citation format for final answers:
+- Cite factual claims using record citations from the fact-pattern text, the way an appellate lawyer would, such as `(CT 335-343.)`, `(RT 6, 34; CT 140, 190.)`, or `(RT 22-34; CRT 17-22; CT 295-301.)`.
+- Do not cite local paths, extracted-text filenames, raw file pages, or line numbers in the final answer. Use those only as internal search leads.
+- Put record citations in the same sentence or paragraph as the factual claim they support.
+- Combine multiple record citations into one parenthetical only when they support the same point.
+- If the fact-pattern text does not include a usable record citation for an important fact, say that the citation is missing or uncertain instead of inventing one.
+
+Argument to assess:
+{issue}
+
+Research California law with Open Law Lens CLI commands. For case-law discovery, start with `uv run open-law-lens case-search "<query>"`. Treat search results as leads only. When a promising search result has an official citation or recognizable case name, try `uv run open-law-lens extract-case "<official citation or case name>"` first so saved durable-library text can be reused. Use `uv run open-law-lens extract-case --cluster-id <cluster_id>` only when citation/name extraction fails or no reliable citation/name is available. Use `uv run open-law-lens extract-statute "<citation>"` and `uv run open-law-lens extract-rule "<citation>"` when statutes or rules matter.
+
+Confine research to California state law unless the argument explicitly requires federal law. Prefer published California Supreme Court and California Court of Appeal authority. Use unpublished cases only for context, not as controlling authority.
+
+Analyze preservation, standard of review, factual support, governing law, prejudice, likely respondent arguments, and missing record facts that could change the assessment.
+
+In the final answer, use normal legal prose for case names, statutes, rules, and citations. Reserve backticks for CLI commands, file paths, and other literal technical text.
+
+End with a rating line exactly in this form:
+Rating: Strong, Medium, Weak, or Frivolous"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text(
+                json.dumps({"appeal_issue_agent_prompt_template": previous_default}),
+                encoding="utf-8",
+            )
+
+            config = load_config(path)
+
+            self.assertEqual(
+                config.appeal_issue_agent_prompt_template,
+                DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
+            )
+            self.assertIn(
+                "recent published California slip opinion",
+                config.appeal_issue_agent_prompt_template,
+            )
+            self.assertIn("Cal.App.5th", config.appeal_issue_agent_prompt_template)
 
     def test_custom_appeal_prompt_is_preserved(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

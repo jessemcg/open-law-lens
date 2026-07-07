@@ -31,6 +31,7 @@ SCHEMA_VERSION = "2"
 OFFICIAL_CITATION_ONLY_NORMALIZED_KEY = "official_citation_only_normalized_v2"
 CASE_TITLES_NORMALIZED_KEY = "case_titles_normalized_v1"
 REPORTER_ONLY_IMPORTED_NAMES_NORMALIZED_KEY = "reporter_only_imported_names_normalized_v1"
+RESEARCH_SET_SLIP_PAYLOAD_KEY = "_open_law_lens_slip_opinion"
 TEXT_FIELDS = (
     "html_with_citations",
     "plain_text",
@@ -174,6 +175,34 @@ def _external_import_primary_citation_key(cluster: dict[str, Any]) -> str:
 def _external_import_matches_lookup(cluster: dict[str, Any], normalized_citation: str) -> bool:
     primary = _external_import_primary_citation_key(cluster)
     return not primary or primary == _citation_lookup_key(normalized_citation)
+
+
+def _case_number_from_cluster_payload(cluster: dict[str, Any]) -> str:
+    candidates: list[object] = [
+        cluster.get("docket_number"),
+        cluster.get("docketNumber"),
+        cluster.get("case_number"),
+        cluster.get("caseNumber"),
+        cluster.get("slug"),
+        cluster.get("absolute_url"),
+    ]
+    docket = cluster.get("docket")
+    if isinstance(docket, dict):
+        candidates.extend(
+            [
+                docket.get("docket_number"),
+                docket.get("docketNumber"),
+                docket.get("case_number"),
+                docket.get("caseNumber"),
+            ]
+        )
+    for candidate in candidates:
+        if not isinstance(candidate, str):
+            continue
+        match = re.search(r"\b([A-Z]\d{6})\b", candidate, flags=re.IGNORECASE)
+        if match:
+            return match.group(1).upper()
+    return ""
 
 
 def _filter_lookup_result_for_citation(
@@ -1331,6 +1360,7 @@ class CaseLibrary:
         result = self.read_research_set(clean_name)
         if result is None:
             raise RuntimeError("Saved research set could not be read.")
+        cache.set_active_research_set(result.set_id, result.name, dirty=False)
         return result
 
     def _research_set_items_from_cache(self, cache: JsonCache) -> list[ResearchSetItem]:
@@ -1343,7 +1373,20 @@ class CaseLibrary:
             cluster = cache.read_cached_cluster(cluster_id)
             if not isinstance(cluster, dict):
                 continue
-            self.upsert_cluster(cluster)
+            cluster_payload = dict(cluster)
+            cluster_payload.pop(RESEARCH_SET_SLIP_PAYLOAD_KEY, None)
+            self.upsert_cluster(cluster_payload)
+            case_number = _case_number_from_cluster_payload(cluster_payload)
+            slip_payload = (
+                cache.read_slip_opinion_payload(case_number)
+                if case_number
+                else None
+            )
+            research_set_payload = (
+                {**cluster_payload, RESEARCH_SET_SLIP_PAYLOAD_KEY: slip_payload}
+                if isinstance(slip_payload, dict)
+                else cluster_payload
+            )
             opinion_ids = [
                 str(value).strip()
                 for value in entry.get("opinion_ids", [])
@@ -1353,7 +1396,7 @@ class CaseLibrary:
             for opinion_id in opinion_ids:
                 opinion = cache.read_resource("opinions", opinion_id)
                 if isinstance(opinion, dict):
-                    saved_id = self.upsert_opinion(opinion, cluster=cluster)
+                    saved_id = self.upsert_opinion(opinion, cluster=cluster_payload)
                     if saved_id:
                         saved_opinion_ids.append(saved_id)
             if saved_opinion_ids:
@@ -1362,9 +1405,9 @@ class CaseLibrary:
                 ResearchSetItem(
                     item_type="case",
                     authority_id=cluster_id,
-                    title=str(entry.get("title") or _cluster_title(cluster)),
-                    citation=str(entry.get("citation_text") or _cluster_citation_line(cluster)),
-                    payload=cluster,
+                    title=str(entry.get("title") or _cluster_title(cluster_payload)),
+                    citation=str(entry.get("citation_text") or _cluster_citation_line(cluster_payload)),
+                    payload=research_set_payload,
                     position=position,
                     agent_selected=bool(entry.get("agent_selected")),
                 )
@@ -1428,6 +1471,50 @@ class CaseLibrary:
             )
             position += 1
         return items
+
+    def matching_research_set_for_cache(self, cache: JsonCache) -> ResearchSet | None:
+        cache_signature = self._cache_research_set_signature(cache)
+        if not cache_signature:
+            return None
+        for research_set in self.list_research_sets():
+            candidate = self.read_research_set(research_set.set_id)
+            if candidate is None:
+                continue
+            if self._research_set_signature(candidate.items) == cache_signature:
+                cache.set_active_research_set(candidate.set_id, candidate.name, dirty=False)
+                return candidate
+        return None
+
+    @staticmethod
+    def _research_set_signature(items: list[ResearchSetItem]) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            sorted(
+                (item.item_type, item.authority_id)
+                for item in items
+                if item.item_type and item.authority_id
+            )
+        )
+
+    @staticmethod
+    def _cache_research_set_signature(cache: JsonCache) -> tuple[tuple[str, str], ...]:
+        identifiers: list[tuple[str, str]] = []
+        identifiers.extend(
+            ("case", str(entry.get("cluster_id") or "").strip())
+            for entry in cache.list_case_entries()
+        )
+        identifiers.extend(
+            ("statute", str(entry.get("statute_id") or "").strip())
+            for entry in cache.list_statute_entries()
+        )
+        identifiers.extend(
+            ("rule", str(entry.get("rule_id") or "").strip())
+            for entry in cache.list_rule_entries()
+        )
+        identifiers.extend(
+            ("agent_answer", str(entry.get("answer_id") or "").strip())
+            for entry in cache.list_agent_answer_entries()
+        )
+        return tuple(sorted((item_type, authority_id) for item_type, authority_id in identifiers if authority_id))
 
     def list_research_sets(self) -> list[ResearchSet]:
         with self.connection() as conn:
@@ -1550,31 +1637,41 @@ class CaseLibrary:
         research_set = self.read_research_set(name_or_id)
         if research_set is None:
             raise ValueError(f"Research set not found: {name_or_id}")
-        cache.clear()
-        for item in research_set.items:
-            if item.item_type == "case":
-                cluster_id = cache.upsert_cluster(item.payload)
-                if item.agent_selected:
-                    cache.set_agent_selected(cluster_id or item.authority_id, True)
-            elif item.item_type == "statute":
-                statute_id = cache.upsert_statute(item.payload)
-                if item.agent_selected:
-                    cache.set_statute_agent_selected(statute_id or item.authority_id, True)
-            elif item.item_type == "rule":
-                rule_id = cache.upsert_rule(item.payload)
-                if item.agent_selected:
-                    cache.set_rule_agent_selected(rule_id or item.authority_id, True)
-            elif item.item_type == "agent_answer":
-                text = str(item.payload.get("text") or "").strip()
-                if not text:
-                    continue
-                answer_id = cache.save_agent_answer(
-                    text,
-                    mode=str(item.payload.get("mode") or item.citation),
-                    title=item.title,
-                )
-                if item.agent_selected:
-                    cache.set_agent_answer_selected(answer_id or item.authority_id, True)
+        with cache.suppress_dirty_tracking():
+            cache.clear()
+            for item in research_set.items:
+                if item.item_type == "case":
+                    cluster_payload = dict(item.payload)
+                    slip_payload = cluster_payload.pop(RESEARCH_SET_SLIP_PAYLOAD_KEY, None)
+                    cluster_id = cache.upsert_cluster(cluster_payload)
+                    if isinstance(slip_payload, dict):
+                        case_number = (
+                            str(slip_payload.get("case_number") or "").strip()
+                            or _case_number_from_cluster_payload(cluster_payload)
+                        )
+                        if case_number:
+                            cache.write_slip_opinion_payload(case_number, slip_payload)
+                    if item.agent_selected:
+                        cache.set_agent_selected(cluster_id or item.authority_id, True)
+                elif item.item_type == "statute":
+                    statute_id = cache.upsert_statute(item.payload)
+                    if item.agent_selected:
+                        cache.set_statute_agent_selected(statute_id or item.authority_id, True)
+                elif item.item_type == "rule":
+                    rule_id = cache.upsert_rule(item.payload)
+                    if item.agent_selected:
+                        cache.set_rule_agent_selected(rule_id or item.authority_id, True)
+                elif item.item_type == "agent_answer":
+                    text = str(item.payload.get("text") or "").strip()
+                    if not text:
+                        continue
+                    answer_id = cache.save_agent_answer(
+                        text,
+                        mode=str(item.payload.get("mode") or item.citation),
+                        title=item.title,
+                    )
+                    if item.agent_selected:
+                        cache.set_agent_answer_selected(answer_id or item.authority_id, True)
         with self.connection() as conn:
             conn.execute(
                 "UPDATE research_sets SET last_accessed = ? WHERE set_id = ?",
@@ -1583,6 +1680,7 @@ class CaseLibrary:
         updated = self.read_research_set(research_set.set_id)
         if updated is None:
             raise RuntimeError("Loaded research set could not be read.")
+        cache.set_active_research_set(updated.set_id, updated.name, dirty=False)
         return updated
 
     def official_pagination_audit(self) -> list[LibraryPruneCandidate]:
