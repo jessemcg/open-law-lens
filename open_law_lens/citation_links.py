@@ -60,6 +60,21 @@ FULL_OFFICIAL_CITATION_RE = re.compile(
     rf"(?P<citation>{REPORTER_CITATION_PATTERN})"
     r")\b",
 )
+SLIP_PUBLISHED_CITATION_RE = re.compile(
+    r"\b(?P<full>"
+    rf"(?P<name>{CASE_NAME_PATTERN})"
+    r"\s+\("
+    r"(?P<date>"
+    r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?\s+"
+    r"\d{1,2},\s+\d{4}"
+    r")"
+    r"\s*,\s*"
+    r"(?P<case_number>[A-Z]\d{6})"
+    r"\)\s+"
+    r"_{3,}\s+Cal\.App\.5th\s+_{3,}"
+    r")\b",
+    re.IGNORECASE,
+)
 SUPRA_CASE_NAME_RE = re.compile(
     rf"\b(?P<name>{CASE_NAME_PATTERN}|{SHORT_FORM_CASE_NAME_PATTERN})\s*,\s*supra\b"
 )
@@ -128,12 +143,31 @@ def cited_case_links(
                 full_text=text[span[0]:span[1]],
             )
         )
+    for match in SLIP_PUBLISHED_CITATION_RE.finditer(text):
+        case_number = match.group("case_number").upper()
+        if not case_number or _citation_key(case_number) in excluded:
+            continue
+        span = _link_span_without_signal_prefix(match)
+        if span in seen_spans:
+            continue
+        seen_spans.add(span)
+        links.append(
+            CitedCaseLink(
+                start_offset=span[0],
+                end_offset=span[1],
+                lookup_text=case_number,
+                case_name=_case_name_without_signal_prefix(match),
+                full_text=text[span[0]:span[1]],
+            )
+        )
     return links
 
 
 def citation_italic_spans(text: str) -> list[CitationStyleSpan]:
     spans: list[tuple[int, int]] = []
     for match in FULL_OFFICIAL_CITATION_RE.finditer(text):
+        spans.append(_case_name_span_without_signal_prefix(match))
+    for match in SLIP_PUBLISHED_CITATION_RE.finditer(text):
         spans.append(_case_name_span_without_signal_prefix(match))
     for match in SUPRA_CASE_NAME_RE.finditer(text):
         spans.append(_case_name_span_without_signal_prefix(match))

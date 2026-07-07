@@ -80,6 +80,8 @@ def _agent_answer_title(text: str, mode: str) -> str:
             continue
         is_explicit = raw_title.startswith(explicit_markers)
         title = re.sub(r"^[#>*`\s-]+", "", raw_title).strip()
+        title = re.sub(r"^([*_]{1,3})(.+)\1$", r"\2", title).strip()
+        title = re.sub(r"[*_`]+$", "", title).strip()
         title = re.sub(r"\s+", " ", title)
         if not title:
             continue
@@ -141,7 +143,15 @@ class JsonCache:
         return cls(cache_root())
 
     def ensure(self) -> None:
-        for name in ("lookups", "clusters", "opinions", "statutes", "rules", "agent_answers"):
+        for name in (
+            "lookups",
+            "clusters",
+            "opinions",
+            "statutes",
+            "rules",
+            "agent_answers",
+            "slip_opinions",
+        ):
             (self.root / name).mkdir(parents=True, exist_ok=True)
         self.repair_reporter_only_imported_case_names()
 

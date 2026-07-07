@@ -285,6 +285,7 @@ class ResearchSet:
     case_count: int
     statute_count: int
     rule_count: int
+    agent_answer_count: int
     items: list[ResearchSetItem]
 
 
@@ -1407,6 +1408,25 @@ class CaseLibrary:
                 )
             )
             position += 1
+        for entry in cache.list_agent_answer_entries():
+            answer_id = str(entry.get("answer_id", "")).strip()
+            if not answer_id:
+                continue
+            answer = cache.read_agent_answer(answer_id)
+            if not isinstance(answer, dict):
+                continue
+            items.append(
+                ResearchSetItem(
+                    item_type="agent_answer",
+                    authority_id=answer_id,
+                    title=str(entry.get("title") or answer.get("title") or "Saved agent answer"),
+                    citation=str(entry.get("mode") or answer.get("mode") or ""),
+                    payload=answer,
+                    position=position,
+                    agent_selected=bool(entry.get("agent_selected")),
+                )
+            )
+            position += 1
         return items
 
     def list_research_sets(self) -> list[ResearchSet]:
@@ -1468,6 +1488,7 @@ class CaseLibrary:
             case_count=counts.get("case", 0),
             statute_count=counts.get("statute", 0),
             rule_count=counts.get("rule", 0),
+            agent_answer_count=counts.get("agent_answer", 0),
             items=items,
         )
 
@@ -1543,6 +1564,17 @@ class CaseLibrary:
                 rule_id = cache.upsert_rule(item.payload)
                 if item.agent_selected:
                     cache.set_rule_agent_selected(rule_id or item.authority_id, True)
+            elif item.item_type == "agent_answer":
+                text = str(item.payload.get("text") or "").strip()
+                if not text:
+                    continue
+                answer_id = cache.save_agent_answer(
+                    text,
+                    mode=str(item.payload.get("mode") or item.citation),
+                    title=item.title,
+                )
+                if item.agent_selected:
+                    cache.set_agent_answer_selected(answer_id or item.authority_id, True)
         with self.connection() as conn:
             conn.execute(
                 "UPDATE research_sets SET last_accessed = ? WHERE set_id = ?",

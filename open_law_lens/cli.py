@@ -20,6 +20,10 @@ from .client import (
 from .launch_request import discard_open_authority_request, write_open_authority_request
 from .library import CaseLibrary, LibraryPruneCandidate
 from .rules import CaliforniaRulesError
+from .slip_opinions import (
+    DEFAULT_SLIP_OPINION_MAX_AGE_DAYS,
+    SlipOpinionError,
+)
 from .statutes import LegInfoError
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -149,6 +153,54 @@ def _cmd_extract_case(args: argparse.Namespace) -> int:
         print("Case citation, query, or --cluster-id is required.", file=sys.stderr)
         return 1
     return _print_authority_result(args, "case")
+
+
+def _cmd_extract_slip_opinion(args: argparse.Namespace) -> int:
+    client = CourtListenerClient.default()
+    try:
+        cluster_id = str(getattr(args, "cluster_id", "") or "").strip()
+        if cluster_id:
+            cluster = client.fetch_url(
+                f"/api/rest/v4/clusters/{cluster_id}/",
+                kind="clusters",
+                refresh=getattr(args, "refresh", False),
+            )
+            result = client.fetch_cluster_slip_opinion(
+                cluster,
+                refresh=getattr(args, "refresh", False),
+                force=getattr(args, "force", False),
+                max_age_days=getattr(args, "max_age_days", DEFAULT_SLIP_OPINION_MAX_AGE_DAYS),
+            )
+        else:
+            case_number = str(getattr(args, "value", "") or "").strip()
+            if not case_number:
+                print("California case number or --cluster-id is required.", file=sys.stderr)
+                return 1
+            result = client.fetch_slip_opinion(case_number, refresh=getattr(args, "refresh", False))
+    except (CourtListenerError, SlipOpinionError, ValueError) as exc:
+        if getattr(args, "text", False):
+            print(str(exc), file=sys.stderr)
+        else:
+            _print_json(
+                {
+                    "ok": False,
+                    "case_number": str(getattr(args, "value", "") or ""),
+                    "source_url": "",
+                    "cache_pdf_path": "",
+                    "date_filed": "",
+                    "page_count": 0,
+                    "text": "",
+                    "text_length": 0,
+                    "warnings": [],
+                    "error": str(exc),
+                }
+            )
+        return 1
+    if getattr(args, "text", False):
+        print(result.display.text)
+        return 0
+    _print_json(result.to_json())
+    return 0
 
 
 def _case_search_result_json(result: Any, rank: int) -> dict[str, Any]:
@@ -570,9 +622,10 @@ def _cmd_show_research_sets(_args: argparse.Namespace) -> int:
     for research_set in research_sets:
         print(
             f"{research_set.name} | id {research_set.set_id} | "
-            f"{research_set.item_count} authorities "
+            f"{research_set.item_count} Research Cache items "
             f"({research_set.case_count} cases, {research_set.statute_count} statutes, "
-            f"{research_set.rule_count} rules) | updated {research_set.updated_at}"
+            f"{research_set.rule_count} rules, {research_set.agent_answer_count} saved answers) "
+            f"| updated {research_set.updated_at}"
         )
     return 0
 
@@ -581,7 +634,7 @@ def _cmd_save_research_set(args: argparse.Namespace) -> int:
     library = CaseLibrary.default()
     cache = JsonCache.default()
     research_set = library.save_research_set(args.name, cache, replace=args.replace)
-    print(f"Saved research set: {research_set.name} ({research_set.item_count} authorities)")
+    print(f"Saved research set: {research_set.name} ({research_set.item_count} Research Cache items)")
     return 0
 
 
@@ -589,7 +642,7 @@ def _cmd_load_research_set(args: argparse.Namespace) -> int:
     library = CaseLibrary.default()
     cache = JsonCache.default()
     research_set = library.load_research_set_into_cache(args.name_or_id, cache)
-    print(f"Loaded research set: {research_set.name} ({research_set.item_count} authorities)")
+    print(f"Loaded research set: {research_set.name} ({research_set.item_count} Research Cache items)")
     return 0
 
 
@@ -670,6 +723,27 @@ def build_parser() -> argparse.ArgumentParser:
     extract_case_parser.add_argument("--refresh", action="store_true", help="bypass saved lookup data where possible")
     extract_case_parser.add_argument("--text", action="store_true", help="print raw case text")
     extract_case_parser.set_defaults(func=_cmd_extract_case)
+
+    slip_parser = subparsers.add_parser(
+        "extract-slip-opinion",
+        help="download and extract a California Courts slip opinion PDF",
+    )
+    slip_parser.add_argument("value", nargs="?", help="California appellate case number, e.g. A173218")
+    slip_parser.add_argument("--cluster-id", help="extract by CourtListener case cluster")
+    slip_parser.add_argument("--refresh", action="store_true", help="re-download the cached slip opinion PDF")
+    slip_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="allow cluster lookup even when the opinion is outside the recent published fallback window",
+    )
+    slip_parser.add_argument(
+        "--max-age-days",
+        type=int,
+        default=DEFAULT_SLIP_OPINION_MAX_AGE_DAYS,
+        help="maximum age for cluster-based slip fallback eligibility",
+    )
+    slip_parser.add_argument("--text", action="store_true", help="print extracted slip opinion text")
+    slip_parser.set_defaults(func=_cmd_extract_slip_opinion)
 
     case_search_parser = subparsers.add_parser("case-search", help="search California case law")
     case_search_parser.add_argument("query", nargs="?", help="CourtListener case-search query")
@@ -841,6 +915,6 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         return int(args.func(args))
-    except (CourtListenerError, LegInfoError, CaliforniaRulesError, ValueError, RuntimeError) as exc:
+    except (CourtListenerError, LegInfoError, CaliforniaRulesError, SlipOpinionError, ValueError, RuntimeError) as exc:
         print(str(exc), file=sys.stderr)
         return 1

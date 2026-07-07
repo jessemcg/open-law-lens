@@ -27,6 +27,14 @@ class CliCommandTests(unittest.TestCase):
         )
         self.assertEqual(parser.parse_args(["case-search", "ICWA"]).command, "case-search")
         self.assertEqual(
+            parser.parse_args(["extract-slip-opinion", "A173218"]).command,
+            "extract-slip-opinion",
+        )
+        self.assertEqual(
+            parser.parse_args(["extract-slip-opinion", "--cluster-id", "42"]).cluster_id,
+            "42",
+        )
+        self.assertEqual(
             parser.parse_args(
                 ["best-published-citing-case", "--cluster-id", "6240402", "--json"]
             ).command,
@@ -125,6 +133,45 @@ class CliCommandTests(unittest.TestCase):
         client.search_cases.assert_called_once()
         self.assertIn('"cluster_id": "6240402"', output.getvalue())
         self.assertIn('"extract_command": "uv run open-law-lens extract-case --cluster-id 6240402"', output.getvalue())
+
+    def test_extract_slip_opinion_prints_json(self) -> None:
+        result = MagicMock()
+        result.to_json.return_value = {
+            "ok": True,
+            "case_number": "A173218",
+            "source_url": "https://www4.courts.ca.gov/opinions/archive/A173218.PDF",
+            "text": "Slip text",
+        }
+        client = MagicMock()
+        client.fetch_slip_opinion.return_value = result
+        output = StringIO()
+        with (
+            patch("open_law_lens.cli.CourtListenerClient.default", return_value=client),
+            redirect_stdout(output),
+        ):
+            status = main(["extract-slip-opinion", "A173218"])
+
+        self.assertEqual(status, 0)
+        client.fetch_slip_opinion.assert_called_once_with("A173218", refresh=False)
+        self.assertIn('"case_number": "A173218"', output.getvalue())
+
+    def test_extract_slip_opinion_by_cluster_prints_text(self) -> None:
+        result = MagicMock()
+        result.display.text = "Slip text"
+        client = MagicMock()
+        client.fetch_url.return_value = {"id": 42}
+        client.fetch_cluster_slip_opinion.return_value = result
+        output = StringIO()
+        with (
+            patch("open_law_lens.cli.CourtListenerClient.default", return_value=client),
+            redirect_stdout(output),
+        ):
+            status = main(["extract-slip-opinion", "--cluster-id", "42", "--text"])
+
+        self.assertEqual(status, 0)
+        client.fetch_url.assert_called_once()
+        client.fetch_cluster_slip_opinion.assert_called_once()
+        self.assertEqual(output.getvalue(), "Slip text\n")
 
     def test_best_published_citing_case_prints_json(self) -> None:
         search_result = MagicMock()

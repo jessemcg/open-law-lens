@@ -30,6 +30,14 @@ from .rules import (
     fetch_california_rule,
     parse_rule_citation,
 )
+from .slip_opinions import (
+    DEFAULT_SLIP_OPINION_MAX_AGE_DAYS,
+    SlipOpinionResult,
+    case_number_from_cluster,
+    fetch_slip_opinion,
+    fetch_slip_opinion_for_cluster,
+    normalize_case_number,
+)
 from .statutes import (
     LegInfoError,
     fetch_leginfo_statute,
@@ -228,6 +236,46 @@ def format_official_california_citation(cluster: dict[str, Any]) -> FormattedCit
     return FormattedCitation(plain_text=plain, html_text=html_text)
 
 
+def format_published_slip_opinion_citation(
+    cluster: dict[str, Any],
+    *,
+    case_number: str = "",
+    long_date: bool = False,
+) -> FormattedCitation | None:
+    clean_case_number = normalize_case_number(case_number) or case_number_from_cluster(cluster)
+    if not clean_case_number:
+        return None
+    title = _slip_opinion_title(cluster)
+    filed = str(cluster.get("date_filed") or "").strip()
+    date_text = us_long_date(filed) if long_date else us_abbreviated_date(filed)
+    parenthetical = (
+        f"({date_text}, {clean_case_number})"
+        if date_text
+        else f"({clean_case_number})"
+    )
+    reporter = "___ Cal.App.5th ___"
+    plain = f"{title} {parenthetical} {reporter}"
+    html_text = (
+        f"<i>{html.escape(title)}</i> "
+        f"{html.escape(parenthetical)} {html.escape(reporter)}"
+    )
+    return FormattedCitation(plain_text=plain, html_text=html_text)
+
+
+def _slip_opinion_title(cluster: dict[str, Any]) -> str:
+    title = cluster_short_title(cluster)
+    raw_title = ""
+    for field in ("case_name_short", "case_name", "case_name_full"):
+        value = cluster.get(field)
+        if isinstance(value, str) and value.strip():
+            raw_title = value.strip()
+            break
+    if raw_title and re.search(r"\bet\s+al\.?(?:$|[\s,(])", raw_title, flags=re.IGNORECASE):
+        if not re.search(r"\bet\s+al\.?$", title, flags=re.IGNORECASE):
+            title = f"{title} et al."
+    return title
+
+
 def official_california_reporter_citation_from_text(text: str) -> str:
     return quality_official_california_reporter_citation_from_text(text)
 
@@ -341,6 +389,28 @@ def us_long_date(value: str) -> str:
     except ValueError:
         return value
     return f"{parsed.strftime('%B')} {parsed.day}, {parsed.year}"
+
+
+def us_abbreviated_date(value: str) -> str:
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        return value
+    month = {
+        1: "Jan.",
+        2: "Feb.",
+        3: "Mar.",
+        4: "Apr.",
+        5: "May",
+        6: "June",
+        7: "July",
+        8: "Aug.",
+        9: "Sept.",
+        10: "Oct.",
+        11: "Nov.",
+        12: "Dec.",
+    }[parsed.month]
+    return f"{month} {parsed.day}, {parsed.year}"
 
 
 def normalize_cluster_search_result(
@@ -957,6 +1027,36 @@ class CourtListenerClient:
         else:
             self.last_opinion_source = "Fetched"
         return opinions
+
+    def fetch_slip_opinion(
+        self,
+        case_number: str,
+        *,
+        refresh: bool = False,
+    ) -> SlipOpinionResult:
+        return fetch_slip_opinion(
+            case_number,
+            self.cache,
+            refresh=refresh,
+            timeout=self.timeout,
+        )
+
+    def fetch_cluster_slip_opinion(
+        self,
+        cluster: dict[str, Any],
+        *,
+        refresh: bool = False,
+        force: bool = False,
+        max_age_days: int = DEFAULT_SLIP_OPINION_MAX_AGE_DAYS,
+    ) -> SlipOpinionResult:
+        return fetch_slip_opinion_for_cluster(
+            cluster,
+            self.cache,
+            refresh=refresh,
+            force=force,
+            max_age_days=max_age_days,
+            timeout=self.timeout,
+        )
 
     def first_opinion_text(self, cluster: dict[str, Any], *, refresh: bool = False) -> str:
         opinions = self.reader_opinions(self.fetch_cluster_opinions(cluster, refresh=refresh))

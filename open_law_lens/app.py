@@ -53,6 +53,7 @@ from .client import (
     cluster_title,
     dedupe_case_clusters,
     format_official_california_citation,
+    format_published_slip_opinion_citation,
     search_result_full_citation,
     us_long_date,
 )
@@ -126,6 +127,13 @@ from .scholar_search import (
     ScholarSearchResult,
     search_first_case_direct,
 )
+from .slip_opinions import (
+    DEFAULT_SLIP_OPINION_MAX_AGE_DAYS,
+    SlipOpinionError,
+    case_number_from_cluster,
+    normalize_case_number,
+    slip_metadata_from_display,
+)
 from .speech import DEFAULT_SPEECH_QUESTION_FILE, normalize_speech_question_text
 from .rules import (
     CaliforniaRulesError,
@@ -153,7 +161,7 @@ AGENT_WRAPPER = PROJECT_DIR / "scripts" / "open-law-lens-codex-agent-vte.sh"
 DEFAULT_CODEX_BIN = "codex"
 READER_BG = "#ffffff"
 READER_FG = "#000000"
-READER_RENDER_TEXT_CHUNK_SIZE = 60000
+READER_RENDER_TEXT_CHUNK_SIZE = 8000
 READER_RENDER_TAG_CHUNK_SIZE = 250
 AGENT_PANEL_MIN_HEIGHT = 260
 AGENT_HEIGHT_DIVISOR = 4
@@ -168,6 +176,7 @@ AGENT_MODE_ICONS = {
     AGENT_MODE_CASE: "file-cabinet-symbolic",
 }
 GOOGLE_SCHOLAR_CASE_SEARCH_TEMPLATE = "https://scholar.google.com/scholar?hl=en&as_sdt=6,33&q={query}"
+EXTERNAL_URL_RE = re.compile(r"https?://\S+")
 SCHOLAR_FALLBACK_MANUAL_WINDOW = "manual_window"
 SCHOLAR_FALLBACK_TRANSIENT_NOTICE = "transient_notice"
 SCHOLAR_FALLBACK_NOTICE_ONLY = "notice_only"
@@ -179,6 +188,9 @@ OFFICIAL_PAGINATION_NOT_FOUND_MESSAGE = (
 OFFICIAL_PAGINATION_NOT_FOUND_ONLY_MESSAGE = (
     "A version of this case with pagination from the official reporter was not found."
 )
+READER_PAGINATION_NONE = "none"
+READER_PAGINATION_OFFICIAL = "official"
+READER_PAGINATION_SLIP = "slip"
 SEARCH_NEXT_PAGE_TARGET = "search-next-page"
 AGENT_ANSWER_FONT_SIZE_PT = 14
 SEARCH_RESULTS_FONT_SIZE_PT = 11
@@ -304,6 +316,9 @@ class CaseReaderPayload:
     quality_eligible: bool
     quality_reason: str
     opinion_source: str
+    pagination_mode: str = READER_PAGINATION_NONE
+    slip_source_url: str = ""
+    slip_case_number: str = ""
 
 
 @dataclass(frozen=True)
@@ -311,6 +326,11 @@ class LibrarySuggestionOpenResult:
     lookup_text: str
     cluster: dict[str, Any]
     cache_generation: int
+
+
+@dataclass(frozen=True)
+class AgentExternalUrlLink:
+    url: str
 
 
 def strip_agent_legal_authority_backticks(text: str) -> str:
@@ -336,6 +356,9 @@ def build_case_reader_payload(
     cache_generation: int = 0,
     opinion_ids: tuple[str, ...] = (),
     opinion_source: str = "",
+    pagination_mode: str = "",
+    slip_source_url: str = "",
+    slip_case_number: str = "",
 ) -> CaseReaderPayload:
     text_parts: list[str] = []
     page_markers: list[PageMarker] = []
@@ -362,6 +385,9 @@ def build_case_reader_payload(
         )
     text = smart_quote_display_text("".join(text_parts) or "No opinion text found.")
     quality = official_pagination_quality(cluster, displays)
+    resolved_pagination_mode = pagination_mode or (
+        READER_PAGINATION_OFFICIAL if quality.eligible else READER_PAGINATION_NONE
+    )
     return CaseReaderPayload(
         generation=generation,
         cache_generation=cache_generation,
@@ -375,6 +401,9 @@ def build_case_reader_payload(
         quality_eligible=quality.eligible,
         quality_reason=quality.reason,
         opinion_source=opinion_source,
+        pagination_mode=resolved_pagination_mode,
+        slip_source_url=slip_source_url,
+        slip_case_number=slip_case_number,
     )
 
 
@@ -1242,6 +1271,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_citation_link_lookup: dict[Gtk.TextTag, CitedCaseLink] = {}
         self._agent_statute_link_lookup: dict[Gtk.TextTag, StatuteLink] = {}
         self._agent_rule_link_lookup: dict[Gtk.TextTag, RuleLink] = {}
+        self._agent_external_url_link_lookup: dict[Gtk.TextTag, AgentExternalUrlLink] = {}
         self._agent_search_link_lookup: dict[Gtk.TextTag, CourtListenerSearchResult] = {}
         self._agent_search_next_link_tags: set[Gtk.TextTag] = set()
         self._agent_search_action_link_lookup: dict[Gtk.TextTag, str] = {}
@@ -1270,10 +1300,17 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_citation_click_gesture: Gtk.GestureClick | None = None
         self._reader_header_citation: FormattedCitation | None = None
         self._reader_display_cluster: dict[str, Any] | None = None
+        self._active_research_set_id: int | None = None
+        self._active_research_set_name = ""
+        self._research_set_label: Gtk.Label | None = None
         self.reader_selection_pinpoint_button: Gtk.Button | None = None
         self.reader_subsequent_treatment_button: Gtk.Button | None = None
         self.reader_helper_case_button: Gtk.Button | None = None
         self._reader_has_official_pagination = False
+        self._reader_pagination_mode = READER_PAGINATION_NONE
+        self._reader_slip_source_url = ""
+        self._reader_slip_case_number = ""
+        self.reader_slip_pdf_button: Gtk.Button | None = None
         self._case_load_generation = 0
         self._research_cache_generation = 0
         self._last_lookup_text = ""
@@ -1669,6 +1706,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return box
 
     def _build_research_cache_header(self) -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        box.set_hexpand(True)
+
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         header.set_hexpand(True)
 
@@ -1700,7 +1740,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         clear_button.set_tooltip_text("Clear Research Cache")
         clear_button.set_valign(Gtk.Align.CENTER)
         header.append(clear_button)
-        return header
+
+        self._research_set_label = Gtk.Label(label="", xalign=0)
+        self._research_set_label.add_css_class("dim-label")
+        self._research_set_label.set_visible(False)
+        box.append(header)
+        box.append(self._research_set_label)
+        return box
 
     def _build_case_completion_results(self) -> Gtk.Widget:
         scroller = Gtk.ScrolledWindow()
@@ -2052,6 +2098,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.reader_header_copy_button.set_valign(Gtk.Align.CENTER)
         self.reader_header_copy_button.connect("clicked", self._on_copy_reader_citation_clicked)
         self.reader_header_action_box.append(self.reader_header_copy_button)
+
+        self.reader_slip_pdf_button = Gtk.Button(icon_name="document-open-symbolic")
+        self.reader_slip_pdf_button.add_css_class("case-reader-header-action-button")
+        self.reader_slip_pdf_button.set_tooltip_text("Open slip opinion PDF")
+        self.reader_slip_pdf_button.set_valign(Gtk.Align.CENTER)
+        self.reader_slip_pdf_button.set_visible(False)
+        self.reader_slip_pdf_button.connect("clicked", self._on_open_slip_pdf_clicked)
+        self.reader_header_action_box.append(self.reader_slip_pdf_button)
 
         self.reader_selection_pinpoint_button = Gtk.Button(icon_name="insert-text-symbolic")
         self.reader_selection_pinpoint_button.add_css_class("case-reader-header-action-button")
@@ -2444,6 +2498,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._close_reader_find(clear_entry=True)
         self._reader_text = text
         self._reader_page_markers = list(page_markers or [])
+        if not page_markers and getattr(self, "_reader_pagination_mode", READER_PAGINATION_NONE) == READER_PAGINATION_SLIP:
+            self._reader_pagination_mode = READER_PAGINATION_NONE
+            self._reader_slip_source_url = ""
+            self._reader_slip_case_number = ""
+            if self.reader_slip_pdf_button is not None:
+                self.reader_slip_pdf_button.set_visible(False)
         self.reader_buffer.set_text(text)
         self._update_reader_selection_pinpoint_button()
         if page_markers:
@@ -2481,6 +2541,18 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_text = ""
         self._reader_page_markers = list(payload.page_markers)
         self._reader_has_official_pagination = False
+        self._reader_pagination_mode = payload.pagination_mode
+        self._reader_slip_source_url = payload.slip_source_url
+        self._reader_slip_case_number = payload.slip_case_number
+        if self.reader_slip_pdf_button is not None:
+            self.reader_slip_pdf_button.set_visible(bool(payload.slip_source_url))
+        if payload.pagination_mode == READER_PAGINATION_SLIP:
+            formatted = format_published_slip_opinion_citation(
+                payload.cluster,
+                case_number=payload.slip_case_number,
+            )
+            if formatted is not None:
+                self._set_reader_header(formatted.plain_text, formatted, payload.cluster)
         self._clear_reader_citation_links()
         self.reader_buffer.set_text("")
         self._update_reader_selection_pinpoint_button()
@@ -2565,13 +2637,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             target = self._pending_quote_target
             self._pending_quote_target = None
             self._highlight_reader_phrase(target.phrase)
-        self._apply_reader_citation_links(payload.text)
         self._set_reader_busy(False)
         self._finish_case_quality_status(
             payload.cluster_id,
             payload.quality_eligible,
             payload.quality_reason,
             payload.opinion_source,
+            payload.pagination_mode,
         )
         return False
 
@@ -2586,6 +2658,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_display_cluster = cluster
         self.reader_header_label.set_text(header)
         self.reader_header_copy_button.set_visible(citation is not None)
+        slip_pdf_button = getattr(self, "reader_slip_pdf_button", None)
+        if slip_pdf_button is not None:
+            slip_pdf_button.set_visible(bool(getattr(self, "_reader_slip_source_url", "")))
         if self.reader_selection_pinpoint_button is not None:
             has_selected_authority = (
                 self._reader_display_cluster is not None
@@ -2624,6 +2699,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return
         self._copy_formatted_citation(self._reader_header_citation)
 
+    def _on_open_slip_pdf_clicked(self, _button: Gtk.Button) -> None:
+        source_url = getattr(self, "_reader_slip_source_url", "")
+        if not source_url:
+            self._set_status("No slip opinion PDF is available for this case.")
+            return
+        if self._launch_external_url(source_url):
+            self._set_status("Opened slip opinion PDF in browser.")
+
     def _on_reader_selection_changed(self, *_args: object) -> None:
         self._update_reader_selection_pinpoint_button()
 
@@ -2656,6 +2739,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if cluster is None:
             return False
         if getattr(self, "_reader_has_official_pagination", False):
+            return False
+        if getattr(self, "_reader_pagination_mode", READER_PAGINATION_NONE) == READER_PAGINATION_SLIP:
             return False
         if not getattr(self, "_reader_text", "").strip():
             return False
@@ -2864,6 +2949,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         selected_statute = getattr(self, "_selected_statute", None)
         selected_rule = getattr(self, "_selected_rule", None)
         if selected_cluster is not None:
+            if getattr(self, "_reader_pagination_mode", READER_PAGINATION_NONE) == READER_PAGINATION_SLIP:
+                return OpenLawLensWindow._case_selection_slip_pinpoint_formatted_citation(
+                    self,
+                    selected_cluster,
+                    start_offset,
+                    end_offset,
+                )
             return OpenLawLensWindow._case_selection_pinpoint_formatted_citation(
                 self,
                 selected_cluster,
@@ -2955,6 +3047,43 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             html_text=f"{formatted.html_text}, {GLib.markup_escape_text(pinpoint)}",
         )
 
+    def _case_selection_slip_pinpoint_formatted_citation(
+        self,
+        cluster: dict[str, Any],
+        start_offset: int,
+        end_offset: int,
+    ) -> FormattedCitation | None:
+        if not getattr(self, "_reader_page_markers", []):
+            return None
+        start_page = OpenLawLensWindow._reader_page_for_offset(self, start_offset)
+        end_page = OpenLawLensWindow._reader_page_for_offset(
+            self,
+            max(start_offset, end_offset - 1),
+        )
+        if start_page is None:
+            start_page = "1"
+        if end_page is None:
+            end_page = start_page
+        pinpoint = start_page if start_page == end_page else f"{start_page}\u2013{end_page}"
+        case_number = (
+            str(getattr(self, "_reader_slip_case_number", "") or "").strip()
+            or case_number_from_cluster(cluster)
+        )
+        if not case_number:
+            return None
+        formatted = format_published_slip_opinion_citation(
+            cluster,
+            case_number=case_number,
+            long_date=True,
+        )
+        if formatted is None:
+            return None
+        page_label = "pp." if start_page != end_page else "p."
+        pinpoint = pinpoint.replace("\u2013", "-")
+        plain = f"{formatted.plain_text} slip opn. at {page_label} {pinpoint}"
+        html_text = f"{formatted.html_text} slip opn. at {page_label} {GLib.markup_escape_text(pinpoint)}"
+        return FormattedCitation(plain_text=plain, html_text=html_text)
+
     def _case_selection_pinpoint_citation(
         self,
         cluster: dict[str, Any],
@@ -2994,6 +3123,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _clipboard_selected_authority_text(text: str, *, strip_page_markers: bool = False) -> str:
         if strip_page_markers:
             text = re.sub(r"\[\*\d{1,5}\]", " ", text)
+            text = re.sub(r"\[Slip opn\. p\. \d{1,5}\]", " ", text)
         return re.sub(r"\s+", " ", text).strip()
 
     @staticmethod
@@ -3243,10 +3373,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._open_cited_case_link(link)
 
     def _open_cited_case_link(self, link: CitedCaseLink) -> None:
-        self._open_citation_lookup_link(
-            link,
-            populate_research_cache=getattr(self, "_selected_agent_answer", None) is None,
-        )
+        self._open_citation_lookup_link(link)
 
     def _open_agent_cited_case_link(self, link: CitedCaseLink) -> None:
         self._open_citation_lookup_link(link)
@@ -3869,6 +3996,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         except Exception as exc:
             self._set_status(f"Unable to clear Research Cache: {exc}")
             return
+        self._set_active_research_set(None)
         self._research_cache_generation += 1
         self._case_load_generation += 1
         self._load_cached_cases()
@@ -3892,11 +4020,28 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         except OSError as exc:
             GLib.idle_add(self._set_status, f"Research Cache cleared, but old files remain: {exc}")
 
+    def _set_active_research_set(self, research_set: ResearchSet | None) -> None:
+        if research_set is None:
+            self._active_research_set_id = None
+            self._active_research_set_name = ""
+        else:
+            self._active_research_set_id = research_set.set_id
+            self._active_research_set_name = research_set.name
+        if self._research_set_label is None:
+            return
+        if self._active_research_set_name:
+            self._research_set_label.set_text(f"Set: {self._active_research_set_name}")
+            self._research_set_label.set_visible(True)
+        else:
+            self._research_set_label.set_text("")
+            self._research_set_label.set_visible(False)
+
     def _research_cache_authority_count(self) -> int:
         return (
             len(self.client.cache.list_case_entries())
             + len(self.client.cache.list_statute_entries())
             + len(self.client.cache.list_rule_entries())
+            + len(self.client.cache.list_agent_answer_entries())
         )
 
     def _on_save_research_set(
@@ -3905,7 +4050,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         _parameter: GLib.Variant | None,
     ) -> None:
         if self._research_cache_authority_count() == 0:
-            self._set_status("Research Cache has no legal authorities to save.")
+            self._set_status("Research Cache has no items to save.")
+            return
+        if self._active_research_set_id is not None and self._active_research_set_name:
+            self._save_research_set(self._active_research_set_name, replace=True)
             return
         window = Gtk.Window(title="Save Research Set")
         window.set_transient_for(self)
@@ -4014,8 +4162,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
             self._set_status(f"Unable to save Research Set: {exc}")
             return
+        self._set_active_research_set(research_set)
         self._set_status(
-            f"Saved Research Set '{research_set.name}' with {research_set.item_count} authority item(s)."
+            f"Saved Research Set '{research_set.name}' with {research_set.item_count} Research Cache item(s)."
         )
 
     def _on_open_research_set(
@@ -4083,9 +4232,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         text_box.append(title)
         summary = Gtk.Label(
             label=(
-                f"{research_set.item_count} authorities | "
+                f"{research_set.item_count} Research Cache items | "
                 f"{research_set.case_count} cases, {research_set.statute_count} statutes, "
-                f"{research_set.rule_count} rules"
+                f"{research_set.rule_count} rules, {research_set.agent_answer_count} saved answers"
             ),
             xalign=0,
         )
@@ -4117,6 +4266,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
             self._set_status(f"Unable to open Research Set: {exc}")
             return
+        self._set_active_research_set(research_set)
+        self._research_cache_generation += 1
         self._set_sidebar_authorities(
             self.client.cached_clusters(),
             self.client.cached_statutes(),
@@ -4127,7 +4278,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if self._research_sets_window is not None:
             self._research_sets_window.close()
         self._set_status(
-            f"Opened Research Set '{research_set.name}' with {research_set.item_count} authority item(s)."
+            f"Opened Research Set '{research_set.name}' with {research_set.item_count} Research Cache item(s)."
         )
 
     def _on_delete_research_set_clicked(self, _button: Gtk.Button, set_id: int) -> None:
@@ -4135,6 +4286,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._set_status("Research Set was not found.")
             return
         self._set_status("Deleted Research Set.")
+        if self._active_research_set_id == set_id:
+            self._set_active_research_set(None)
         self._show_research_sets_window()
 
     def _on_open_official_search(
@@ -4810,6 +4963,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_sidebar_clusters(self.client.cached_clusters(), select_cluster_id=cluster_id)
         self._refresh_case_suggestion_index_async(force=True)
         self._reader_has_official_pagination = True
+        self._reader_pagination_mode = READER_PAGINATION_OFFICIAL
+        self._reader_slip_source_url = ""
+        self._reader_slip_case_number = ""
         self._set_reader_header(
             self._case_header_text(cluster),
             self._case_header_citation(cluster),
@@ -4825,6 +4981,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._set_status("Enter a citation.")
             return
         citation = self._lookup_text_from_entry(entry_text)
+        case_number = normalize_case_number(citation)
+        if case_number and citation.strip().casefold() == case_number.casefold():
+            self._start_case_number_lookup(case_number)
+            return
         if parse_statute_citation(citation) is not None:
             self._start_statute_lookup(citation)
             return
@@ -4832,6 +4992,123 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._start_rule_lookup(citation)
             return
         self._start_lookup(citation)
+
+    def _start_case_number_lookup(self, case_number: str) -> None:
+        clean_case_number = normalize_case_number(case_number)
+        if not clean_case_number:
+            self._set_status("Enter a California appellate case number.")
+            return
+        self._last_lookup_text = clean_case_number
+        self._pending_auto_scholar_cluster_id = ""
+        self._pending_auto_scholar_query = ""
+        self._hide_case_completion()
+        self._set_status(f"Looking up case number {clean_case_number}...")
+        self._set_reader_header("")
+        self._set_reader_busy(True, "Looking up case number...")
+        self.reader_buffer.set_text("Loading...")
+        cache_generation = self._research_cache_generation
+        generation = self._case_load_generation + 1
+        thread = threading.Thread(
+            target=self._case_number_lookup_worker,
+            args=(clean_case_number, generation, cache_generation),
+            daemon=True,
+        )
+        thread.start()
+
+    def _case_number_lookup_worker(
+        self,
+        case_number: str,
+        generation: int,
+        cache_generation: int,
+    ) -> None:
+        try:
+            page = self.client.search_cases(case_number, page_size=1)
+            if page.results:
+                result = page.results[0]
+                cluster = self.client.fetch_url(
+                    f"/api/rest/v4/clusters/{result.cluster_id}/",
+                    kind="clusters",
+                )
+                cluster = {**cluster, "docket_number": case_number}
+                GLib.idle_add(
+                    self._finish_case_number_cluster_lookup,
+                    cluster,
+                    case_number,
+                    cache_generation,
+                )
+                return
+            slip = self.client.fetch_slip_opinion(case_number)
+            cluster = {
+                "id": f"slip-{case_number}",
+                "case_name": case_number,
+                "case_name_short": case_number,
+                "precedential_status": "Published",
+                "docket": {"docket_number": case_number},
+            }
+            cluster.update(slip_metadata_from_display(slip.display))
+            GLib.idle_add(
+                self._finish_case_number_direct_slip_lookup,
+                cluster,
+                slip.display,
+                slip.source_url,
+                slip.case_number,
+                cache_generation,
+            )
+        except (CourtListenerError, SlipOpinionError, ValueError, OSError) as exc:
+            GLib.idle_add(self._apply_error, f"Unable to open {case_number}: {exc}")
+
+    def _finish_case_number_direct_slip_lookup(
+        self,
+        cluster: dict[str, Any],
+        display: DisplayText,
+        source_url: str,
+        case_number: str,
+        cache_generation: int,
+    ) -> bool:
+        if cache_generation != self._research_cache_generation:
+            return False
+        generation = self._begin_case_load(cluster)
+        payload = build_case_reader_payload(
+            cluster,
+            [display],
+            generation=generation,
+            cache_generation=cache_generation,
+            opinion_ids=(),
+            opinion_source="California Courts",
+            pagination_mode=READER_PAGINATION_SLIP,
+            slip_source_url=source_url,
+            slip_case_number=case_number,
+        )
+        return self._start_reader_payload_render(payload)
+
+    def _finish_case_number_cluster_lookup(
+        self,
+        cluster: dict[str, Any],
+        case_number: str,
+        cache_generation: int,
+    ) -> bool:
+        if cache_generation != self._research_cache_generation:
+            return False
+        clean_case_number = normalize_case_number(case_number) or case_number
+        if clean_case_number:
+            cluster = {**cluster, "docket_number": clean_case_number}
+        cluster_id = self.client.cache.upsert_cluster(cluster) or cluster_id_from_cluster(cluster)
+        self._set_sidebar_clusters(
+            self.client.cached_clusters(),
+            select_cluster_id=cluster_id,
+            select_first=True,
+            suppress_selection_lookup=True,
+        )
+        self._set_status(f"Opened case number {case_number}.")
+        self._refresh_case_suggestion_index_async(force=True)
+        generation = self._begin_case_load(cluster)
+        thread = threading.Thread(
+            target=self._case_worker,
+            args=(cluster, generation, cache_generation, True),
+            daemon=True,
+        )
+        thread.start()
+        return False
 
     def _start_statute_lookup(self, citation: str) -> None:
         self._last_lookup_text = citation.strip()
@@ -4914,6 +5191,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._selected_rule = None
         self._selected_agent_answer = answer
         self._reader_has_official_pagination = False
+        self._reader_pagination_mode = READER_PAGINATION_NONE
+        self._reader_slip_source_url = ""
+        self._reader_slip_case_number = ""
         self._reader_page_markers = []
         self._set_reader_busy(False)
         self._set_reader_header(title)
@@ -4949,6 +5229,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         link: CitedCaseLink | None = None,
         populate_research_cache: bool = True,
     ) -> None:
+        case_number = normalize_case_number(citation)
+        if case_number and citation.strip().casefold() == case_number.casefold():
+            self._start_case_number_lookup(case_number)
+            return
         lookup_context = self._lookup_context_text(citation, link)
         self._last_lookup_text = lookup_context
         self._pending_auto_scholar_cluster_id = ""
@@ -5125,6 +5409,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         *,
         select_cluster_id: str = "",
         select_first: bool = False,
+        suppress_selection_lookup: bool = False,
     ) -> None:
         self._set_sidebar_authorities(
             clusters,
@@ -5132,6 +5417,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self.client.cached_rules(),
             select_cluster_id=select_cluster_id,
             select_first=select_first,
+            suppress_selection_lookup=suppress_selection_lookup,
         )
 
     def _set_sidebar_authorities(
@@ -5667,6 +5953,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _apply_error(self, message: str) -> bool:
         self._set_reader_busy(False)
         self._set_status(message)
+        self._reader_pagination_mode = READER_PAGINATION_NONE
+        self._reader_slip_source_url = ""
+        self._reader_slip_case_number = ""
         self._set_reader_header("")
         self.reader_buffer.set_text(message)
         return False
@@ -5715,6 +6004,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._selected_rule = None
         self._selected_agent_answer = None
         self._reader_has_official_pagination = False
+        self._reader_pagination_mode = READER_PAGINATION_NONE
+        self._reader_slip_source_url = ""
+        self._reader_slip_case_number = ""
         self._clear_reader_citation_links()
         citation_text = str(statute.get("citation") or "").strip()
         header = str(statute.get("title") or citation_text or "Untitled statute")
@@ -5733,6 +6025,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._selected_rule = rule
         self._selected_agent_answer = None
         self._reader_has_official_pagination = False
+        self._reader_pagination_mode = READER_PAGINATION_NONE
+        self._reader_slip_source_url = ""
+        self._reader_slip_case_number = ""
         self._clear_reader_citation_links()
         citation_text = str(rule.get("citation") or "").strip()
         header = str(rule.get("title") or citation_text or "Untitled rule")
@@ -5752,6 +6047,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._selected_rule = None
         self._selected_agent_answer = None
         self._reader_has_official_pagination = False
+        self._reader_pagination_mode = READER_PAGINATION_NONE
+        self._reader_slip_source_url = ""
+        self._reader_slip_case_number = ""
         self._reader_page_markers = []
         self._set_reader_header(
             self._case_header_text(cluster),
@@ -5771,9 +6069,43 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         cluster: dict[str, Any],
         generation: int,
         cache_generation: int,
+        force_slip_opinion: bool = False,
     ) -> None:
         cluster_id = cluster_id_from_cluster(cluster)
         try:
+            if force_slip_opinion:
+                GLib.idle_add(
+                    self._set_reader_busy,
+                    True,
+                    "Downloading slip opinion PDF...",
+                )
+                try:
+                    slip = self.client.fetch_cluster_slip_opinion(
+                        cluster,
+                        force=True,
+                        max_age_days=DEFAULT_SLIP_OPINION_MAX_AGE_DAYS,
+                    )
+                except (SlipOpinionError, ValueError, OSError):
+                    slip = None
+                if slip is not None:
+                    GLib.idle_add(
+                        self._set_reader_busy,
+                        True,
+                        "Rendering slip opinion...",
+                    )
+                    payload = build_case_reader_payload(
+                        cluster,
+                        [slip.display],
+                        generation=generation,
+                        cache_generation=cache_generation,
+                        opinion_ids=(),
+                        opinion_source="California Courts",
+                        pagination_mode=READER_PAGINATION_SLIP,
+                        slip_source_url=slip.source_url,
+                        slip_case_number=slip.case_number,
+                    )
+                    GLib.idle_add(self._start_reader_payload_render, payload)
+                    return
             opinions = self.client.fetch_cluster_opinions(
                 cluster,
                 populate_research_cache=False,
@@ -5786,6 +6118,30 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 if str(opinion.get("id") or "").strip()
             )
             displays = [self.client.opinion_display(opinion) for opinion in reader_opinions]
+            quality = official_pagination_quality(cluster, displays)
+            if not quality.eligible:
+                try:
+                    slip = self.client.fetch_cluster_slip_opinion(
+                        cluster,
+                        force=force_slip_opinion,
+                        max_age_days=DEFAULT_SLIP_OPINION_MAX_AGE_DAYS,
+                    )
+                except (SlipOpinionError, ValueError, OSError):
+                    slip = None
+                if slip is not None:
+                    payload = build_case_reader_payload(
+                        cluster,
+                        [slip.display],
+                        generation=generation,
+                        cache_generation=cache_generation,
+                        opinion_ids=(),
+                        opinion_source="California Courts",
+                        pagination_mode=READER_PAGINATION_SLIP,
+                        slip_source_url=slip.source_url,
+                        slip_case_number=slip.case_number,
+                    )
+                    GLib.idle_add(self._start_reader_payload_render, payload)
+                    return
             payload = build_case_reader_payload(
                 cluster,
                 displays,
@@ -5813,8 +6169,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         eligible: bool,
         reason: str,
         source: str,
+        pagination_mode: str = READER_PAGINATION_NONE,
     ) -> bool:
         self._reader_has_official_pagination = eligible
+        self._reader_pagination_mode = pagination_mode
         pending_query = ""
         if cluster_id and cluster_id == self._pending_auto_scholar_cluster_id:
             pending_query = self._pending_auto_scholar_query
@@ -5822,6 +6180,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._pending_auto_scholar_query = ""
         if eligible:
             self._set_status(self._official_pagination_status(source))
+        elif pagination_mode == READER_PAGINATION_SLIP:
+            self._set_status("Loaded California Courts slip opinion PDF with slip-opinion pagination.")
         elif pending_query:
             self._set_reader_busy(True, "Searching Google Scholar...")
             self._set_status("Searching Google Scholar for official reporter text...")
@@ -6210,6 +6570,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_citation_link_lookup.clear()
         self._agent_statute_link_lookup.clear()
         self._agent_rule_link_lookup.clear()
+        self._agent_external_url_link_lookup.clear()
         self._agent_search_link_lookup.clear()
         self._agent_search_next_link_tags.clear()
         self._agent_search_action_link_lookup.clear()
@@ -6387,6 +6748,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_link_tags.clear()
         self._agent_link_lookup.clear()
         self._agent_citation_link_lookup.clear()
+        self._agent_external_url_link_lookup.clear()
         self._agent_search_link_lookup.clear()
         self._agent_search_next_link_tags.clear()
         self._agent_search_highlight_tags.clear()
@@ -6421,6 +6783,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._apply_agent_citation_links(buffer, rendered)
             self._apply_agent_statute_links(buffer, rendered)
             self._apply_agent_rule_links(buffer, rendered)
+        self._apply_agent_external_url_links(buffer, rendered)
 
     def _apply_agent_citation_italics(self, buffer: Gtk.TextBuffer, text: str) -> None:
         table = buffer.get_tag_table()
@@ -6500,6 +6863,35 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._agent_link_tags.append(tag)
             self._agent_rule_link_lookup[tag] = link
 
+    def _apply_agent_external_url_links(self, buffer: Gtk.TextBuffer, text: str) -> None:
+        for start, end, url in self._external_url_links(text):
+            tag = buffer.create_tag(
+                None,
+                foreground_rgba=self._resolve_agent_quote_color(),
+                underline=Pango.Underline.SINGLE,
+                weight=Pango.Weight.MEDIUM,
+            )
+            buffer.apply_tag(
+                tag,
+                buffer.get_iter_at_offset(start),
+                buffer.get_iter_at_offset(end),
+            )
+            self._agent_link_tags.append(tag)
+            self._agent_external_url_link_lookup[tag] = AgentExternalUrlLink(url)
+
+    @staticmethod
+    def _external_url_links(text: str) -> list[tuple[int, int, str]]:
+        links: list[tuple[int, int, str]] = []
+        for match in EXTERNAL_URL_RE.finditer(text):
+            start, end = match.span()
+            url = match.group(0)
+            while url and url[-1] in ".,;:)]}":
+                url = url[:-1]
+                end -= 1
+            if url:
+                links.append((start, end, url))
+        return links
+
     def _render_search_results(
         self,
         query: str,
@@ -6534,6 +6926,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_citation_link_lookup.clear()
         self._agent_statute_link_lookup.clear()
         self._agent_rule_link_lookup.clear()
+        self._agent_external_url_link_lookup.clear()
         self._agent_search_link_lookup.clear()
         self._agent_search_next_link_tags.clear()
         self._agent_search_action_link_lookup.clear()
@@ -6864,7 +7257,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self,
         x: float,
         y: float,
-    ) -> CitedCaseLink | StatuteLink | RuleLink | QuoteTarget | CourtListenerSearchResult | str | None:
+    ) -> CitedCaseLink | StatuteLink | RuleLink | AgentExternalUrlLink | QuoteTarget | CourtListenerSearchResult | str | None:
         view = self._agent_answer_view
         if view is None:
             return None
@@ -6896,6 +7289,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             rule_link = self._agent_rule_link_lookup.get(tag)
             if rule_link is not None:
                 return rule_link
+            external_url = self._agent_external_url_link_lookup.get(tag)
+            if external_url is not None:
+                return external_url
             search_result = self._agent_search_link_lookup.get(tag)
             if search_result is not None:
                 return search_result
@@ -6939,6 +7335,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._open_statute_link(target)
         elif isinstance(target, RuleLink):
             self._open_rule_link(target)
+        elif isinstance(target, AgentExternalUrlLink):
+            self._launch_external_url(target.url)
         elif target is not None:
             self._open_quote_target(target)
 

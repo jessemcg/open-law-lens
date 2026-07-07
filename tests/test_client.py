@@ -20,6 +20,7 @@ from open_law_lens.client import (
     cluster_title,
     dedupe_case_clusters,
     format_official_california_citation,
+    format_published_slip_opinion_citation,
     html_to_text,
     normalize_search_api_result,
     official_california_reporter_citation_from_text,
@@ -27,9 +28,11 @@ from open_law_lens.client import (
     opinion_text,
     search_result_full_citation,
     us_long_date,
+    us_abbreviated_date,
 )
 from open_law_lens.case_titles import normalize_case_title
-from open_law_lens.library import CaseLibrary
+from open_law_lens.library import CaseLibrary, DisplayText
+from open_law_lens.slip_opinions import SlipOpinionResult
 
 
 class ClientTests(unittest.TestCase):
@@ -1148,6 +1151,49 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(us_long_date("2017-03-27"), "March 27, 2017")
         self.assertEqual(us_long_date("not-a-date"), "not-a-date")
 
+    def test_us_abbreviated_date_formats_iso_date(self) -> None:
+        self.assertEqual(us_abbreviated_date("2026-03-06"), "Mar. 6, 2026")
+        self.assertEqual(us_abbreviated_date("not-a-date"), "not-a-date")
+
+    def test_format_published_slip_opinion_citation_uses_placeholder_reporter(self) -> None:
+        cluster = {
+            "case_name_short": "In re L.G.",
+            "date_filed": "2026-03-06",
+            "docket": {"docket_number": "A173218"},
+        }
+
+        citation = format_published_slip_opinion_citation(cluster)
+
+        self.assertIsNotNone(citation)
+        assert citation is not None
+        self.assertEqual(
+            citation.plain_text,
+            "In re L.G. (Mar. 6, 2026, A173218) ___ Cal.App.5th ___",
+        )
+        self.assertEqual(
+            citation.html_text,
+            "<i>In re L.G.</i> (Mar. 6, 2026, A173218) ___ Cal.App.5th ___",
+        )
+
+    def test_format_published_slip_opinion_citation_can_use_long_date(self) -> None:
+        cluster = {
+            "case_name_short": "In re Bella L. et al.",
+            "date_filed": "2026-01-20",
+        }
+
+        citation = format_published_slip_opinion_citation(
+            cluster,
+            case_number="B348279",
+            long_date=True,
+        )
+
+        self.assertIsNotNone(citation)
+        assert citation is not None
+        self.assertEqual(
+            citation.plain_text,
+            "In re Bella L. et al. (January 20, 2026, B348279) ___ Cal.App.5th ___",
+        )
+
     def test_lookup_uses_cache_without_network(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = JsonCache(Path(temp_dir))
@@ -1413,6 +1459,39 @@ class ClientTests(unittest.TestCase):
 
             client.fetch_cluster_opinions(cluster)
 
+            self.assertEqual(library.saved_clusters(), [])
+
+    def test_fetch_cluster_slip_opinion_uses_research_cache_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            cache = JsonCache(temp_path / "cache")
+            library = CaseLibrary(temp_path / "library.sqlite3")
+            library.ensure()
+            client = CourtListenerClient(cache=cache, library=library)
+            cluster = {
+                "id": 42,
+                "case_name": "Example v. State",
+                "precedential_status": "Published",
+                "date_filed": "2026-06-01",
+                "docket": {
+                    "docket_number": "A173218",
+                    "court": {"id": "calctapp1d"},
+                },
+            }
+            expected = SlipOpinionResult(
+                case_number="A173218",
+                source_url="https://example.test/A173218.PDF",
+                pdf_path=temp_path / "cache" / "slip_opinions" / "A173218.PDF",
+                display=DisplayText("Slip text", "slip_pdf", []),
+                date_filed="2026-06-01",
+            )
+
+            with patch("open_law_lens.client.fetch_slip_opinion_for_cluster", return_value=expected) as fetch:
+                result = client.fetch_cluster_slip_opinion(cluster, max_age_days=120)
+
+            self.assertIs(result, expected)
+            fetch.assert_called_once()
+            self.assertEqual(fetch.call_args.args[1], cache)
             self.assertEqual(library.saved_clusters(), [])
 
     def test_reader_opinions_prefers_combined_opinion(self) -> None:

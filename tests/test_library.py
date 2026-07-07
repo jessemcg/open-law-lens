@@ -222,17 +222,21 @@ class LibraryTests(unittest.TestCase):
             )
             cache.set_rule_agent_selected("CRC:8.11", True)
             cache.save_agent_answer(
-                "This prior assessment should stay in the disposable Research Cache.",
+                "This prior assessment should round-trip with the saved Research Set.",
                 mode="appeal",
+                title="Removal assessment",
             )
+            answer_id = cache.list_agent_answer_entries()[0]["answer_id"]
+            cache.set_agent_answer_selected(answer_id, True)
 
             saved = library.save_research_set("Example_research", cache)
 
             self.assertEqual(saved.name, "Example_research")
-            self.assertEqual(saved.item_count, 3)
+            self.assertEqual(saved.item_count, 4)
             self.assertEqual(saved.case_count, 1)
             self.assertEqual(saved.statute_count, 1)
             self.assertEqual(saved.rule_count, 1)
+            self.assertEqual(saved.agent_answer_count, 1)
             self.assertIsNotNone(library.read_opinion("10"))
 
             cache.clear()
@@ -244,9 +248,11 @@ class LibraryTests(unittest.TestCase):
             self.assertEqual([entry["cluster_id"] for entry in cache.list_case_entries()], ["42"])
             self.assertEqual([entry["statute_id"] for entry in cache.list_statute_entries()], ["WIC:300"])
             self.assertEqual([entry["rule_id"] for entry in cache.list_rule_entries()], ["CRC:8.11"])
-            self.assertEqual(cache.list_agent_answer_entries(), [])
+            self.assertEqual([entry["answer_id"] for entry in cache.list_agent_answer_entries()], [answer_id])
+            self.assertEqual(cache.read_agent_answer(answer_id)["title"], "Removal assessment")
             self.assertTrue(cache.is_agent_selected("42"))
             self.assertTrue(cache.is_rule_agent_selected("CRC:8.11"))
+            self.assertTrue(cache.is_agent_answer_selected(answer_id))
 
     def test_research_set_duplicate_requires_replace(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

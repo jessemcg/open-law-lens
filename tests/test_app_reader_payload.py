@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from importlib import resources
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from open_law_lens.app import (
     SCHOLAR_FALLBACK_NOTICE_ONLY,
@@ -22,7 +22,8 @@ from open_law_lens.citation_links import CitedCaseLink
 from open_law_lens.client import CourtListenerClient, FormattedCitation
 from open_law_lens.config import AppConfig
 from open_law_lens.fact_patterns import FactPatternExport
-from open_law_lens.library import CaseLibrary, DisplayText, PageMarker
+from open_law_lens.library import CaseLibrary, DisplayText, PageMarker, ResearchSet
+from open_law_lens.slip_opinions import SlipOpinionResult
 from open_law_lens.web_import import ExtractedWebpage
 
 
@@ -637,6 +638,300 @@ class AppReaderPayloadTests(unittest.TestCase):
             ],
         )
 
+    def test_case_worker_uses_slip_opinion_before_scholar_fallback(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.payloads = []
+                self.client = MagicMock()
+                self.client.fetch_cluster_opinions.return_value = [
+                    {"id": 10, "plain_text": "Unpaginated CourtListener text."}
+                ]
+                self.client.last_opinion_source = "Fetched"
+                self.client.reader_opinions.return_value = self.client.fetch_cluster_opinions.return_value
+                self.client.opinion_display.return_value = DisplayText(
+                    "Unpaginated CourtListener text.",
+                    "plain_text",
+                    [],
+                )
+                self.client.fetch_cluster_slip_opinion.return_value = SlipOpinionResult(
+                    case_number="A173218",
+                    source_url="https://www4.courts.ca.gov/opinions/archive/A173218.PDF",
+                    pdf_path=Path("/tmp/A173218.PDF"),
+                    display=DisplayText(
+                        "[Slip opn. p. 1]\nSlip text.",
+                        "slip_pdf",
+                        [PageMarker("1", "[Slip opn. p. 1]", 0, 16, "slip_pdf")],
+                    ),
+                    date_filed="2026-06-01",
+                )
+
+            def _start_reader_payload_render(self, payload):  # type: ignore[no-untyped-def]
+                self.payloads.append(payload)
+                return False
+
+            def _apply_case_error(self, *_args):  # type: ignore[no-untyped-def]
+                raise AssertionError("case error should not be used")
+
+        window = DummyWindow()
+        cluster = {
+            "id": 42,
+            "case_name": "Example v. State",
+            "citations": [{"volume": "10", "reporter": "Cal.App.5th", "page": "25"}],
+            "precedential_status": "Published",
+            "date_filed": "2026-06-01",
+            "docket": {"docket_number": "A173218", "court": {"id": "calctapp1d"}},
+        }
+
+        with patch("open_law_lens.app.GLib.idle_add", side_effect=lambda func, *args: func(*args)):
+            OpenLawLensWindow._case_worker(window, cluster, 7, 8)  # type: ignore[arg-type]
+
+        self.assertEqual(len(window.payloads), 1)
+        payload = window.payloads[0]
+        self.assertEqual(payload.pagination_mode, "slip")
+        self.assertEqual(payload.slip_case_number, "A173218")
+        self.assertIn("Slip text.", payload.text)
+        window.client.fetch_cluster_slip_opinion.assert_called_once()
+
+    def test_forced_case_worker_uses_slip_opinion_without_courtlistener_blob_first(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.payloads = []
+                self.busy: list[tuple[bool, str]] = []
+                self.client = MagicMock()
+                self.client.fetch_cluster_opinions.side_effect = AssertionError(
+                    "forced slip lookup should not fetch CourtListener opinion text first"
+                )
+                self.client.fetch_cluster_slip_opinion.return_value = SlipOpinionResult(
+                    case_number="A173218",
+                    source_url="https://www4.courts.ca.gov/opinions/archive/A173218.PDF",
+                    pdf_path=Path("/tmp/A173218.PDF"),
+                    display=DisplayText(
+                        "[Slip opn. p. 1]\nSlip text.",
+                        "slip_pdf",
+                        [PageMarker("1", "[Slip opn. p. 1]", 0, 16, "slip_pdf")],
+                    ),
+                    date_filed="2026-03-06",
+                )
+
+            def _set_reader_busy(self, busy: bool, message: str = "") -> None:
+                self.busy.append((busy, message))
+
+            def _start_reader_payload_render(self, payload):  # type: ignore[no-untyped-def]
+                self.payloads.append(payload)
+                return False
+
+            def _apply_case_error(self, *_args):  # type: ignore[no-untyped-def]
+                raise AssertionError("case error should not be used")
+
+        window = DummyWindow()
+        cluster = {
+            "id": 42,
+            "case_name_short": "In re L.G.",
+            "precedential_status": "Published",
+            "date_filed": "2026-03-06",
+            "docket_number": "A173218",
+            "docket": {"court": {"id": "calctapp1d"}},
+        }
+
+        with patch("open_law_lens.app.GLib.idle_add", side_effect=lambda func, *args: func(*args)):
+            OpenLawLensWindow._case_worker(window, cluster, 7, 8, True)  # type: ignore[arg-type]
+
+        window.client.fetch_cluster_opinions.assert_not_called()
+        window.client.fetch_cluster_slip_opinion.assert_called_once()
+        self.assertEqual(window.payloads[0].pagination_mode, "slip")
+        self.assertEqual(
+            window.busy[:2],
+            [
+                (True, "Downloading slip opinion PDF..."),
+                (True, "Rendering slip opinion..."),
+            ],
+        )
+
+    def test_start_reader_payload_render_replaces_header_with_slip_citation(self) -> None:
+        class DummyButton:
+            def __init__(self) -> None:
+                self.visible = False
+
+            def set_visible(self, visible: bool) -> None:
+                self.visible = visible
+
+        class DummyBuffer:
+            def __init__(self) -> None:
+                self.text = ""
+
+            def set_text(self, text: str) -> None:
+                self.text = text
+
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.client = MagicMock()
+                self.reader_slip_pdf_button = DummyButton()
+                self.reader_buffer = DummyBuffer()
+                self.headers: list[tuple[str, str]] = []
+                self._research_cache_generation = 1
+
+            def _case_load_is_current(self, _generation: int, _cluster_id: str) -> bool:
+                return True
+
+            def _close_reader_find(self, *, clear_entry: bool) -> None:
+                pass
+
+            def _set_reader_header(
+                self,
+                text: str,
+                citation: FormattedCitation | None = None,
+                cluster: dict[str, object] | None = None,
+            ) -> None:
+                self.headers.append((text, citation.plain_text if citation else ""))
+
+            def _clear_reader_citation_links(self) -> None:
+                pass
+
+            def _update_reader_selection_pinpoint_button(self) -> None:
+                pass
+
+            def _insert_reader_payload_text_chunk(self, *_args: object) -> bool:
+                return False
+
+        cluster = {
+            "id": 42,
+            "case_name_short": "In re L.G.",
+            "date_filed": "2026-03-06",
+            "docket": {"docket_number": "A173218"},
+        }
+        payload = build_case_reader_payload(
+            cluster,
+            [
+                DisplayText(
+                    "[Slip opn. p. 1]\nSlip text.",
+                    "slip_pdf",
+                    [PageMarker("1", "[Slip opn. p. 1]", 0, 16, "slip_pdf")],
+                )
+            ],
+            generation=1,
+            cache_generation=1,
+            pagination_mode="slip",
+            slip_source_url="https://www4.courts.ca.gov/opinions/archive/A173218.PDF",
+            slip_case_number="A173218",
+        )
+        window = DummyWindow()
+
+        with patch("open_law_lens.app.GLib.idle_add", return_value=None):
+            OpenLawLensWindow._start_reader_payload_render(window, payload)  # type: ignore[arg-type]
+
+        expected = "In re L.G. (Mar. 6, 2026, A173218) ___ Cal.App.5th ___"
+        self.assertEqual(window.headers, [(expected, expected)])
+        self.assertTrue(window.reader_slip_pdf_button.visible)
+
+    def test_case_number_direct_slip_lookup_uses_pdf_metadata_for_header_citation(self) -> None:
+        class EmptySearchPage:
+            results: list[object] = []
+
+        class DummyClient:
+            def search_cases(self, _query: str, *, page_size: int) -> EmptySearchPage:
+                return EmptySearchPage()
+
+            def fetch_slip_opinion(self, _case_number: str) -> SlipOpinionResult:
+                return SlipOpinionResult(
+                    case_number="A173218",
+                    source_url="https://www4.courts.ca.gov/opinions/archive/A173218.PDF",
+                    pdf_path=Path("/tmp/A173218.PDF"),
+                    display=DisplayText(
+                        "[Slip opn. p. 1]\nFiled 3/6/26\n\nIn re L.G., a Person Coming Under the Juvenile Court Law.\n\nText.",
+                        "slip_pdf",
+                        [PageMarker("1", "[Slip opn. p. 1]", 0, 16, "slip_pdf")],
+                    ),
+                    date_filed="",
+                )
+
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.client = DummyClient()
+                self.finished: list[dict[str, object]] = []
+
+            def _finish_case_number_direct_slip_lookup(
+                self,
+                cluster: dict[str, object],
+                *_args: object,
+            ) -> bool:
+                self.finished.append(cluster)
+                return False
+
+        window = DummyWindow()
+
+        with patch("open_law_lens.app.GLib.idle_add", side_effect=lambda func, *args: func(*args)):
+            OpenLawLensWindow._case_number_lookup_worker(window, "A173218", 1, 1)  # type: ignore[arg-type]
+
+        self.assertEqual(window.finished[0]["case_name_short"], "In re L.G.")
+        self.assertEqual(window.finished[0]["date_filed"], "2026-03-06")
+
+    def test_case_number_cluster_lookup_forces_slip_worker(self) -> None:
+        class ImmediateThread:
+            def __init__(self, *, target: object, args: tuple[object, ...], daemon: bool = False) -> None:
+                self.target = target
+                self.args = args
+
+            def start(self) -> None:
+                self.target(*self.args)  # type: ignore[misc]
+
+        class DummyCache:
+            def upsert_cluster(self, _cluster: dict[str, object]) -> str:
+                return "10805052"
+
+        class DummyClient:
+            def __init__(self, cluster: dict[str, object]) -> None:
+                self.cache = DummyCache()
+                self._cluster = cluster
+
+            def cached_clusters(self) -> list[dict[str, object]]:
+                return [self._cluster]
+
+        class DummyWindow:
+            def __init__(self, cluster: dict[str, object]) -> None:
+                self.client = DummyClient(cluster)
+                self._research_cache_generation = 3
+                self.sidebar_kwargs: list[dict[str, object]] = []
+                self.worker_args: list[tuple[dict[str, object], int, int, bool]] = []
+
+            def _set_sidebar_clusters(self, _clusters: list[dict[str, object]], **kwargs: object) -> None:
+                self.sidebar_kwargs.append(kwargs)
+
+            def _set_status(self, _status: str) -> None:
+                pass
+
+            def _refresh_case_suggestion_index_async(self, *, force: bool = False) -> None:
+                pass
+
+            def _begin_case_load(self, _cluster: dict[str, object]) -> int:
+                return 9
+
+            def _case_worker(
+                self,
+                cluster: dict[str, object],
+                generation: int,
+                cache_generation: int,
+                force_slip_opinion: bool = False,
+            ) -> None:
+                self.worker_args.append((cluster, generation, cache_generation, force_slip_opinion))
+
+        cluster = {"id": 10805052, "case_name_short": "In re L.G."}
+        window = DummyWindow(cluster)
+
+        with patch("open_law_lens.app.threading.Thread", ImmediateThread):
+            OpenLawLensWindow._finish_case_number_cluster_lookup(  # type: ignore[arg-type]
+                window,
+                cluster,
+                "A173218",
+                3,
+            )
+
+        self.assertTrue(window.sidebar_kwargs[0]["suppress_selection_lookup"])
+        loaded_cluster, generation, cache_generation, force_slip = window.worker_args[0]
+        self.assertEqual(loaded_cluster["docket_number"], "A173218")
+        self.assertEqual(generation, 9)
+        self.assertEqual(cache_generation, 3)
+        self.assertTrue(force_slip)
+
     def test_transient_scholar_failure_shows_notice_without_manual_window(self) -> None:
         class DummyWindow:
             def __init__(self) -> None:
@@ -810,7 +1105,144 @@ class AppReaderPayloadTests(unittest.TestCase):
         window._selected_agent_answer = {"answer_id": "saved"}
         OpenLawLensWindow._open_cited_case_link(window, link)  # type: ignore[arg-type]
 
-        self.assertEqual(window.populate_values[-1], False)
+        self.assertEqual(window.populate_values[-1], True)
+
+    def test_agent_answer_external_url_links_strip_trailing_punctuation(self) -> None:
+        links = OpenLawLensWindow._external_url_links(  # type: ignore[arg-type]
+            "Slip: https://www4.courts.ca.gov/opinions/archive/A173218.PDF."
+        )
+
+        self.assertEqual(
+            links,
+            [
+                (
+                    6,
+                    61,
+                    "https://www4.courts.ca.gov/opinions/archive/A173218.PDF",
+                )
+            ],
+        )
+
+    def test_lookup_clicked_routes_bare_case_number_to_case_number_lookup(self) -> None:
+        class DummyEntry:
+            def get_text(self) -> str:
+                return "A173218"
+
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.citation_entry = DummyEntry()
+                self.case_numbers: list[str] = []
+
+            def _lookup_text_from_entry(self, text: str) -> str:
+                return text
+
+            def _start_case_number_lookup(self, case_number: str) -> None:
+                self.case_numbers.append(case_number)
+
+        window = DummyWindow()
+
+        OpenLawLensWindow._on_lookup_clicked(window, object())  # type: ignore[arg-type]
+
+        self.assertEqual(window.case_numbers, ["A173218"])
+
+    def test_active_research_set_label_and_save_updates_loaded_set(self) -> None:
+        class DummyLabel:
+            def __init__(self) -> None:
+                self.text = ""
+                self.visible = False
+
+            def set_text(self, text: str) -> None:
+                self.text = text
+
+            def set_visible(self, visible: bool) -> None:
+                self.visible = visible
+
+        class DummyCache:
+            def list_case_entries(self) -> list[dict[str, object]]:
+                return [{"cluster_id": "42"}]
+
+            def list_statute_entries(self) -> list[dict[str, object]]:
+                return []
+
+            def list_rule_entries(self) -> list[dict[str, object]]:
+                return []
+
+            def list_agent_answer_entries(self) -> list[dict[str, object]]:
+                return []
+
+        class DummyLibrary:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, bool]] = []
+
+            def save_research_set(
+                self,
+                name: str,
+                cache: DummyCache,
+                *,
+                replace: bool = False,
+            ) -> ResearchSet:
+                self.calls.append((name, replace))
+                return ResearchSet(
+                    set_id=7,
+                    name=name,
+                    created_at="",
+                    updated_at="",
+                    last_accessed="",
+                    item_count=1,
+                    case_count=1,
+                    statute_count=0,
+                    rule_count=0,
+                    agent_answer_count=0,
+                    items=[],
+                )
+
+        class DummyClient:
+            def __init__(self) -> None:
+                self.cache = DummyCache()
+                self.library = DummyLibrary()
+
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.client = DummyClient()
+                self._active_research_set_id: int | None = None
+                self._active_research_set_name = ""
+                self._research_set_label = DummyLabel()
+                self.statuses: list[str] = []
+
+            def _set_status(self, status: str) -> None:
+                self.statuses.append(status)
+
+            def _research_cache_authority_count(self) -> int:
+                return OpenLawLensWindow._research_cache_authority_count(self)  # type: ignore[arg-type]
+
+            def _save_research_set(self, name: str, *, replace: bool) -> None:
+                OpenLawLensWindow._save_research_set(self, name, replace=replace)  # type: ignore[arg-type]
+
+            def _set_active_research_set(self, research_set: ResearchSet | None) -> None:
+                OpenLawLensWindow._set_active_research_set(self, research_set)  # type: ignore[arg-type]
+
+        window = DummyWindow()
+        research_set = ResearchSet(
+            set_id=7,
+            name="Dependency appeal",
+            created_at="",
+            updated_at="",
+            last_accessed="",
+            item_count=1,
+            case_count=1,
+            statute_count=0,
+            rule_count=0,
+            agent_answer_count=0,
+            items=[],
+        )
+
+        OpenLawLensWindow._set_active_research_set(window, research_set)  # type: ignore[arg-type]
+        OpenLawLensWindow._on_save_research_set(window, object(), None)  # type: ignore[arg-type]
+
+        self.assertEqual(window._research_set_label.text, "Set: Dependency appeal")
+        self.assertTrue(window._research_set_label.visible)
+        self.assertEqual(window.client.library.calls, [("Dependency appeal", True)])
+        self.assertIn("1 Research Cache item(s)", window.statuses[-1])
 
     def test_lookup_clusters_for_display_repairs_reporter_only_linked_case_name(self) -> None:
         window = OpenLawLensWindow.__new__(OpenLawLensWindow)
@@ -1618,6 +2050,20 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(window.async_refreshes, 1)
         self.assertEqual(window.opened_cases, ["11 Cal.5th 614"])
 
+    def test_start_lookup_routes_bare_case_number_to_case_number_lookup(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.case_numbers: list[str] = []
+
+            def _start_case_number_lookup(self, case_number: str) -> None:
+                self.case_numbers.append(case_number)
+
+        window = DummyWindow()
+
+        OpenLawLensWindow._start_lookup(window, "A173218")  # type: ignore[arg-type]
+
+        self.assertEqual(window.case_numbers, ["A173218"])
+
     def test_app_startup_request_uses_existing_open_authority_path(self) -> None:
         class DummyWindow:
             def __init__(self) -> None:
@@ -1686,10 +2132,14 @@ class AppReaderPayloadTests(unittest.TestCase):
             pass
 
         header = OpenLawLensWindow._build_research_cache_header(DummyWindow())  # type: ignore[arg-type]
-        heading = header.get_first_child()
-        clear_button = header.get_last_child()
+        header_row = header.get_first_child()
+        heading = header_row.get_first_child()
+        clear_button = header_row.get_last_child()
+        set_label = header.get_last_child()
 
         self.assertEqual(heading.get_text(), "Research Cache")
+        self.assertEqual(set_label.get_text(), "")
+        self.assertFalse(set_label.get_visible())
         self.assertEqual(clear_button.get_action_name(), "win.clear_cache")
         self.assertEqual(clear_button.get_tooltip_text(), "Clear Research Cache")
 
@@ -1774,6 +2224,152 @@ class AppReaderPayloadTests(unittest.TestCase):
         )
 
         self.assertEqual(citation, "In re Caden C. (2021) 11 Cal.5th 614, 631")
+
+    def test_reader_case_selection_slip_pinpoint_uses_case_number_and_slip_page(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self._selected_cluster = {
+                    "case_name_short": "In re Bella L. et al.",
+                    "date_filed": "2026-01-20",
+                    "docket": {"docket_number": "B348279"},
+                }
+                self._selected_statute = None
+                self._selected_rule = None
+                self._reader_pagination_mode = "slip"
+                self._reader_slip_case_number = "B348279"
+                self._reader_text = "[Slip opn. p. 7]\nFirst page. [Slip opn. p. 9]\nThird page."
+                self._reader_page_markers = [
+                    PageMarker("7", "[Slip opn. p. 7]", 0, 16, "slip_pdf"),
+                    PageMarker("9", "[Slip opn. p. 9]", 29, 45, "slip_pdf"),
+                ]
+
+        window = DummyWindow()
+
+        citation = OpenLawLensWindow._reader_selection_pinpoint_citation(  # type: ignore[arg-type]
+            window,
+            window._reader_text.index("First"),
+            len(window._reader_text),
+        )
+
+        self.assertEqual(
+            citation,
+            "In re Bella L. et al. (January 20, 2026, B348279) ___ Cal.App.5th ___ slip opn. at pp. 7-9",
+        )
+
+    def test_reader_case_selection_slip_pinpoint_html_italicizes_case_name(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self._selected_cluster = {
+                    "case_name_short": "In re Bella L. et al.",
+                    "date_filed": "2026-01-20",
+                    "docket": {"docket_number": "B348279"},
+                }
+                self._selected_statute = None
+                self._selected_rule = None
+                self._reader_pagination_mode = "slip"
+                self._reader_slip_case_number = "B348279"
+                self._reader_text = "[Slip opn. p. 7]\nFirst page."
+                self._reader_page_markers = [
+                    PageMarker("7", "[Slip opn. p. 7]", 0, 16, "slip_pdf"),
+                ]
+
+        window = DummyWindow()
+
+        citation = OpenLawLensWindow._reader_selection_pinpoint_formatted_citation(  # type: ignore[arg-type]
+            window,
+            window._reader_text.index("First"),
+            len(window._reader_text),
+        )
+
+        self.assertIsNotNone(citation)
+        assert citation is not None
+        self.assertEqual(
+            citation.html_text,
+            "<i>In re Bella L. et al.</i> (January 20, 2026, B348279) "
+            "___ Cal.App.5th ___ slip opn. at p. 7",
+        )
+
+    def test_copy_reader_selection_slip_pinpoint_copies_text_and_full_citation(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self._selected_cluster = {
+                    "case_name_short": "In re Bella L. et al.",
+                    "date_filed": "2026-01-20",
+                    "docket": {"docket_number": "B348279"},
+                }
+                self._selected_statute = None
+                self._selected_rule = None
+                self._reader_pagination_mode = "slip"
+                self._reader_slip_case_number = "B348279"
+                self._reader_text = "[Slip opn. p. 7]\nSelected text."
+                self._reader_page_markers = [
+                    PageMarker("7", "[Slip opn. p. 7]", 0, 16, "slip_pdf"),
+                ]
+                self.copied: list[FormattedCitation] = []
+                self.statuses: list[str] = []
+
+            def _reader_selection_bounds(self) -> tuple[int, int, str]:
+                start = self._reader_text.index("Selected")
+                end = len(self._reader_text)
+                return start, end, self._reader_text[start:end]
+
+            def _reader_selection_pinpoint_formatted_citation(
+                self,
+                start_offset: int,
+                end_offset: int,
+            ) -> FormattedCitation | None:
+                return OpenLawLensWindow._reader_selection_pinpoint_formatted_citation(  # type: ignore[arg-type]
+                    self,
+                    start_offset,
+                    end_offset,
+                )
+
+            def _clipboard_selected_authority_text(
+                self,
+                text: str,
+                *,
+                strip_page_markers: bool = False,
+            ) -> str:
+                return OpenLawLensWindow._clipboard_selected_authority_text(
+                    text,
+                    strip_page_markers=strip_page_markers,
+                )
+
+            def _selection_pinpoint_clipboard_payload(
+                self,
+                selected_text: str,
+                citation: FormattedCitation,
+            ) -> FormattedCitation:
+                return OpenLawLensWindow._selection_pinpoint_clipboard_payload(
+                    selected_text,
+                    citation,
+                )
+
+            def _set_formatted_clipboard(
+                self,
+                citation: FormattedCitation,
+                _failure_message: str,
+            ) -> bool:
+                self.copied.append(citation)
+                return True
+
+            def _set_status(self, text: str) -> None:
+                self.statuses.append(text)
+
+        window = DummyWindow()
+
+        OpenLawLensWindow._on_copy_reader_selection_pinpoint_clicked(window, object())  # type: ignore[arg-type]
+
+        self.assertEqual(
+            window.copied[0].plain_text,
+            "Selected text. (In re Bella L. et al. (January 20, 2026, B348279) "
+            "___ Cal.App.5th ___ slip opn. at p. 7.)",
+        )
+        self.assertEqual(
+            window.copied[0].html_text,
+            "Selected text. (<i>In re Bella L. et al.</i> (January 20, 2026, B348279) "
+            "___ Cal.App.5th ___ slip opn. at p. 7.)",
+        )
 
     def test_reader_case_selection_pinpoint_html_italicizes_case_name(self) -> None:
         class DummyWindow:
@@ -2185,11 +2781,11 @@ class AppReaderPayloadTests(unittest.TestCase):
 
     def test_case_clipboard_text_strips_reader_page_markers(self) -> None:
         text = OpenLawLensWindow._clipboard_selected_authority_text(
-            "First page [*631] second page.",
+            "First page [*631] second page [Slip opn. p. 4] third page.",
             strip_page_markers=True,
         )
 
-        self.assertEqual(text, "First page second page.")
+        self.assertEqual(text, "First page second page third page.")
 
     def test_selection_pinpoint_clipboard_payload_preserves_citation_html(self) -> None:
         payload = OpenLawLensWindow._selection_pinpoint_clipboard_payload(
@@ -2207,6 +2803,27 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(
             payload.html_text,
             "Selected &lt;text&gt; (<i>In re Caden C.</i> (2021) 11 Cal.5th 614, 631.)",
+        )
+
+    def test_copy_reader_citation_uses_reader_header_citation(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self._reader_header_citation = FormattedCitation(
+                    plain_text="In re L.G. (Mar. 6, 2026, A173218) ___ Cal.App.5th ___",
+                    html_text="<i>In re L.G.</i> (Mar. 6, 2026, A173218) ___ Cal.App.5th ___",
+                )
+                self.copied: list[FormattedCitation] = []
+
+            def _copy_formatted_citation(self, citation: FormattedCitation) -> None:
+                self.copied.append(citation)
+
+        window = DummyWindow()
+
+        OpenLawLensWindow._on_copy_reader_citation_clicked(window, object())  # type: ignore[arg-type]
+
+        self.assertEqual(
+            window.copied[0].plain_text,
+            "In re L.G. (Mar. 6, 2026, A173218) ___ Cal.App.5th ___",
         )
 
     def test_copy_reader_selection_pinpoint_warns_without_selection(self) -> None:

@@ -36,6 +36,7 @@
 - For library, cache, config, and client changes, add or update tests under `tests/` using `unittest` unless the project intentionally migrates to another test runner.
 - For CourtListener API changes, keep tests network-free by using cached fixtures, temporary directories, or mocks. Do not make routine tests depend on live network access or real credentials.
 - For GUI changes, run the app when a display is available and manually exercise the affected flow: citation lookup, cached-case selection, opinion text display, settings save/load, and embedded Codex agent launch if touched.
+- When sandbox-only checks cannot reproduce a reported desktop/runtime issue, perform appropriate live host testing outside the sandbox after approval: verify running Open Law Lens processes, active launcher/cache paths, and the exact user-facing workflow before declaring the issue fixed.
 
 ## Configuration, Cache, and Security Notes
 - `config.json` is local runtime state and may contain a CourtListener token. Do not commit it.

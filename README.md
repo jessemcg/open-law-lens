@@ -71,7 +71,8 @@ Or save it in the app menu under Settings. The Settings path writes a local
 - GTK 4, Libadwaita, and PyGObject system packages
 - Optional: GTK VTE packages for the embedded Codex terminal
 - Optional: Codex CLI for agent queries and appeal issue assessment
-- Optional: `pdftotext` for extracting appeal fact patterns from PDF files
+- Optional: `pdftotext` for extracting appeal fact patterns and California
+  slip-opinion PDFs
 
 Ubuntu/Debian package names vary by release, but the GTK stack is typically
 provided by packages such as:
@@ -243,6 +244,11 @@ uv run open-law-lens show-cache
 CourtListener is the primary source for case lookup, search, metadata, and
 opinion text. Google Scholar is a fallback for cases where CourtListener cannot
 provide usable official reporter text or embedded reporter pagination.
+
+For recent published California opinions, Open Law Lens first tries the official
+California Courts slip-opinion PDF archive before falling back to Scholar. Slip
+opinions are displayed with slip-opinion page markers for temporary citation
+work, but they are not saved as official reporter text in the durable Library.
 
 The manual fallback path opens the Find Case Online window. From there you can
 open a Google Scholar case-law search in the browser, use Auto-Find on Scholar

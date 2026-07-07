@@ -153,6 +153,18 @@ class CitationLinkTests(unittest.TestCase):
             ],
         )
 
+    def test_cited_case_links_find_published_slip_placeholder_citations(self) -> None:
+        text = "The answer cites In re L.G. (Mar. 6, 2026, A173218) ___ Cal.App.5th ___."
+
+        links = cited_case_links(text)
+
+        self.assertEqual([link.lookup_text for link in links], ["A173218"])
+        self.assertEqual([link.case_name for link in links], ["In re L.G."])
+        self.assertEqual(
+            text[links[0].start_offset:links[0].end_offset],
+            "In re L.G. (Mar. 6, 2026, A173218) ___ Cal.App.5th ___",
+        )
+
     def test_cited_case_links_find_adoption_of_case_names(self) -> None:
         text = (
             "The term comes from Adoption of Kelsey S. (1992) 1 Cal.4th 816. "
@@ -224,6 +236,16 @@ class CitationLinkTests(unittest.TestCase):
         self.assertEqual(
             [text[span.start_offset:span.end_offset] for span in spans],
             ["In re Caden C."],
+        )
+
+    def test_citation_italic_spans_cover_slip_placeholder_case_names(self) -> None:
+        text = "The answer cites In re L.G. (Mar. 6, 2026, A173218) ___ Cal.App.5th ___."
+
+        spans = citation_italic_spans(text)
+
+        self.assertEqual(
+            [text[span.start_offset:span.end_offset] for span in spans],
+            ["In re L.G."],
         )
 
     def test_citation_italic_spans_cover_conservatorship_case_names(self) -> None:
