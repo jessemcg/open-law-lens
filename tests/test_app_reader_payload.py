@@ -344,7 +344,7 @@ class AppReaderPayloadTests(unittest.TestCase):
             labels(popover),
             [
                 "Assess custom argument...",
-                "Assess: Short one",
+                "Short one",
                 "Edit appeal arguments...",
             ],
         )

@@ -2339,7 +2339,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         labels = normalize_appeal_issue_labels(config.appeal_issue_labels, issues)
         for index, issue in enumerate(issues):
             label = appeal_issue_menu_label(issue, labels[index])
-            assess_button = Gtk.Button(label=f"Assess: {label}")
+            assess_button = Gtk.Button(label=label)
             OpenLawLensWindow._style_appeal_issue_menu_button(assess_button)
             assess_button.connect(
                 "clicked",
