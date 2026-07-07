@@ -910,6 +910,7 @@ class CourtListenerClient:
         *,
         refresh: bool = False,
         persist_to_library: bool = True,
+        populate_research_cache: bool = True,
     ) -> list[dict[str, Any]]:
         self.last_opinion_source = ""
         cluster_id = cluster_id_from_cluster(cluster)
@@ -924,7 +925,8 @@ class CourtListenerClient:
                 return library_opinions
         urls = cluster.get("sub_opinions")
         if not isinstance(urls, list):
-            self.cache.upsert_cluster(cluster)
+            if populate_research_cache:
+                self.cache.upsert_cluster(cluster)
             if persist_to_library:
                 self.save_case_if_official_paginated(cluster, [])
             self.last_opinion_source = "Lookup"
@@ -938,7 +940,8 @@ class CourtListenerClient:
                 opinion_id = str(opinion.get("id") or resource_id_from_url(url)).strip()
                 if opinion_id:
                     opinion_ids.append(opinion_id)
-        self.cache.update_case_opinions(cluster, opinion_ids)
+        if populate_research_cache:
+            self.cache.update_case_opinions(cluster, opinion_ids)
         if persist_to_library:
             self.save_case_if_official_paginated(cluster, opinions)
         self.last_opinion_source = "Fetched"

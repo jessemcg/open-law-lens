@@ -294,7 +294,10 @@ def _apply_terminal_theme(terminal: Any) -> None:
 @dataclass(frozen=True)
 class CaseReaderPayload:
     generation: int
+    cache_generation: int
     cluster_id: str
+    cluster: dict[str, Any]
+    opinion_ids: tuple[str, ...]
     text: str
     page_markers: list[PageMarker]
     italic_spans: list[CitationStyleSpan]
@@ -307,8 +310,8 @@ class CaseReaderPayload:
 @dataclass(frozen=True)
 class LibrarySuggestionOpenResult:
     lookup_text: str
-    cluster_id: str
-    clusters: list[dict[str, Any]]
+    cluster: dict[str, Any]
+    cache_generation: int
 
 
 def build_case_reader_payload(
@@ -316,6 +319,8 @@ def build_case_reader_payload(
     displays: list[DisplayText],
     *,
     generation: int = 0,
+    cache_generation: int = 0,
+    opinion_ids: tuple[str, ...] = (),
     opinion_source: str = "",
 ) -> CaseReaderPayload:
     text_parts: list[str] = []
@@ -345,7 +350,10 @@ def build_case_reader_payload(
     quality = official_pagination_quality(cluster, displays)
     return CaseReaderPayload(
         generation=generation,
+        cache_generation=cache_generation,
         cluster_id=cluster_id_from_cluster(cluster),
+        cluster=cluster,
+        opinion_ids=opinion_ids,
         text=text,
         page_markers=page_markers,
         italic_spans=citation_italic_spans(text),
@@ -1266,6 +1274,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.reader_helper_case_button: Gtk.Button | None = None
         self._reader_has_official_pagination = False
         self._case_load_generation = 0
+        self._research_cache_generation = 0
         self._last_lookup_text = ""
         self._external_lookup_window: Gtk.Window | None = None
         self._external_lookup_query: str = ""
@@ -1927,29 +1936,30 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if suggestion.cluster_id:
             self._set_status(f"Opening {suggestion.lookup_text} from Library...")
             self._set_reader_busy(True, "Opening from Library...")
+            cache_generation = self._research_cache_generation
             thread = threading.Thread(
                 target=self._library_case_suggestion_worker,
-                args=(suggestion,),
+                args=(suggestion, cache_generation),
                 daemon=True,
             )
             thread.start()
             return
         self._start_lookup(suggestion.lookup_text)
 
-    def _library_case_suggestion_worker(self, suggestion: CaseSuggestion) -> None:
+    def _library_case_suggestion_worker(
+        self,
+        suggestion: CaseSuggestion,
+        cache_generation: int,
+    ) -> None:
         try:
             cluster = self.client.library.read_cluster(suggestion.cluster_id)
             if cluster is None:
                 GLib.idle_add(self._start_lookup_from_idle, suggestion.lookup_text)
                 return
-            cluster_id = self.client.cache.upsert_cluster(cluster)
-            if not cluster_id:
-                GLib.idle_add(self._start_lookup_from_idle, suggestion.lookup_text)
-                return
             result = LibrarySuggestionOpenResult(
                 lookup_text=suggestion.lookup_text,
-                cluster_id=cluster_id,
-                clusters=self.client.cached_clusters(),
+                cluster=cluster,
+                cache_generation=cache_generation,
             )
             GLib.idle_add(self._finish_library_case_suggestion_open, result)
         except Exception as exc:
@@ -1960,7 +1970,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return False
 
     def _finish_library_case_suggestion_open(self, result: LibrarySuggestionOpenResult) -> bool:
-        self._set_sidebar_clusters(result.clusters, select_cluster_id=result.cluster_id)
+        if result.cache_generation != self._research_cache_generation:
+            return False
+        cluster_id = self.client.cache.upsert_cluster(result.cluster)
+        if not cluster_id:
+            self._start_lookup(result.lookup_text)
+            return False
+        self._set_sidebar_clusters(self.client.cached_clusters(), select_cluster_id=cluster_id)
         self._refresh_case_suggestion_index_async(force=True)
         if self.case_list.get_selected_row() is None:
             self._set_reader_busy(False)
@@ -2463,6 +2479,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _start_reader_payload_render(self, payload: CaseReaderPayload) -> bool:
         if not self._case_load_is_current(payload.generation, payload.cluster_id):
             return False
+        if payload.cache_generation == self._research_cache_generation and payload.opinion_ids:
+            self.client.cache.update_case_opinions(payload.cluster, list(payload.opinion_ids))
         self._close_reader_find(clear_entry=True)
         self._reader_text = ""
         self._reader_page_markers = list(payload.page_markers)
@@ -3652,6 +3670,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def reload_settings(self) -> None:
         self.client = CourtListenerClient.default()
+        self._research_cache_generation += 1
+        self._case_load_generation += 1
         self._install_css()
         self._load_cached_cases()
         self._refresh_case_suggestion_index_async(force=True)
@@ -3845,6 +3865,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         except Exception as exc:
             self._set_status(f"Unable to clear Research Cache: {exc}")
             return
+        self._research_cache_generation += 1
+        self._case_load_generation += 1
         self._load_cached_cases()
         self._set_reader_header("")
         self.reader_buffer.set_text("")
@@ -4905,7 +4927,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_reader_header("")
         self._set_reader_busy(True, "Looking up...")
         self.reader_buffer.set_text("Loading...")
-        thread = threading.Thread(target=self._lookup_worker, args=(citation, link), daemon=True)
+        cache_generation = self._research_cache_generation
+        thread = threading.Thread(
+            target=self._lookup_worker,
+            args=(citation, link, cache_generation),
+            daemon=True,
+        )
         thread.start()
 
     def _lookup_context_text(self, citation: str, link: CitedCaseLink | None = None) -> str:
@@ -4944,11 +4971,16 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return
         self._set_status("Official citation copied.")
 
-    def _lookup_worker(self, citation: str, link: CitedCaseLink | None = None) -> None:
+    def _lookup_worker(
+        self,
+        citation: str,
+        link: CitedCaseLink | None = None,
+        cache_generation: int = 0,
+    ) -> None:
         try:
             result = self.client.lookup_citation(
                 citation,
-                populate_research_cache=link is None,
+                populate_research_cache=False,
             )
             raw_clusters = self.client.clusters_from_lookup(result)
             shown_clusters = self._lookup_clusters_for_display(raw_clusters, link)
@@ -4961,6 +4993,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 shown_clusters,
                 status,
                 self._lookup_context_text(citation, link),
+                cache_generation,
             )
         except CourtListenerError:
             GLib.idle_add(
@@ -5404,7 +5437,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         clusters: list[dict[str, Any]],
         status: str,
         citation: str = "",
+        cache_generation: int | None = None,
     ) -> bool:
+        if cache_generation is not None and cache_generation != self._research_cache_generation:
+            return False
         select_cluster_id = cluster_id_from_cluster(clusters[0]) if clusters else ""
         if clusters:
             self._pending_auto_scholar_cluster_id = select_cluster_id
@@ -5472,7 +5508,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return
         cluster = self._clusters[index]
         generation = self._begin_case_load(cluster)
-        thread = threading.Thread(target=self._case_worker, args=(cluster, generation), daemon=True)
+        cache_generation = self._research_cache_generation
+        thread = threading.Thread(
+            target=self._case_worker,
+            args=(cluster, generation, cache_generation),
+            daemon=True,
+        )
         thread.start()
 
     def _open_statute_in_reader(self, statute: dict[str, Any]) -> None:
@@ -5530,17 +5571,32 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_status(f"Loading {title}...")
         return generation
 
-    def _case_worker(self, cluster: dict[str, Any], generation: int) -> None:
+    def _case_worker(
+        self,
+        cluster: dict[str, Any],
+        generation: int,
+        cache_generation: int,
+    ) -> None:
         cluster_id = cluster_id_from_cluster(cluster)
         try:
-            opinions = self.client.fetch_cluster_opinions(cluster)
+            opinions = self.client.fetch_cluster_opinions(
+                cluster,
+                populate_research_cache=False,
+            )
             opinion_source = self.client.last_opinion_source
             reader_opinions = self.client.reader_opinions(opinions)
+            opinion_ids = tuple(
+                str(opinion.get("id") or "").strip()
+                for opinion in opinions
+                if str(opinion.get("id") or "").strip()
+            )
             displays = [self.client.opinion_display(opinion) for opinion in reader_opinions]
             payload = build_case_reader_payload(
                 cluster,
                 displays,
                 generation=generation,
+                cache_generation=cache_generation,
+                opinion_ids=opinion_ids,
                 opinion_source=opinion_source,
             )
             GLib.idle_add(self._start_reader_payload_render, payload)
@@ -6748,29 +6804,42 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def _open_search_result(self, result: CourtListenerSearchResult) -> None:
         self._set_status(f"Opening {result.case_name}...")
+        cache_generation = self._research_cache_generation
         thread = threading.Thread(
             target=self._search_result_open_worker,
-            args=(result,),
+            args=(result, cache_generation),
             daemon=True,
         )
         thread.start()
 
-    def _search_result_open_worker(self, result: CourtListenerSearchResult) -> None:
+    def _search_result_open_worker(
+        self,
+        result: CourtListenerSearchResult,
+        cache_generation: int,
+    ) -> None:
         try:
             cluster = self.client.fetch_url(
                 f"/api/rest/v4/clusters/{result.cluster_id}/",
                 kind="clusters",
             )
-            cluster_id = self.client.cache.upsert_cluster(cluster)
             GLib.idle_add(
                 self._finish_search_result_open,
-                cluster_id or result.cluster_id,
+                cluster,
                 result.case_name,
+                cache_generation,
             )
         except CourtListenerError as exc:
             GLib.idle_add(self._set_status, f"Unable to open {result.case_name}: {exc}")
 
-    def _finish_search_result_open(self, cluster_id: str, title: str) -> bool:
+    def _finish_search_result_open(
+        self,
+        cluster: dict[str, Any],
+        title: str,
+        cache_generation: int,
+    ) -> bool:
+        if cache_generation != self._research_cache_generation:
+            return False
+        cluster_id = self.client.cache.upsert_cluster(cluster) or cluster_id_from_cluster(cluster)
         self._set_sidebar_clusters(
             self.client.cached_clusters(),
             select_cluster_id=cluster_id,

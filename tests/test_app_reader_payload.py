@@ -18,10 +18,10 @@ from open_law_lens.app import (
 )
 from open_law_lens.cache import JsonCache
 from open_law_lens.citation_links import CitedCaseLink
-from open_law_lens.client import FormattedCitation
+from open_law_lens.client import CourtListenerClient, FormattedCitation
 from open_law_lens.config import AppConfig
 from open_law_lens.fact_patterns import FactPatternExport
-from open_law_lens.library import DisplayText, PageMarker
+from open_law_lens.library import CaseLibrary, DisplayText, PageMarker
 from open_law_lens.web_import import ExtractedWebpage
 
 
@@ -1212,6 +1212,144 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(window._pending_auto_scholar_query, "")
         self.assertTrue(window.hidden)
         thread_cls.assert_not_called()
+
+    def test_stale_lookup_result_after_clear_does_not_repopulate_research_cache(self) -> None:
+        class DummyList:
+            def get_selected_row(self) -> object:
+                return object()
+
+            def get_row_at_index(self, _index: int) -> None:
+                return None
+
+            def select_row(self, _row: object) -> None:
+                pass
+
+        class DummyWindow:
+            def __init__(self, client: CourtListenerClient) -> None:
+                self.client = client
+                self.case_list = DummyList()
+                self._research_cache_generation = 1
+                self._pending_auto_scholar_cluster_id = ""
+                self._pending_auto_scholar_query = ""
+                self.sidebar_snapshots: list[list[str]] = []
+                self.statuses: list[str] = []
+                self.refreshes = 0
+
+            def _set_sidebar_clusters(self, clusters: list[dict[str, object]], **_kwargs: object) -> None:
+                self.sidebar_snapshots.append([str(cluster.get("case_name") or "") for cluster in clusters])
+
+            def _set_status(self, status: str) -> None:
+                self.statuses.append(status)
+
+            def _refresh_case_suggestion_index_async(self, *, force: bool = False) -> None:
+                self.refreshes += int(force)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir) / "cache")
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            client = CourtListenerClient(cache=cache, library=library)
+            window = DummyWindow(client)
+            stale_clusters = [
+                {
+                    "id": 1,
+                    "case_name": "Old One",
+                    "citations": [{"volume": "1", "reporter": "Cal.App.5th", "page": "1"}],
+                },
+                {
+                    "id": 2,
+                    "case_name": "Old Two",
+                    "citations": [{"volume": "2", "reporter": "Cal.App.5th", "page": "2"}],
+                },
+            ]
+
+            OpenLawLensWindow._apply_lookup_result(  # type: ignore[arg-type]
+                window,
+                [{"status": 200, "clusters": stale_clusters}],
+                stale_clusters,
+                "stale",
+                "old lookup",
+                0,
+            )
+
+            self.assertEqual(cache.list_case_entries(), [])
+            self.assertEqual(window.sidebar_snapshots, [])
+
+            current_cluster = {
+                "id": 99,
+                "case_name": "New Case",
+                "citations": [{"volume": "99", "reporter": "Cal.App.5th", "page": "1"}],
+            }
+            OpenLawLensWindow._apply_lookup_result(  # type: ignore[arg-type]
+                window,
+                [{"status": 200, "clusters": [current_cluster]}],
+                [current_cluster],
+                "current",
+                "new lookup",
+                1,
+            )
+
+            self.assertEqual(
+                [(entry["cluster_id"], entry["title"]) for entry in cache.list_case_entries()],
+                [("99", "New Case")],
+            )
+            self.assertEqual(window.sidebar_snapshots[-1], ["New Case"])
+
+    def test_current_linked_lookup_adds_only_displayed_case_to_empty_research_cache(self) -> None:
+        class DummyList:
+            def get_selected_row(self) -> object:
+                return object()
+
+            def get_row_at_index(self, _index: int) -> None:
+                return None
+
+            def select_row(self, _row: object) -> None:
+                pass
+
+        class DummyWindow:
+            def __init__(self, client: CourtListenerClient) -> None:
+                self.client = client
+                self.case_list = DummyList()
+                self._research_cache_generation = 0
+                self._pending_auto_scholar_cluster_id = ""
+                self._pending_auto_scholar_query = ""
+                self.sidebar_snapshots: list[list[str]] = []
+                self.statuses: list[str] = []
+                self.refreshes = 0
+
+            def _set_sidebar_clusters(self, clusters: list[dict[str, object]], **_kwargs: object) -> None:
+                self.sidebar_snapshots.append([str(cluster.get("case_name") or "") for cluster in clusters])
+
+            def _set_status(self, status: str) -> None:
+                self.statuses.append(status)
+
+            def _refresh_case_suggestion_index_async(self, *, force: bool = False) -> None:
+                self.refreshes += int(force)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir) / "cache")
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            client = CourtListenerClient(cache=cache, library=library)
+            window = DummyWindow(client)
+            clicked_cluster = {
+                "id": "external-1ae35d9d1a375146",
+                "case_name": "In re M.V.",
+                "citations": [{"volume": "78", "reporter": "Cal.App.5th", "page": "944"}],
+            }
+
+            OpenLawLensWindow._apply_lookup_result(  # type: ignore[arg-type]
+                window,
+                [{"status": 200, "clusters": [clicked_cluster]}],
+                [clicked_cluster],
+                "Library: 1 match, status 200 (exact match)",
+                "In re M.V. (2022) 78 Cal.App.5th 944",
+                0,
+            )
+
+            self.assertEqual(len(cache.list_case_entries()), 1)
+            self.assertEqual(cache.list_case_entries()[0]["title"], "In re M.V.")
+            self.assertEqual(window.sidebar_snapshots[-1], ["In re M.V."])
 
     def test_external_case_open_does_not_sync_load_suggestions(self) -> None:
         class DummyEntry:

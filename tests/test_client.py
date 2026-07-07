@@ -1310,6 +1310,29 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(cache.list_case_entries()[0]["opinion_ids"], ["10"])
             self.assertEqual(client.last_opinion_source, "Fetched")
 
+    def test_fetch_cluster_opinions_can_skip_research_cache_population(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir) / "cache")
+            cache.write_resource(
+                "opinions",
+                "10",
+                {"id": 10, "cluster_id": 42, "plain_text": "Opinion text"},
+            )
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            client = CourtListenerClient(cache=cache, library=library)
+            cluster = {
+                "id": 42,
+                "case_name": "Example v. State",
+                "sub_opinions": ["/api/rest/v4/opinions/10/"],
+            }
+
+            opinions = client.fetch_cluster_opinions(cluster, populate_research_cache=False)
+
+            self.assertEqual(opinions, [{"id": 10, "cluster_id": 42, "plain_text": "Opinion text"}])
+            self.assertEqual(cache.list_case_entries(), [])
+            self.assertEqual(client.last_opinion_source, "Fetched")
+
     def test_fetch_cluster_opinions_reports_library_source(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = JsonCache(Path(temp_dir) / "cache")
