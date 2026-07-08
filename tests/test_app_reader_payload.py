@@ -3046,6 +3046,46 @@ class AppReaderPayloadTests(unittest.TestCase):
             ["Select case, statute, or rule text before copying a pinpoint citation."],
         )
 
+    def test_background_worker_marshals_success_to_idle(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.results: list[str] = []
+
+        window = DummyWindow()
+
+        with patch("open_law_lens.app.GLib.idle_add", side_effect=lambda callback, *args: callback(*args)):
+            OpenLawLensWindow._background_worker(  # type: ignore[arg-type]
+                window,
+                lambda: "done",
+                lambda result: window.results.append(result),
+                None,
+                (Exception,),
+            )
+
+        self.assertEqual(window.results, ["done"])
+
+    def test_background_worker_marshals_error_to_idle(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.errors: list[str] = []
+
+            def _apply_error(self, message: str) -> bool:
+                self.errors.append(message)
+                return False
+
+        window = DummyWindow()
+
+        with patch("open_law_lens.app.GLib.idle_add", side_effect=lambda callback, *args: callback(*args)):
+            OpenLawLensWindow._background_worker(  # type: ignore[arg-type]
+                window,
+                lambda: (_ for _ in ()).throw(ValueError("bad input")),
+                None,
+                None,
+                (ValueError,),
+            )
+
+        self.assertEqual(window.errors, ["bad input"])
+
     def test_pinpoint_citation_parenthetical_places_period_inside(self) -> None:
         parenthetical = OpenLawLensWindow._pinpoint_citation_parenthetical(
             "Welf. & Inst. Code, § 388, subd. (a)(2)"

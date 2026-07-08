@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import threading
 import uuid
 from datetime import UTC, datetime
 from dataclasses import dataclass, field
@@ -18,6 +19,12 @@ from .citation_model import (
     official_citation_from_cluster,
 )
 from .external_import import repair_reporter_only_imported_cluster
+from .storage import (
+    cluster_id_from_cluster,
+    normalize_citation,
+    repair_lookup_result_clusters,
+    resource_id_from_url,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PROJECT_CACHE_DIR = PROJECT_ROOT / "cache"
@@ -32,10 +39,6 @@ OPINION_TEXT_FIELDS = (
 )
 
 
-def normalize_citation(value: str) -> str:
-    return re.sub(r"\s+", " ", value.strip())
-
-
 def cache_root() -> Path:
     root = os.environ.get("OPEN_LAW_LENS_CACHE_DIR")
     if root:
@@ -46,22 +49,6 @@ def cache_root() -> Path:
 def citation_cache_key(citation: str) -> str:
     normalized = normalize_citation(citation).casefold()
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-
-
-def resource_id_from_url(url: str) -> str:
-    stripped = url.rstrip("/")
-    return stripped.rsplit("/", 1)[-1]
-
-
-def cluster_id_from_cluster(cluster: dict[str, Any]) -> str:
-    value = cluster.get("id")
-    if value is not None and str(value).strip():
-        return str(value).strip()
-    for key in ("resource_uri", "absolute_url", "cluster_url"):
-        url = cluster.get(key)
-        if isinstance(url, str) and url.strip():
-            return resource_id_from_url(url)
-    return ""
 
 
 def _utc_now() -> str:
@@ -104,40 +91,19 @@ def _opinion_import_text(opinion: dict[str, Any]) -> str:
     return ""
 
 
-def _repair_lookup_result_clusters(
-    data: Any,
-    repaired_clusters: dict[str, dict[str, Any]],
-) -> Any | None:
-    if not isinstance(data, list):
-        return None
-    changed = False
-    repaired_items: list[Any] = []
-    for item in data:
-        if not isinstance(item, dict):
-            repaired_items.append(item)
-            continue
-        clusters = item.get("clusters")
-        if not isinstance(clusters, list):
-            repaired_items.append(item)
-            continue
-        repaired_item_clusters: list[Any] = []
-        for cluster in clusters:
-            if isinstance(cluster, dict):
-                cluster_id = cluster_id_from_cluster(cluster)
-                repaired = repaired_clusters.get(cluster_id)
-                if repaired is not None:
-                    repaired_item_clusters.append(repaired)
-                    changed = True
-                    continue
-            repaired_item_clusters.append(cluster)
-        repaired_items.append({**item, "clusters": repaired_item_clusters})
-    return canonicalize_lookup_result(repaired_items) if changed else None
+def _synchronized(method: Any) -> Any:
+    def wrapper(self: "JsonCache", *args: Any, **kwargs: Any) -> Any:
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
 
 
 @dataclass
 class JsonCache:
     root: Path
     _dirty_tracking_suppressed: bool = field(default=False, init=False, repr=False)
+    _lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
 
     @classmethod
     def default(cls) -> "JsonCache":
@@ -197,17 +163,24 @@ class JsonCache:
         return self.root / "slip_opinions" / f"{clean_case_number}.json"
 
     def read_json(self, path: Path) -> Any | None:
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return None
+        with self._lock:
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                return None
 
     def write_json(self, path: Path, value: Any) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
+        with self._lock:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+            try:
+                temp_path.write_text(
+                    json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True),
+                    encoding="utf-8",
+                )
+                os.replace(temp_path, path)
+            finally:
+                temp_path.unlink(missing_ok=True)
 
     def read_metadata(self) -> dict[str, Any]:
         data = self.read_json(self.metadata_path())
@@ -216,6 +189,7 @@ class JsonCache:
     def write_metadata(self, metadata: dict[str, Any]) -> None:
         self.write_json(self.metadata_path(), metadata)
 
+    @_synchronized
     def active_research_set_metadata(self) -> dict[str, Any] | None:
         metadata = self.read_metadata()
         set_id = metadata.get("active_research_set_id")
@@ -233,6 +207,7 @@ class JsonCache:
             "updated_at": str(metadata.get("updated_at") or ""),
         }
 
+    @_synchronized
     def set_active_research_set(self, set_id: int, name: str, *, dirty: bool = False) -> None:
         clean_name = str(name or "").strip()
         if not clean_name:
@@ -247,9 +222,11 @@ class JsonCache:
             }
         )
 
+    @_synchronized
     def clear_active_research_set(self) -> None:
         self.metadata_path().unlink(missing_ok=True)
 
+    @_synchronized
     def mark_active_research_set_dirty(self) -> None:
         if self._dirty_tracking_suppressed:
             return
@@ -330,9 +307,11 @@ class JsonCache:
     def write_slip_opinion_payload(self, case_number: str, payload: dict[str, Any]) -> None:
         if not str(case_number or "").strip():
             return
-        self.write_json(self.slip_opinion_payload_path(case_number), payload)
-        self.mark_active_research_set_dirty()
+        with self._lock:
+            self.write_json(self.slip_opinion_payload_path(case_number), payload)
+            self.mark_active_research_set_dirty()
 
+    @_synchronized
     def upsert_cluster(self, cluster: dict[str, Any]) -> str:
         cluster = canonicalize_cluster_citations(cluster)
         cluster_id = cluster_id_from_cluster(cluster)
@@ -361,6 +340,7 @@ class JsonCache:
         self.mark_active_research_set_dirty()
         return cluster_id
 
+    @_synchronized
     def update_case_opinions(self, cluster: dict[str, Any], opinion_ids: list[str]) -> None:
         cluster_id = self.upsert_cluster(cluster)
         if not cluster_id:
@@ -405,6 +385,7 @@ class JsonCache:
         data = self.read_resource("clusters", cluster_id)
         return canonicalize_cluster_citations(data) if isinstance(data, dict) else None
 
+    @_synchronized
     def repair_reporter_only_imported_case_names(self) -> int:
         repaired_clusters: dict[str, dict[str, Any]] = {}
         index = self.read_case_index()
@@ -433,7 +414,7 @@ class JsonCache:
     def _repair_lookup_clusters(self, repaired_clusters: dict[str, dict[str, Any]]) -> None:
         for lookup_path in self.list_lookups():
             data = self.read_json(lookup_path)
-            repaired_data = _repair_lookup_result_clusters(data, repaired_clusters)
+            repaired_data = repair_lookup_result_clusters(data, repaired_clusters)
             if repaired_data is not None:
                 self.write_json(lookup_path, repaired_data)
 
@@ -441,6 +422,7 @@ class JsonCache:
         entry = self.read_case_index().get(cluster_id)
         return bool(entry.get("agent_selected")) if isinstance(entry, dict) else False
 
+    @_synchronized
     def set_agent_selected(self, cluster_id: str, selected: bool) -> None:
         if not cluster_id:
             return
@@ -454,6 +436,7 @@ class JsonCache:
         self.write_case_index(index)
         self.mark_active_research_set_dirty()
 
+    @_synchronized
     def remove_case(self, cluster_id: str) -> bool:
         if not cluster_id:
             return False
@@ -487,6 +470,7 @@ class JsonCache:
             if bool(entry.get("agent_selected"))
         ]
 
+    @_synchronized
     def upsert_statute(self, statute: dict[str, Any]) -> str:
         statute_id = str(statute.get("statute_id") or "").strip()
         if not statute_id:
@@ -536,6 +520,7 @@ class JsonCache:
         entry = self.read_statute_index().get(statute_id)
         return bool(entry.get("agent_selected")) if isinstance(entry, dict) else False
 
+    @_synchronized
     def set_statute_agent_selected(self, statute_id: str, selected: bool) -> None:
         if not statute_id:
             return
@@ -556,6 +541,7 @@ class JsonCache:
             if bool(entry.get("agent_selected"))
         ]
 
+    @_synchronized
     def remove_statute(self, statute_id: str) -> bool:
         if not statute_id:
             return False
@@ -568,6 +554,7 @@ class JsonCache:
         self.mark_active_research_set_dirty()
         return True
 
+    @_synchronized
     def upsert_rule(self, rule: dict[str, Any]) -> str:
         rule_id = str(rule.get("rule_id") or "").strip()
         if not rule_id:
@@ -617,6 +604,7 @@ class JsonCache:
         entry = self.read_rule_index().get(rule_id)
         return bool(entry.get("agent_selected")) if isinstance(entry, dict) else False
 
+    @_synchronized
     def set_rule_agent_selected(self, rule_id: str, selected: bool) -> None:
         if not rule_id:
             return
@@ -637,6 +625,7 @@ class JsonCache:
             if bool(entry.get("agent_selected"))
         ]
 
+    @_synchronized
     def remove_rule(self, rule_id: str) -> bool:
         if not rule_id:
             return False
@@ -649,6 +638,7 @@ class JsonCache:
         self.mark_active_research_set_dirty()
         return True
 
+    @_synchronized
     def save_agent_answer(self, text: str, *, mode: str = "", title: str = "") -> str:
         clean_text = text.strip()
         if not clean_text:
@@ -693,6 +683,7 @@ class JsonCache:
         entries.sort(key=_cache_sort_timestamp, reverse=True)
         return entries
 
+    @_synchronized
     def read_agent_answer(self, answer_id: str) -> dict[str, Any] | None:
         data = self.read_json(self.agent_answer_path(answer_id))
         if not isinstance(data, dict):
@@ -709,6 +700,7 @@ class JsonCache:
         entry = self.read_agent_answer_index().get(answer_id)
         return bool(entry.get("agent_selected")) if isinstance(entry, dict) else False
 
+    @_synchronized
     def set_agent_answer_selected(self, answer_id: str, selected: bool) -> None:
         if not answer_id:
             return
@@ -729,6 +721,7 @@ class JsonCache:
             if bool(entry.get("agent_selected"))
         ]
 
+    @_synchronized
     def remove_agent_answer(self, answer_id: str) -> bool:
         if not answer_id:
             return False
@@ -741,11 +734,13 @@ class JsonCache:
         self.mark_active_research_set_dirty()
         return True
 
+    @_synchronized
     def clear(self) -> None:
         trash_path = self.detach_for_clear()
         if trash_path is not None:
             shutil.rmtree(trash_path)
 
+    @_synchronized
     def detach_for_clear(self) -> Path | None:
         self.root.mkdir(parents=True, exist_ok=True)
         trash_path = self.root / f".clear-trash-{_utc_now().replace(':', '-')}-{uuid.uuid4().hex}"

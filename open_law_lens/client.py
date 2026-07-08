@@ -44,6 +44,10 @@ from .statutes import (
     fetch_leginfo_statute,
     parse_statute_citation,
 )
+from .storage import (
+    filter_lookup_result_for_client,
+    lookup_result_had_clusters,
+)
 
 
 BASE_URL = "https://www.courtlistener.com"
@@ -646,7 +650,7 @@ class CourtListenerClient:
         if not refresh:
             library_result = self.library.read_lookup(normalized)
             if isinstance(library_result, list):
-                library_result = self._filter_lookup_result_for_citation(normalized, library_result)
+                library_result = filter_lookup_result_for_client(library_result, normalized)
                 self.cache.write_lookup(normalized, library_result)
                 if populate_research_cache:
                     self._cache_lookup_clusters(library_result)
@@ -654,8 +658,8 @@ class CourtListenerClient:
                 return library_result
             cached = self.cache.read_lookup(normalized)
             if isinstance(cached, list):
-                filtered_cached = self._filter_lookup_result_for_citation(normalized, cached)
-                if filtered_cached or not self._lookup_result_had_clusters(cached):
+                filtered_cached = filter_lookup_result_for_client(cached, normalized)
+                if filtered_cached or not lookup_result_had_clusters(cached):
                     self.cache.write_lookup(normalized, filtered_cached)
                     if populate_research_cache:
                         self._cache_lookup_clusters(filtered_cached)
@@ -1101,48 +1105,6 @@ class CourtListenerClient:
             if isinstance(values, list):
                 clusters.extend(cluster for cluster in values if isinstance(cluster, dict))
         return clusters
-
-    @staticmethod
-    def _lookup_result_had_clusters(result: list[dict[str, Any]]) -> bool:
-        return any(isinstance(item.get("clusters"), list) and bool(item.get("clusters")) for item in result)
-
-    @staticmethod
-    def _citation_lookup_key(citation: str) -> str:
-        return re.sub(r"\s+", "", normalize_citation(citation)).casefold()
-
-    @classmethod
-    def _external_import_matches_lookup(cls, cluster: dict[str, Any], normalized_citation: str) -> bool:
-        if cluster.get("source_type") != "user_imported_external_case":
-            return True
-        citation = quality_official_california_reporter_citation(cluster)
-        if not citation:
-            return True
-        return cls._citation_lookup_key(citation) == cls._citation_lookup_key(normalized_citation)
-
-    @classmethod
-    def _filter_lookup_result_for_citation(
-        cls,
-        normalized_citation: str,
-        result: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        filtered: list[dict[str, Any]] = []
-        for item in result:
-            if not isinstance(item, dict):
-                continue
-            clusters = item.get("clusters")
-            if not isinstance(clusters, list):
-                filtered.append(item)
-                continue
-            kept = [
-                cluster
-                for cluster in clusters
-                if isinstance(cluster, dict) and cls._external_import_matches_lookup(cluster, normalized_citation)
-            ]
-            if kept:
-                filtered.append({**item, "clusters": kept})
-        if filtered or not cls._lookup_result_had_clusters(result):
-            return filtered
-        return []
 
     def cached_clusters(self) -> list[dict[str, Any]]:
         clusters: list[dict[str, Any]] = []

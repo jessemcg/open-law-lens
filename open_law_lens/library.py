@@ -22,6 +22,13 @@ from .citation_model import (
 )
 from .external_import import repair_reporter_only_imported_cluster
 from .import_text import clean_imported_opinion_text
+from .storage import (
+    external_import_matches_lookup as _external_import_matches_lookup,
+    filter_lookup_result_for_citation as _filter_lookup_result_for_citation,
+    filter_lookup_result_to_official_citation as _filter_lookup_result_to_official_citation,
+    lookup_result_had_clusters as _lookup_result_had_clusters,
+    repair_lookup_result_clusters as _repair_lookup_result_clusters,
+)
 from .text_formatting import quote_stack_replacements
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -110,36 +117,6 @@ def _opinion_import_text(opinion: dict[str, Any]) -> str:
     return ""
 
 
-def _repair_lookup_result_clusters(
-    data: Any,
-    repaired_clusters: dict[str, dict[str, Any]],
-) -> Any | None:
-    if not isinstance(data, list):
-        return None
-    changed = False
-    repaired_items: list[Any] = []
-    for item in data:
-        if not isinstance(item, dict):
-            repaired_items.append(item)
-            continue
-        clusters = item.get("clusters")
-        if not isinstance(clusters, list):
-            repaired_items.append(item)
-            continue
-        repaired_item_clusters: list[Any] = []
-        for cluster in clusters:
-            if isinstance(cluster, dict):
-                cluster_id = cluster_id_from_cluster(cluster)
-                repaired = repaired_clusters.get(cluster_id)
-                if repaired is not None:
-                    repaired_item_clusters.append(repaired)
-                    changed = True
-                    continue
-            repaired_item_clusters.append(cluster)
-        repaired_items.append({**item, "clusters": repaired_item_clusters})
-    return canonicalize_lookup_result(repaired_items) if changed else None
-
-
 def _cluster_title(cluster: dict[str, Any]) -> str:
     title = cluster_short_title_value(cluster)
     if title:
@@ -159,22 +136,6 @@ def _citation_text_from_dict(citation: dict[str, Any]) -> str:
         if str(piece).strip()
     ]
     return " ".join(pieces)
-
-
-def _citation_lookup_key(citation: str) -> str:
-    return re.sub(r"\s+", "", normalize_citation(citation)).casefold()
-
-
-def _external_import_primary_citation_key(cluster: dict[str, Any]) -> str:
-    if cluster.get("source_type") != "user_imported_external_case":
-        return ""
-    official = official_citation_from_cluster(cluster)
-    return _citation_lookup_key(official) if official else ""
-
-
-def _external_import_matches_lookup(cluster: dict[str, Any], normalized_citation: str) -> bool:
-    primary = _external_import_primary_citation_key(cluster)
-    return not primary or primary == _citation_lookup_key(normalized_citation)
 
 
 def _case_number_from_cluster_payload(cluster: dict[str, Any]) -> str:
@@ -203,58 +164,6 @@ def _case_number_from_cluster_payload(cluster: dict[str, Any]) -> str:
         if match:
             return match.group(1).upper()
     return ""
-
-
-def _filter_lookup_result_for_citation(
-    result: list[dict[str, Any]],
-    normalized_citation: str,
-) -> list[dict[str, Any]]:
-    filtered: list[dict[str, Any]] = []
-    for item in result:
-        if not isinstance(item, dict):
-            continue
-        clusters = item.get("clusters")
-        if not isinstance(clusters, list):
-            filtered.append(item)
-            continue
-        kept = [
-            cluster
-            for cluster in clusters
-            if isinstance(cluster, dict) and _external_import_matches_lookup(cluster, normalized_citation)
-        ]
-        if kept:
-            filtered.append({**item, "clusters": kept})
-    return filtered
-
-
-def _filter_lookup_result_to_official_citation(
-    result: list[dict[str, Any]],
-    normalized_citation: str,
-) -> list[dict[str, Any]]:
-    filtered: list[dict[str, Any]] = []
-    normalized_key = _citation_lookup_key(normalized_citation)
-    for item in result:
-        if not isinstance(item, dict):
-            continue
-        clusters = item.get("clusters")
-        if not isinstance(clusters, list):
-            filtered.append(item)
-            continue
-        kept = [
-            cluster
-            for cluster in clusters
-            if (
-                isinstance(cluster, dict)
-                and _citation_lookup_key(official_citation_from_cluster(cluster)) == normalized_key
-            )
-        ]
-        if kept:
-            filtered.append({**item, "clusters": kept})
-    return filtered
-
-
-def _lookup_result_had_clusters(result: list[dict[str, Any]]) -> bool:
-    return any(isinstance(item.get("clusters"), list) and bool(item.get("clusters")) for item in result)
 
 
 @dataclass(frozen=True)

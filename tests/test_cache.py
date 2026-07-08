@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -59,6 +61,25 @@ class CacheTests(unittest.TestCase):
             cache = JsonCache(Path(temp_dir))
             cache.write_lookup("576 U.S. 644", [{"status": 200}])
             self.assertEqual(cache.read_lookup("576 U.S. 644"), [{"status": 200}])
+
+    def test_malformed_json_is_treated_as_cache_miss(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            path = cache.lookup_path("576 U.S. 644")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{not json", encoding="utf-8")
+
+            self.assertIsNone(cache.read_lookup("576 U.S. 644"))
+
+    def test_write_json_replaces_atomically_without_temp_leftover(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            path = Path(temp_dir) / "metadata.json"
+
+            cache.write_json(path, {"ok": True})
+
+            self.assertEqual(cache.read_json(path), {"ok": True})
+            self.assertEqual(list(Path(temp_dir).glob(".metadata.json.*.tmp")), [])
 
     def test_write_lookup_canonicalizes_cluster_citations(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -228,6 +249,31 @@ class CacheTests(unittest.TestCase):
             cache.upsert_cluster(cluster)
             self.assertTrue(cache.is_agent_selected("42"))
             self.assertEqual(cache.selected_case_entries()[0]["cluster_id"], "42")
+
+    def test_upsert_and_selection_updates_are_serialized(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cluster = {"id": 42, "case_name": "Example v. State"}
+            cache.upsert_cluster(cluster)
+            original_read_case_index = cache.read_case_index
+            upsert_read_started = threading.Event()
+
+            def delayed_read_case_index() -> dict[str, dict[str, object]]:
+                upsert_read_started.set()
+                time.sleep(0.05)
+                return original_read_case_index()
+
+            def reupsert() -> None:
+                with patch.object(cache, "read_case_index", delayed_read_case_index):
+                    cache.upsert_cluster(cluster)
+
+            thread = threading.Thread(target=reupsert)
+            thread.start()
+            self.assertTrue(upsert_read_started.wait(1))
+            cache.set_agent_selected("42", True)
+            thread.join(1)
+
+            self.assertTrue(cache.is_agent_selected("42"))
 
     def test_agent_answer_cache_round_trip_selection_and_remove(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

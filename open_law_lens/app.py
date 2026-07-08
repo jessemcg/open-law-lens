@@ -12,7 +12,7 @@ import threading
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote_plus
 
 import gi
@@ -1851,8 +1851,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if self._case_suggestions_loaded and not force:
             return
         self._case_suggestion_refresh_pending = True
-        thread = threading.Thread(target=self._case_suggestion_index_worker, daemon=True)
-        thread.start()
+        self._start_background_worker(
+            self._load_case_suggestion_index,
+            on_success=self._finish_case_suggestion_index_refresh,
+            on_error=lambda _exc: self._finish_case_suggestion_index_refresh(self._case_suggestions),
+        )
 
     def _case_suggestion_index_worker(self) -> None:
         try:
@@ -2521,6 +2524,38 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if self._status_label is None:
             return
         self._status_label.set_text(text)
+
+    def _start_background_worker(
+        self,
+        worker: Callable[[], Any],
+        *,
+        on_success: Callable[[Any], Any] | None = None,
+        on_error: Callable[[BaseException], Any] | None = None,
+        handled_exceptions: tuple[type[BaseException], ...] = (Exception,),
+    ) -> threading.Thread:
+        thread = threading.Thread(
+            target=self._background_worker,
+            args=(worker, on_success, on_error, handled_exceptions),
+            daemon=True,
+        )
+        thread.start()
+        return thread
+
+    def _background_worker(
+        self,
+        worker: Callable[[], Any],
+        on_success: Callable[[Any], Any] | None,
+        on_error: Callable[[BaseException], Any] | None,
+        handled_exceptions: tuple[type[BaseException], ...],
+    ) -> None:
+        try:
+            result = worker()
+        except handled_exceptions as exc:
+            callback = on_error or (lambda error: self._apply_error(str(error)))
+            GLib.idle_add(callback, exc)
+            return
+        if on_success is not None:
+            GLib.idle_add(on_success, result)
 
     def _set_reader_text(
         self,
@@ -5197,8 +5232,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_reader_header("")
         self._set_reader_busy(True, "Looking up statute...")
         self.reader_buffer.set_text("Loading...")
-        thread = threading.Thread(target=self._statute_lookup_worker, args=(citation,), daemon=True)
-        thread.start()
+        self._start_background_worker(
+            lambda: self.client.lookup_statute(citation),
+            on_success=self._apply_statute_lookup_result,
+            on_error=lambda exc: self._apply_error(str(exc)),
+            handled_exceptions=(LegInfoError, ValueError),
+        )
 
     def _open_cached_statute(self, statute: dict[str, Any]) -> None:
         citation = str(statute.get("citation") or "").strip()
@@ -5241,8 +5280,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_reader_header("")
         self._set_reader_busy(True, "Looking up rule...")
         self.reader_buffer.set_text("Loading...")
-        thread = threading.Thread(target=self._rule_lookup_worker, args=(citation,), daemon=True)
-        thread.start()
+        self._start_background_worker(
+            lambda: self.client.lookup_rule(citation),
+            on_success=self._apply_rule_lookup_result,
+            on_error=lambda exc: self._apply_error(str(exc)),
+            handled_exceptions=(CaliforniaRulesError, ValueError),
+        )
 
     def _open_cached_rule(self, rule: dict[str, Any]) -> None:
         citation = str(rule.get("citation") or "").strip()
@@ -5321,12 +5364,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_reader_busy(True, "Looking up...")
         self.reader_buffer.set_text("Loading...")
         cache_generation = self._research_cache_generation
-        thread = threading.Thread(
-            target=self._lookup_worker,
-            args=(citation, link, cache_generation, populate_research_cache),
-            daemon=True,
+        self._start_background_worker(
+            lambda: self._lookup_worker_result(citation, link, cache_generation, populate_research_cache),
+            on_success=self._finish_lookup_worker_result,
         )
-        thread.start()
 
     def _lookup_context_text(self, citation: str, link: CitedCaseLink | None = None) -> str:
         if link is not None:
@@ -5371,6 +5412,16 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         cache_generation: int = 0,
         populate_research_cache: bool = True,
     ) -> None:
+        result = self._lookup_worker_result(citation, link, cache_generation, populate_research_cache)
+        GLib.idle_add(self._finish_lookup_worker_result, result)
+
+    def _lookup_worker_result(
+        self,
+        citation: str,
+        link: CitedCaseLink | None = None,
+        cache_generation: int = 0,
+        populate_research_cache: bool = True,
+    ) -> tuple[Any, ...]:
         try:
             result = self.client.lookup_citation(
                 citation,
@@ -5381,8 +5432,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             if link is not None and shown_clusters:
                 shown_clusters = shown_clusters[:1]
             status = self._lookup_status_text(result, raw_clusters, shown_clusters)
-            GLib.idle_add(
-                self._apply_lookup_result,
+            return (
+                "success",
                 result,
                 shown_clusters,
                 status,
@@ -5391,12 +5442,19 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 populate_research_cache,
             )
         except CourtListenerError:
-            GLib.idle_add(
-                self._fallback_lookup_to_scholar,
-                self._lookup_context_text(citation, link),
-            )
+            return ("fallback", self._lookup_context_text(citation, link))
         except ValueError as exc:
-            GLib.idle_add(self._apply_error, str(exc))
+            return ("error", str(exc))
+
+    def _finish_lookup_worker_result(self, payload: tuple[Any, ...]) -> bool:
+        kind = str(payload[0] if payload else "")
+        if kind == "success":
+            return self._apply_lookup_result(*payload[1:])
+        if kind == "fallback":
+            return self._fallback_lookup_to_scholar(str(payload[1] if len(payload) > 1 else ""))
+        if kind == "error":
+            return self._apply_error(str(payload[1] if len(payload) > 1 else "Lookup failed."))
+        return False
 
     def _lookup_clusters_for_display(
         self,
@@ -7477,12 +7535,19 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _open_search_result(self, result: CourtListenerSearchResult) -> None:
         self._set_status(f"Opening {result.case_name}...")
         cache_generation = self._research_cache_generation
-        thread = threading.Thread(
-            target=self._search_result_open_worker,
-            args=(result, cache_generation),
-            daemon=True,
+        self._start_background_worker(
+            lambda: self.client.fetch_url(
+                f"/api/rest/v4/clusters/{result.cluster_id}/",
+                kind="clusters",
+            ),
+            on_success=lambda cluster: self._finish_search_result_open(
+                cluster,
+                result,
+                cache_generation,
+            ),
+            on_error=lambda exc: self._set_status(f"Unable to open {result.case_name}: {exc}"),
+            handled_exceptions=(CourtListenerError,),
         )
-        thread.start()
 
     def _search_result_open_worker(
         self,
