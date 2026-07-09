@@ -14,6 +14,7 @@ from .cache import JsonCache
 from .library import DisplayText, PageMarker
 
 
+CALIFORNIA_SLIP_OPINION_DOCUMENTS = "https://www4.courts.ca.gov/opinions/documents"
 CALIFORNIA_SLIP_OPINION_ARCHIVE = "https://www4.courts.ca.gov/opinions/archive"
 DEFAULT_SLIP_OPINION_MAX_AGE_DAYS = 180
 CASE_NUMBER_RE = re.compile(r"\b([A-Z]\d{6})\b", re.IGNORECASE)
@@ -114,10 +115,17 @@ def slip_result_to_payload(result: SlipOpinionResult) -> dict[str, Any]:
 
 
 def slip_opinion_url(case_number: str) -> str:
+    return slip_opinion_urls(case_number)[0]
+
+
+def slip_opinion_urls(case_number: str) -> tuple[str, ...]:
     clean = normalize_case_number(case_number)
     if not clean:
         raise ValueError("California case number is required.")
-    return f"{CALIFORNIA_SLIP_OPINION_ARCHIVE}/{clean}.PDF"
+    return (
+        f"{CALIFORNIA_SLIP_OPINION_DOCUMENTS}/{clean}.PDF",
+        f"{CALIFORNIA_SLIP_OPINION_ARCHIVE}/{clean}.PDF",
+    )
 
 
 def normalize_case_number(value: str) -> str:
@@ -207,7 +215,11 @@ def fetch_slip_opinion(
     url = slip_opinion_url(clean_case_number)
     pdf_path = slip_opinion_pdf_path(cache, clean_case_number)
     if refresh or not pdf_path.exists():
-        _download_pdf(url, pdf_path, timeout=timeout)
+        url = _download_first_available_pdf(
+            slip_opinion_urls(clean_case_number),
+            pdf_path,
+            timeout=timeout,
+        )
     display = extract_slip_pdf_display(pdf_path)
     if not display.text:
         raise SlipOpinionError("No extractable slip opinion text found.")
@@ -294,21 +306,39 @@ def slip_text_display_from_pages(pages: list[str]) -> DisplayText:
     )
 
 
-def _download_pdf(url: str, pdf_path: Path, *, timeout: float) -> None:
+def _download_first_available_pdf(
+    urls: tuple[str, ...],
+    pdf_path: Path,
+    *,
+    timeout: float,
+) -> str:
+    tried: list[str] = []
+    for url in urls:
+        tried.append(url)
+        if _download_pdf(url, pdf_path, timeout=timeout):
+            return url
+    raise SlipOpinionError(
+        "California Courts slip opinion PDF was not found at any known URL: "
+        + "; ".join(tried)
+    )
+
+
+def _download_pdf(url: str, pdf_path: Path, *, timeout: float) -> bool:
     request = Request(url, headers={"User-Agent": "OpenLawLens/0.1"}, method="GET")
     try:
         with urlopen(request, timeout=timeout) as response:
             data = response.read()
     except HTTPError as exc:
         if exc.code == 404:
-            raise SlipOpinionError(f"California Courts slip opinion PDF was not found: {url}") from exc
+            return False
         raise SlipOpinionError(f"California Courts returned HTTP {exc.code} for slip opinion PDF.") from exc
     except URLError as exc:
-        raise SlipOpinionError(f"Unable to reach California Courts slip opinion archive: {exc.reason}") from exc
+        raise SlipOpinionError(f"Unable to reach California Courts slip opinion PDF: {exc.reason}") from exc
     if not data:
         raise SlipOpinionError("California Courts slip opinion PDF download was empty.")
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
     pdf_path.write_bytes(data)
+    return True
 
 
 def _cluster_filed_date(cluster: dict[str, Any]) -> date | None:

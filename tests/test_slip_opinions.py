@@ -4,7 +4,8 @@ import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
-from unittest.mock import Mock, patch
+from urllib.error import HTTPError
+from unittest.mock import MagicMock, Mock, patch
 
 from open_law_lens.cache import JsonCache
 from open_law_lens.slip_opinions import (
@@ -15,6 +16,7 @@ from open_law_lens.slip_opinions import (
     slip_metadata_from_text,
     slip_opinion_pdf_path,
     slip_opinion_url,
+    slip_opinion_urls,
     slip_text_display_from_pages,
 )
 
@@ -22,8 +24,15 @@ from open_law_lens.slip_opinions import (
 class SlipOpinionTests(unittest.TestCase):
     def test_slip_opinion_url_normalizes_case_number(self) -> None:
         self.assertEqual(
-            slip_opinion_url("a173218"),
-            "https://www4.courts.ca.gov/opinions/archive/A173218.PDF",
+            slip_opinion_url("b348185"),
+            "https://www4.courts.ca.gov/opinions/documents/B348185.PDF",
+        )
+        self.assertEqual(
+            slip_opinion_urls("b348185"),
+            (
+                "https://www4.courts.ca.gov/opinions/documents/B348185.PDF",
+                "https://www4.courts.ca.gov/opinions/archive/B348185.PDF",
+            ),
         )
 
     def test_case_number_from_cluster_reads_nested_docket(self) -> None:
@@ -134,6 +143,82 @@ class SlipOpinionTests(unittest.TestCase):
         run_mock.assert_called_once()
         self.assertEqual(result.case_number, "A173218")
         self.assertEqual(result.page_count, 2)
+
+    def test_fetch_slip_opinion_downloads_documents_url_first(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cache.ensure()
+
+            completed = Mock()
+            completed.returncode = 0
+            completed.stdout = "First page."
+            completed.stderr = ""
+            response = MagicMock()
+            response.__enter__.return_value = response
+            response.read.return_value = b"%PDF documents"
+
+            with (
+                patch("open_law_lens.slip_opinions.shutil.which", return_value="/usr/bin/pdftotext"),
+                patch("open_law_lens.slip_opinions.subprocess.run", return_value=completed),
+                patch("open_law_lens.slip_opinions.urlopen", return_value=response) as urlopen_mock,
+            ):
+                result = fetch_slip_opinion("B348185", cache)
+
+        self.assertEqual(
+            result.source_url,
+            "https://www4.courts.ca.gov/opinions/documents/B348185.PDF",
+        )
+        self.assertEqual(len(urlopen_mock.call_args_list), 1)
+        request = urlopen_mock.call_args.args[0]
+        self.assertEqual(request.full_url, result.source_url)
+
+    def test_fetch_slip_opinion_falls_back_to_archive_after_documents_404(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cache.ensure()
+
+            completed = Mock()
+            completed.returncode = 0
+            completed.stdout = "First page."
+            completed.stderr = ""
+            response = MagicMock()
+            response.__enter__.return_value = response
+            response.read.return_value = b"%PDF archive"
+            documents_url = "https://www4.courts.ca.gov/opinions/documents/A173218.PDF"
+            archive_url = "https://www4.courts.ca.gov/opinions/archive/A173218.PDF"
+            not_found = HTTPError(documents_url, 404, "Not Found", hdrs=None, fp=None)
+
+            with (
+                patch("open_law_lens.slip_opinions.shutil.which", return_value="/usr/bin/pdftotext"),
+                patch("open_law_lens.slip_opinions.subprocess.run", return_value=completed),
+                patch("open_law_lens.slip_opinions.urlopen", side_effect=[not_found, response]) as urlopen_mock,
+            ):
+                result = fetch_slip_opinion("A173218", cache)
+
+        self.assertEqual(result.source_url, archive_url)
+        self.assertEqual(
+            [call.args[0].full_url for call in urlopen_mock.call_args_list],
+            [documents_url, archive_url],
+        )
+
+    def test_fetch_slip_opinion_reports_all_urls_after_all_404s(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cache.ensure()
+
+            documents_url = "https://www4.courts.ca.gov/opinions/documents/A173218.PDF"
+            archive_url = "https://www4.courts.ca.gov/opinions/archive/A173218.PDF"
+            not_found = [
+                HTTPError(documents_url, 404, "Not Found", hdrs=None, fp=None),
+                HTTPError(archive_url, 404, "Not Found", hdrs=None, fp=None),
+            ]
+
+            with patch("open_law_lens.slip_opinions.urlopen", side_effect=not_found):
+                with self.assertRaisesRegex(SlipOpinionError, "any known URL") as context:
+                    fetch_slip_opinion("A173218", cache)
+
+        self.assertIn(documents_url, str(context.exception))
+        self.assertIn(archive_url, str(context.exception))
 
     def test_fetch_slip_opinion_requires_pdftotext(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

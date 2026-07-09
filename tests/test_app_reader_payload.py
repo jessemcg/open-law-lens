@@ -1149,6 +1149,100 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(window.failures[0]["fallback_mode"], SCHOLAR_FALLBACK_TRANSIENT_NOTICE)
         self.assertEqual(window.failures[0]["initial_source_url"], webpage.url)
 
+    def test_scholar_auto_import_rejects_mismatched_official_citation(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.failures: list[dict[str, str]] = []
+
+            def _default_import_official_citation(self) -> str:
+                return ""
+
+            def _default_import_case_name(self) -> str:
+                return ""
+
+            def _save_imported_official_text(self, **_kwargs: object) -> bool:
+                raise AssertionError("Mismatched Scholar result should not be saved.")
+
+            def _close_external_lookup_window(self) -> None:
+                raise AssertionError("External lookup window should not close on failed save.")
+
+            def _handle_scholar_auto_failure(
+                self,
+                query: str,
+                message: str,
+                fallback_mode: str,
+                *,
+                initial_source_url: str = "",
+            ) -> None:
+                self.failures.append(
+                    {
+                        "query": query,
+                        "message": message,
+                        "fallback_mode": fallback_mode,
+                        "initial_source_url": initial_source_url,
+                    }
+                )
+
+        window = DummyWindow()
+        webpage = ExtractedWebpage(
+            url="https://scholar.google.com/scholar_case?case=wrong",
+            title="Wrong Case",
+            text="Wrong Case (2026) 10 Cal.App.5th 25.",
+        )
+
+        result = OpenLawLensWindow._finish_scholar_auto_import(  # type: ignore[arg-type]
+            window,
+            "116 Cal.App.5th 53",
+            webpage,
+            SCHOLAR_FALLBACK_NOTICE_ONLY,
+        )
+
+        self.assertFalse(result)
+        self.assertEqual(window.failures[0]["query"], "116 Cal.App.5th 53")
+        self.assertIn("did not match", window.failures[0]["message"])
+        self.assertEqual(window.failures[0]["initial_source_url"], webpage.url)
+
+    def test_scholar_auto_import_allows_matching_official_citation(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.saved: list[dict[str, object]] = []
+                self.closed = False
+
+            def _default_import_official_citation(self) -> str:
+                return ""
+
+            def _default_import_case_name(self) -> str:
+                return ""
+
+            def _save_imported_official_text(self, **kwargs: object) -> bool:
+                self.saved.append(kwargs)
+                return True
+
+            def _close_external_lookup_window(self) -> None:
+                self.closed = True
+
+            def _handle_scholar_auto_failure(self, *_args: object, **_kwargs: object) -> None:
+                raise AssertionError("Matching Scholar result should not fail.")
+
+        window = DummyWindow()
+        webpage = ExtractedWebpage(
+            url="https://scholar.google.com/scholar_case?case=3488447941400747812",
+            title="In re C.L.",
+            text="In re C.L. (2025) 116 Cal.App.5th 53.",
+        )
+
+        result = OpenLawLensWindow._finish_scholar_auto_import(  # type: ignore[arg-type]
+            window,
+            "116 Cal.App.5th 53",
+            webpage,
+            SCHOLAR_FALLBACK_NOTICE_ONLY,
+        )
+
+        self.assertFalse(result)
+        self.assertTrue(window.closed)
+        self.assertEqual(window.saved[0]["official_citation"], "116 Cal.App.5th 53")
+        self.assertEqual(window.saved[0]["case_name"], "In re C.L.")
+
     def test_reader_and_agent_citation_links_use_shared_lookup_path(self) -> None:
         class DummyWindow:
             def __init__(self) -> None:
@@ -2041,6 +2135,137 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(window.worker_args, [(cluster, 7, -1)])
         self.assertEqual(window._pending_auto_scholar_cluster_id, "")
         self.assertEqual(window._pending_auto_scholar_query, "")
+
+    def test_clicked_link_no_match_scholar_fallback_uses_reporter_citation(self) -> None:
+        class DummyBuffer:
+            def __init__(self) -> None:
+                self.values: list[str] = []
+
+            def set_text(self, value: str) -> None:
+                self.values.append(value)
+
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.client = self
+                self._research_cache_generation = 0
+                self._pending_auto_scholar_cluster_id = "old"
+                self._pending_auto_scholar_query = "old"
+                self.reader_buffer = DummyBuffer()
+                self.sidebar_snapshots: list[list[str]] = []
+                self.statuses: list[str] = []
+                self.busy_messages: list[str] = []
+                self.scholar_queries: list[str] = []
+
+            def cached_clusters(self) -> list[dict[str, object]]:
+                return []
+
+            def _set_reader_header(self, _text: str) -> None:
+                pass
+
+            def _set_reader_busy(self, _busy: bool, message: str = "") -> None:
+                self.busy_messages.append(message)
+
+            def _set_sidebar_clusters(self, clusters: list[dict[str, object]], **_kwargs: object) -> None:
+                self.sidebar_snapshots.append([str(cluster.get("case_name") or "") for cluster in clusters])
+
+            def _set_status(self, status: str) -> None:
+                self.statuses.append(status)
+
+            def _refresh_case_suggestion_index_async(self, *, force: bool = False) -> None:
+                pass
+
+            def _start_scholar_auto_find(
+                self,
+                query: str,
+                *,
+                fallback_mode: str,
+                auto_import: bool,
+            ) -> None:
+                del fallback_mode, auto_import
+                self.scholar_queries.append(query)
+
+        window = DummyWindow()
+
+        OpenLawLensWindow._apply_lookup_result(  # type: ignore[arg-type]
+            window,
+            [{"status": 404, "clusters": []}],
+            [],
+            "CourtListener API: no matches, status 404 (not found)",
+            "In re C.L. (2025) 116 Cal.App.5th 53",
+            0,
+            True,
+            "116 Cal.App.5th 53",
+        )
+
+        self.assertEqual(window.scholar_queries, ["116 Cal.App.5th 53"])
+        self.assertEqual(window._pending_auto_scholar_cluster_id, "")
+        self.assertEqual(window._pending_auto_scholar_query, "")
+
+    def test_clicked_link_cluster_match_sets_clean_pending_scholar_query(self) -> None:
+        class DummyList:
+            def get_selected_row(self) -> object:
+                return object()
+
+            def get_row_at_index(self, _index: int) -> None:
+                return None
+
+            def select_row(self, _row: object) -> None:
+                pass
+
+        class DummyCache:
+            def __init__(self) -> None:
+                self.clusters: list[dict[str, object]] = []
+
+            def upsert_cluster(self, cluster: dict[str, object]) -> str:
+                self.clusters.append(cluster)
+                return str(cluster.get("id") or "")
+
+        class DummyClient:
+            def __init__(self) -> None:
+                self.cache = DummyCache()
+
+            def cached_clusters(self) -> list[dict[str, object]]:
+                return self.cache.clusters
+
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.client = DummyClient()
+                self.case_list = DummyList()
+                self._research_cache_generation = 0
+                self._pending_auto_scholar_cluster_id = ""
+                self._pending_auto_scholar_query = ""
+                self.sidebar_snapshots: list[list[str]] = []
+                self.statuses: list[str] = []
+
+            def _set_sidebar_clusters(self, clusters: list[dict[str, object]], **_kwargs: object) -> None:
+                self.sidebar_snapshots.append([str(cluster.get("case_name") or "") for cluster in clusters])
+
+            def _set_status(self, status: str) -> None:
+                self.statuses.append(status)
+
+            def _refresh_case_suggestion_index_async(self, *, force: bool = False) -> None:
+                pass
+
+        window = DummyWindow()
+        cluster = {
+            "id": "42",
+            "case_name": "In re C.L.",
+            "citations": [{"volume": "116", "reporter": "Cal.App.5th", "page": "53"}],
+        }
+
+        OpenLawLensWindow._apply_lookup_result(  # type: ignore[arg-type]
+            window,
+            [{"status": 200, "clusters": [cluster]}],
+            [cluster],
+            "CourtListener API: 1 match, status 200 (exact match)",
+            "In re C.L. (2025) 116 Cal.App.5th 53",
+            0,
+            True,
+            "116 Cal.App.5th 53",
+        )
+
+        self.assertEqual(window._pending_auto_scholar_cluster_id, "42")
+        self.assertEqual(window._pending_auto_scholar_query, "116 Cal.App.5th 53")
 
     def test_current_linked_lookup_adds_only_displayed_case_to_empty_research_cache(self) -> None:
         class DummyList:

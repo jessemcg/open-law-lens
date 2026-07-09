@@ -4679,9 +4679,19 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     ) -> bool:
         imported_text = clean_imported_opinion_text(webpage.text) or webpage.text
         case_source = "\n".join(part for part in (webpage.title, imported_text) if part)
+        source_official_citation = normalize_official_citation(case_source)
+        query_official_citation = normalize_official_citation(query)
+        if query_official_citation and source_official_citation != query_official_citation:
+            self._handle_scholar_auto_failure(
+                query,
+                "Scholar first result did not match the requested official citation.",
+                fallback_mode,
+                initial_source_url=webpage.url,
+            )
+            return False
         official_citation = (
-            normalize_official_citation(case_source)
-            or normalize_official_citation(query)
+            source_official_citation
+            or query_official_citation
             or self._default_import_official_citation()
         )
         case_name = imported_case_name_from_text(case_source) or self._default_import_case_name()
@@ -5374,6 +5384,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return (link.full_text or link.lookup_text).strip()
         return citation.strip()
 
+    def _scholar_lookup_query(self, citation: str, link: CitedCaseLink | None = None) -> str:
+        if link is not None and link.lookup_text.strip():
+            return link.lookup_text.strip()
+        return citation.strip()
+
     def _set_formatted_clipboard(
         self,
         citation: FormattedCitation,
@@ -5440,9 +5455,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 self._lookup_context_text(citation, link),
                 cache_generation,
                 populate_research_cache,
+                self._scholar_lookup_query(citation, link),
             )
         except CourtListenerError:
-            return ("fallback", self._lookup_context_text(citation, link))
+            return ("fallback", self._scholar_lookup_query(citation, link))
         except ValueError as exc:
             return ("error", str(exc))
 
@@ -6023,6 +6039,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         citation: str = "",
         cache_generation: int | None = None,
         populate_research_cache: bool = True,
+        scholar_query: str = "",
     ) -> bool:
         if cache_generation is not None and cache_generation != self._research_cache_generation:
             return False
@@ -6048,7 +6065,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return False
         if clusters:
             self._pending_auto_scholar_cluster_id = select_cluster_id
-            self._pending_auto_scholar_query = citation.strip()
+            self._pending_auto_scholar_query = (scholar_query or citation).strip()
             for cluster in clusters:
                 self.client.cache.upsert_cluster(cluster)
         else:
@@ -6068,12 +6085,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                     self.case_list.select_row(first)
         else:
             self._set_reader_header("")
-            if citation.strip():
+            query = (scholar_query or citation).strip()
+            if query:
                 self.reader_buffer.set_text("")
                 self._set_reader_busy(True, "Searching Google Scholar...")
                 self._set_status("No CourtListener match shown. Searching Google Scholar...")
                 self._start_scholar_auto_find(
-                    citation,
+                    query,
                     fallback_mode=SCHOLAR_FALLBACK_NOTICE_ONLY,
                     auto_import=True,
                 )
