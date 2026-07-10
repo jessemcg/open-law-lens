@@ -19,6 +19,7 @@ from .citation_model import (
     official_citation_from_cluster,
 )
 from .external_import import repair_reporter_only_imported_cluster
+from .reader_highlights import ReaderHighlight
 from .storage import (
     cluster_id_from_cluster,
     normalize_citation,
@@ -140,6 +141,9 @@ class JsonCache:
     def reader_positions_path(self) -> Path:
         return self.root / "reader_positions.json"
 
+    def reader_highlights_path(self) -> Path:
+        return self.root / "reader_highlights.json"
+
     def lookup_path(self, citation: str) -> Path:
         return self.root / "lookups" / f"{citation_cache_key(citation)}.json"
 
@@ -258,6 +262,77 @@ class JsonCache:
             )
         else:
             self.reader_positions_path().unlink(missing_ok=True)
+
+    def read_reader_highlights(self) -> dict[str, dict[str, list[ReaderHighlight]]]:
+        data = self.read_json(self.reader_highlights_path())
+        raw_highlights = data.get("highlights") if isinstance(data, dict) else None
+        if not isinstance(raw_highlights, dict):
+            return {}
+        highlights: dict[str, dict[str, list[ReaderHighlight]]] = {}
+        for item_type in ("case", "statute", "rule"):
+            raw_items = raw_highlights.get(item_type)
+            if not isinstance(raw_items, dict):
+                continue
+            clean_items: dict[str, list[ReaderHighlight]] = {}
+            for authority_id, raw_entries in raw_items.items():
+                clean_id = str(authority_id).strip()
+                if not clean_id or not isinstance(raw_entries, list):
+                    continue
+                entries = [
+                    highlight
+                    for value in raw_entries
+                    if (highlight := ReaderHighlight.from_mapping(value)) is not None
+                ]
+                if entries:
+                    clean_items[clean_id] = entries
+            if clean_items:
+                highlights[item_type] = clean_items
+        return highlights
+
+    def reader_highlights(self, item_type: str, authority_id: str) -> list[ReaderHighlight]:
+        clean_type = str(item_type or "").strip()
+        clean_id = str(authority_id or "").strip()
+        if not clean_type or not clean_id:
+            return []
+        return list(self.read_reader_highlights().get(clean_type, {}).get(clean_id, []))
+
+    @_synchronized
+    def set_reader_highlights(
+        self,
+        item_type: str,
+        authority_id: str,
+        entries: list[ReaderHighlight],
+    ) -> None:
+        clean_type = str(item_type or "").strip()
+        clean_id = str(authority_id or "").strip()
+        if clean_type not in {"case", "statute", "rule"} or not clean_id:
+            return
+        highlights = self.read_reader_highlights()
+        if entries:
+            highlights.setdefault(clean_type, {})[clean_id] = list(entries)
+        else:
+            items = highlights.get(clean_type)
+            if isinstance(items, dict):
+                items.pop(clean_id, None)
+                if not items:
+                    highlights.pop(clean_type, None)
+        if not highlights:
+            self.reader_highlights_path().unlink(missing_ok=True)
+            return
+        payload = {
+            item_type_key: {
+                item_id: [entry.to_mapping() for entry in item_entries]
+                for item_id, item_entries in items.items()
+            }
+            for item_type_key, items in highlights.items()
+        }
+        self.write_json(
+            self.reader_highlights_path(),
+            {"version": 1, "highlights": payload},
+        )
+
+    def remove_reader_highlights(self, item_type: str, authority_id: str) -> None:
+        self.set_reader_highlights(item_type, authority_id, [])
 
     @_synchronized
     def active_research_set_metadata(self) -> dict[str, Any] | None:
@@ -551,6 +626,7 @@ class JsonCache:
         self.cluster_path(cluster_id).unlink(missing_ok=True)
         self.write_case_index(index)
         self.remove_reader_position("case", cluster_id)
+        self.remove_reader_highlights("case", cluster_id)
         self.mark_active_research_set_dirty()
         return True
 
@@ -643,6 +719,7 @@ class JsonCache:
         self.statute_path(statute_id).unlink(missing_ok=True)
         self.write_statute_index(index)
         self.remove_reader_position("statute", statute_id)
+        self.remove_reader_highlights("statute", statute_id)
         self.mark_active_research_set_dirty()
         return True
 
@@ -728,6 +805,7 @@ class JsonCache:
         self.rule_path(rule_id).unlink(missing_ok=True)
         self.write_rule_index(index)
         self.remove_reader_position("rule", rule_id)
+        self.remove_reader_highlights("rule", rule_id)
         self.mark_active_research_set_dirty()
         return True
 
@@ -829,15 +907,26 @@ class JsonCache:
         return True
 
     @_synchronized
-    def clear(self, *, preserve_reader_positions: bool = False) -> None:
+    def clear(
+        self,
+        *,
+        preserve_reader_positions: bool = False,
+        preserve_reader_highlights: bool = False,
+    ) -> None:
         trash_path = self.detach_for_clear(
             preserve_reader_positions=preserve_reader_positions,
+            preserve_reader_highlights=preserve_reader_highlights,
         )
         if trash_path is not None:
             shutil.rmtree(trash_path)
 
     @_synchronized
-    def detach_for_clear(self, *, preserve_reader_positions: bool = False) -> Path | None:
+    def detach_for_clear(
+        self,
+        *,
+        preserve_reader_positions: bool = False,
+        preserve_reader_highlights: bool = False,
+    ) -> Path | None:
         self.root.mkdir(parents=True, exist_ok=True)
         trash_path = self.root / f".clear-trash-{_utc_now().replace(':', '-')}-{uuid.uuid4().hex}"
         moved: list[tuple[Path, Path]] = []
@@ -857,6 +946,8 @@ class JsonCache:
             ]
             if not preserve_reader_positions:
                 sources.append(self.reader_positions_path())
+            if not preserve_reader_highlights:
+                sources.append(self.reader_highlights_path())
             for source in sources:
                 if not source.exists():
                     continue

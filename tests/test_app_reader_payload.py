@@ -26,11 +26,142 @@ from open_law_lens.client import CourtListenerClient, FormattedCitation
 from open_law_lens.config import AppConfig
 from open_law_lens.fact_patterns import FactPatternExport
 from open_law_lens.library import CaseLibrary, DisplayText, PageMarker, ResearchSet
+from open_law_lens.reader_highlights import ReaderHighlight
 from open_law_lens.slip_opinions import SlipOpinionResult
 from open_law_lens.web_import import ExtractedWebpage
 
 
 class AppReaderPayloadTests(unittest.TestCase):
+    def test_reader_highlight_button_uses_bundled_icon(self) -> None:
+        class DummyWindow:
+            def _on_toggle_reader_highlight_clicked(self, *_args: object) -> None:
+                pass
+
+        window = DummyWindow()
+        button = OpenLawLensWindow._build_reader_highlight_button(  # type: ignore[arg-type]
+            window
+        )
+        icon_ref = resources.files("open_law_lens").joinpath(
+            "icons",
+            "hicolor",
+            "scalable",
+            "actions",
+            "highlighter-symbolic.svg",
+        )
+
+        self.assertEqual(button.get_icon_name(), "highlighter-symbolic")
+        self.assertFalse(button.get_sensitive())
+        self.assertTrue(icon_ref.is_file())
+
+    def test_reader_highlight_button_excludes_saved_agent_answers(self) -> None:
+        button = MagicMock()
+
+        class DummyWindow:
+            _reader_position_key = ("agent_answer", "answer")
+            _reader_highlight_button = button
+            _reader_text = "Saved answer text"
+
+            _reader_highlight_key = OpenLawLensWindow._reader_highlight_key
+
+            def _reader_selection_bounds(self) -> tuple[int, int, str]:
+                raise AssertionError("Agent answers must not inspect highlight selection")
+
+        OpenLawLensWindow._update_reader_highlight_button(DummyWindow())  # type: ignore[arg-type]
+
+        button.set_sensitive.assert_called_once_with(False)
+        button.set_tooltip_text.assert_called_once_with("Highlight selected text")
+
+    def test_reader_highlight_button_offers_remove_for_selection_inside_highlight(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cache.set_reader_highlights(
+                "case",
+                "42",
+                [ReaderHighlight(0, 10, "Alpha beta")],
+            )
+            button = MagicMock()
+
+            class DummyWindow:
+                _reader_position_key = ("case", "42")
+                _reader_highlight_button = button
+                _reader_text = "Alpha beta gamma"
+                client = SimpleNamespace(cache=cache)
+                _reader_highlight_key = OpenLawLensWindow._reader_highlight_key
+
+                def _reader_selection_bounds(self) -> tuple[int, int, str]:
+                    return 2, 7, "pha b"
+
+            OpenLawLensWindow._update_reader_highlight_button(  # type: ignore[arg-type]
+                DummyWindow()
+            )
+
+            button.set_sensitive.assert_called_once_with(True)
+            button.set_tooltip_text.assert_called_once_with("Remove highlight")
+
+    def test_reader_highlight_action_adds_applies_and_removes_highlight(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+
+            class DummyWindow:
+                _reader_position_key = ("case", "42")
+                _reader_text = "Alpha beta gamma."
+                _reader_saved_highlight_tag = object()
+                client = SimpleNamespace(cache=cache)
+
+                _reader_highlight_key = OpenLawLensWindow._reader_highlight_key
+                _reader_selection_bounds = OpenLawLensWindow._reader_selection_bounds
+                _apply_saved_reader_highlights = (
+                    OpenLawLensWindow._apply_saved_reader_highlights
+                )
+
+                def __init__(self) -> None:
+                    self.reader_buffer = Gtk.TextBuffer()
+                    self.reader_buffer.set_text(self._reader_text)
+                    self._reader_saved_highlight_tag = self.reader_buffer.create_tag(
+                        "saved-highlight-test"
+                    )
+                    self.status = ""
+
+                def _set_status(self, text: str) -> None:
+                    self.status = text
+
+            window = DummyWindow()
+            window.reader_buffer.select_range(
+                window.reader_buffer.get_iter_at_offset(0),
+                window.reader_buffer.get_iter_at_offset(5),
+            )
+
+            OpenLawLensWindow._on_toggle_reader_highlight_clicked(  # type: ignore[arg-type]
+                window,
+                MagicMock(),
+            )
+
+            self.assertEqual(
+                cache.reader_highlights("case", "42"),
+                [ReaderHighlight(0, 5, "Alpha", "", " beta gamma.")],
+            )
+            self.assertIn(
+                window._reader_saved_highlight_tag,
+                window.reader_buffer.get_iter_at_offset(2).get_tags(),
+            )
+            self.assertEqual(window.status, "Highlighted selected text.")
+
+            window.reader_buffer.select_range(
+                window.reader_buffer.get_iter_at_offset(1),
+                window.reader_buffer.get_iter_at_offset(4),
+            )
+            OpenLawLensWindow._on_toggle_reader_highlight_clicked(  # type: ignore[arg-type]
+                window,
+                MagicMock(),
+            )
+
+            self.assertEqual(cache.reader_highlights("case", "42"), [])
+            self.assertNotIn(
+                window._reader_saved_highlight_tag,
+                window.reader_buffer.get_iter_at_offset(2).get_tags(),
+            )
+            self.assertEqual(window.status, "Removed highlight.")
+
     def test_capture_reader_position_saves_top_visible_text_offset(self) -> None:
         class DummyCache:
             def __init__(self) -> None:

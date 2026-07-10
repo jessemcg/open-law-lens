@@ -123,6 +123,11 @@ from .library import (
     opinion_display_text,
 )
 from .quality import official_pagination_quality
+from .reader_highlights import (
+    ReaderHighlight,
+    resolved_reader_highlights,
+    toggle_reader_highlight,
+)
 from .scholar_search import (
     ScholarSearchError,
     ScholarSearchResult,
@@ -1295,6 +1300,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_position_key: tuple[str, str] | None = None
         self._reader_page_markers: list[PageMarker] = []
         self._reader_highlight_tag: Gtk.TextTag | None = None
+        self._reader_saved_highlight_tag: Gtk.TextTag | None = None
         self._reader_find_tag: Gtk.TextTag | None = None
         self._reader_find_current_tag: Gtk.TextTag | None = None
         self._reader_find_bar: Gtk.Widget | None = None
@@ -1323,6 +1329,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.reader_selection_pinpoint_button: Gtk.Button | None = None
         self.reader_subsequent_treatment_button: Gtk.Button | None = None
         self.reader_helper_case_button: Gtk.Button | None = None
+        self._reader_highlight_button: Gtk.Button | None = None
         self._reader_has_official_pagination = False
         self._reader_pagination_mode = READER_PAGINATION_NONE
         self._reader_slip_source_url = ""
@@ -2128,6 +2135,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             "agent-quote-highlight",
             background="#fff0a6",
         )
+        self._reader_saved_highlight_tag = self.reader_buffer.create_tag(
+            "reader-saved-highlight",
+            background="#fff0a6",
+            foreground="#1f1f1f",
+        )
         self._reader_find_tag = self.reader_buffer.create_tag(
             "reader-find-match",
             background="#fff3b0",
@@ -2433,6 +2445,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         appeal_button = self._build_appeal_issue_menu_button()
         row.append(appeal_button)
 
+        row.append(self._build_reader_highlight_button())
+
         collapse_button = Gtk.Button(icon_name="go-up-symbolic")
         collapse_button.add_css_class("flat")
         collapse_button.set_tooltip_text("Hide agent output")
@@ -2450,6 +2464,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         button.set_tooltip_text("Assess appeal argument")
         self._appeal_issue_menu_button = button
         self._refresh_appeal_issue_menu()
+        return button
+
+    def _build_reader_highlight_button(self) -> Gtk.Button:
+        button = Gtk.Button(icon_name="highlighter-symbolic")
+        button.add_css_class("flat")
+        button.set_tooltip_text("Highlight selected text")
+        button.set_sensitive(False)
+        button.connect("clicked", self._on_toggle_reader_highlight_clicked)
+        self._reader_highlight_button = button
         return button
 
     def _refresh_appeal_issue_menu(self) -> None:
@@ -2595,9 +2618,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _set_reader_position_key(self, item_type: str, authority_id: str) -> None:
         clean_id = str(authority_id or "").strip()
         self._reader_position_key = (item_type, clean_id) if clean_id else None
+        update_button = getattr(self, "_update_reader_highlight_button", None)
+        if update_button is not None:
+            update_button()
 
     def _clear_reader_position_key(self) -> None:
         self._reader_position_key = None
+        update_button = getattr(self, "_update_reader_highlight_button", None)
+        if update_button is not None:
+            update_button()
 
     def _schedule_reader_position_restore(self) -> None:
         key = self._reader_position_key
@@ -2670,6 +2699,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._apply_reader_markdown_spans(markdown_spans)
         self._apply_reader_citation_italics(text)
         self._apply_reader_citation_links(text)
+        apply_highlights = getattr(self, "_apply_saved_reader_highlights", None)
+        if apply_highlights is not None:
+            apply_highlights()
         if self._pending_quote_target is not None:
             target = self._pending_quote_target
             self._pending_quote_target = None
@@ -2789,6 +2821,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _finish_reader_payload_render(self, payload: CaseReaderPayload) -> bool:
         if not self._case_load_is_current(payload.generation, payload.cluster_id):
             return False
+        apply_highlights = getattr(self, "_apply_saved_reader_highlights", None)
+        if apply_highlights is not None:
+            apply_highlights()
         if self._pending_quote_target is not None:
             target = self._pending_quote_target
             self._pending_quote_target = None
@@ -2859,6 +2894,89 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def _on_reader_selection_changed(self, *_args: object) -> None:
         self._update_reader_selection_pinpoint_button()
+        update_highlight = getattr(self, "_update_reader_highlight_button", None)
+        if update_highlight is not None:
+            update_highlight()
+
+    def _reader_highlight_key(self) -> tuple[str, str] | None:
+        key = getattr(self, "_reader_position_key", None)
+        if key is None or key[0] not in {"case", "statute", "rule"} or not key[1]:
+            return None
+        return key
+
+    def _update_reader_highlight_button(self) -> None:
+        button = getattr(self, "_reader_highlight_button", None)
+        if button is None:
+            return
+        key = self._reader_highlight_key()
+        selection = self._reader_selection_bounds() if key is not None else None
+        button.set_sensitive(selection is not None)
+        remove = False
+        if selection is not None and key is not None:
+            start, end, _selected_text = selection
+            entries = self.client.cache.reader_highlights(key[0], key[1])
+            remove = any(
+                span_start <= start and end <= span_end
+                for _entry, span_start, span_end in resolved_reader_highlights(
+                    self._reader_text,
+                    entries,
+                )
+            )
+        button.set_tooltip_text(
+            "Remove highlight" if remove else "Highlight selected text"
+        )
+
+    def _apply_saved_reader_highlights(
+        self,
+        entries: list[ReaderHighlight] | None = None,
+    ) -> None:
+        tag = getattr(self, "_reader_saved_highlight_tag", None)
+        if tag is None:
+            return
+        self.reader_buffer.remove_tag(
+            tag,
+            self.reader_buffer.get_start_iter(),
+            self.reader_buffer.get_end_iter(),
+        )
+        key = self._reader_highlight_key()
+        if key is None or not self._reader_text:
+            return
+        if entries is None:
+            entries = self.client.cache.reader_highlights(key[0], key[1])
+        for _entry, start, end in resolved_reader_highlights(self._reader_text, entries):
+            self.reader_buffer.apply_tag(
+                tag,
+                self.reader_buffer.get_iter_at_offset(start),
+                self.reader_buffer.get_iter_at_offset(end),
+            )
+
+    def _on_toggle_reader_highlight_clicked(self, _button: Gtk.Button) -> None:
+        key = self._reader_highlight_key()
+        selection = self._reader_selection_bounds()
+        if key is None or selection is None:
+            self._set_status("Select case, statute, or rule text before highlighting.")
+            return
+        start, end, _selected_text = selection
+        existing = self.client.cache.reader_highlights(key[0], key[1])
+        updated, action = toggle_reader_highlight(
+            self._reader_text,
+            existing,
+            start,
+            end,
+        )
+        if action == "unchanged":
+            self._set_status("Selected text could not be highlighted.")
+            return
+        try:
+            self.client.cache.set_reader_highlights(key[0], key[1], updated)
+        except OSError as exc:
+            self._set_status(f"Could not save highlight: {exc}")
+            return
+        self._apply_saved_reader_highlights(updated)
+        self.reader_buffer.place_cursor(self.reader_buffer.get_iter_at_offset(end))
+        self._set_status(
+            "Removed highlight." if action == "removed" else "Highlighted selected text."
+        )
 
     def _update_reader_selection_pinpoint_button(self) -> None:
         has_authority = (

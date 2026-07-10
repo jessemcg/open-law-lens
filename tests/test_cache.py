@@ -17,6 +17,7 @@ from open_law_lens.cache import (
     normalize_citation,
     resource_id_from_url,
 )
+from open_law_lens.reader_highlights import ReaderHighlight
 
 
 B_D_TEXT = """110 Cal.App.5th 1132 (2025)
@@ -563,15 +564,90 @@ class CacheTests(unittest.TestCase):
 
             self.assertEqual(cache.read_reader_positions(), {"case": {"valid": 12}})
 
-    def test_removing_cache_item_removes_reader_position(self) -> None:
+    def test_reader_highlights_round_trip_without_dirtying_research_set(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cache.set_active_research_set(7, "Example_research")
+            highlight = ReaderHighlight(4, 9, "alpha", "pre", "post")
+
+            cache.set_reader_highlights("case", "42", [highlight])
+
+            self.assertEqual(cache.reader_highlights("case", "42"), [highlight])
+            metadata = cache.active_research_set_metadata()
+            self.assertIsNotNone(metadata)
+            assert metadata is not None
+            self.assertFalse(metadata["dirty"])
+            self.assertEqual(
+                list(Path(temp_dir).glob(".reader_highlights.json.*.tmp")),
+                [],
+            )
+
+    def test_reader_highlights_ignore_invalid_entries_and_unknown_types(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cache.write_json(
+                cache.reader_highlights_path(),
+                {
+                    "version": 1,
+                    "highlights": {
+                        "case": {
+                            "42": [
+                                {"start_offset": 0, "end_offset": 5, "text": "Alpha"},
+                                {"start_offset": -1, "end_offset": 5, "text": "bad"},
+                            ]
+                        },
+                        "agent_answer": {
+                            "answer": [
+                                {"start_offset": 0, "end_offset": 4, "text": "Nope"}
+                            ]
+                        },
+                    },
+                },
+            )
+
+            self.assertEqual(
+                cache.reader_highlights("case", "42"),
+                [ReaderHighlight(0, 5, "Alpha")],
+            )
+            self.assertEqual(cache.reader_highlights("agent_answer", "answer"), [])
+
+    def test_removing_cache_item_removes_reader_state(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = JsonCache(Path(temp_dir))
             cache.upsert_cluster({"id": 42, "case_name": "Example v. State"})
             cache.set_reader_position("case", "42", 1234)
+            cache.set_reader_highlights(
+                "case",
+                "42",
+                [ReaderHighlight(0, 5, "Alpha")],
+            )
 
             self.assertTrue(cache.remove_case("42"))
 
             self.assertIsNone(cache.reader_position("case", "42"))
+            self.assertEqual(cache.reader_highlights("case", "42"), [])
+
+    def test_removing_statute_and_rule_removes_their_highlights(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cache.upsert_statute({"statute_id": "WIC:300", "text": "Alpha"})
+            cache.upsert_rule({"rule_id": "CRC:8.11", "text": "Beta"})
+            cache.set_reader_highlights(
+                "statute",
+                "WIC:300",
+                [ReaderHighlight(0, 5, "Alpha")],
+            )
+            cache.set_reader_highlights(
+                "rule",
+                "CRC:8.11",
+                [ReaderHighlight(0, 4, "Beta")],
+            )
+
+            self.assertTrue(cache.remove_statute("WIC:300"))
+            self.assertTrue(cache.remove_rule("CRC:8.11"))
+
+            self.assertEqual(cache.reader_highlights("statute", "WIC:300"), [])
+            self.assertEqual(cache.reader_highlights("rule", "CRC:8.11"), [])
 
     def test_dirty_tracking_can_be_suppressed_for_clean_loads(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -634,6 +710,11 @@ class CacheTests(unittest.TestCase):
             )
             cache.save_agent_answer("The cached answer.")
             cache.set_reader_position("case", "42", 1234)
+            cache.set_reader_highlights(
+                "case",
+                "42",
+                [ReaderHighlight(0, 5, "Alpha")],
+            )
             agent_workspace = root / "agent-workspaces" / "workspace.test"
             agent_workspace.mkdir(parents=True)
             (agent_workspace / "manifest.json").write_text("{}", encoding="utf-8")
@@ -654,6 +735,7 @@ class CacheTests(unittest.TestCase):
             self.assertTrue((trash_path / "agent_answers_index.json").is_file())
             self.assertTrue((trash_path / "metadata.json").is_file())
             self.assertTrue((trash_path / "reader_positions.json").is_file())
+            self.assertTrue((trash_path / "reader_highlights.json").is_file())
             self.assertEqual(cache.list_lookups(), [])
             self.assertEqual(cache.list_case_entries(), [])
             self.assertEqual(cache.list_agent_answer_entries(), [])
@@ -676,12 +758,18 @@ class CacheTests(unittest.TestCase):
             answer_id = cache.save_agent_answer("The answer to save.")
             cache.set_active_research_set(7, "Example_research")
             cache.set_reader_position("case", "42", 1234)
+            cache.set_reader_highlights(
+                "case",
+                "42",
+                [ReaderHighlight(0, 5, "Alpha")],
+            )
             cache.clear()
             self.assertEqual(cache.list_lookups(), [])
             self.assertEqual(cache.list_case_entries(), [])
             self.assertEqual(cache.list_agent_answer_entries(), [])
             self.assertIsNone(cache.active_research_set_metadata())
             self.assertIsNone(cache.reader_position("case", "42"))
+            self.assertEqual(cache.reader_highlights("case", "42"), [])
             self.assertIsNone(cache.read_agent_answer(answer_id))
             self.assertFalse(cache.selected_case_entries())
             self.assertTrue((root / "lookups").is_dir())
@@ -690,15 +778,21 @@ class CacheTests(unittest.TestCase):
             self.assertTrue((root / "agent_answers").is_dir())
             self.assertEqual(list(root.glob(".clear-trash-*")), [])
 
-    def test_clear_can_preserve_reader_positions_for_research_set_switch(self) -> None:
+    def test_clear_can_preserve_reader_state_for_research_set_switch(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = JsonCache(Path(temp_dir))
             cache.set_reader_position("case", "42", 1234)
+            highlight = ReaderHighlight(0, 5, "Alpha")
+            cache.set_reader_highlights("case", "42", [highlight])
             cache.upsert_cluster({"id": 42, "case_name": "Example v. State"})
 
-            cache.clear(preserve_reader_positions=True)
+            cache.clear(
+                preserve_reader_positions=True,
+                preserve_reader_highlights=True,
+            )
 
             self.assertEqual(cache.reader_position("case", "42"), 1234)
+            self.assertEqual(cache.reader_highlights("case", "42"), [highlight])
             self.assertEqual(cache.list_case_entries(), [])
 
 

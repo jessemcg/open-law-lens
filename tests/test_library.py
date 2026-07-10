@@ -7,6 +7,7 @@ from pathlib import Path
 
 from open_law_lens.cache import JsonCache
 from open_law_lens.library import CaseLibrary, opinion_display_text
+from open_law_lens.reader_highlights import ReaderHighlight
 
 
 B_D_TEXT = """110 Cal.App.5th 1132 (2025)
@@ -248,6 +249,8 @@ class LibraryTests(unittest.TestCase):
             cache.clear()
             cache.upsert_cluster({"id": 99, "case_name": "Other v. State"})
             cache.set_reader_position("case", "42", 1234)
+            highlight = ReaderHighlight(0, 7, "Example")
+            cache.set_reader_highlights("case", "42", [highlight])
 
             loaded = library.load_research_set_into_cache("Example_research", cache)
 
@@ -267,6 +270,7 @@ class LibraryTests(unittest.TestCase):
             self.assertTrue(cache.is_rule_agent_selected("CRC:8.11"))
             self.assertTrue(cache.is_agent_answer_selected(answer_id))
             self.assertEqual(cache.reader_position("case", "42"), 1234)
+            self.assertEqual(cache.reader_highlights("case", "42"), [highlight])
 
     def test_research_set_duplicate_requires_replace(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

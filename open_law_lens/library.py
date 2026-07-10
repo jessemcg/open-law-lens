@@ -1547,7 +1547,10 @@ class CaseLibrary:
         if research_set is None:
             raise ValueError(f"Research set not found: {name_or_id}")
         with cache.suppress_dirty_tracking():
-            cache.clear(preserve_reader_positions=True)
+            cache.clear(
+                preserve_reader_positions=True,
+                preserve_reader_highlights=True,
+            )
             for item in research_set.items:
                 if item.item_type == "case":
                     cluster_payload = dict(item.payload)
