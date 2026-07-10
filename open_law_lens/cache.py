@@ -137,6 +137,9 @@ class JsonCache:
     def metadata_path(self) -> Path:
         return self.root / "metadata.json"
 
+    def reader_positions_path(self) -> Path:
+        return self.root / "reader_positions.json"
+
     def lookup_path(self, citation: str) -> Path:
         return self.root / "lookups" / f"{citation_cache_key(citation)}.json"
 
@@ -188,6 +191,73 @@ class JsonCache:
 
     def write_metadata(self, metadata: dict[str, Any]) -> None:
         self.write_json(self.metadata_path(), metadata)
+
+    def read_reader_positions(self) -> dict[str, dict[str, int]]:
+        data = self.read_json(self.reader_positions_path())
+        raw_positions = data.get("positions") if isinstance(data, dict) else None
+        if not isinstance(raw_positions, dict):
+            return {}
+        positions: dict[str, dict[str, int]] = {}
+        for item_type in ("case", "statute", "rule", "agent_answer"):
+            raw_items = raw_positions.get(item_type)
+            if not isinstance(raw_items, dict):
+                continue
+            clean_items = {
+                str(authority_id): offset
+                for authority_id, offset in raw_items.items()
+                if str(authority_id).strip()
+                and isinstance(offset, int)
+                and not isinstance(offset, bool)
+                and offset >= 0
+            }
+            if clean_items:
+                positions[item_type] = clean_items
+        return positions
+
+    def reader_position(self, item_type: str, authority_id: str) -> int | None:
+        clean_type = str(item_type or "").strip()
+        clean_id = str(authority_id or "").strip()
+        if not clean_type or not clean_id:
+            return None
+        return self.read_reader_positions().get(clean_type, {}).get(clean_id)
+
+    @_synchronized
+    def set_reader_position(self, item_type: str, authority_id: str, offset: int) -> None:
+        clean_type = str(item_type or "").strip()
+        clean_id = str(authority_id or "").strip()
+        if clean_type not in {"case", "statute", "rule", "agent_answer"} or not clean_id:
+            return
+        try:
+            clean_offset = max(0, int(offset))
+        except (TypeError, ValueError):
+            return
+        positions = self.read_reader_positions()
+        if positions.get(clean_type, {}).get(clean_id) == clean_offset:
+            return
+        positions.setdefault(clean_type, {})[clean_id] = clean_offset
+        self.write_json(
+            self.reader_positions_path(),
+            {"version": 1, "positions": positions},
+        )
+
+    @_synchronized
+    def remove_reader_position(self, item_type: str, authority_id: str) -> None:
+        clean_type = str(item_type or "").strip()
+        clean_id = str(authority_id or "").strip()
+        positions = self.read_reader_positions()
+        items = positions.get(clean_type)
+        if not isinstance(items, dict) or clean_id not in items:
+            return
+        items.pop(clean_id, None)
+        if not items:
+            positions.pop(clean_type, None)
+        if positions:
+            self.write_json(
+                self.reader_positions_path(),
+                {"version": 1, "positions": positions},
+            )
+        else:
+            self.reader_positions_path().unlink(missing_ok=True)
 
     @_synchronized
     def active_research_set_metadata(self) -> dict[str, Any] | None:
@@ -480,6 +550,7 @@ class JsonCache:
             self.opinion_path(opinion_id).unlink(missing_ok=True)
         self.cluster_path(cluster_id).unlink(missing_ok=True)
         self.write_case_index(index)
+        self.remove_reader_position("case", cluster_id)
         self.mark_active_research_set_dirty()
         return True
 
@@ -571,6 +642,7 @@ class JsonCache:
             return False
         self.statute_path(statute_id).unlink(missing_ok=True)
         self.write_statute_index(index)
+        self.remove_reader_position("statute", statute_id)
         self.mark_active_research_set_dirty()
         return True
 
@@ -655,6 +727,7 @@ class JsonCache:
             return False
         self.rule_path(rule_id).unlink(missing_ok=True)
         self.write_rule_index(index)
+        self.remove_reader_position("rule", rule_id)
         self.mark_active_research_set_dirty()
         return True
 
@@ -751,22 +824,25 @@ class JsonCache:
             return False
         self.agent_answer_path(answer_id).unlink(missing_ok=True)
         self.write_agent_answer_index(index)
+        self.remove_reader_position("agent_answer", answer_id)
         self.mark_active_research_set_dirty()
         return True
 
     @_synchronized
-    def clear(self) -> None:
-        trash_path = self.detach_for_clear()
+    def clear(self, *, preserve_reader_positions: bool = False) -> None:
+        trash_path = self.detach_for_clear(
+            preserve_reader_positions=preserve_reader_positions,
+        )
         if trash_path is not None:
             shutil.rmtree(trash_path)
 
     @_synchronized
-    def detach_for_clear(self) -> Path | None:
+    def detach_for_clear(self, *, preserve_reader_positions: bool = False) -> Path | None:
         self.root.mkdir(parents=True, exist_ok=True)
         trash_path = self.root / f".clear-trash-{_utc_now().replace(':', '-')}-{uuid.uuid4().hex}"
         moved: list[tuple[Path, Path]] = []
         try:
-            for source in (
+            sources = [
                 self.root / "lookups",
                 self.root / "clusters",
                 self.root / "opinions",
@@ -778,7 +854,10 @@ class JsonCache:
                 self.rule_index_path(),
                 self.agent_answer_index_path(),
                 self.metadata_path(),
-            ):
+            ]
+            if not preserve_reader_positions:
+                sources.append(self.reader_positions_path())
+            for source in sources:
                 if not source.exists():
                     continue
                 trash_path.mkdir(parents=True, exist_ok=True)

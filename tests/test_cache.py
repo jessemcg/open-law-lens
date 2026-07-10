@@ -528,6 +528,51 @@ class CacheTests(unittest.TestCase):
             self.assertEqual(metadata["active_research_set_name"], "Example_research")
             self.assertTrue(metadata["dirty"])
 
+    def test_reader_positions_round_trip_without_dirtying_research_set(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cache.set_active_research_set(7, "Example_research")
+
+            cache.set_reader_position("case", "42", 1234)
+            cache.set_reader_position("rule", "CRC:8.11", 88)
+
+            self.assertEqual(cache.reader_position("case", "42"), 1234)
+            self.assertEqual(cache.reader_position("rule", "CRC:8.11"), 88)
+            metadata = cache.active_research_set_metadata()
+            self.assertIsNotNone(metadata)
+            assert metadata is not None
+            self.assertFalse(metadata["dirty"])
+            self.assertEqual(
+                list(Path(temp_dir).glob(".reader_positions.json.*.tmp")),
+                [],
+            )
+
+    def test_reader_positions_ignore_invalid_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cache.write_json(
+                cache.reader_positions_path(),
+                {
+                    "version": 1,
+                    "positions": {
+                        "case": {"valid": 12, "negative": -1, "boolean": True},
+                        "unknown": {"value": 9},
+                    },
+                },
+            )
+
+            self.assertEqual(cache.read_reader_positions(), {"case": {"valid": 12}})
+
+    def test_removing_cache_item_removes_reader_position(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cache.upsert_cluster({"id": 42, "case_name": "Example v. State"})
+            cache.set_reader_position("case", "42", 1234)
+
+            self.assertTrue(cache.remove_case("42"))
+
+            self.assertIsNone(cache.reader_position("case", "42"))
+
     def test_dirty_tracking_can_be_suppressed_for_clean_loads(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = JsonCache(Path(temp_dir))
@@ -588,6 +633,7 @@ class CacheTests(unittest.TestCase):
                 }
             )
             cache.save_agent_answer("The cached answer.")
+            cache.set_reader_position("case", "42", 1234)
             agent_workspace = root / "agent-workspaces" / "workspace.test"
             agent_workspace.mkdir(parents=True)
             (agent_workspace / "manifest.json").write_text("{}", encoding="utf-8")
@@ -607,6 +653,7 @@ class CacheTests(unittest.TestCase):
             self.assertTrue((trash_path / "rules_index.json").is_file())
             self.assertTrue((trash_path / "agent_answers_index.json").is_file())
             self.assertTrue((trash_path / "metadata.json").is_file())
+            self.assertTrue((trash_path / "reader_positions.json").is_file())
             self.assertEqual(cache.list_lookups(), [])
             self.assertEqual(cache.list_case_entries(), [])
             self.assertEqual(cache.list_agent_answer_entries(), [])
@@ -628,11 +675,13 @@ class CacheTests(unittest.TestCase):
             cache.write_resource("opinions", "10", {"id": 10})
             answer_id = cache.save_agent_answer("The answer to save.")
             cache.set_active_research_set(7, "Example_research")
+            cache.set_reader_position("case", "42", 1234)
             cache.clear()
             self.assertEqual(cache.list_lookups(), [])
             self.assertEqual(cache.list_case_entries(), [])
             self.assertEqual(cache.list_agent_answer_entries(), [])
             self.assertIsNone(cache.active_research_set_metadata())
+            self.assertIsNone(cache.reader_position("case", "42"))
             self.assertIsNone(cache.read_agent_answer(answer_id))
             self.assertFalse(cache.selected_case_entries())
             self.assertTrue((root / "lookups").is_dir())
@@ -640,6 +689,17 @@ class CacheTests(unittest.TestCase):
             self.assertTrue((root / "opinions").is_dir())
             self.assertTrue((root / "agent_answers").is_dir())
             self.assertEqual(list(root.glob(".clear-trash-*")), [])
+
+    def test_clear_can_preserve_reader_positions_for_research_set_switch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cache.set_reader_position("case", "42", 1234)
+            cache.upsert_cluster({"id": 42, "case_name": "Example v. State"})
+
+            cache.clear(preserve_reader_positions=True)
+
+            self.assertEqual(cache.reader_position("case", "42"), 1234)
+            self.assertEqual(cache.list_case_entries(), [])
 
 
 if __name__ == "__main__":

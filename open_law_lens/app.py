@@ -1292,6 +1292,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_click_gesture: Gtk.GestureClick | None = None
         self._agent_link_press: LinkPressState | None = None
         self._reader_text = ""
+        self._reader_position_key: tuple[str, str] | None = None
         self._reader_page_markers: list[PageMarker] = []
         self._reader_highlight_tag: Gtk.TextTag | None = None
         self._reader_find_tag: Gtk.TextTag | None = None
@@ -1364,6 +1365,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._install_css()
         self._install_actions()
         self.set_content(self._build_ui())
+        self.connect("close-request", self._on_window_close_request)
         self._restore_active_research_set()
         self._load_cached_cases()
         self.add_tick_callback(self._on_window_tick)
@@ -2568,6 +2570,63 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if on_success is not None:
             GLib.idle_add(on_success, result)
 
+    def _on_window_close_request(self, _window: Gtk.Window) -> bool:
+        self._capture_current_reader_position()
+        return False
+
+    def _capture_current_reader_position(self) -> None:
+        key = self._reader_position_key
+        if key is None or not self._reader_text:
+            return
+        view = getattr(self, "reader_view", None)
+        if view is None:
+            return
+        visible = view.get_visible_rect()
+        iter_result = view.get_iter_at_position(int(visible.x), int(visible.y))
+        if not isinstance(iter_result, tuple) or len(iter_result) < 2:
+            return
+        # GTK returns False when the point is in the TextView margin, but the
+        # accompanying iterator still identifies the nearest text position.
+        iter_ = iter_result[1]
+        if iter_ is None:
+            return
+        self.client.cache.set_reader_position(key[0], key[1], iter_.get_offset())
+
+    def _set_reader_position_key(self, item_type: str, authority_id: str) -> None:
+        clean_id = str(authority_id or "").strip()
+        self._reader_position_key = (item_type, clean_id) if clean_id else None
+
+    def _clear_reader_position_key(self) -> None:
+        self._reader_position_key = None
+
+    def _schedule_reader_position_restore(self) -> None:
+        key = self._reader_position_key
+        if key is None or self._pending_quote_target is not None:
+            return
+        offset = self.client.cache.reader_position(key[0], key[1])
+        if offset is None:
+            return
+        generation = self._case_load_generation
+        GLib.idle_add(self._restore_reader_position, key, generation, offset)
+
+    def _restore_reader_position(
+        self,
+        key: tuple[str, str],
+        generation: int,
+        offset: int,
+    ) -> bool:
+        if (
+            generation != self._case_load_generation
+            or key != self._reader_position_key
+            or self._pending_quote_target is not None
+            or not self._reader_text
+        ):
+            return False
+        clean_offset = max(0, min(offset, self.reader_buffer.get_char_count()))
+        iter_ = self.reader_buffer.get_iter_at_offset(clean_offset)
+        self.reader_view.scroll_to_iter(iter_, 0.0, True, 0.0, 0.0)
+        return False
+
     def _set_reader_text(
         self,
         text: str,
@@ -2615,6 +2674,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             target = self._pending_quote_target
             self._pending_quote_target = None
             self._highlight_reader_quote_target(target)
+        else:
+            schedule_restore = getattr(self, "_schedule_reader_position_restore", None)
+            if schedule_restore is not None:
+                schedule_restore()
         return False
 
     def _case_load_is_current(self, generation: int, cluster_id: str) -> bool:
@@ -2730,6 +2793,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             target = self._pending_quote_target
             self._pending_quote_target = None
             self._highlight_reader_quote_target(target)
+        else:
+            schedule_restore = getattr(self, "_schedule_reader_position_restore", None)
+            if schedule_restore is not None:
+                schedule_restore()
         self._set_reader_busy(False)
         self._finish_case_quality_status(
             payload.cluster_id,
@@ -3962,6 +4029,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return ""
 
     def show_open_authority_pending(self, message: str = "Opening selected authority...") -> None:
+        capture_position = getattr(self, "_capture_current_reader_position", None)
+        if capture_position is not None:
+            capture_position()
+        clear_position_key = getattr(self, "_clear_reader_position_key", None)
+        if clear_position_key is not None:
+            clear_position_key()
         self._hide_case_completion()
         self._set_reader_header("")
         self._set_status(message)
@@ -4123,6 +4196,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_active_research_set(None)
         self._research_cache_generation += 1
         self._case_load_generation += 1
+        clear_position_key = getattr(self, "_clear_reader_position_key", None)
+        if clear_position_key is not None:
+            clear_position_key()
+        self._reader_text = ""
         self._load_cached_cases()
         self._set_reader_header("")
         self.reader_buffer.set_text("")
@@ -4422,6 +4499,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         set_id: int,
         popover: Gtk.Popover | None = None,
     ) -> None:
+        capture_position = getattr(self, "_capture_current_reader_position", None)
+        if capture_position is not None:
+            capture_position()
         self._research_cache_generation += 1
         try:
             research_set = self.client.library.load_research_set_into_cache(set_id, self.client.cache)
@@ -5209,6 +5289,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if not clean_case_number:
             self._set_status("Enter a California appellate case number.")
             return
+        capture_position = getattr(self, "_capture_current_reader_position", None)
+        if capture_position is not None:
+            capture_position()
+        clear_position_key = getattr(self, "_clear_reader_position_key", None)
+        if clear_position_key is not None:
+            clear_position_key()
         self._last_lookup_text = clean_case_number
         self._pending_auto_scholar_cluster_id = ""
         self._pending_auto_scholar_query = ""
@@ -5322,6 +5408,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return False
 
     def _start_statute_lookup(self, citation: str) -> None:
+        capture_position = getattr(self, "_capture_current_reader_position", None)
+        if capture_position is not None:
+            capture_position()
+        clear_position_key = getattr(self, "_clear_reader_position_key", None)
+        if clear_position_key is not None:
+            clear_position_key()
         self._last_lookup_text = citation.strip()
         self._pending_auto_scholar_cluster_id = ""
         self._pending_auto_scholar_query = ""
@@ -5375,6 +5467,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return False
 
     def _start_rule_lookup(self, citation: str) -> None:
+        capture_position = getattr(self, "_capture_current_reader_position", None)
+        if capture_position is not None:
+            capture_position()
+        clear_position_key = getattr(self, "_clear_reader_position_key", None)
+        if clear_position_key is not None:
+            clear_position_key()
         self._last_lookup_text = citation.strip()
         self._pending_auto_scholar_cluster_id = ""
         self._pending_auto_scholar_query = ""
@@ -5409,6 +5507,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if not isinstance(answer, dict):
             self._set_status("Saved answer was not found in Research Cache.")
             return
+        capture_position = getattr(self, "_capture_current_reader_position", None)
+        if capture_position is not None:
+            capture_position()
+        set_position_key = getattr(self, "_set_reader_position_key", None)
+        if set_position_key is not None:
+            set_position_key("agent_answer", answer_id)
         title = str(answer.get("title") or answer_entry.get("title") or "Saved agent answer")
         text = str(answer.get("text") or "").strip()
         self._selected_cluster = None
@@ -5457,6 +5561,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if case_number and citation.strip().casefold() == case_number.casefold():
             self._start_case_number_lookup(case_number)
             return
+        capture_position = getattr(self, "_capture_current_reader_position", None)
+        if capture_position is not None:
+            capture_position()
+        clear_position_key = getattr(self, "_clear_reader_position_key", None)
+        if clear_position_key is not None:
+            clear_position_key()
         lookup_context = self._lookup_context_text(citation, link)
         self._last_lookup_text = lookup_context
         self._pending_auto_scholar_cluster_id = ""
@@ -5692,6 +5802,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         select_first: bool = False,
         suppress_selection_lookup: bool = False,
     ) -> None:
+        capture_position = getattr(self, "_capture_current_reader_position", None)
+        if capture_position is not None:
+            capture_position()
         self._clusters = clusters
         self._statutes = statutes
         self._rules = rules
@@ -6047,6 +6160,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return
         if removed_selected:
             self._selected_cluster = None
+            clear_position_key = getattr(self, "_clear_reader_position_key", None)
+            if clear_position_key is not None:
+                clear_position_key()
+            self._reader_text = ""
             self._set_reader_header("")
             self.reader_buffer.set_text("")
             self._set_reader_busy(False)
@@ -6074,6 +6191,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return
         if removed_selected:
             self._selected_statute = None
+            clear_position_key = getattr(self, "_clear_reader_position_key", None)
+            if clear_position_key is not None:
+                clear_position_key()
+            self._reader_text = ""
             self._set_reader_header("")
             self.reader_buffer.set_text("")
             self._set_reader_busy(False)
@@ -6103,6 +6224,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return
         if removed_selected:
             self._selected_rule = None
+            clear_position_key = getattr(self, "_clear_reader_position_key", None)
+            if clear_position_key is not None:
+                clear_position_key()
+            self._reader_text = ""
             self._set_reader_header("")
             self.reader_buffer.set_text("")
             self._set_reader_busy(False)
@@ -6132,6 +6257,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return
         if removed_selected:
             self._selected_agent_answer = None
+            clear_position_key = getattr(self, "_clear_reader_position_key", None)
+            if clear_position_key is not None:
+                clear_position_key()
+            self._reader_text = ""
             self._set_reader_header("")
             self.reader_buffer.set_text("")
             self._set_reader_busy(False)
@@ -6276,6 +6405,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         thread.start()
 
     def _open_statute_in_reader(self, statute: dict[str, Any]) -> None:
+        capture_position = getattr(self, "_capture_current_reader_position", None)
+        if capture_position is not None:
+            capture_position()
+        set_position_key = getattr(self, "_set_reader_position_key", None)
+        if set_position_key is not None:
+            set_position_key("statute", str(statute.get("statute_id") or ""))
         self._case_load_generation += 1
         self._selected_cluster = None
         self._selected_statute = statute
@@ -6297,6 +6432,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_status(f"Loaded {citation_text or header} from Research Cache.")
 
     def _open_rule_in_reader(self, rule: dict[str, Any]) -> None:
+        capture_position = getattr(self, "_capture_current_reader_position", None)
+        if capture_position is not None:
+            capture_position()
+        set_position_key = getattr(self, "_set_reader_position_key", None)
+        if set_position_key is not None:
+            set_position_key("rule", str(rule.get("rule_id") or ""))
         self._case_load_generation += 1
         self._selected_cluster = None
         self._selected_statute = None
@@ -6318,6 +6459,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_status(f"Loaded {citation_text or header} from Research Cache.")
 
     def _begin_case_load(self, cluster: dict[str, Any]) -> int:
+        capture_position = getattr(self, "_capture_current_reader_position", None)
+        if capture_position is not None:
+            capture_position()
+        set_position_key = getattr(self, "_set_reader_position_key", None)
+        if set_position_key is not None:
+            set_position_key("case", cluster_id_from_cluster(cluster))
         self._case_load_generation += 1
         generation = self._case_load_generation
         self._selected_cluster = cluster

@@ -31,6 +31,112 @@ from open_law_lens.web_import import ExtractedWebpage
 
 
 class AppReaderPayloadTests(unittest.TestCase):
+    def test_capture_reader_position_saves_top_visible_text_offset(self) -> None:
+        class DummyCache:
+            def __init__(self) -> None:
+                self.saved: tuple[str, str, int] | None = None
+
+            def set_reader_position(self, item_type: str, authority_id: str, offset: int) -> None:
+                self.saved = (item_type, authority_id, offset)
+
+        class DummyIter:
+            def get_offset(self) -> int:
+                return 321
+
+        class DummyView:
+            def get_visible_rect(self) -> SimpleNamespace:
+                return SimpleNamespace(x=0, y=480)
+
+            def get_iter_at_position(self, x: int, y: int) -> tuple[bool, DummyIter, int]:
+                self.coords = (x, y)
+                return False, DummyIter(), 0
+
+        cache = DummyCache()
+        window = SimpleNamespace(
+            _reader_position_key=("case", "42"),
+            _reader_text="Long opinion text",
+            reader_view=DummyView(),
+            client=SimpleNamespace(cache=cache),
+        )
+
+        OpenLawLensWindow._capture_current_reader_position(window)  # type: ignore[arg-type]
+
+        self.assertEqual(cache.saved, ("case", "42", 321))
+
+    def test_restore_reader_position_clamps_offset_and_scrolls_to_top(self) -> None:
+        class DummyBuffer:
+            def get_char_count(self) -> int:
+                return 100
+
+            def get_iter_at_offset(self, offset: int) -> int:
+                return offset
+
+        class DummyView:
+            def __init__(self) -> None:
+                self.scrolls: list[tuple[object, ...]] = []
+
+            def scroll_to_iter(self, *args: object) -> None:
+                self.scrolls.append(args)
+
+        window = SimpleNamespace(
+            _case_load_generation=7,
+            _reader_position_key=("case", "42"),
+            _pending_quote_target=None,
+            _reader_text="x" * 100,
+            reader_buffer=DummyBuffer(),
+            reader_view=DummyView(),
+        )
+
+        result = OpenLawLensWindow._restore_reader_position(  # type: ignore[arg-type]
+            window,
+            ("case", "42"),
+            7,
+            250,
+        )
+
+        self.assertFalse(result)
+        self.assertEqual(window.reader_view.scrolls, [(100, 0.0, True, 0.0, 0.0)])
+
+    def test_restore_reader_position_does_not_override_pending_quote(self) -> None:
+        window = SimpleNamespace(
+            _case_load_generation=7,
+            _reader_position_key=("case", "42"),
+            _pending_quote_target=object(),
+            _reader_text="opinion text",
+        )
+
+        result = OpenLawLensWindow._restore_reader_position(  # type: ignore[arg-type]
+            window,
+            ("case", "42"),
+            7,
+            20,
+        )
+
+        self.assertFalse(result)
+
+    def test_schedule_reader_position_restore_queues_saved_offset(self) -> None:
+        restore = object()
+        window = SimpleNamespace(
+            _reader_position_key=("rule", "CRC:8.11"),
+            _pending_quote_target=None,
+            _case_load_generation=4,
+            _restore_reader_position=restore,
+            client=SimpleNamespace(
+                cache=SimpleNamespace(
+                    reader_position=lambda item_type, authority_id: (
+                        77 if (item_type, authority_id) == ("rule", "CRC:8.11") else None
+                    )
+                )
+            ),
+        )
+
+        with patch("open_law_lens.app.GLib.idle_add") as idle_add:
+            OpenLawLensWindow._schedule_reader_position_restore(  # type: ignore[arg-type]
+                window
+            )
+
+        idle_add.assert_called_once_with(restore, ("rule", "CRC:8.11"), 4, 77)
+
     def test_case_agent_render_links_only_resolved_quotes_and_keeps_delimiters(self) -> None:
         class DummyTagTable:
             def remove(self, _tag: object) -> None:

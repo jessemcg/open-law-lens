@@ -247,6 +247,7 @@ class LibraryTests(unittest.TestCase):
 
             cache.clear()
             cache.upsert_cluster({"id": 99, "case_name": "Other v. State"})
+            cache.set_reader_position("case", "42", 1234)
 
             loaded = library.load_research_set_into_cache("Example_research", cache)
 
@@ -265,6 +266,7 @@ class LibraryTests(unittest.TestCase):
             self.assertTrue(cache.is_agent_selected("42"))
             self.assertTrue(cache.is_rule_agent_selected("CRC:8.11"))
             self.assertTrue(cache.is_agent_answer_selected(answer_id))
+            self.assertEqual(cache.reader_position("case", "42"), 1234)
 
     def test_research_set_duplicate_requires_replace(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
