@@ -36,9 +36,9 @@ from .agent import (
     QuoteTarget,
     export_selected_authorities,
     extract_latest_codex_final_answer_from_jsonl,
-    extract_quoted_phrases,
     find_latest_codex_session_log_for_cwd,
-    resolve_quote_target,
+    quote_match_spans,
+    resolved_agent_quote_spans,
 )
 from .authority_resolver import first_authority_candidate
 from .cache import cluster_id_from_cluster
@@ -2614,7 +2614,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if self._pending_quote_target is not None:
             target = self._pending_quote_target
             self._pending_quote_target = None
-            self._highlight_reader_phrase(target.phrase)
+            self._highlight_reader_quote_target(target)
         return False
 
     def _case_load_is_current(self, generation: int, cluster_id: str) -> bool:
@@ -2729,7 +2729,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if self._pending_quote_target is not None:
             target = self._pending_quote_target
             self._pending_quote_target = None
-            self._highlight_reader_phrase(target.phrase)
+            self._highlight_reader_quote_target(target)
         self._set_reader_busy(False)
         self._finish_case_quality_status(
             payload.cluster_id,
@@ -5764,6 +5764,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             row.set_child(row_box)
             row._open_law_lens_cluster_index = index
             row._open_law_lens_authority_type = "case"
+            row._open_law_lens_authority_id = cluster_id
             row._open_law_lens_cache_section = "authority"
             row._open_law_lens_cache_sort_key = self._research_cache_row_sort_key(
                 case_entries.get(cluster_id, {}),
@@ -5819,6 +5820,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             row.set_child(row_box)
             row._open_law_lens_statute_index = index
             row._open_law_lens_authority_type = "statute"
+            row._open_law_lens_authority_id = statute_id
             row._open_law_lens_cache_section = "authority"
             row._open_law_lens_cache_sort_key = self._research_cache_row_sort_key(
                 statute_entries.get(statute_id, {}),
@@ -5874,6 +5876,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             row.set_child(row_box)
             row._open_law_lens_rule_index = index
             row._open_law_lens_authority_type = "rule"
+            row._open_law_lens_authority_id = rule_id
             row._open_law_lens_cache_section = "authority"
             row._open_law_lens_cache_sort_key = self._research_cache_row_sort_key(
                 rule_entries.get(rule_id, {}),
@@ -5945,6 +5948,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             row.set_child(row_box)
             row._open_law_lens_agent_answer_index = index
             row._open_law_lens_authority_type = "agent_answer"
+            row._open_law_lens_authority_id = answer_id
             row._open_law_lens_cache_section = "agent_answer"
             row._open_law_lens_cache_sort_key = self._research_cache_row_sort_key(
                 answer_entries.get(answer_id, {}),
@@ -7088,27 +7092,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         offset = max(0, min(offset, len(offset_map) - 1))
         return offset_map[offset]
 
-    def _extract_agent_quote_spans(self, text: str) -> tuple[str, list[tuple[int, int, str]]]:
-        spans: list[tuple[int, int, str]] = []
-        parts: list[str] = []
-        cursor = 0
-        offset = 0
-        for start, end, phrase in extract_quoted_phrases(text):
-            quote_start = start - 1 if start > 0 and text[start - 1] in {'"', "\u201c"} else start
-            quote_end = end + 1 if end < len(text) and text[end] in {'"', "\u201d"} else end
-            if quote_start < cursor:
-                continue
-            before = text[cursor:quote_start]
-            parts.append(before)
-            offset += len(before)
-            parts.append(phrase)
-            spans.append((offset, offset + len(phrase), phrase))
-            offset += len(phrase)
-            cursor = quote_end
-        tail = text[cursor:]
-        parts.append(tail)
-        return "".join(parts), spans
-
     def _render_agent_answer(self, text: str) -> None:
         if self._agent_answer_buffer is None:
             return
@@ -7128,15 +7111,21 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_search_link_lookup.clear()
         self._agent_search_next_link_tags.clear()
         self._agent_search_highlight_tags.clear()
-        clean_text, quote_spans = self._extract_agent_quote_spans(text)
-        rendered, markdown_spans, offset_map = self._render_markdown_text(clean_text)
+        quote_spans = (
+            resolved_agent_quote_spans(text, self._case_agent_text_sources)
+            if self._agent_mode == AGENT_MODE_CASE
+            else []
+        )
+        rendered, markdown_spans, offset_map = self._render_markdown_text(text)
         buffer.set_text(rendered)
         self._apply_agent_markdown_spans(buffer, markdown_spans)
         self._apply_agent_citation_italics(buffer, rendered)
         quote_color = self._resolve_agent_quote_color()
-        for start, end, phrase in quote_spans:
-            mapped_start = self._map_offset(start, offset_map)
-            mapped_end = self._map_offset(end, offset_map)
+        for span in quote_spans:
+            if span.target is None:
+                continue
+            mapped_start = self._map_offset(span.start_offset, offset_map)
+            mapped_end = self._map_offset(span.end_offset, offset_map)
             if mapped_end <= mapped_start:
                 continue
             tag = buffer.create_tag(
@@ -7151,10 +7140,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 buffer.get_iter_at_offset(mapped_end),
             )
             self._agent_link_tags.append(tag)
-            if self._agent_mode == AGENT_MODE_CASE:
-                target = resolve_quote_target(phrase, self._case_agent_text_sources)
-                if target is not None:
-                    self._agent_link_lookup[tag] = target
+            self._agent_link_lookup[tag] = span.target
         if self._agent_mode in {AGENT_MODE_GENERAL, AGENT_MODE_APPEAL}:
             self._apply_agent_citation_links(buffer, rendered)
             self._apply_agent_statute_links(buffer, rendered)
@@ -7799,20 +7785,52 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return False
 
     def _open_quote_target(self, target: QuoteTarget) -> None:
-        for index, cluster in enumerate(self._clusters):
-            if cluster_id_from_cluster(cluster) != target.cluster_id:
-                continue
-            row = self.case_list.get_row_at_index(index)
-            if row is not None:
-                if self._selected_cluster is cluster:
-                    self._highlight_reader_phrase(target.phrase)
-                else:
-                    self._pending_quote_target = target
-                    self.case_list.select_row(row)
+        authority_id = self._quote_target_authority_id(target)
+        row = self._research_cache_authority_row(target.authority_type, authority_id)
+        if row is None:
+            self._set_status("Quoted authority is no longer in Research Cache.")
             return
-        self._set_status("Quoted case is no longer in Research Cache.")
+        if self._quote_target_is_selected(target) and self._reader_text:
+            self._highlight_reader_quote_target(target)
+            return
+        self._pending_quote_target = target
+        if self.case_list.get_selected_row() is not row:
+            self.case_list.select_row(row)
 
-    def _highlight_reader_phrase(self, phrase: str) -> None:
+    @staticmethod
+    def _quote_target_authority_id(target: QuoteTarget) -> str:
+        if target.authority_type == "statute":
+            return target.statute_id
+        if target.authority_type == "rule":
+            return target.rule_id
+        return target.cluster_id
+
+    def _research_cache_authority_row(
+        self,
+        authority_type: str,
+        authority_id: str,
+    ) -> Gtk.ListBoxRow | None:
+        index = 0
+        while row := self.case_list.get_row_at_index(index):
+            if (
+                getattr(row, "_open_law_lens_authority_type", "") == authority_type
+                and getattr(row, "_open_law_lens_authority_id", "") == authority_id
+            ):
+                return row
+            index += 1
+        return None
+
+    def _quote_target_is_selected(self, target: QuoteTarget) -> bool:
+        if target.authority_type == "statute":
+            selected_id = str((self._selected_statute or {}).get("statute_id") or "")
+            return bool(target.statute_id and selected_id == target.statute_id)
+        if target.authority_type == "rule":
+            selected_id = str((self._selected_rule or {}).get("rule_id") or "")
+            return bool(target.rule_id and selected_id == target.rule_id)
+        selected_id = cluster_id_from_cluster(self._selected_cluster or {})
+        return bool(target.cluster_id and selected_id == target.cluster_id)
+
+    def _highlight_reader_quote_target(self, target: QuoteTarget) -> None:
         if self._reader_highlight_tag is None:
             return
         self.reader_buffer.remove_tag(
@@ -7820,11 +7838,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self.reader_buffer.get_start_iter(),
             self.reader_buffer.get_end_iter(),
         )
-        start = self._reader_text.find(phrase)
-        if start < 0:
-            self._set_status("Quoted phrase was not found in the loaded case text.")
+        spans = quote_match_spans(self._reader_text, target.phrase)
+        if not spans:
+            self._set_status("Quoted phrase was not found in the loaded authority text.")
             return
-        end = start + len(phrase)
+        start, end = min(spans, key=lambda span: abs(span[0] - target.offset))
         start_iter = self.reader_buffer.get_iter_at_offset(start)
         end_iter = self.reader_buffer.get_iter_at_offset(end)
         self.reader_buffer.apply_tag(self._reader_highlight_tag, start_iter, end_iter)

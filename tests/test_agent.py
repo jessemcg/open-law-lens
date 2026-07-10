@@ -14,7 +14,9 @@ from open_law_lens.agent import (
     extract_latest_codex_final_answer_from_jsonl,
     extract_quoted_phrases,
     find_latest_codex_session_log_for_cwd,
+    quote_match_spans,
     resolve_quote_target,
+    resolved_agent_quote_spans,
 )
 from open_law_lens.library import DisplayText
 
@@ -96,7 +98,7 @@ class AgentTests(unittest.TestCase):
         spans = extract_quoted_phrases('Use "active risk today" and skip "one" and "too many words in this quote".')
         self.assertEqual([span[2] for span in spans], ["active risk today"])
 
-    def test_resolve_quote_target_uses_first_exact_source_match(self) -> None:
+    def test_resolve_quote_target_uses_first_canonical_source_match(self) -> None:
         sources = [
             CaseTextSource(
                 cluster_id="42",
@@ -112,6 +114,160 @@ class AgentTests(unittest.TestCase):
         assert target is not None
         self.assertEqual(target.cluster_id, "42")
         self.assertEqual(target.offset, 25)
+
+    def test_quote_match_spans_tolerate_observed_display_differences(self) -> None:
+        source = (
+            'Mother\'s "emotions [were] out of control." She "couldn\'t relax" '
+            'and was being "very negative" because of her condition.'
+        )
+
+        phrases = (
+            "emotions [were] out of control,",
+            "couldn’t relax,",
+            "being very negative.",
+        )
+
+        matches = [quote_match_spans(source, phrase) for phrase in phrases]
+        self.assertTrue(all(match for match in matches))
+        self.assertEqual(
+            [source[start:end] for (start, end), in matches],
+            [
+                "emotions [were] out of control",
+                "couldn't relax",
+                'being "very negative',
+            ],
+        )
+
+    def test_quote_match_spans_ignore_reporter_page_marker(self) -> None:
+        source = "The court found active [*1214] risk today."
+        spans = quote_match_spans(source, "active risk today")
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(source[slice(*spans[0])], "active [*1214] risk today")
+
+    def test_resolved_quote_uses_following_citation_to_disambiguate(self) -> None:
+        sources = [
+            CaseTextSource(
+                cluster_id="1",
+                opinion_id="10",
+                title="First v. State",
+                citation="1 Cal.App.5th 10",
+                text_path="/tmp/first.txt",
+                text="The court found active risk today.",
+            ),
+            CaseTextSource(
+                cluster_id="2",
+                opinion_id="20",
+                title="Second v. State",
+                citation="2 Cal.App.5th 20",
+                text_path="/tmp/second.txt",
+                text="The court also found active risk today.",
+            ),
+        ]
+        answer = 'The court found “active risk today.” (Second v. State (2024) 2 Cal.App.5th 20.)'
+
+        spans = resolved_agent_quote_spans(answer, sources)
+
+        self.assertEqual(len(spans), 1)
+        self.assertIsNotNone(spans[0].target)
+        assert spans[0].target is not None
+        self.assertEqual(spans[0].target.cluster_id, "2")
+
+    def test_resolved_quote_leaves_cross_authority_ambiguity_unlinked(self) -> None:
+        sources = [
+            CaseTextSource("1", "10", "First", "1 Cal.App.5th 10", "/tmp/1", "active risk today"),
+            CaseTextSource("2", "20", "Second", "2 Cal.App.5th 20", "/tmp/2", "active risk today"),
+        ]
+
+        spans = resolved_agent_quote_spans('Both discuss “active risk today.”', sources)
+
+        self.assertEqual(len(spans), 1)
+        self.assertIsNone(spans[0].target)
+
+    def test_resolved_quote_uses_statute_citation_hint(self) -> None:
+        sources = [
+            CaseTextSource(
+                "1",
+                "10",
+                "Example",
+                "1 Cal.App.5th 10",
+                "/tmp/case",
+                "The best interests of child control.",
+            ),
+            CaseTextSource(
+                "",
+                "",
+                "Welfare and Institutions Code section 300",
+                "Welf. & Inst. Code, § 300",
+                "/tmp/statute",
+                "The best interests of child control.",
+                authority_type="statute",
+                statute_id="WIC:300",
+            ),
+        ]
+        answer = (
+            'The standard protects “best interests of child.” '
+            '(Welf. & Inst. Code, § 300.)'
+        )
+
+        spans = resolved_agent_quote_spans(answer, sources)
+
+        self.assertIsNotNone(spans[0].target)
+        assert spans[0].target is not None
+        self.assertEqual(spans[0].target.statute_id, "WIC:300")
+
+    def test_resolved_quote_ignores_saved_agent_answer_source(self) -> None:
+        source = CaseTextSource(
+            cluster_id="",
+            opinion_id="",
+            title="Prior answer",
+            citation="Saved agent answer",
+            text_path="/tmp/answer.txt",
+            text="active risk today",
+            authority_type="agent_answer",
+            agent_answer_id="abc",
+        )
+
+        spans = resolved_agent_quote_spans('Prior analysis said “active risk today.”', [source])
+
+        self.assertEqual(len(spans), 1)
+        self.assertIsNone(spans[0].target)
+
+    def test_resolve_quote_target_preserves_statute_and_rule_identity(self) -> None:
+        statute = CaseTextSource(
+            "",
+            "",
+            "Welfare and Institutions Code section 300",
+            "Welf. & Inst. Code, § 300",
+            "/tmp/statute",
+            "A child comes within jurisdiction.",
+            authority_type="statute",
+            statute_id="WIC:300",
+        )
+        rule = CaseTextSource(
+            "",
+            "",
+            "California Rules of Court, rule 8.11",
+            "Cal. Rules of Court, rule 8.11",
+            "/tmp/rule",
+            "This rule governs computing time.",
+            authority_type="rule",
+            rule_id="CRC:8.11",
+        )
+
+        statute_target = resolve_quote_target("comes within jurisdiction", [statute, rule])
+        rule_target = resolve_quote_target("governs computing time", [statute, rule])
+
+        self.assertIsNotNone(statute_target)
+        self.assertIsNotNone(rule_target)
+        assert statute_target is not None and rule_target is not None
+        self.assertEqual(
+            (statute_target.authority_type, statute_target.statute_id),
+            ("statute", "WIC:300"),
+        )
+        self.assertEqual(
+            (rule_target.authority_type, rule_target.rule_id),
+            ("rule", "CRC:8.11"),
+        )
 
     def test_export_selected_cases_writes_manifest_and_text_sources(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

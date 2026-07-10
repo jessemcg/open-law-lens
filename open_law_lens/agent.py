@@ -2,16 +2,21 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .cache import cluster_id_from_cluster
+from .cache import cluster_id_from_cluster, normalize_citation
+from .citation_links import cited_case_links
 from .client import cluster_citation_line, cluster_title
+from .rules import cited_rule_links, parse_rule_citation
+from .statutes import cited_statute_links, parse_statute_citation
 
 
 CODEX_SESSION_LOG_GLOB = "20*/**/rollout-*.jsonl"
 QUOTE_RE = re.compile(r'"([^"\n]{1,160})"|“([^”\n]{1,160})”')
+REPORTER_PAGE_MARKER_RE = re.compile(r"\[\*\d+\]")
 
 
 @dataclass(frozen=True)
@@ -23,6 +28,10 @@ class QuoteTarget:
     citation: str
     text_path: str
     offset: int
+    end_offset: int
+    authority_type: str = "case"
+    statute_id: str = ""
+    rule_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -37,6 +46,21 @@ class CaseTextSource:
     statute_id: str = ""
     rule_id: str = ""
     agent_answer_id: str = ""
+
+
+@dataclass(frozen=True)
+class AgentQuoteSpan:
+    start_offset: int
+    end_offset: int
+    phrase: str
+    target: QuoteTarget | None = None
+
+
+@dataclass(frozen=True)
+class _CitationHint:
+    start_offset: int
+    end_offset: int
+    authority_key: tuple[str, str]
 
 
 @dataclass(frozen=True)
@@ -160,21 +184,204 @@ def extract_quoted_phrases(text: str) -> list[tuple[int, int, str]]:
     return spans
 
 
-def resolve_quote_target(phrase: str, sources: list[CaseTextSource]) -> QuoteTarget | None:
+def quote_match_spans(text: str, phrase: str) -> list[tuple[int, int]]:
+    """Find a direct quote while tolerating display-only punctuation differences."""
+    phrase = phrase.rstrip(" \t\r\n.,;:!?")
+    canonical_phrase, _ = _canonical_quote_text(phrase)
+    if not canonical_phrase:
+        return []
+    canonical_text, text_offsets = _canonical_quote_text(text)
+    spans: list[tuple[int, int]] = []
+    cursor = 0
+    while True:
+        index = canonical_text.find(canonical_phrase, cursor)
+        if index < 0:
+            break
+        end_index = index + len(canonical_phrase)
+        if _canonical_match_has_word_boundaries(canonical_text, index, end_index):
+            spans.append((text_offsets[index][0], text_offsets[end_index - 1][1]))
+        cursor = index + 1
+    return spans
+
+
+def resolve_quote_target(
+    phrase: str,
+    sources: list[CaseTextSource],
+    *,
+    preferred_authority_key: tuple[str, str] | None = None,
+) -> QuoteTarget | None:
     if not phrase:
         return None
+    matches: dict[tuple[str, str], list[tuple[CaseTextSource, int, int]]] = {}
     for source in sources:
-        offset = source.text.find(phrase)
-        if offset >= 0:
-            return QuoteTarget(
-                phrase=phrase,
-                cluster_id=source.cluster_id,
-                opinion_id=source.opinion_id,
-                title=source.title,
-                citation=source.citation,
-                text_path=source.text_path,
-                offset=offset,
+        authority_key = _source_authority_key(source)
+        if authority_key is None:
+            continue
+        source_spans = quote_match_spans(source.text, phrase)
+        if source_spans:
+            matches.setdefault(authority_key, []).extend(
+                (source, start, end) for start, end in source_spans
             )
+    selected_key: tuple[str, str] | None = None
+    if preferred_authority_key in matches:
+        selected_key = preferred_authority_key
+    elif len(matches) == 1:
+        selected_key = next(iter(matches))
+    if selected_key is None:
+        return None
+    source, start, end = matches[selected_key][0]
+    return QuoteTarget(
+        phrase=phrase,
+        cluster_id=source.cluster_id,
+        opinion_id=source.opinion_id,
+        title=source.title,
+        citation=source.citation,
+        text_path=source.text_path,
+        offset=start,
+        end_offset=end,
+        authority_type=source.authority_type,
+        statute_id=source.statute_id,
+        rule_id=source.rule_id,
+    )
+
+
+def resolved_agent_quote_spans(
+    text: str,
+    sources: list[CaseTextSource],
+) -> list[AgentQuoteSpan]:
+    hints = _authority_citation_hints(text, sources)
+    spans: list[AgentQuoteSpan] = []
+    for start, end, phrase in extract_quoted_phrases(text):
+        preferred_key = _preferred_quote_authority_key(text, start, end, hints)
+        spans.append(
+            AgentQuoteSpan(
+                start_offset=start,
+                end_offset=end,
+                phrase=phrase,
+                target=resolve_quote_target(
+                    phrase,
+                    sources,
+                    preferred_authority_key=preferred_key,
+                ),
+            )
+        )
+    return spans
+
+
+def _canonical_quote_text(text: str) -> tuple[str, list[tuple[int, int]]]:
+    chars: list[str] = []
+    offsets: list[tuple[int, int]] = []
+    index = 0
+    while index < len(text):
+        marker = REPORTER_PAGE_MARKER_RE.match(text, index)
+        if marker is not None:
+            index = marker.end()
+            continue
+        raw_char = text[index]
+        if raw_char in {'"', "\u201c", "\u201d"}:
+            index += 1
+            continue
+        normalized = unicodedata.normalize("NFKC", raw_char)
+        normalized = normalized.replace("\u2018", "'").replace("\u2019", "'")
+        if normalized.isspace():
+            if chars and chars[-1] != " ":
+                chars.append(" ")
+                offsets.append((index, index + 1))
+            elif chars and offsets:
+                offsets[-1] = (offsets[-1][0], index + 1)
+            index += 1
+            continue
+        for char in normalized.casefold():
+            chars.append(char)
+            offsets.append((index, index + 1))
+        index += 1
+    while chars and chars[-1] == " ":
+        chars.pop()
+        offsets.pop()
+    return "".join(chars), offsets
+
+
+def _canonical_match_has_word_boundaries(text: str, start: int, end: int) -> bool:
+    if start > 0 and text[start].isalnum() and text[start - 1].isalnum():
+        return False
+    if end < len(text) and text[end - 1].isalnum() and text[end].isalnum():
+        return False
+    return True
+
+
+def _source_authority_key(source: CaseTextSource) -> tuple[str, str] | None:
+    if source.authority_type == "case" and source.cluster_id:
+        return ("case", source.cluster_id)
+    if source.authority_type == "statute" and source.statute_id:
+        return ("statute", source.statute_id)
+    if source.authority_type == "rule" and source.rule_id:
+        return ("rule", source.rule_id)
+    return None
+
+
+def _case_citation_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", normalize_citation(value).casefold())
+
+
+def _authority_citation_hints(
+    text: str,
+    sources: list[CaseTextSource],
+) -> list[_CitationHint]:
+    case_keys: dict[str, set[tuple[str, str]]] = {}
+    statute_keys: dict[str, set[tuple[str, str]]] = {}
+    rule_keys: dict[str, set[tuple[str, str]]] = {}
+    for source in sources:
+        authority_key = _source_authority_key(source)
+        if authority_key is None:
+            continue
+        if source.authority_type == "case":
+            key = _case_citation_key(source.citation)
+            if key:
+                case_keys.setdefault(key, set()).add(authority_key)
+        elif source.authority_type == "statute":
+            statute_keys.setdefault(source.statute_id, set()).add(authority_key)
+        elif source.authority_type == "rule":
+            rule_keys.setdefault(source.rule_id, set()).add(authority_key)
+
+    hints: list[_CitationHint] = []
+    for link in cited_case_links(text):
+        keys = case_keys.get(_case_citation_key(link.lookup_text), set())
+        if len(keys) == 1:
+            hints.append(_CitationHint(link.start_offset, link.end_offset, next(iter(keys))))
+    for link in cited_statute_links(text):
+        citation = parse_statute_citation(link.lookup_text)
+        keys = statute_keys.get(citation.statute_id, set()) if citation is not None else set()
+        if len(keys) == 1:
+            hints.append(_CitationHint(link.start_offset, link.end_offset, next(iter(keys))))
+    for link in cited_rule_links(text):
+        citation = parse_rule_citation(link.lookup_text)
+        keys = rule_keys.get(citation.rule_id, set()) if citation is not None else set()
+        if len(keys) == 1:
+            hints.append(_CitationHint(link.start_offset, link.end_offset, next(iter(keys))))
+    return sorted(hints, key=lambda hint: hint.start_offset)
+
+
+def _preferred_quote_authority_key(
+    text: str,
+    quote_start: int,
+    quote_end: int,
+    hints: list[_CitationHint],
+) -> tuple[str, str] | None:
+    paragraph_start = text.rfind("\n\n", 0, quote_start) + 2
+    paragraph_end = text.find("\n\n", quote_end)
+    if paragraph_end < 0:
+        paragraph_end = len(text)
+    same_paragraph = [
+        hint
+        for hint in hints
+        if hint.start_offset >= paragraph_start and hint.end_offset <= paragraph_end
+    ]
+    following = [hint for hint in same_paragraph if hint.start_offset >= quote_end]
+    if following:
+        return min(following, key=lambda hint: hint.start_offset).authority_key
+    preceding = [hint for hint in same_paragraph if hint.end_offset <= quote_start]
+    if preceding:
+        return max(preceding, key=lambda hint: hint.end_offset).authority_key
     return None
 
 
@@ -378,8 +585,9 @@ def export_selected_authorities(
         "agent_answers": manifest_agent_answers,
         "instructions": (
             "Use only these selected Open Law Lens Research Cache materials. "
-            "Quote exact continuous phrases from the text files. Saved agent answers "
-            "are prior analysis for context, not legal authority."
+            "Quote exact continuous phrases only from selected cases, statutes, and rules. "
+            "Saved agent answers are prior analysis for context, not legal authority or a "
+            "source of direct quotations."
         ),
     }
     manifest_path = case_dir / "manifest.json"

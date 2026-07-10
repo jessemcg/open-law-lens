@@ -19,6 +19,7 @@ from open_law_lens.app import (
     build_case_reader_payload,
     strip_agent_legal_authority_backticks,
 )
+from open_law_lens.agent import CaseTextSource, QuoteTarget
 from open_law_lens.cache import JsonCache
 from open_law_lens.citation_links import CitedCaseLink
 from open_law_lens.client import CourtListenerClient, FormattedCitation
@@ -30,6 +31,190 @@ from open_law_lens.web_import import ExtractedWebpage
 
 
 class AppReaderPayloadTests(unittest.TestCase):
+    def test_case_agent_render_links_only_resolved_quotes_and_keeps_delimiters(self) -> None:
+        class DummyTagTable:
+            def remove(self, _tag: object) -> None:
+                pass
+
+        class DummyBuffer:
+            def __init__(self) -> None:
+                self.text = ""
+                self.tags: list[tuple[object, int, int]] = []
+                self.table = DummyTagTable()
+
+            def get_tag_table(self) -> DummyTagTable:
+                return self.table
+
+            def set_text(self, text: str) -> None:
+                self.text = text
+
+            def create_tag(self, _name: object, **_props: object) -> object:
+                return object()
+
+            def get_iter_at_offset(self, offset: int) -> int:
+                return offset
+
+            def apply_tag(self, tag: object, start: int, end: int) -> None:
+                self.tags.append((tag, start, end))
+
+        class DummyWindow:
+            def __init__(self) -> None:
+                self._agent_answer_buffer = DummyBuffer()
+                self._agent_link_tags: list[object] = []
+                self._agent_link_lookup: dict[object, QuoteTarget] = {}
+                self._agent_citation_link_lookup: dict[object, object] = {}
+                self._agent_external_url_link_lookup: dict[object, object] = {}
+                self._agent_search_link_lookup: dict[object, object] = {}
+                self._agent_search_next_link_tags: set[object] = set()
+                self._agent_search_highlight_tags: list[object] = []
+                self._agent_mode = "case"
+                self._case_agent_text_sources = [
+                    CaseTextSource(
+                        "42",
+                        "10",
+                        "Example",
+                        "1 Cal.App.5th 2",
+                        "/tmp/source",
+                        "The court found active risk today.",
+                    )
+                ]
+
+            def _render_markdown_text(
+                self,
+                text: str,
+            ) -> tuple[str, list[tuple[int, int, str]], list[int]]:
+                return text, [], list(range(len(text) + 1))
+
+            def _map_offset(self, offset: int, offset_map: list[int]) -> int:
+                return OpenLawLensWindow._map_offset(  # type: ignore[arg-type]
+                    self,
+                    offset,
+                    offset_map,
+                )
+
+            def _apply_agent_markdown_spans(self, *_args: object) -> None:
+                pass
+
+            def _apply_agent_citation_italics(self, *_args: object) -> None:
+                pass
+
+            def _resolve_agent_quote_color(self) -> object:
+                return object()
+
+            def _apply_agent_external_url_links(self, *_args: object) -> None:
+                pass
+
+        window = DummyWindow()
+        answer = 'The court found “active risk today.” It rejected “unmatched phrase here.”'
+
+        OpenLawLensWindow._render_agent_answer(window, answer)  # type: ignore[arg-type]
+
+        self.assertEqual(window._agent_answer_buffer.text, answer)
+        self.assertEqual(len(window._agent_link_lookup), 1)
+        self.assertEqual(len(window._agent_answer_buffer.tags), 1)
+
+    def test_quote_target_finds_sorted_sidebar_row_by_stable_identity(self) -> None:
+        class DummyRow:
+            def __init__(self, authority_type: str, authority_id: str) -> None:
+                self._open_law_lens_authority_type = authority_type
+                self._open_law_lens_authority_id = authority_id
+
+        class DummyList:
+            def __init__(self, rows: list[DummyRow]) -> None:
+                self.rows = rows
+
+            def get_row_at_index(self, index: int) -> DummyRow | None:
+                return self.rows[index] if index < len(self.rows) else None
+
+        expected = DummyRow("case", "cluster-42")
+        window = SimpleNamespace(
+            case_list=DummyList(
+                [
+                    DummyRow("statute", "WIC:300"),
+                    expected,
+                    DummyRow("rule", "CRC:8.11"),
+                ]
+            )
+        )
+
+        row = OpenLawLensWindow._research_cache_authority_row(  # type: ignore[arg-type]
+            window,
+            "case",
+            "cluster-42",
+        )
+
+        self.assertIs(row, expected)
+
+    def test_open_quote_target_selects_rule_row_and_defers_highlight(self) -> None:
+        class DummyRow:
+            _open_law_lens_authority_type = "rule"
+            _open_law_lens_authority_id = "CRC:8.11"
+
+        class DummyList:
+            def __init__(self) -> None:
+                self.row = DummyRow()
+                self.selected: object | None = None
+
+            def get_row_at_index(self, index: int) -> DummyRow | None:
+                return self.row if index == 0 else None
+
+            def get_selected_row(self) -> object | None:
+                return self.selected
+
+            def select_row(self, row: object) -> None:
+                self.selected = row
+
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.case_list = DummyList()
+                self._reader_text = ""
+                self._pending_quote_target = None
+                self._selected_rule = None
+                self._selected_statute = None
+                self._selected_cluster = None
+                self.status = ""
+
+            _quote_target_authority_id = staticmethod(OpenLawLensWindow._quote_target_authority_id)
+
+            def _research_cache_authority_row(
+                self,
+                authority_type: str,
+                authority_id: str,
+            ) -> object:
+                return OpenLawLensWindow._research_cache_authority_row(  # type: ignore[arg-type]
+                    self,
+                    authority_type,
+                    authority_id,
+                )
+
+            def _quote_target_is_selected(self, target: QuoteTarget) -> bool:
+                return OpenLawLensWindow._quote_target_is_selected(  # type: ignore[arg-type]
+                    self,
+                    target,
+                )
+
+            def _set_status(self, message: str) -> None:
+                self.status = message
+
+        target = QuoteTarget(
+            phrase="governs computing time",
+            cluster_id="",
+            opinion_id="",
+            title="Rule 8.11",
+            citation="Cal. Rules of Court, rule 8.11",
+            text_path="/tmp/rule",
+            offset=10,
+            end_offset=32,
+            authority_type="rule",
+            rule_id="CRC:8.11",
+        )
+        window = DummyWindow()
+
+        OpenLawLensWindow._open_quote_target(window, target)  # type: ignore[arg-type]
+
+        self.assertIs(window._pending_quote_target, target)
+        self.assertIs(window.case_list.selected, window.case_list.row)
+
     def test_link_release_requires_same_target_without_drag(self) -> None:
         class DummyView:
             def __init__(self, dragged: bool) -> None:

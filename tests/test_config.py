@@ -260,6 +260,36 @@ Selected authority count: {case_count}"""
         self.assertEqual(config.case_agent_prompt_template, DEFAULT_CASE_AGENT_PROMPT_TEMPLATE)
         self.assertIn("current-case factual context", config.case_agent_prompt_template)
 
+    def test_original_cases_agent_prompt_migrates_to_authority_quote_guidance(self) -> None:
+        prior_default = """You are the Open Law Lens Marked Research Cache Cases Agent.
+
+Answer only from the selected cached cases exported into this workspace. Do not use CourtListener MCP, web browsing, or unselected Open Law Lens cases. If the exported cases do not answer the question, say that plainly.
+
+In your answer, include short direct quotes from the record to highlight legally significant statements. Each quote should be only two to five words long, enclosed in quotation marks, and must include continuous phrases exactly as they appear in the source text.
+
+Question:
+{question}
+
+Selected case manifest:
+{case_manifest}
+
+Selected case text directory:
+{case_dir}
+
+Selected case count: {case_count}"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text(
+                json.dumps({"case_agent_prompt_template": prior_default}),
+                encoding="utf-8",
+            )
+
+            config = load_config(path)
+
+        self.assertEqual(config.case_agent_prompt_template, DEFAULT_CASE_AGENT_PROMPT_TEMPLATE)
+        self.assertIn("selected cases, statutes, and rules", config.case_agent_prompt_template)
+        self.assertIn("same paragraph", config.case_agent_prompt_template)
+
     def test_legacy_appeal_prompt_migrates_to_new_default(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "config.json"

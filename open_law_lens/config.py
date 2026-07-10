@@ -70,6 +70,8 @@ LEGACY_CASE_AGENT_PROMPT_SHA256ES = (
     "90bd5ba6984eb91b4b7c72c3a33617896ed2b6279ce3bdd5592f07f15fc73f9b",
     "58395b3951138bf6ebdc383a5f52366ca7f7c81e0fcd6b1b75b6095c36a5f3d8",
     "21f8d2e20a04a17942009d9bb12957263ed4461f58cf46d7d62e40aa8da7d604",
+    "5c11542ccdffaef4e88e0fa568bc1dc9b35204cb3d4cf2d1983db829217596a9",
+    "b34a8f1ffb8ae9e574c5caf791739d2745ed330013c420b85fb30c384d15123f",
 )
 LEGACY_APPEAL_ISSUE_AGENT_PROMPT_SHA256ES = (
     "b57fb338bb6148eaa4937be89de687884b1f42f2ef2d966d9d4a21cb3816d338",
@@ -103,7 +105,7 @@ Answer only from the selected Research Cache materials and current-case factual 
 
 When the question calls for comparison, compare the current case with the selected authorities using legally significant facts, procedural posture, legal issues, and governing standards. Cite current-case facts with the record citations already present in the fact pattern. Do not cite local paths, filenames, or line numbers.
 
-In your answer, include short direct quotes from the record to highlight legally significant statements. Each quote should be only two to five words long, enclosed in quotation marks, and must include continuous phrases exactly as they appear in the source text.
+In your answer, include short direct quotes from the selected cases, statutes, and rules to highlight legally significant statements. Do not use the current-case fact pattern or saved agent answers as the source of these quotes. Each quote should be only two to five words long, enclosed in quotation marks, and must include continuous phrases exactly as they appear in the source text. Put a full identifying case, statute, or rule citation in the same paragraph as each quote; one citation may support multiple quotes from the same authority.
 
 Question:
 {question}
