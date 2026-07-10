@@ -4,14 +4,40 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from open_law_lens.authority_resolver import (
+    _extract_case_from_scholar,
     detect_authority_candidates,
     extract_case,
     extract_case_by_cluster_id,
     first_authority_candidate,
 )
+from open_law_lens.scholar_search import ScholarSearchResult
+from open_law_lens.web_import import ExtractedWebpage
 
 
 class AuthorityResolverTests(unittest.TestCase):
+    def test_scholar_fallback_rejects_mismatched_official_citation_before_writes(self) -> None:
+        client = MagicMock()
+        with (
+            patch(
+                "open_law_lens.authority_resolver.search_first_case_direct",
+                return_value=ScholarSearchResult("https://example.test/wrong", "People v. Carter"),
+            ),
+            patch(
+                "open_law_lens.authority_resolver.extract_webpage_text",
+                return_value=ExtractedWebpage(
+                    "https://example.test/wrong",
+                    "People v. Carter",
+                    "97 Cal.App.5th 960 (2023)\nPeople v. Carter.",
+                ),
+            ),
+        ):
+            result = _extract_case_from_scholar("117 Cal.App.5th 379", client=client)
+
+        self.assertFalse(result.ok)
+        self.assertIn("did not match", result.error)
+        client.library.upsert_cluster.assert_not_called()
+        client.cache.upsert_cluster.assert_not_called()
+
     def test_detects_first_authority_by_text_position(self) -> None:
         candidates = detect_authority_candidates(
             "See 13 Cal.4th 952 and Welf. & Inst. Code, § 300."

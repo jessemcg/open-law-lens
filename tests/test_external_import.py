@@ -15,6 +15,7 @@ from open_law_lens.external_import import (
     imported_year_from_text,
     normalize_official_citation,
     repair_reporter_only_cluster_name,
+    validated_import_official_citation,
 )
 from open_law_lens.library import CaseLibrary, opinion_display_text
 from open_law_lens.quality import official_pagination_quality
@@ -84,6 +85,22 @@ OPINION
 
 
 class ExternalImportTests(unittest.TestCase):
+    def test_validated_import_citation_accepts_exact_match(self) -> None:
+        self.assertEqual(
+            validated_import_official_citation(
+                "In re K.G. (2025) 117 Cal.App.5th 379",
+                "117 Cal.App.5th 379 (2025)\nIn re K.G.",
+            ),
+            "117 Cal.App.5th 379",
+        )
+
+    def test_validated_import_citation_rejects_wrong_scholar_case(self) -> None:
+        with self.assertRaisesRegex(ValueError, "did not match"):
+            validated_import_official_citation(
+                "117 Cal.App.5th 379",
+                "97 Cal.App.5th 960 (2023)\nPeople v. Carter",
+            )
+
     def test_repair_reporter_only_cluster_name_uses_linked_case_name(self) -> None:
         cluster = {
             "id": "external-ob",

@@ -1055,6 +1055,7 @@ class CourtListenerClient:
         refresh: bool = False,
         force: bool = False,
         max_age_days: int = DEFAULT_SLIP_OPINION_MAX_AGE_DAYS,
+        populate_research_cache: bool = True,
     ) -> SlipOpinionResult:
         result = fetch_slip_opinion_for_cluster(
             cluster,
@@ -1064,7 +1065,11 @@ class CourtListenerClient:
             max_age_days=max_age_days,
             timeout=self.timeout,
         )
-        self.cache.write_slip_opinion_payload(result.case_number, slip_result_to_payload(result))
+        if populate_research_cache:
+            self.cache.write_slip_opinion_payload(
+                result.case_number,
+                slip_result_to_payload(result),
+            )
         return result
 
     def first_opinion_text(self, cluster: dict[str, Any], *, refresh: bool = False) -> str:
@@ -1117,7 +1122,13 @@ class CourtListenerClient:
                 clusters.append(cluster)
         return dedupe_case_clusters(clusters)
 
-    def lookup_statute(self, citation: str, *, refresh: bool = False) -> dict[str, Any]:
+    def lookup_statute(
+        self,
+        citation: str,
+        *,
+        refresh: bool = False,
+        populate_research_cache: bool = True,
+    ) -> dict[str, Any]:
         del refresh
         parsed = parse_statute_citation(citation)
         if parsed is None:
@@ -1126,7 +1137,8 @@ class CourtListenerClient:
             statute = fetch_leginfo_statute(parsed, timeout=self.timeout)
         except LegInfoError:
             raise
-        self.cache.upsert_statute(statute)
+        if populate_research_cache:
+            self.cache.upsert_statute(statute)
         self.last_lookup_source = "LegInfo"
         return statute
 
@@ -1141,7 +1153,13 @@ class CourtListenerClient:
                 statutes.append(statute)
         return statutes
 
-    def lookup_rule(self, citation: str, *, refresh: bool = False) -> dict[str, Any]:
+    def lookup_rule(
+        self,
+        citation: str,
+        *,
+        refresh: bool = False,
+        populate_research_cache: bool = True,
+    ) -> dict[str, Any]:
         del refresh
         parsed = parse_rule_citation(citation)
         if parsed is None:
@@ -1150,7 +1168,8 @@ class CourtListenerClient:
             rule = fetch_california_rule(parsed, timeout=self.timeout)
         except CaliforniaRulesError:
             raise
-        self.cache.upsert_rule(rule)
+        if populate_research_cache:
+            self.cache.upsert_rule(rule)
         self.last_lookup_source = "California Courts"
         return rule
 

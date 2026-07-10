@@ -10,6 +10,7 @@ from open_law_lens.app import (
     SCHOLAR_FALLBACK_NOTICE_ONLY,
     SCHOLAR_FALLBACK_TRANSIENT_NOTICE,
     Gtk,
+    LinkPressState,
     OpenLawLensApp,
     OpenLawLensWindow,
     appeal_issue_menu_label,
@@ -28,6 +29,48 @@ from open_law_lens.web_import import ExtractedWebpage
 
 
 class AppReaderPayloadTests(unittest.TestCase):
+    def test_link_release_requires_same_target_without_drag(self) -> None:
+        class DummyView:
+            def __init__(self, dragged: bool) -> None:
+                self.dragged = dragged
+
+            def drag_check_threshold(self, *_args: int) -> bool:
+                return self.dragged
+
+        target = object()
+        press = LinkPressState(target, 10.0, 12.0)
+
+        self.assertTrue(
+            OpenLawLensWindow._link_release_is_click(
+                DummyView(False),  # type: ignore[arg-type]
+                press,
+                target,
+                1,
+                11.0,
+                13.0,
+            )
+        )
+        self.assertFalse(
+            OpenLawLensWindow._link_release_is_click(
+                DummyView(True),  # type: ignore[arg-type]
+                press,
+                target,
+                1,
+                30.0,
+                40.0,
+            )
+        )
+        self.assertFalse(
+            OpenLawLensWindow._link_release_is_click(
+                DummyView(False),  # type: ignore[arg-type]
+                press,
+                object(),
+                1,
+                11.0,
+                13.0,
+            )
+        )
+
     def test_strip_agent_legal_authority_backticks_preserves_commands(self) -> None:
         text = (
             "See `DKN Holdings LLC v. Faerber (2015) 61 Cal.4th 813`, "
@@ -639,12 +682,14 @@ class AppReaderPayloadTests(unittest.TestCase):
                 *,
                 fallback_mode: str,
                 auto_import: bool,
+                cache_generation: int | None = None,
             ) -> None:
                 self.auto_find_calls.append(
                     {
                         "query": query,
                         "fallback_mode": fallback_mode,
                         "auto_import": auto_import,
+                        "cache_generation": cache_generation,
                     }
                 )
 
@@ -673,6 +718,7 @@ class AppReaderPayloadTests(unittest.TestCase):
                     "query": "10 Cal.App.5th 25",
                     "fallback_mode": SCHOLAR_FALLBACK_TRANSIENT_NOTICE,
                     "auto_import": True,
+                    "cache_generation": None,
                 }
             ],
         )
@@ -729,7 +775,12 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(payload.pagination_mode, "slip")
         self.assertEqual(payload.slip_case_number, "A173218")
         self.assertIn("Slip text.", payload.text)
-        window.client.fetch_cluster_slip_opinion.assert_called_once()
+        window.client.fetch_cluster_slip_opinion.assert_called_once_with(
+            cluster,
+            force=False,
+            max_age_days=180,
+            populate_research_cache=False,
+        )
 
     def test_case_worker_uses_cached_slip_payload_before_courtlistener_blob(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -840,7 +891,12 @@ class AppReaderPayloadTests(unittest.TestCase):
             OpenLawLensWindow._case_worker(window, cluster, 7, 8, True)  # type: ignore[arg-type]
 
         window.client.fetch_cluster_opinions.assert_not_called()
-        window.client.fetch_cluster_slip_opinion.assert_called_once()
+        window.client.fetch_cluster_slip_opinion.assert_called_once_with(
+            cluster,
+            force=True,
+            max_age_days=180,
+            populate_research_cache=False,
+        )
         self.assertEqual(window.payloads[0].pagination_mode, "slip")
         self.assertEqual(
             window.busy[:2],
@@ -916,6 +972,62 @@ class AppReaderPayloadTests(unittest.TestCase):
 
         expected = "In re L.G. (Mar. 6, 2026, A173218) ___ Cal.App.5th ___"
         self.assertEqual(window.headers, [(expected, expected)])
+
+    def test_reader_opinion_hydration_keeps_loaded_research_set_clean(self) -> None:
+        class DummyBuffer:
+            def set_text(self, _text: str) -> None:
+                pass
+
+        class DummyClient:
+            def __init__(self, cache: JsonCache) -> None:
+                self.cache = cache
+
+        class DummyWindow:
+            def __init__(self, cache: JsonCache) -> None:
+                self.client = DummyClient(cache)
+                self.reader_buffer = DummyBuffer()
+                self._research_cache_generation = 1
+
+            def _case_load_is_current(self, _generation: int, _cluster_id: str) -> bool:
+                return True
+
+            def _close_reader_find(self, *, clear_entry: bool) -> None:
+                pass
+
+            def _clear_reader_citation_links(self) -> None:
+                pass
+
+            def _update_reader_selection_pinpoint_button(self) -> None:
+                pass
+
+            def _insert_reader_payload_text_chunk(self, *_args: object) -> bool:
+                return False
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir) / "cache")
+            cluster = {"id": 42, "case_name": "Example v. State"}
+            cache.upsert_cluster(cluster)
+            cache.set_active_research_set(7, "Example")
+            payload = build_case_reader_payload(
+                cluster,
+                [DisplayText("Opinion text.", "plain_text", [])],
+                generation=1,
+                cache_generation=1,
+                opinion_ids=("10",),
+            )
+            window = DummyWindow(cache)
+
+            with patch("open_law_lens.app.GLib.idle_add", return_value=None):
+                OpenLawLensWindow._start_reader_payload_render(  # type: ignore[arg-type]
+                    window,
+                    payload,
+                )
+
+            metadata = cache.active_research_set_metadata()
+            self.assertIsNotNone(metadata)
+            assert metadata is not None
+            self.assertFalse(metadata["dirty"])
+            self.assertEqual(cache.list_case_entries()[0]["opinion_ids"], ["10"])
 
     def test_case_number_direct_slip_lookup_uses_pdf_metadata_for_header_citation(self) -> None:
         class EmptySearchPage:
@@ -1823,8 +1935,13 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertIn("reader-md-bold", tag_names)
 
     def test_apply_statute_lookup_opens_fetched_result_without_sidebar_relookup(self) -> None:
+        class DummyCache:
+            def upsert_statute(self, statute: dict[str, object]) -> str:
+                return str(statute["statute_id"])
+
         class DummyClient:
             last_lookup_source = "LegInfo"
+            cache = DummyCache()
 
             def cached_clusters(self) -> list[dict[str, object]]:
                 return []
@@ -1871,8 +1988,13 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(window.statuses[-1], "LegInfo: opened Welf. & Inst. Code, § 300.")
 
     def test_apply_rule_lookup_opens_fetched_result_without_sidebar_relookup(self) -> None:
+        class DummyCache:
+            def upsert_rule(self, rule: dict[str, object]) -> str:
+                return str(rule["rule_id"])
+
         class DummyClient:
             last_lookup_source = "California Courts"
+            cache = DummyCache()
 
             def cached_clusters(self) -> list[dict[str, object]]:
                 return []
@@ -1917,6 +2039,57 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(window.opened, [rule])
         self.assertEqual(window.refreshes, 1)
         self.assertEqual(window.statuses[-1], "California Courts: opened Cal. Rules of Court, rule 8.11.")
+
+    def test_stale_statute_and_rule_results_do_not_populate_new_research_set(self) -> None:
+        class DummyClient:
+            def __init__(self, cache: JsonCache) -> None:
+                self.cache = cache
+
+        class DummyWindow:
+            def __init__(self, cache: JsonCache) -> None:
+                self.client = DummyClient(cache)
+                self._research_cache_generation = 2
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir) / "cache")
+            window = DummyWindow(cache)
+
+            statute_result = OpenLawLensWindow._apply_statute_lookup_result(  # type: ignore[arg-type]
+                window,
+                {"statute_id": "WIC:300", "citation": "Welf. & Inst. Code, § 300"},
+                1,
+            )
+            rule_result = OpenLawLensWindow._apply_rule_lookup_result(  # type: ignore[arg-type]
+                window,
+                {"rule_id": "CRC:8.11", "citation": "Cal. Rules of Court, rule 8.11"},
+                1,
+            )
+
+            self.assertFalse(statute_result)
+            self.assertFalse(rule_result)
+            self.assertEqual(cache.list_statute_entries(), [])
+            self.assertEqual(cache.list_rule_entries(), [])
+
+    def test_stale_scholar_import_does_not_write_after_set_change(self) -> None:
+        class DummyWindow:
+            _research_cache_generation = 2
+
+            def _save_imported_official_text(self, **_kwargs: object) -> bool:
+                raise AssertionError("Stale Scholar result must not be saved.")
+
+        result = OpenLawLensWindow._finish_scholar_auto_import(  # type: ignore[arg-type]
+            DummyWindow(),
+            "117 Cal.App.5th 379",
+            ExtractedWebpage(
+                "https://example.test/kg",
+                "In re K.G.",
+                "117 Cal.App.5th 379 (2025)\nIn re K.G.",
+            ),
+            SCHOLAR_FALLBACK_NOTICE_ONLY,
+            1,
+        )
+
+        self.assertFalse(result)
 
     def test_cached_statute_row_opens_cache_without_background_refresh(self) -> None:
         class DummyWindow:
@@ -2180,8 +2353,9 @@ class AppReaderPayloadTests(unittest.TestCase):
                 *,
                 fallback_mode: str,
                 auto_import: bool,
+                cache_generation: int | None = None,
             ) -> None:
-                del fallback_mode, auto_import
+                del fallback_mode, auto_import, cache_generation
                 self.scholar_queries.append(query)
 
         window = DummyWindow()

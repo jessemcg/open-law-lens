@@ -28,6 +28,7 @@ from .external_import import (
     clean_imported_opinion_text,
     imported_case_name_from_text,
     normalize_official_citation,
+    validated_import_official_citation,
 )
 from .library import opinion_display_text
 from .quality import official_pagination_quality
@@ -304,7 +305,7 @@ def _extract_case_from_scholar(query: str, *, client: CourtListenerClient) -> Au
         webpage = extract_webpage_text(found.url)
         imported_text = clean_imported_opinion_text(webpage.text) or webpage.text
         source = "\n".join(part for part in (found.title, webpage.title, imported_text) if part)
-        official_citation = normalize_official_citation(source) or normalize_official_citation(query)
+        official_citation = validated_import_official_citation(query, source)
         cluster = build_external_import_cluster(
             case_name=imported_case_name_from_text(source),
             official_citation=official_citation,

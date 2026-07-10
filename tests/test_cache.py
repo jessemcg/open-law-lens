@@ -554,6 +554,23 @@ class CacheTests(unittest.TestCase):
 
             self.assertEqual(cache.read_slip_opinion_payload("A173218"), payload)
 
+    def test_slip_opinion_hydration_can_leave_active_set_clean(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cache.set_active_research_set(7, "Example_research")
+            payload = {
+                "case_number": "A173218",
+                "display": {"text": "Slip text.", "page_markers": []},
+            }
+
+            cache.write_slip_opinion_payload("A173218", payload, mark_dirty=False)
+
+            metadata = cache.active_research_set_metadata()
+            self.assertIsNotNone(metadata)
+            assert metadata is not None
+            self.assertFalse(metadata["dirty"])
+            self.assertEqual(cache.read_slip_opinion_payload("A173218"), payload)
+
     def test_detach_for_clear_moves_resources_and_preserves_unrelated_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

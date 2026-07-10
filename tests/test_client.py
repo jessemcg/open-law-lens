@@ -142,6 +142,29 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(client.last_lookup_source, "California Courts")
             self.assertIsNotNone(client.cache.read_cached_rule("CRC:8.11"))
 
+    def test_lookup_rule_can_fetch_without_populating_research_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            client = CourtListenerClient(
+                cache=JsonCache(temp_path / "cache"),
+                library=CaseLibrary(temp_path / "library.sqlite3"),
+            )
+            fetched_rule = {
+                "rule_id": "CRC:8.11",
+                "rule_number": "8.11",
+                "citation": "Cal. Rules of Court, rule 8.11",
+                "text": "Rule 8.11. Scope.",
+            }
+
+            with patch("open_law_lens.client.fetch_california_rule", return_value=fetched_rule):
+                result = client.lookup_rule(
+                    "rule 8.11",
+                    populate_research_cache=False,
+                )
+
+            self.assertEqual(result, fetched_rule)
+            self.assertIsNone(client.cache.read_cached_rule("CRC:8.11"))
+
     def test_lookup_statute_fetches_leginfo_and_caches_result(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -170,6 +193,30 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(statute["statute_id"], "WIC:300")
             self.assertEqual(client.last_lookup_source, "LegInfo")
             self.assertIsNotNone(client.cache.read_cached_statute("WIC:300"))
+
+    def test_lookup_statute_can_fetch_without_populating_research_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            client = CourtListenerClient(
+                cache=JsonCache(temp_path / "cache"),
+                library=CaseLibrary(temp_path / "library.sqlite3"),
+            )
+            fetched_statute = {
+                "statute_id": "WIC:300",
+                "law_code": "WIC",
+                "section": "300",
+                "citation": "Welf. & Inst. Code, § 300",
+                "text": "300. A child comes within jurisdiction.",
+            }
+
+            with patch("open_law_lens.client.fetch_leginfo_statute", return_value=fetched_statute):
+                result = client.lookup_statute(
+                    "section 300",
+                    populate_research_cache=False,
+                )
+
+            self.assertEqual(result, fetched_statute)
+            self.assertIsNone(client.cache.read_cached_statute("WIC:300"))
 
     def test_request_json_retries_courtlistener_rate_limit(self) -> None:
         class FakeResponse:
@@ -1497,6 +1544,31 @@ class ClientTests(unittest.TestCase):
             assert cached_slip is not None
             self.assertEqual(cached_slip["display"]["text"], "Slip text")
             self.assertEqual(library.saved_clusters(), [])
+
+    def test_fetch_cluster_slip_opinion_can_skip_research_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            cache = JsonCache(temp_path / "cache")
+            client = CourtListenerClient(
+                cache=cache,
+                library=CaseLibrary(temp_path / "library.sqlite3"),
+            )
+            expected = SlipOpinionResult(
+                case_number="A173218",
+                source_url="https://example.test/A173218.PDF",
+                pdf_path=temp_path / "cache" / "slip_opinions" / "A173218.PDF",
+                display=DisplayText("Slip text", "slip_pdf", []),
+                date_filed="2026-06-01",
+            )
+
+            with patch("open_law_lens.client.fetch_slip_opinion_for_cluster", return_value=expected):
+                result = client.fetch_cluster_slip_opinion(
+                    {"id": 42},
+                    populate_research_cache=False,
+                )
+
+            self.assertIs(result, expected)
+            self.assertIsNone(cache.read_slip_opinion_payload("A173218"))
 
     def test_reader_opinions_prefers_combined_opinion(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

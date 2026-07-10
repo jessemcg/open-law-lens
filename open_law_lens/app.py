@@ -111,6 +111,7 @@ from .external_import import (
     imported_case_name_from_text,
     normalize_official_citation,
     repair_reporter_only_cluster_name,
+    validated_import_official_citation,
 )
 from .fact_patterns import FactPatternError, FactPatternExport, export_fact_pattern
 from .launch_request import pop_open_authority_request
@@ -335,6 +336,13 @@ class LibrarySuggestionOpenResult:
 @dataclass(frozen=True)
 class AgentExternalUrlLink:
     url: str
+
+
+@dataclass(frozen=True)
+class LinkPressState:
+    target: object
+    x: float
+    y: float
 
 
 def strip_agent_legal_authority_backticks(text: str) -> str:
@@ -1282,6 +1290,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_search_highlight_tags: list[Gtk.TextTag] = []
         self._agent_motion_controller: Gtk.EventControllerMotion | None = None
         self._agent_click_gesture: Gtk.GestureClick | None = None
+        self._agent_link_press: LinkPressState | None = None
         self._reader_text = ""
         self._reader_page_markers: list[PageMarker] = []
         self._reader_highlight_tag: Gtk.TextTag | None = None
@@ -1302,6 +1311,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_rule_link_lookup: dict[Gtk.TextTag, RuleLink] = {}
         self._reader_citation_motion_controller: Gtk.EventControllerMotion | None = None
         self._reader_citation_click_gesture: Gtk.GestureClick | None = None
+        self._reader_link_press: LinkPressState | None = None
         self._reader_header_citation: FormattedCitation | None = None
         self._reader_display_cluster: dict[str, Any] | None = None
         self._active_research_set_id: int | None = None
@@ -1327,6 +1337,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._external_lookup_auto_query = ""
         self._external_lookup_auto_fallback_mode = SCHOLAR_FALLBACK_MANUAL_WINDOW
         self._external_lookup_auto_import = False
+        self._external_lookup_auto_cache_generation: int | None = None
         self._pending_auto_scholar_cluster_id = ""
         self._pending_auto_scholar_query = ""
         self._pending_quote_target: QuoteTarget | None = None
@@ -2616,7 +2627,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if not self._case_load_is_current(payload.generation, payload.cluster_id):
             return False
         if payload.cache_generation == self._research_cache_generation and payload.opinion_ids:
-            self.client.cache.update_case_opinions(payload.cluster, list(payload.opinion_ids))
+            self.client.cache.update_case_opinions(
+                payload.cluster,
+                list(payload.opinion_ids),
+                mark_dirty=False,
+            )
         self._close_reader_find(clear_entry=True)
         self._reader_text = ""
         self._reader_page_markers = list(payload.page_markers)
@@ -2722,6 +2737,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             payload.quality_reason,
             payload.opinion_source,
             payload.pagination_mode,
+            payload.cache_generation,
         )
         return False
 
@@ -3377,9 +3393,30 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if self._reader_citation_click_gesture is None:
             click = Gtk.GestureClick.new()
             click.set_button(Gdk.BUTTON_PRIMARY)
+            click.connect("pressed", self._on_reader_citation_pressed)
             click.connect("released", self._on_reader_citation_click)
+            click.connect("stopped", self._clear_reader_link_press)
+            click.connect("cancel", self._clear_reader_link_press)
             self.reader_view.add_controller(click)
             self._reader_citation_click_gesture = click
+
+    @staticmethod
+    def _link_release_is_click(
+        view: Gtk.Widget,
+        press: LinkPressState | None,
+        target: object | None,
+        n_press: int,
+        x: float,
+        y: float,
+    ) -> bool:
+        if press is None or n_press != 1 or target is not press.target:
+            return False
+        return not view.drag_check_threshold(
+            int(press.x),
+            int(press.y),
+            int(x),
+            int(y),
+        )
 
     def _reader_citation_link_at_coords(self, x: float, y: float) -> CitedCaseLink | StatuteLink | RuleLink | None:
         bx, by = self.reader_view.window_to_buffer_coords(Gtk.TextWindowType.WIDGET, int(x), int(y))
@@ -3418,18 +3455,38 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _on_reader_citation_leave(self, _controller: Gtk.EventControllerMotion) -> None:
         self.reader_view.set_cursor_from_name(None)
 
-    def _on_reader_citation_click(
+    def _on_reader_citation_pressed(
         self,
         gesture: Gtk.GestureClick,
-        _n_press: int,
+        n_press: int,
         x: float,
         y: float,
     ) -> None:
         button = gesture.get_current_button()
+        target = self._reader_citation_link_at_coords(x, y)
+        self._reader_link_press = (
+            LinkPressState(target, x, y)
+            if n_press == 1 and target is not None and (not button or button == Gdk.BUTTON_PRIMARY)
+            else None
+        )
+
+    def _clear_reader_link_press(self, *_args: object) -> None:
+        self._reader_link_press = None
+
+    def _on_reader_citation_click(
+        self,
+        gesture: Gtk.GestureClick,
+        n_press: int,
+        x: float,
+        y: float,
+    ) -> None:
+        button = gesture.get_current_button()
+        press = self._reader_link_press
+        self._reader_link_press = None
         if button and button != Gdk.BUTTON_PRIMARY:
             return
         link = self._reader_citation_link_at_coords(x, y)
-        if link is None:
+        if not self._link_release_is_click(self.reader_view, press, link, n_press, x, y):
             return
         if isinstance(link, StatuteLink):
             self._open_statute_link(link)
@@ -4365,13 +4422,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         set_id: int,
         popover: Gtk.Popover | None = None,
     ) -> None:
+        self._research_cache_generation += 1
         try:
             research_set = self.client.library.load_research_set_into_cache(set_id, self.client.cache)
         except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
             self._set_status(f"Unable to open Research Set: {exc}")
             return
         self._set_active_research_set(research_set)
-        self._research_cache_generation += 1
         self._set_sidebar_authorities(
             self.client.cached_clusters(),
             self.client.cached_statutes(),
@@ -4507,6 +4564,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._external_lookup_source_entry = None
         self._external_lookup_auto_finding = False
         self._external_lookup_auto_query = ""
+        self._external_lookup_auto_cache_generation = None
         return False
 
     def _close_external_lookup_window(self) -> None:
@@ -4543,6 +4601,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         *,
         fallback_mode: str,
         auto_import: bool,
+        cache_generation: int | None = None,
     ) -> None:
         clean_query = re.sub(r"\s+", " ", query).strip()
         if self._external_lookup_auto_finding:
@@ -4555,6 +4614,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._external_lookup_auto_query = query
         self._external_lookup_auto_fallback_mode = fallback_mode
         self._external_lookup_auto_import = auto_import
+        self._external_lookup_auto_cache_generation = (
+            self._research_cache_generation
+            if cache_generation is None
+            else cache_generation
+        )
         if self._external_lookup_auto_find_button is not None:
             self._external_lookup_auto_find_button.set_sensitive(False)
             self._external_lookup_auto_find_button.set_label("Searching Scholar...")
@@ -4587,12 +4651,20 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._external_lookup_auto_query = ""
         auto_import = self._external_lookup_auto_import
         fallback_mode = self._external_lookup_auto_fallback_mode
+        cache_generation = self._external_lookup_auto_cache_generation
         self._external_lookup_auto_import = False
         self._external_lookup_auto_fallback_mode = SCHOLAR_FALLBACK_MANUAL_WINDOW
+        self._external_lookup_auto_cache_generation = None
         button = self._external_lookup_auto_find_button
         if button is not None:
             button.set_sensitive(True)
             button.set_label("Auto-Find on Scholar")
+
+        if (
+            cache_generation is not None
+            and cache_generation != self._research_cache_generation
+        ):
+            return False
 
         if result is not None:
             if self._external_lookup_source_entry is not None:
@@ -4601,7 +4673,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             action = "importing" if auto_import else "fetching"
             self._set_status(f"Found case on Scholar{title}. {action.capitalize()} text...")
             if auto_import:
-                self._start_scholar_auto_import(query, result, fallback_mode)
+                self._start_scholar_auto_import(
+                    query,
+                    result,
+                    fallback_mode,
+                    cache_generation,
+                )
                 return False
             self._set_reader_busy(False)
             # Reuse the existing Import + Fetch flow with the discovered URL.
@@ -4627,11 +4704,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         query: str,
         result: ScholarSearchResult,
         fallback_mode: str,
+        cache_generation: int | None,
     ) -> None:
         self._set_reader_busy(True, "Importing Scholar text...")
         thread = threading.Thread(
             target=self._scholar_auto_import_worker,
-            args=(query, result, fallback_mode),
+            args=(query, result, fallback_mode, cache_generation),
             daemon=True,
         )
         thread.start()
@@ -4641,6 +4719,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         query: str,
         result: ScholarSearchResult,
         fallback_mode: str,
+        cache_generation: int | None,
     ) -> None:
         try:
             webpage = extract_webpage_text(result.url)
@@ -4651,9 +4730,16 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 result.url,
                 str(exc),
                 fallback_mode,
+                cache_generation,
             )
             return
-        GLib.idle_add(self._finish_scholar_auto_import, query, webpage, fallback_mode)
+        GLib.idle_add(
+            self._finish_scholar_auto_import,
+            query,
+            webpage,
+            fallback_mode,
+            cache_generation,
+        )
 
     def _finish_scholar_auto_import_error(
         self,
@@ -4661,7 +4747,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         source_url: str,
         message: str,
         fallback_mode: str,
+        cache_generation: int | None = None,
     ) -> bool:
+        if cache_generation is not None and cache_generation != self._research_cache_generation:
+            return False
         self._set_reader_busy(False)
         self._handle_scholar_auto_failure(
             query,
@@ -4676,12 +4765,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         query: str,
         webpage: ExtractedWebpage,
         fallback_mode: str,
+        cache_generation: int | None = None,
     ) -> bool:
+        if cache_generation is not None and cache_generation != self._research_cache_generation:
+            return False
         imported_text = clean_imported_opinion_text(webpage.text) or webpage.text
         case_source = "\n".join(part for part in (webpage.title, imported_text) if part)
-        source_official_citation = normalize_official_citation(case_source)
-        query_official_citation = normalize_official_citation(query)
-        if query_official_citation and source_official_citation != query_official_citation:
+        try:
+            official_citation = validated_import_official_citation(query, case_source)
+        except ValueError:
             self._handle_scholar_auto_failure(
                 query,
                 "Scholar first result did not match the requested official citation.",
@@ -4689,11 +4781,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 initial_source_url=webpage.url,
             )
             return False
-        official_citation = (
-            source_official_citation
-            or query_official_citation
-            or self._default_import_official_citation()
-        )
+        official_citation = official_citation or self._default_import_official_citation()
         case_name = imported_case_name_from_text(case_source) or self._default_import_case_name()
         if self._save_imported_official_text(
             case_name=case_name,
@@ -5242,9 +5330,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_reader_header("")
         self._set_reader_busy(True, "Looking up statute...")
         self.reader_buffer.set_text("Loading...")
+        cache_generation = self._research_cache_generation
         self._start_background_worker(
-            lambda: self.client.lookup_statute(citation),
-            on_success=self._apply_statute_lookup_result,
+            lambda: self.client.lookup_statute(citation, populate_research_cache=False),
+            on_success=lambda statute: self._apply_statute_lookup_result(
+                statute,
+                cache_generation,
+            ),
             on_error=lambda exc: self._apply_error(str(exc)),
             handled_exceptions=(LegInfoError, ValueError),
         )
@@ -5259,15 +5351,16 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._hide_case_completion()
         self._open_statute_in_reader(statute)
 
-    def _statute_lookup_worker(self, citation: str) -> None:
-        try:
-            statute = self.client.lookup_statute(citation)
-            GLib.idle_add(self._apply_statute_lookup_result, statute)
-        except (LegInfoError, ValueError) as exc:
-            GLib.idle_add(self._apply_error, str(exc))
-
-    def _apply_statute_lookup_result(self, statute: dict[str, Any]) -> bool:
-        statute_id = str(statute.get("statute_id") or "").strip()
+    def _apply_statute_lookup_result(
+        self,
+        statute: dict[str, Any],
+        cache_generation: int | None = None,
+    ) -> bool:
+        if cache_generation is not None and cache_generation != self._research_cache_generation:
+            return False
+        statute_id = self.client.cache.upsert_statute(statute) or str(
+            statute.get("statute_id") or ""
+        ).strip()
         self._set_sidebar_authorities(
             self.client.cached_clusters(),
             self.client.cached_statutes(),
@@ -5290,9 +5383,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_reader_header("")
         self._set_reader_busy(True, "Looking up rule...")
         self.reader_buffer.set_text("Loading...")
+        cache_generation = self._research_cache_generation
         self._start_background_worker(
-            lambda: self.client.lookup_rule(citation),
-            on_success=self._apply_rule_lookup_result,
+            lambda: self.client.lookup_rule(citation, populate_research_cache=False),
+            on_success=lambda rule: self._apply_rule_lookup_result(rule, cache_generation),
             on_error=lambda exc: self._apply_error(str(exc)),
             handled_exceptions=(CaliforniaRulesError, ValueError),
         )
@@ -5331,15 +5425,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_reader_text(text, apply_markdown=True)
         self._set_status(f"Loaded saved answer: {title}")
 
-    def _rule_lookup_worker(self, citation: str) -> None:
-        try:
-            rule = self.client.lookup_rule(citation)
-            GLib.idle_add(self._apply_rule_lookup_result, rule)
-        except (CaliforniaRulesError, ValueError) as exc:
-            GLib.idle_add(self._apply_error, str(exc))
-
-    def _apply_rule_lookup_result(self, rule: dict[str, Any]) -> bool:
-        rule_id = str(rule.get("rule_id") or "").strip()
+    def _apply_rule_lookup_result(
+        self,
+        rule: dict[str, Any],
+        cache_generation: int | None = None,
+    ) -> bool:
+        if cache_generation is not None and cache_generation != self._research_cache_generation:
+            return False
+        rule_id = self.client.cache.upsert_rule(rule) or str(rule.get("rule_id") or "").strip()
         self._set_sidebar_authorities(
             self.client.cached_clusters(),
             self.client.cached_statutes(),
@@ -5458,7 +5551,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 self._scholar_lookup_query(citation, link),
             )
         except CourtListenerError:
-            return ("fallback", self._scholar_lookup_query(citation, link))
+            return (
+                "fallback",
+                self._scholar_lookup_query(citation, link),
+                cache_generation,
+            )
         except ValueError as exc:
             return ("error", str(exc))
 
@@ -5467,7 +5564,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if kind == "success":
             return self._apply_lookup_result(*payload[1:])
         if kind == "fallback":
-            return self._fallback_lookup_to_scholar(str(payload[1] if len(payload) > 1 else ""))
+            return self._fallback_lookup_to_scholar(
+                str(payload[1] if len(payload) > 1 else ""),
+                int(payload[2]) if len(payload) > 2 else None,
+            )
         if kind == "error":
             return self._apply_error(str(payload[1] if len(payload) > 1 else "Lookup failed."))
         return False
@@ -5485,7 +5585,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             repaired.append(repair_reporter_only_cluster_name(cluster, link.case_name) or cluster)
         return repaired
 
-    def _fallback_lookup_to_scholar(self, citation: str) -> bool:
+    def _fallback_lookup_to_scholar(
+        self,
+        citation: str,
+        cache_generation: int | None = None,
+    ) -> bool:
+        if cache_generation is not None and cache_generation != self._research_cache_generation:
+            return False
         self._set_reader_header("")
         self.reader_buffer.set_text("")
         self._set_reader_busy(True, "Searching Google Scholar...")
@@ -5494,6 +5600,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             citation,
             fallback_mode=SCHOLAR_FALLBACK_NOTICE_ONLY,
             auto_import=True,
+            cache_generation=cache_generation,
         )
         return False
 
@@ -6094,6 +6201,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                     query,
                     fallback_mode=SCHOLAR_FALLBACK_NOTICE_ONLY,
                     auto_import=True,
+                    cache_generation=cache_generation,
                 )
             else:
                 self._set_reader_busy(False)
@@ -6255,7 +6363,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         payload = slip_result_to_payload(slip)
         if not payload.get("date_filed") and cluster.get("date_filed"):
             payload["date_filed"] = str(cluster.get("date_filed") or "")
-        self.client.cache.write_slip_opinion_payload(case_number, payload)
+        self.client.cache.write_slip_opinion_payload(
+            case_number,
+            payload,
+            mark_dirty=False,
+        )
 
     def _case_worker(
         self,
@@ -6292,6 +6404,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                         cluster,
                         force=True,
                         max_age_days=DEFAULT_SLIP_OPINION_MAX_AGE_DAYS,
+                        populate_research_cache=False,
                     )
                 except (SlipOpinionError, ValueError, OSError):
                     slip = None
@@ -6334,6 +6447,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                         cluster,
                         force=force_slip_opinion,
                         max_age_days=DEFAULT_SLIP_OPINION_MAX_AGE_DAYS,
+                        populate_research_cache=False,
                     )
                 except (SlipOpinionError, ValueError, OSError):
                     slip = None
@@ -6380,6 +6494,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         reason: str,
         source: str,
         pagination_mode: str = READER_PAGINATION_NONE,
+        cache_generation: int | None = None,
     ) -> bool:
         self._reader_has_official_pagination = eligible
         self._reader_pagination_mode = pagination_mode
@@ -6399,6 +6514,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 pending_query,
                 fallback_mode=SCHOLAR_FALLBACK_TRANSIENT_NOTICE,
                 auto_import=True,
+                cache_generation=cache_generation,
             )
         elif reason:
             self._set_status(f"Transient view only: {reason} Use Find Official Text or Import Official Text.")
@@ -7459,7 +7575,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if self._agent_click_gesture is None:
             click = Gtk.GestureClick.new()
             click.set_button(Gdk.BUTTON_PRIMARY)
+            click.connect("pressed", self._on_agent_answer_pressed)
             click.connect("released", self._on_agent_answer_click)
+            click.connect("stopped", self._clear_agent_link_press)
+            click.connect("cancel", self._clear_agent_link_press)
             view.add_controller(click)
             self._agent_click_gesture = click
 
@@ -7524,17 +7643,40 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if self._agent_answer_view is not None:
             self._agent_answer_view.set_cursor_from_name(None)
 
-    def _on_agent_answer_click(
+    def _on_agent_answer_pressed(
         self,
         gesture: Gtk.GestureClick,
-        _n_press: int,
+        n_press: int,
         x: float,
         y: float,
     ) -> None:
         button = gesture.get_current_button()
+        target = self._agent_link_at_coords(x, y)
+        self._agent_link_press = (
+            LinkPressState(target, x, y)
+            if n_press == 1 and target is not None and (not button or button == Gdk.BUTTON_PRIMARY)
+            else None
+        )
+
+    def _clear_agent_link_press(self, *_args: object) -> None:
+        self._agent_link_press = None
+
+    def _on_agent_answer_click(
+        self,
+        gesture: Gtk.GestureClick,
+        n_press: int,
+        x: float,
+        y: float,
+    ) -> None:
+        button = gesture.get_current_button()
+        press = self._agent_link_press
+        self._agent_link_press = None
         if button and button != Gdk.BUTTON_PRIMARY:
             return
         target = self._agent_link_at_coords(x, y)
+        view = self._agent_answer_view
+        if view is None or not self._link_release_is_click(view, press, target, n_press, x, y):
+            return
         if target == SEARCH_NEXT_PAGE_TARGET:
             return
         if isinstance(target, CourtListenerSearchResult):

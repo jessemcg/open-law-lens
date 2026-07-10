@@ -21,6 +21,15 @@ def normalize_official_citation(text: str) -> str:
     return f"{volume} {reporter} {page}"
 
 
+def validated_import_official_citation(requested_text: str, source_text: str) -> str:
+    """Return the source citation only when it matches an explicit request."""
+    requested = normalize_official_citation(requested_text)
+    source = normalize_official_citation(source_text)
+    if requested and source != requested:
+        raise ValueError("Scholar result did not match the requested official citation.")
+    return source or requested
+
+
 def official_citation_parts(text: str) -> tuple[str, str, str] | None:
     return official_citation_parts_from_text(text)
 

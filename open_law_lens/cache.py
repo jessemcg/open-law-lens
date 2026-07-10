@@ -304,15 +304,27 @@ class JsonCache:
         data = self.read_json(self.slip_opinion_payload_path(case_number))
         return data if isinstance(data, dict) else None
 
-    def write_slip_opinion_payload(self, case_number: str, payload: dict[str, Any]) -> None:
+    def write_slip_opinion_payload(
+        self,
+        case_number: str,
+        payload: dict[str, Any],
+        *,
+        mark_dirty: bool = True,
+    ) -> None:
         if not str(case_number or "").strip():
             return
         with self._lock:
             self.write_json(self.slip_opinion_payload_path(case_number), payload)
-            self.mark_active_research_set_dirty()
+            if mark_dirty:
+                self.mark_active_research_set_dirty()
 
     @_synchronized
-    def upsert_cluster(self, cluster: dict[str, Any]) -> str:
+    def upsert_cluster(
+        self,
+        cluster: dict[str, Any],
+        *,
+        mark_dirty: bool = True,
+    ) -> str:
         cluster = canonicalize_cluster_citations(cluster)
         cluster_id = cluster_id_from_cluster(cluster)
         if not cluster_id:
@@ -337,12 +349,19 @@ class JsonCache:
             "last_accessed": now,
         }
         self.write_case_index(index)
-        self.mark_active_research_set_dirty()
+        if mark_dirty:
+            self.mark_active_research_set_dirty()
         return cluster_id
 
     @_synchronized
-    def update_case_opinions(self, cluster: dict[str, Any], opinion_ids: list[str]) -> None:
-        cluster_id = self.upsert_cluster(cluster)
+    def update_case_opinions(
+        self,
+        cluster: dict[str, Any],
+        opinion_ids: list[str],
+        *,
+        mark_dirty: bool = True,
+    ) -> None:
+        cluster_id = self.upsert_cluster(cluster, mark_dirty=mark_dirty)
         if not cluster_id:
             return
         index = self.read_case_index()
@@ -360,7 +379,8 @@ class JsonCache:
         entry["last_accessed"] = _utc_now()
         index[cluster_id] = entry
         self.write_case_index(index)
-        self.mark_active_research_set_dirty()
+        if mark_dirty:
+            self.mark_active_research_set_dirty()
 
     def list_case_entries(self) -> list[dict[str, Any]]:
         entries = list(self.read_case_index().values())
