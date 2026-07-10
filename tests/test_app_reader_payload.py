@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from importlib import resources
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from open_law_lens.app import (
@@ -180,6 +181,202 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(env["OPEN_LAW_LENS_CODEX_SANDBOX"], "danger-full-access")
         self.assertEqual(env["OPEN_LAW_LENS_CODEX_APPROVAL"], "never")
         self.assertNotIn("OPEN_LAW_LENS_LIBRARY_DB", env)
+
+    def test_case_agent_prompt_adds_current_case_context_to_custom_prompt(self) -> None:
+        class DummyWindow:
+            def _format_agent_prompt(
+                self,
+                template: str,
+                fallback: str,
+                values: dict[str, object],
+            ) -> str:
+                return OpenLawLensWindow._format_agent_prompt(  # type: ignore[arg-type]
+                    self,
+                    template,
+                    fallback,
+                    values,
+                )
+
+        authority_export = SimpleNamespace(
+            manifest_path=Path("/tmp/workspace/selected_authorities/manifest.json"),
+            case_dir=Path("/tmp/workspace/selected_authorities"),
+            case_count=2,
+            authority_count=2,
+        )
+        fact_export = FactPatternExport(
+            source_path=Path("/case/SOCF/B123456_SOCF_JM.odt"),
+            source_copy_path=Path("/tmp/workspace/current_case/B123456_SOCF_JM.odt"),
+            text_path=Path("/tmp/workspace/current_case/B123456_SOCF_JM_extracted.txt"),
+            text="Current-case facts. (CT 12.)",
+        )
+
+        with patch(
+            "open_law_lens.app.load_config",
+            return_value=AppConfig(case_agent_prompt_template="Custom cache prompt: {question}"),
+        ):
+            prompt = OpenLawLensWindow._compose_case_agent_prompt(  # type: ignore[arg-type]
+                DummyWindow(),
+                "Which case is most analogous?",
+                authority_export,
+                fact_export,
+            )
+
+        self.assertIn("Custom cache prompt: Which case is most analogous?", prompt)
+        self.assertIn("within the authorized scope", prompt)
+        self.assertIn("Treat it as facts, not legal authority", prompt)
+        self.assertIn(str(fact_export.text_path), prompt)
+        self.assertIn(str(fact_export.source_copy_path), prompt)
+        self.assertIn("do not cite local paths", prompt)
+
+    def test_case_agent_prompt_reports_missing_current_case_context(self) -> None:
+        class DummyWindow:
+            def _format_agent_prompt(
+                self,
+                template: str,
+                fallback: str,
+                values: dict[str, object],
+            ) -> str:
+                return OpenLawLensWindow._format_agent_prompt(  # type: ignore[arg-type]
+                    self,
+                    template,
+                    fallback,
+                    values,
+                )
+
+        authority_export = SimpleNamespace(
+            manifest_path=Path("/tmp/manifest.json"),
+            case_dir=Path("/tmp/selected_authorities"),
+            case_count=1,
+            authority_count=1,
+        )
+
+        with patch("open_law_lens.app.load_config", return_value=AppConfig()):
+            prompt = OpenLawLensWindow._compose_case_agent_prompt(  # type: ignore[arg-type]
+                DummyWindow(),
+                "Compare the cases.",
+                authority_export,
+                None,
+                "SOCF ODT not found",
+            )
+
+        self.assertIn("Unavailable: SOCF ODT not found", prompt)
+        self.assertIn("Do not guess about the current case", prompt)
+
+    def test_case_agent_finish_uses_context_aware_status(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self._case_agent_text_sources: list[object] = []
+                self._agent_mode = "general"
+                self.launches: list[dict[str, object]] = []
+
+            def _launch_agent_with_prompt(
+                self,
+                prompt_path: Path,
+                workspace: Path,
+                mode: str,
+                reasoning_effort: str = "",
+                success_status: str = "",
+            ) -> None:
+                self.launches.append(
+                    {
+                        "prompt_path": prompt_path,
+                        "workspace": workspace,
+                        "mode": mode,
+                        "reasoning_effort": reasoning_effort,
+                        "success_status": success_status,
+                    }
+                )
+
+        window = DummyWindow()
+        with patch("open_law_lens.app.load_config", return_value=AppConfig()):
+            result = OpenLawLensWindow._finish_case_agent_prepare(  # type: ignore[arg-type]
+                window,
+                Path("/tmp/prompt.txt"),
+                Path("/tmp/workspace"),
+                [],
+                "Current case file not found",
+            )
+
+        self.assertFalse(result)
+        self.assertEqual(window._agent_mode, "case")
+        self.assertEqual(
+            window.launches[0]["success_status"],
+            "Started Cache Agent without current-case context; see the session for details.",
+        )
+
+    def test_case_agent_worker_exports_current_case_socf(self) -> None:
+        fact_export = FactPatternExport(
+            source_path=Path("/case/SOCF/B123456_SOCF_JM.odt"),
+            source_copy_path=Path("/tmp/workspace/current_case/B123456_SOCF_JM.odt"),
+            text_path=Path("/tmp/workspace/current_case/B123456_SOCF_JM_extracted.txt"),
+            text="Current-case facts.",
+        )
+        authority_export = SimpleNamespace(
+            authority_count=1,
+            case_count=1,
+            text_sources=["source"],
+        )
+
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.client = object()
+                self.compose_args: tuple[object, ...] = ()
+
+            def _create_agent_workspace(self) -> Path:
+                return Path("/tmp/workspace")
+
+            def _compose_case_agent_prompt(self, *args: object) -> str:
+                self.compose_args = args
+                return "prompt"
+
+            def _write_prompt_file(self, prompt: str) -> Path:
+                self.assert_prompt = prompt
+                return Path("/tmp/prompt.txt")
+
+            def _finish_case_agent_prepare(self, *args: object) -> bool:
+                return False
+
+            def _set_status(self, status: str) -> None:
+                self.status = status
+
+        window = DummyWindow()
+        with (
+            patch(
+                "open_law_lens.app.export_selected_authorities",
+                return_value=authority_export,
+            ),
+            patch(
+                "open_law_lens.app.current_case_socf_odt",
+                return_value=fact_export.source_path,
+            ),
+            patch(
+                "open_law_lens.app.export_fact_pattern",
+                return_value=fact_export,
+            ) as export_current_case,
+            patch("open_law_lens.app.GLib.idle_add") as idle_add,
+        ):
+            OpenLawLensWindow._prepare_case_agent_worker(  # type: ignore[arg-type]
+                window,
+                "Compare the cases.",
+                [{}],
+                [],
+                [],
+                [],
+            )
+
+        export_current_case.assert_called_once_with(
+            fact_export.source_path,
+            Path("/tmp/workspace/current_case_fact_pattern"),
+        )
+        self.assertEqual(window.compose_args[2], fact_export)
+        self.assertEqual(window.compose_args[3], "")
+        idle_add.assert_called_once_with(
+            window._finish_case_agent_prepare,
+            Path("/tmp/prompt.txt"),
+            Path("/tmp/workspace"),
+            ["source"],
+            "",
+        )
 
     def test_agent_launch_env_passes_xhigh_reasoning_when_enabled(self) -> None:
         class DummyCache:

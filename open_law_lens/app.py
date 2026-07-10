@@ -6547,9 +6547,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             {"question": question},
         )
 
-    def _compose_case_agent_prompt(self, question: str, export: Any) -> str:
+    def _compose_case_agent_prompt(
+        self,
+        question: str,
+        export: Any,
+        current_case_export: FactPatternExport | None = None,
+        current_case_warning: str = "",
+    ) -> str:
         config = load_config()
-        return self._format_agent_prompt(
+        prompt = self._format_agent_prompt(
             config.case_agent_prompt_template,
             DEFAULT_CASE_AGENT_PROMPT_TEMPLATE,
             {
@@ -6559,6 +6565,26 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 "case_count": getattr(export, "authority_count", export.case_count),
             },
         )
+        if current_case_export is not None:
+            context = (
+                "Current-case factual context for this run:\n"
+                "This material is within the authorized scope in addition to the selected "
+                "Research Cache materials. Treat it as facts, not legal authority. Read the "
+                "extracted text before comparing the authorities to the current case. Cite "
+                "facts with record citations already present in the text; do not cite local "
+                "paths, filenames, or line numbers.\n"
+                f"Extracted fact-pattern text: {current_case_export.text_path}\n"
+                f"Copied source file: {current_case_export.source_copy_path}"
+            )
+        else:
+            reason = current_case_warning.strip() or "Current case SOCF was not available."
+            context = (
+                "Current-case factual context for this run:\n"
+                f"Unavailable: {reason}\n"
+                "Do not guess about the current case. If the question requires a comparison "
+                "with the current case, explain that the factual context is unavailable."
+            )
+        return f"{prompt}\n\n{context}"
 
     def _compose_appeal_issue_agent_prompt(
         self,
@@ -6776,12 +6802,29 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             if export.authority_count == 0:
                 GLib.idle_add(self._set_status, "No text found for marked authorities.")
                 return
-            prompt_path = self._write_prompt_file(self._compose_case_agent_prompt(question, export))
+            current_case_export: FactPatternExport | None = None
+            current_case_warning = ""
+            try:
+                current_case_export = export_fact_pattern(
+                    current_case_socf_odt(),
+                    workspace / "current_case_fact_pattern",
+                )
+            except (CurrentCaseError, FactPatternError, OSError) as exc:
+                current_case_warning = str(exc)
+            prompt_path = self._write_prompt_file(
+                self._compose_case_agent_prompt(
+                    question,
+                    export,
+                    current_case_export,
+                    current_case_warning,
+                )
+            )
             GLib.idle_add(
                 self._finish_case_agent_prepare,
                 prompt_path,
                 workspace,
                 export.text_sources,
+                current_case_warning,
             )
         except (CourtListenerError, LegInfoError, CaliforniaRulesError, OSError, ValueError) as exc:
             GLib.idle_add(self._set_status, f"Unable to prepare marked authorities: {exc}")
@@ -6791,6 +6834,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         prompt_path: Path,
         workspace: Path,
         text_sources: list[CaseTextSource],
+        current_case_warning: str = "",
     ) -> bool:
         self._case_agent_text_sources = text_sources
         self._agent_mode = AGENT_MODE_CASE
@@ -6800,6 +6844,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             workspace,
             AGENT_MODE_CASE,
             xhigh_reasoning_effort(config.case_agent_xhigh_reasoning),
+            success_status=(
+                "Started Cache Agent without current-case context; see the session for details."
+                if current_case_warning
+                else "Started Cache Agent with current-case SOCF."
+            ),
         )
         return False
 
@@ -6809,6 +6858,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         workspace: Path,
         mode: str,
         reasoning_effort: str = "",
+        success_status: str = "Started embedded Codex agent.",
     ) -> None:
         self._stop_agent()
         self._stop_agent_answer_polling()
@@ -6857,7 +6907,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._agent_last_answer_text = ""
             self._set_agent_subview(AGENT_SUBVIEW_SESSION)
             self._start_agent_answer_polling()
-            self._set_status("Started embedded Codex agent.")
+            self._set_status(success_status)
             self._agent_terminal.grab_focus()
         except Exception as exc:
             self._set_status(f"Unable to start embedded agent: {exc}")

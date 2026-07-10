@@ -231,6 +231,35 @@ Question:
             self.assertIn("saved agent answers as prior analysis", config.case_agent_prompt_template)
             self.assertIn("not as legal authority", config.case_agent_prompt_template)
 
+    def test_prior_default_case_prompt_migrates_to_current_case_guidance(self) -> None:
+        prior_default = """You are the Open Law Lens Marked Research Cache Agent.
+
+Answer only from the selected Research Cache materials exported into this workspace. Do not use web browsing or unselected Open Law Lens materials. Treat cases, statutes, and rules as legal authority. Treat saved agent answers as prior analysis for context only, not as legal authority. If the exported materials do not answer the question, say that plainly.
+
+In your answer, include short direct quotes from the record to highlight legally significant statements. Each quote should be only two to five words long, enclosed in quotation marks, and must include continuous phrases exactly as they appear in the source text.
+
+Question:
+{question}
+
+Selected authority manifest:
+{case_manifest}
+
+Selected authority text directory:
+{case_dir}
+
+Selected authority count: {case_count}"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text(
+                json.dumps({"case_agent_prompt_template": prior_default}),
+                encoding="utf-8",
+            )
+
+            config = load_config(path)
+
+        self.assertEqual(config.case_agent_prompt_template, DEFAULT_CASE_AGENT_PROMPT_TEMPLATE)
+        self.assertIn("current-case factual context", config.case_agent_prompt_template)
+
     def test_legacy_appeal_prompt_migrates_to_new_default(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "config.json"

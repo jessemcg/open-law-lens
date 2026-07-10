@@ -69,6 +69,7 @@ LEGACY_GENERAL_AGENT_PROMPT_SHA256ES = (
 LEGACY_CASE_AGENT_PROMPT_SHA256ES = (
     "90bd5ba6984eb91b4b7c72c3a33617896ed2b6279ce3bdd5592f07f15fc73f9b",
     "58395b3951138bf6ebdc383a5f52366ca7f7c81e0fcd6b1b75b6095c36a5f3d8",
+    "21f8d2e20a04a17942009d9bb12957263ed4461f58cf46d7d62e40aa8da7d604",
 )
 LEGACY_APPEAL_ISSUE_AGENT_PROMPT_SHA256ES = (
     "b57fb338bb6148eaa4937be89de687884b1f42f2ef2d966d9d4a21cb3816d338",
@@ -98,7 +99,9 @@ Question:
 
 DEFAULT_CASE_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens Marked Research Cache Agent.
 
-Answer only from the selected Research Cache materials exported into this workspace. Do not use web browsing or unselected Open Law Lens materials. Treat cases, statutes, and rules as legal authority. Treat saved agent answers as prior analysis for context only, not as legal authority. If the exported materials do not answer the question, say that plainly.
+Answer only from the selected Research Cache materials and current-case factual context exported into this workspace. Do not use web browsing or unselected Open Law Lens materials. Treat cases, statutes, and rules as legal authority. Treat the current-case fact pattern as factual context only, not as legal authority. Treat saved agent answers as prior analysis for context only, not as legal authority. If the exported materials do not answer the question, say that plainly.
+
+When the question calls for comparison, compare the current case with the selected authorities using legally significant facts, procedural posture, legal issues, and governing standards. Cite current-case facts with the record citations already present in the fact pattern. Do not cite local paths, filenames, or line numbers.
 
 In your answer, include short direct quotes from the record to highlight legally significant statements. Each quote should be only two to five words long, enclosed in quotation marks, and must include continuous phrases exactly as they appear in the source text.
 

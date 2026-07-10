@@ -172,8 +172,11 @@ There are three main agent workflows:
 - Law: ask a California legal research question. The default prompt directs
   Codex to search and extract authority through Open Law Lens CLI commands.
 - Cache: ask about authorities marked in the current Research Cache. The app
-  exports the selected authorities into a temporary workspace and asks Codex to
-  answer only from those materials.
+  exports the selected authorities and the currently selected case's SOCF into
+  a temporary workspace. Codex treats the marked authorities as legal authority
+  and the SOCF as factual context, allowing comparisons such as which marked
+  case is most analogous to the current case. If the SOCF is unavailable, the
+  app warns the user and continues with the marked materials only.
 - Appeal Issue Assessment: assess a proposed appellate claim against an ODT or
   PDF fact pattern. The app extracts the fact pattern into a temporary
   workspace, launches Codex in Appeal mode, and directs it to research
