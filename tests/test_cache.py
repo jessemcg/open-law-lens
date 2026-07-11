@@ -536,9 +536,11 @@ class CacheTests(unittest.TestCase):
 
             cache.set_reader_position("case", "42", 1234)
             cache.set_reader_position("rule", "CRC:8.11", 88)
+            cache.set_reader_position("socf", "B123456_Test", 321)
 
             self.assertEqual(cache.reader_position("case", "42"), 1234)
             self.assertEqual(cache.reader_position("rule", "CRC:8.11"), 88)
+            self.assertEqual(cache.reader_position("socf", "B123456_Test"), 321)
             metadata = cache.active_research_set_metadata()
             self.assertIsNotNone(metadata)
             assert metadata is not None
@@ -547,6 +549,33 @@ class CacheTests(unittest.TestCase):
                 list(Path(temp_dir).glob(".reader_positions.json.*.tmp")),
                 [],
             )
+
+    def test_current_case_context_selection_is_per_case_and_survives_cache_clear(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+
+            self.assertFalse(cache.is_current_case_context_selected("B123456_First"))
+            cache.set_current_case_context_selected("B123456_First", True)
+            cache.set_current_case_context_selected("B234567_Second", True)
+
+            self.assertTrue(cache.is_current_case_context_selected("B123456_First"))
+            self.assertTrue(cache.is_current_case_context_selected("B234567_Second"))
+            cache.set_current_case_context_selected("B123456_First", False)
+            self.assertFalse(cache.is_current_case_context_selected("B123456_First"))
+            self.assertTrue(cache.is_current_case_context_selected("B234567_Second"))
+
+            cache.upsert_cluster({"id": 42, "case_name": "Example v. State"})
+            trash_path = cache.detach_for_clear()
+
+            self.assertIsNotNone(trash_path)
+            self.assertTrue(cache.is_current_case_context_selected("B234567_Second"))
+
+    def test_current_case_context_selection_ignores_malformed_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cache.current_case_context_path().write_text("not json", encoding="utf-8")
+
+            self.assertEqual(cache.selected_current_case_contexts(), set())
 
     def test_reader_positions_ignore_invalid_entries(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -72,6 +72,7 @@ LEGACY_CASE_AGENT_PROMPT_SHA256ES = (
     "21f8d2e20a04a17942009d9bb12957263ed4461f58cf46d7d62e40aa8da7d604",
     "5c11542ccdffaef4e88e0fa568bc1dc9b35204cb3d4cf2d1983db829217596a9",
     "b34a8f1ffb8ae9e574c5caf791739d2745ed330013c420b85fb30c384d15123f",
+    "11b5512669311cff769c62e9e91f7ed27ef2793042a2807584375d36fba64cdb",
 )
 LEGACY_APPEAL_ISSUE_AGENT_PROMPT_SHA256ES = (
     "b57fb338bb6148eaa4937be89de687884b1f42f2ef2d966d9d4a21cb3816d338",
@@ -101,9 +102,9 @@ Question:
 
 DEFAULT_CASE_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens Marked Research Cache Agent.
 
-Answer only from the selected Research Cache materials and current-case factual context exported into this workspace. Do not use web browsing or unselected Open Law Lens materials. Treat cases, statutes, and rules as legal authority. Treat the current-case fact pattern as factual context only, not as legal authority. Treat saved agent answers as prior analysis for context only, not as legal authority. If the exported materials do not answer the question, say that plainly.
+Answer only from the selected Research Cache materials and any current-case factual context explicitly selected for this run. Do not use web browsing or unselected Open Law Lens materials. Treat cases, statutes, and rules as legal authority. Treat any current-case fact pattern as factual context only, not as legal authority. Treat saved agent answers as prior analysis for context only, not as legal authority. If the exported materials do not answer the question, say that plainly.
 
-When the question calls for comparison, compare the current case with the selected authorities using legally significant facts, procedural posture, legal issues, and governing standards. Cite current-case facts with the record citations already present in the fact pattern. Do not cite local paths, filenames, or line numbers.
+When current-case factual context is provided and the question calls for comparison, compare the current case with the selected authorities using legally significant facts, procedural posture, legal issues, and governing standards. Cite current-case facts with the record citations already present in the fact pattern. Do not cite local paths, filenames, or line numbers.
 
 In your answer, include short direct quotes from the selected cases, statutes, and rules to highlight legally significant statements. Do not use the current-case fact pattern or saved agent answers as the source of these quotes. Each quote should be only two to five words long, enclosed in quotation marks, and must include continuous phrases exactly as they appear in the source text. Put a full identifying case, statute, or rule citation in the same paragraph as each quote; one citation may support multiple quotes from the same authority.
 

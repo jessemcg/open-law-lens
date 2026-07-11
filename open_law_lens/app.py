@@ -103,7 +103,13 @@ from .config import (
     READER_FONT_FAMILY_OPTIONS,
     save_config,
 )
-from .current_case import CurrentCaseError, current_case_socf_odt
+from .current_case import (
+    CurrentCaseError,
+    CurrentCaseSocf,
+    current_case_socf,
+    current_case_socf_odt,
+    read_current_case,
+)
 from .dbus_commands import DBUS_COMMAND_GROUPS, DbusCommand, dbus_action_command
 from .external_import import (
     build_external_import_cluster,
@@ -113,7 +119,12 @@ from .external_import import (
     repair_reporter_only_cluster_name,
     validated_import_official_citation,
 )
-from .fact_patterns import FactPatternError, FactPatternExport, export_fact_pattern
+from .fact_patterns import (
+    FactPatternError,
+    FactPatternExport,
+    export_fact_pattern,
+    extract_fact_pattern_text,
+)
 from .launch_request import pop_open_authority_request
 from .library import (
     DisplayText,
@@ -1250,6 +1261,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_answers: list[dict[str, Any]] = []
         self._selected_agent_answer: dict[str, Any] | None = None
         self._suppress_sidebar_selection_lookup = False
+        self._current_case_name = ""
+        self._current_case_socf_path: Path | None = None
+        self._current_case_error = ""
+        self._current_case_context_list: Gtk.ListBox | None = None
+        self._current_case_context_row: Gtk.ListBoxRow | None = None
+        self._current_case_context_title: Gtk.Label | None = None
+        self._current_case_context_subtitle: Gtk.Label | None = None
+        self._current_case_context_check: Gtk.CheckButton | None = None
+        self._current_case_context_toggle_guard = False
         self._agent_terminal: Any | None = None
         self._agent_pid: int | None = None
         self._agent_session_widget: Gtk.Widget | None = None
@@ -1373,6 +1393,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._install_actions()
         self.set_content(self._build_ui())
         self.connect("close-request", self._on_window_close_request)
+        self.connect("notify::is-active", self._on_window_active_changed)
         self._restore_active_research_set()
         self._load_cached_cases()
         self.add_tick_callback(self._on_window_tick)
@@ -1727,6 +1748,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         box.append(input_row)
         box.append(self._build_case_completion_results())
 
+        box.append(self._build_current_case_context())
         box.append(self._build_research_cache_header())
 
         self.case_list = Gtk.ListBox()
@@ -1742,6 +1764,66 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         scroller.set_child(self.case_list)
         scroller.set_vexpand(True)
         box.append(scroller)
+        return box
+
+    def _build_current_case_context(self) -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        box.set_hexpand(True)
+
+        heading = Gtk.Label(label="Current Case", xalign=0)
+        heading.add_css_class("heading")
+        box.append(heading)
+
+        list_box = Gtk.ListBox()
+        list_box.add_css_class("case-list")
+        list_box.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        list_box.connect("row-selected", self._on_current_case_context_selected)
+
+        row = Gtk.ListBoxRow()
+        row.set_selectable(True)
+        row.set_activatable(True)
+        row.add_css_class("case-cache-row")
+
+        row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        row_box.set_margin_top(8)
+        row_box.set_margin_bottom(8)
+        row_box.set_margin_start(8)
+        row_box.set_margin_end(8)
+
+        icon = Gtk.Image(icon_name="text-x-generic-symbolic")
+        icon.set_valign(Gtk.Align.START)
+        row_box.append(icon)
+
+        text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        text_box.set_hexpand(True)
+        title = Gtk.Label(label="Current Case", xalign=0)
+        title.set_wrap(True)
+        text_box.append(title)
+        subtitle = Gtk.Label(label="Statement of Case and Facts", xalign=0)
+        subtitle.add_css_class("dim-label")
+        subtitle.set_wrap(True)
+        text_box.append(subtitle)
+        row_box.append(text_box)
+
+        check = Gtk.CheckButton()
+        check.add_css_class("neutral-agent-check")
+        check.set_valign(Gtk.Align.START)
+        check.set_tooltip_text(
+            "Include this SOCF in Law and Cache agent questions; appeal assessments always include their fact pattern"
+        )
+        check.connect("toggled", self._on_current_case_context_toggled)
+        row_box.append(check)
+
+        row.set_child(row_box)
+        list_box.append(row)
+        box.append(list_box)
+
+        self._current_case_context_list = list_box
+        self._current_case_context_row = row
+        self._current_case_context_title = title
+        self._current_case_context_subtitle = subtitle
+        self._current_case_context_check = check
+        self._refresh_current_case_context()
         return box
 
     def _build_research_cache_header(self) -> Gtk.Widget:
@@ -2595,6 +2677,154 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def _on_window_close_request(self, _window: Gtk.Window) -> bool:
         self._capture_current_reader_position()
+        return False
+
+    def _on_window_active_changed(self, _window: Gtk.Window, _param: Any) -> None:
+        if not self.is_active():
+            return
+        resolved = self._refresh_current_case_context()
+        if (
+            resolved is not None
+            and self._current_case_context_list is not None
+            and self._current_case_context_list.get_selected_row() is not None
+        ):
+            self._open_current_case_socf()
+
+    def _refresh_current_case_context(self) -> CurrentCaseSocf | None:
+        try:
+            resolved = current_case_socf()
+        except CurrentCaseError as exc:
+            try:
+                case_name = read_current_case()
+            except CurrentCaseError:
+                case_name = ""
+            self._current_case_name = case_name
+            self._current_case_socf_path = None
+            self._current_case_error = str(exc)
+            if self._current_case_context_title is not None:
+                self._current_case_context_title.set_text(case_name or "Current Case")
+            if self._current_case_context_subtitle is not None:
+                self._current_case_context_subtitle.set_text("SOCF unavailable")
+                self._current_case_context_subtitle.set_tooltip_text(str(exc))
+            self._current_case_context_toggle_guard = True
+            try:
+                if self._current_case_context_check is not None:
+                    self._current_case_context_check.set_active(
+                        bool(
+                            case_name
+                            and self.client.cache.is_current_case_context_selected(case_name)
+                        )
+                    )
+                    self._current_case_context_check.set_sensitive(False)
+            finally:
+                self._current_case_context_toggle_guard = False
+            return None
+
+        self._current_case_name = resolved.case_name
+        self._current_case_socf_path = resolved.path
+        self._current_case_error = ""
+        if self._current_case_context_title is not None:
+            self._current_case_context_title.set_text(resolved.case_name)
+        if self._current_case_context_subtitle is not None:
+            self._current_case_context_subtitle.set_text("Statement of Case and Facts")
+            self._current_case_context_subtitle.set_tooltip_text(str(resolved.path))
+        self._current_case_context_toggle_guard = True
+        try:
+            if self._current_case_context_check is not None:
+                self._current_case_context_check.set_sensitive(True)
+                self._current_case_context_check.set_active(
+                    self.client.cache.is_current_case_context_selected(resolved.case_name)
+                )
+        finally:
+            self._current_case_context_toggle_guard = False
+        return resolved
+
+    def _on_current_case_context_toggled(self, button: Gtk.CheckButton) -> None:
+        if self._current_case_context_toggle_guard:
+            return
+        selected = button.get_active()
+        resolved = self._refresh_current_case_context()
+        if resolved is None:
+            return
+        self.client.cache.set_current_case_context_selected(
+            resolved.case_name,
+            selected,
+        )
+        self._current_case_context_toggle_guard = True
+        try:
+            button.set_active(selected)
+        finally:
+            self._current_case_context_toggle_guard = False
+        state = "included in" if selected else "excluded from"
+        self._set_status(f"Current-case SOCF will be {state} Law and Cache questions.")
+
+    def _on_current_case_context_selected(
+        self,
+        _list_box: Gtk.ListBox,
+        row: Gtk.ListBoxRow | None,
+    ) -> None:
+        if row is None:
+            return
+        self.case_list.unselect_all()
+        self._open_current_case_socf()
+
+    def _open_current_case_socf(self) -> None:
+        resolved = self._refresh_current_case_context()
+        if resolved is None:
+            self._set_status(self._current_case_error or "Current-case SOCF is unavailable.")
+            return
+        self._capture_current_reader_position()
+        self._set_reader_position_key("socf", resolved.case_name)
+        self._case_load_generation += 1
+        generation = self._case_load_generation
+        self._selected_cluster = None
+        self._selected_statute = None
+        self._selected_rule = None
+        self._selected_agent_answer = None
+        self._reader_has_official_pagination = False
+        self._reader_pagination_mode = READER_PAGINATION_NONE
+        self._reader_slip_source_url = ""
+        self._reader_slip_case_number = ""
+        self._reader_page_markers = []
+        self._clear_reader_citation_links()
+        self._set_reader_header(f"{resolved.case_name}\nStatement of Case and Facts")
+        self._reader_text = ""
+        self.reader_buffer.set_text("")
+        self._set_reader_busy(True, "Loading current-case SOCF...")
+        self._set_status("Loading current-case SOCF...")
+        threading.Thread(
+            target=self._current_case_socf_worker,
+            args=(resolved, generation),
+            daemon=True,
+        ).start()
+
+    def _current_case_socf_worker(self, resolved: CurrentCaseSocf, generation: int) -> None:
+        try:
+            text = extract_fact_pattern_text(resolved.path)
+        except (FactPatternError, OSError) as exc:
+            GLib.idle_add(self._apply_current_case_socf_error, str(exc), generation)
+            return
+        GLib.idle_add(self._finish_current_case_socf_load, resolved, text, generation)
+
+    def _finish_current_case_socf_load(
+        self,
+        resolved: CurrentCaseSocf,
+        text: str,
+        generation: int,
+    ) -> bool:
+        if generation != self._case_load_generation:
+            return False
+        self._set_reader_text(text)
+        self._set_status(f"Loaded the current-case SOCF for {resolved.case_name}.")
+        return False
+
+    def _apply_current_case_socf_error(self, message: str, generation: int) -> bool:
+        if generation != self._case_load_generation:
+            return False
+        self._set_reader_busy(False)
+        self._reader_text = ""
+        self.reader_buffer.set_text(message)
+        self._set_status(f"Unable to load current-case SOCF: {message}")
         return False
 
     def _capture_current_reader_position(self) -> None:
@@ -4168,6 +4398,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._research_cache_generation += 1
         self._case_load_generation += 1
         self._install_css()
+        self._refresh_current_case_context()
         self._load_cached_cases()
         self._refresh_case_suggestion_index_async(force=True)
         self._refresh_appeal_issue_menu()
@@ -6490,6 +6721,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return
         if self._suppress_sidebar_selection_lookup:
             return
+        if self._current_case_context_list is not None:
+            self._current_case_context_list.unselect_all()
         authority_type = getattr(row, "_open_law_lens_authority_type", "case")
         if authority_type == "statute":
             index = getattr(row, "_open_law_lens_statute_index", None)
@@ -6808,19 +7041,34 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         except (KeyError, ValueError):
             return fallback.format_map(values).strip()
 
-    def _compose_general_agent_prompt(self, question: str) -> str:
+    def _compose_general_agent_prompt(
+        self,
+        question: str,
+        current_case_export: FactPatternExport | None = None,
+        current_case_selected: bool = False,
+        current_case_warning: str = "",
+    ) -> str:
         config = load_config()
-        return self._format_agent_prompt(
+        prompt = self._format_agent_prompt(
             config.general_agent_prompt_template,
             DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE,
             {"question": question},
         )
+        if not current_case_selected:
+            return prompt
+        context = OpenLawLensWindow._compose_current_case_context(
+            current_case_export,
+            True,
+            current_case_warning,
+        )
+        return f"{prompt}\n\n{context}"
 
     def _compose_case_agent_prompt(
         self,
         question: str,
         export: Any,
         current_case_export: FactPatternExport | None = None,
+        current_case_selected: bool = False,
         current_case_warning: str = "",
     ) -> str:
         config = load_config()
@@ -6834,26 +7082,39 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 "case_count": getattr(export, "authority_count", export.case_count),
             },
         )
-        if current_case_export is not None:
-            context = (
-                "Current-case factual context for this run:\n"
-                "This material is within the authorized scope in addition to the selected "
-                "Research Cache materials. Treat it as facts, not legal authority. Read the "
-                "extracted text before comparing the authorities to the current case. Cite "
-                "facts with record citations already present in the text; do not cite local "
-                "paths, filenames, or line numbers.\n"
-                f"Extracted fact-pattern text: {current_case_export.text_path}\n"
-                f"Copied source file: {current_case_export.source_copy_path}"
-            )
-        else:
-            reason = current_case_warning.strip() or "Current case SOCF was not available."
-            context = (
-                "Current-case factual context for this run:\n"
-                f"Unavailable: {reason}\n"
-                "Do not guess about the current case. If the question requires a comparison "
-                "with the current case, explain that the factual context is unavailable."
-            )
+        context = OpenLawLensWindow._compose_current_case_context(
+            current_case_export,
+            current_case_selected,
+            current_case_warning,
+        )
         return f"{prompt}\n\n{context}"
+
+    @staticmethod
+    def _compose_current_case_context(
+        current_case_export: FactPatternExport | None,
+        selected: bool,
+        warning: str = "",
+    ) -> str:
+        heading = "Current-case factual context for this run:\n"
+        if not selected:
+            return (
+                f"{heading}Not selected. Answer without assuming facts about the current case."
+            )
+        if current_case_export is None:
+            reason = warning.strip() or "Current case SOCF was not available."
+            return (
+                f"{heading}Unavailable: {reason}\n"
+                "Do not guess about the current case. If the question requires current-case "
+                "facts, explain that the selected factual context is unavailable."
+            )
+        return (
+            f"{heading}This material is within the authorized scope. Treat it as facts, not "
+            "legal authority. Read the extracted text before applying or comparing legal "
+            "authority to the current case. Cite facts with record citations already present "
+            "in the text; do not cite local paths, filenames, or line numbers.\n"
+            f"Extracted fact-pattern text: {current_case_export.text_path}\n"
+            f"Copied source file: {current_case_export.source_copy_path}"
+        )
 
     def _compose_appeal_issue_agent_prompt(
         self,
@@ -6982,6 +7243,18 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         )
         return False
 
+    def _current_case_context_for_launch(
+        self,
+    ) -> tuple[CurrentCaseSocf | None, bool, str]:
+        resolved = self._refresh_current_case_context()
+        case_name = resolved.case_name if resolved is not None else self._current_case_name
+        selected = bool(
+            case_name
+            and self.client.cache.is_current_case_context_selected(case_name)
+        )
+        warning = self._current_case_error if selected and resolved is None else ""
+        return resolved, selected, warning
+
     def _on_agent_launch(self, _widget: Gtk.Widget) -> None:
         mode = self._selected_agent_mode
         question = self.agent_question_entry.get_text().strip()
@@ -6991,37 +7264,122 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if Vte is None or self._agent_terminal is None:
             self._set_status("Embedded terminal is unavailable.")
             return
+        current_case, current_case_selected, current_case_warning = (
+            self._current_case_context_for_launch()
+        )
         if mode == AGENT_MODE_CASE:
             clusters = self._selected_agent_clusters()
             statutes = self._selected_agent_statutes()
             rules = self._selected_agent_rules()
             agent_answers = self._selected_agent_answers()
-            if not clusters and not statutes and not rules and not agent_answers:
-                self._set_status("Mark at least one Research Cache item for the Cache Agent.")
+            if (
+                not clusters
+                and not statutes
+                and not rules
+                and not agent_answers
+                and not (current_case_selected and current_case is not None)
+            ):
+                if current_case_selected and current_case_warning:
+                    self._set_status(
+                        f"Selected current-case SOCF is unavailable: {current_case_warning}"
+                    )
+                else:
+                    self._set_status(
+                        "Mark a Research Cache item or include the current-case SOCF for the Cache Agent."
+                    )
                 return
             self._set_status("Preparing marked authorities for Cache Agent...")
             thread = threading.Thread(
                 target=self._prepare_case_agent_worker,
-                args=(question, clusters, statutes, rules, agent_answers),
+                args=(
+                    question,
+                    clusters,
+                    statutes,
+                    rules,
+                    agent_answers,
+                    current_case,
+                    current_case_selected,
+                    current_case_warning,
+                ),
                 daemon=True,
             )
             thread.start()
             return
-        self._case_agent_text_sources = []
-        self._agent_mode = AGENT_MODE_GENERAL
-        prompt_path = self._write_prompt_file(self._compose_general_agent_prompt(question))
+        self._set_status("Preparing Law Agent...")
+        threading.Thread(
+            target=self._prepare_general_agent_worker,
+            args=(
+                question,
+                current_case,
+                current_case_selected,
+                current_case_warning,
+            ),
+            daemon=True,
+        ).start()
+
+    def _prepare_general_agent_worker(
+        self,
+        question: str,
+        current_case: CurrentCaseSocf | None,
+        current_case_selected: bool,
+        current_case_warning: str,
+    ) -> None:
         try:
             workspace = self._create_agent_workspace()
+            current_case_export: FactPatternExport | None = None
+            warning = current_case_warning
+            if current_case_selected and current_case is not None:
+                try:
+                    current_case_export = export_fact_pattern(
+                        current_case.path,
+                        workspace / "current_case_fact_pattern",
+                    )
+                except (FactPatternError, OSError) as exc:
+                    warning = str(exc)
+            prompt_path = self._write_prompt_file(
+                self._compose_general_agent_prompt(
+                    question,
+                    current_case_export,
+                    current_case_selected,
+                    warning,
+                )
+            )
+            GLib.idle_add(
+                self._finish_general_agent_prepare,
+                prompt_path,
+                workspace,
+                current_case_export is not None,
+                warning if current_case_selected and current_case_export is None else "",
+            )
         except OSError as exc:
-            self._set_status(f"Unable to create agent workspace: {exc}")
-            return
+            GLib.idle_add(self._set_status, f"Unable to prepare Law Agent: {exc}")
+
+    def _finish_general_agent_prepare(
+        self,
+        prompt_path: Path,
+        workspace: Path,
+        current_case_included: bool,
+        current_case_warning: str = "",
+    ) -> bool:
+        self._case_agent_text_sources = []
+        self._agent_mode = AGENT_MODE_GENERAL
         config = load_config()
+        if current_case_included:
+            success_status = "Started Law Agent with current-case SOCF."
+        elif current_case_warning:
+            success_status = (
+                "Started Law Agent without selected current-case SOCF; see the session for details."
+            )
+        else:
+            success_status = "Started Law Agent."
         self._launch_agent_with_prompt(
             prompt_path,
             workspace,
             AGENT_MODE_GENERAL,
             xhigh_reasoning_effort(config.general_agent_xhigh_reasoning),
+            success_status=success_status,
         )
+        return False
 
     def submit_speech_question(self, mode: str) -> None:
         try:
@@ -7057,6 +7415,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         statutes: list[dict[str, Any]],
         rules: list[dict[str, Any]],
         agent_answers: list[dict[str, Any]],
+        current_case: CurrentCaseSocf | None,
+        current_case_selected: bool,
+        current_case_warning: str = "",
     ) -> None:
         try:
             workspace = self._create_agent_workspace()
@@ -7068,24 +7429,31 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 workspace / "selected_authorities",
                 agent_answers,
             )
-            if export.authority_count == 0:
-                GLib.idle_add(self._set_status, "No text found for marked authorities.")
-                return
             current_case_export: FactPatternExport | None = None
-            current_case_warning = ""
-            try:
-                current_case_export = export_fact_pattern(
-                    current_case_socf_odt(),
-                    workspace / "current_case_fact_pattern",
+            warning = current_case_warning
+            if current_case_selected and current_case is not None:
+                try:
+                    current_case_export = export_fact_pattern(
+                        current_case.path,
+                        workspace / "current_case_fact_pattern",
+                    )
+                except (FactPatternError, OSError) as exc:
+                    warning = str(exc)
+            if export.authority_count == 0 and current_case_export is None:
+                message = (
+                    f"Selected current-case SOCF is unavailable: {warning}"
+                    if current_case_selected and warning
+                    else "No text found for marked authorities or current-case SOCF."
                 )
-            except (CurrentCaseError, FactPatternError, OSError) as exc:
-                current_case_warning = str(exc)
+                GLib.idle_add(self._set_status, message)
+                return
             prompt_path = self._write_prompt_file(
                 self._compose_case_agent_prompt(
                     question,
                     export,
                     current_case_export,
-                    current_case_warning,
+                    current_case_selected,
+                    warning,
                 )
             )
             GLib.idle_add(
@@ -7093,7 +7461,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 prompt_path,
                 workspace,
                 export.text_sources,
-                current_case_warning,
+                current_case_export is not None,
+                warning if current_case_selected and current_case_export is None else "",
             )
         except (CourtListenerError, LegInfoError, CaliforniaRulesError, OSError, ValueError) as exc:
             GLib.idle_add(self._set_status, f"Unable to prepare marked authorities: {exc}")
@@ -7103,6 +7472,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         prompt_path: Path,
         workspace: Path,
         text_sources: list[CaseTextSource],
+        current_case_included: bool,
         current_case_warning: str = "",
     ) -> bool:
         self._case_agent_text_sources = text_sources
@@ -7114,9 +7484,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             AGENT_MODE_CASE,
             xhigh_reasoning_effort(config.case_agent_xhigh_reasoning),
             success_status=(
-                "Started Cache Agent without current-case context; see the session for details."
-                if current_case_warning
-                else "Started Cache Agent with current-case SOCF."
+                "Started Cache Agent with current-case SOCF."
+                if current_case_included
+                else (
+                    "Started Cache Agent without selected current-case SOCF; see the session for details."
+                    if current_case_warning
+                    else "Started Cache Agent without current-case SOCF."
+                )
             ),
         )
         return False

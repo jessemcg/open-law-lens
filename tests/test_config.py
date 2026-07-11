@@ -260,6 +260,29 @@ Selected authority count: {case_count}"""
         self.assertEqual(config.case_agent_prompt_template, DEFAULT_CASE_AGENT_PROMPT_TEMPLATE)
         self.assertIn("current-case factual context", config.case_agent_prompt_template)
 
+    def test_automatic_socf_case_prompt_migrates_to_opt_in_wording(self) -> None:
+        previous_default = DEFAULT_CASE_AGENT_PROMPT_TEMPLATE.replace(
+            "Answer only from the selected Research Cache materials and any current-case factual context explicitly selected for this run.",
+            "Answer only from the selected Research Cache materials and current-case factual context exported into this workspace.",
+        ).replace(
+            "Treat any current-case fact pattern as factual context only",
+            "Treat the current-case fact pattern as factual context only",
+        ).replace(
+            "When current-case factual context is provided and the question calls for comparison,",
+            "When the question calls for comparison,",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text(
+                json.dumps({"case_agent_prompt_template": previous_default}),
+                encoding="utf-8",
+            )
+
+            config = load_config(path)
+
+        self.assertEqual(config.case_agent_prompt_template, DEFAULT_CASE_AGENT_PROMPT_TEMPLATE)
+        self.assertIn("explicitly selected", config.case_agent_prompt_template)
+
     def test_original_cases_agent_prompt_migrates_to_authority_quote_guidance(self) -> None:
         prior_default = """You are the Open Law Lens Marked Research Cache Cases Agent.
 

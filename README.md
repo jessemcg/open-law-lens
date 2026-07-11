@@ -49,6 +49,7 @@ Or save it in the app menu under Settings. The Settings path writes a local
 - GTK4/Libadwaita desktop app with a quiet reader-focused interface.
 - Citation lookup for California cases through CourtListener.
 - California statute and California Rules of Court lookup.
+- Pinned current-case SOCF reader above the Research Cache, with per-case agent-context selection.
 - Research Cache sidebar for the authorities currently in view.
 - Durable SQLite library at `library/open_law_lens.sqlite3` for saved authority
   data, display text, and reporter page-marker metadata.
@@ -170,13 +171,16 @@ authority lookup to CourtListener APIs and the app's local cache/library model.
 There are three main agent workflows:
 
 - Law: ask a California legal research question. The default prompt directs
-  Codex to search and extract authority through Open Law Lens CLI commands.
+  Codex to search and extract authority through Open Law Lens CLI commands. If
+  the pinned current-case SOCF is checked, the app also exports it as factual
+  context for that question.
 - Cache: ask about authorities marked in the current Research Cache. The app
-  exports the selected authorities and the currently selected case's SOCF into
-  a temporary workspace. Codex treats the marked authorities as legal authority
-  and the SOCF as factual context, allowing comparisons such as which marked
-  case is most analogous to the current case. If the SOCF is unavailable, the
-  app warns the user and continues with the marked materials only.
+  exports the selected authorities into a temporary workspace. The pinned
+  current-case SOCF is added only when its checkmark is active. Codex treats the
+  marked authorities as legal authority and the SOCF as factual context,
+  allowing comparisons such as which marked case is most analogous to the
+  current case. A checked SOCF can also be used by itself for a factual Cache
+  question.
 - Appeal Issue Assessment: assess a proposed appellate claim against an ODT or
   PDF fact pattern. The app extracts the fact pattern into a temporary
   workspace, launches Codex in Appeal mode, and directs it to research
@@ -185,6 +189,13 @@ There are three main agent workflows:
 Agent runtime settings, including prompt templates, appeal issue presets, the
 fact-pattern source, prompt-level xhigh reasoning toggles, and Codex permission
 mode, are available in the app Settings window.
+
+The pinned Current Case row is separate from Research Set contents and cannot
+be removed by clearing the Research Cache. Clicking it displays the same
+normalized SOCF text supplied to the agent in the main reader. Its context
+checkmark starts off for each case and remembers that case's choice across app
+launches. Appeal Issue Assessment always includes its selected fact pattern,
+regardless of this ordinary-question checkmark.
 
 ## Appeal Issue Assessment
 

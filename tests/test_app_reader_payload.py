@@ -24,6 +24,7 @@ from open_law_lens.cache import JsonCache
 from open_law_lens.citation_links import CitedCaseLink
 from open_law_lens.client import CourtListenerClient, FormattedCitation
 from open_law_lens.config import AppConfig
+from open_law_lens.current_case import CurrentCaseSocf
 from open_law_lens.fact_patterns import FactPatternExport
 from open_law_lens.library import CaseLibrary, DisplayText, PageMarker, ResearchSet
 from open_law_lens.reader_highlights import ReaderHighlight
@@ -641,6 +642,7 @@ class AppReaderPayloadTests(unittest.TestCase):
                 "Which case is most analogous?",
                 authority_export,
                 fact_export,
+                True,
             )
 
         self.assertIn("Custom cache prompt: Which case is most analogous?", prompt)
@@ -649,6 +651,173 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertIn(str(fact_export.text_path), prompt)
         self.assertIn(str(fact_export.source_copy_path), prompt)
         self.assertIn("do not cite local paths", prompt)
+
+    def test_general_agent_prompt_adds_socf_only_when_selected(self) -> None:
+        class DummyWindow:
+            def _format_agent_prompt(
+                self,
+                template: str,
+                fallback: str,
+                values: dict[str, object],
+            ) -> str:
+                return OpenLawLensWindow._format_agent_prompt(  # type: ignore[arg-type]
+                    self,
+                    template,
+                    fallback,
+                    values,
+                )
+
+        fact_export = FactPatternExport(
+            source_path=Path("/case/SOCF/B123456_SOCF_JM.odt"),
+            source_copy_path=Path("/tmp/workspace/current_case/B123456_SOCF_JM.odt"),
+            text_path=Path("/tmp/workspace/current_case/B123456_SOCF_JM_extracted.txt"),
+            text="Current-case facts. (CT 12.)",
+        )
+        with patch(
+            "open_law_lens.app.load_config",
+            return_value=AppConfig(general_agent_prompt_template="Custom law prompt: {question}"),
+        ):
+            without_context = OpenLawLensWindow._compose_general_agent_prompt(  # type: ignore[arg-type]
+                DummyWindow(),
+                "What law applies?",
+            )
+            with_context = OpenLawLensWindow._compose_general_agent_prompt(  # type: ignore[arg-type]
+                DummyWindow(),
+                "What law applies?",
+                fact_export,
+                True,
+            )
+
+        self.assertEqual(without_context, "Custom law prompt: What law applies?")
+        self.assertIn(str(fact_export.text_path), with_context)
+        self.assertIn("Treat it as facts, not legal authority", with_context)
+
+    def test_case_agent_prompt_marks_socf_as_not_selected(self) -> None:
+        class DummyWindow:
+            def _format_agent_prompt(
+                self,
+                template: str,
+                fallback: str,
+                values: dict[str, object],
+            ) -> str:
+                return OpenLawLensWindow._format_agent_prompt(  # type: ignore[arg-type]
+                    self,
+                    template,
+                    fallback,
+                    values,
+                )
+
+        authority_export = SimpleNamespace(
+            manifest_path=Path("/tmp/manifest.json"),
+            case_dir=Path("/tmp/selected_authorities"),
+            case_count=1,
+            authority_count=1,
+        )
+        with patch("open_law_lens.app.load_config", return_value=AppConfig()):
+            prompt = OpenLawLensWindow._compose_case_agent_prompt(  # type: ignore[arg-type]
+                DummyWindow(),
+                "What do the authorities establish?",
+                authority_export,
+            )
+
+        self.assertIn("Current-case factual context for this run:\nNot selected", prompt)
+        self.assertNotIn("Extracted fact-pattern text", prompt)
+
+    def test_general_agent_worker_exports_checked_socf(self) -> None:
+        fact_export = FactPatternExport(
+            source_path=Path("/case/SOCF/B123456_SOCF_JM.odt"),
+            source_copy_path=Path("/tmp/workspace/current_case/B123456_SOCF_JM.odt"),
+            text_path=Path("/tmp/workspace/current_case/B123456_SOCF_JM_extracted.txt"),
+            text="Current-case facts.",
+        )
+        resolved = CurrentCaseSocf(
+            case_name="B123456_Test",
+            case_dir=Path("/case"),
+            path=fact_export.source_path,
+        )
+
+        class DummyWindow:
+            def _create_agent_workspace(self) -> Path:
+                return Path("/tmp/workspace")
+
+            def _compose_general_agent_prompt(self, *args: object) -> str:
+                self.compose_args = args
+                return "prompt"
+
+            def _write_prompt_file(self, _prompt: str) -> Path:
+                return Path("/tmp/prompt.txt")
+
+            def _finish_general_agent_prepare(self, *args: object) -> bool:
+                return False
+
+            def _set_status(self, status: str) -> None:
+                self.status = status
+
+        window = DummyWindow()
+        with (
+            patch("open_law_lens.app.export_fact_pattern", return_value=fact_export) as export,
+            patch("open_law_lens.app.GLib.idle_add") as idle_add,
+        ):
+            OpenLawLensWindow._prepare_general_agent_worker(  # type: ignore[arg-type]
+                window,
+                "What law applies?",
+                resolved,
+                True,
+                "",
+            )
+
+        export.assert_called_once_with(
+            fact_export.source_path,
+            Path("/tmp/workspace/current_case_fact_pattern"),
+        )
+        self.assertEqual(window.compose_args[1], fact_export)
+        self.assertTrue(window.compose_args[2])
+        idle_add.assert_called_once_with(
+            window._finish_general_agent_prepare,
+            Path("/tmp/prompt.txt"),
+            Path("/tmp/workspace"),
+            True,
+            "",
+        )
+
+    def test_current_case_socf_load_ignores_stale_results(self) -> None:
+        resolved = CurrentCaseSocf(
+            case_name="B123456_Test",
+            case_dir=Path("/case"),
+            path=Path("/case/SOCF/B123456_SOCF_JM.odt"),
+        )
+
+        class DummyWindow:
+            _case_load_generation = 3
+
+            def __init__(self) -> None:
+                self.texts: list[str] = []
+                self.statuses: list[str] = []
+
+            def _set_reader_text(self, text: str) -> None:
+                self.texts.append(text)
+
+            def _set_status(self, status: str) -> None:
+                self.statuses.append(status)
+
+        window = DummyWindow()
+        stale = OpenLawLensWindow._finish_current_case_socf_load(  # type: ignore[arg-type]
+            window,
+            resolved,
+            "Old text",
+            2,
+        )
+        current = OpenLawLensWindow._finish_current_case_socf_load(  # type: ignore[arg-type]
+            window,
+            resolved,
+            "Current text",
+            3,
+        )
+
+        self.assertFalse(stale)
+        self.assertFalse(current)
+        self.assertEqual(window.texts, ["Current text"])
+        self.assertEqual(window.statuses, ["Loaded the current-case SOCF for B123456_Test."])
 
     def test_case_agent_prompt_reports_missing_current_case_context(self) -> None:
         class DummyWindow:
@@ -678,6 +847,7 @@ class AppReaderPayloadTests(unittest.TestCase):
                 "Compare the cases.",
                 authority_export,
                 None,
+                True,
                 "SOCF ODT not found",
             )
 
@@ -716,6 +886,7 @@ class AppReaderPayloadTests(unittest.TestCase):
                 Path("/tmp/prompt.txt"),
                 Path("/tmp/workspace"),
                 [],
+                False,
                 "Current case file not found",
             )
 
@@ -723,7 +894,7 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(window._agent_mode, "case")
         self.assertEqual(
             window.launches[0]["success_status"],
-            "Started Cache Agent without current-case context; see the session for details.",
+            "Started Cache Agent without selected current-case SOCF; see the session for details.",
         )
 
     def test_case_agent_worker_exports_current_case_socf(self) -> None:
@@ -768,10 +939,6 @@ class AppReaderPayloadTests(unittest.TestCase):
                 return_value=authority_export,
             ),
             patch(
-                "open_law_lens.app.current_case_socf_odt",
-                return_value=fact_export.source_path,
-            ),
-            patch(
                 "open_law_lens.app.export_fact_pattern",
                 return_value=fact_export,
             ) as export_current_case,
@@ -784,6 +951,12 @@ class AppReaderPayloadTests(unittest.TestCase):
                 [],
                 [],
                 [],
+                CurrentCaseSocf(
+                    case_name="B123456_Test",
+                    case_dir=Path("/case"),
+                    path=fact_export.source_path,
+                ),
+                True,
             )
 
         export_current_case.assert_called_once_with(
@@ -791,12 +964,140 @@ class AppReaderPayloadTests(unittest.TestCase):
             Path("/tmp/workspace/current_case_fact_pattern"),
         )
         self.assertEqual(window.compose_args[2], fact_export)
-        self.assertEqual(window.compose_args[3], "")
+        self.assertTrue(window.compose_args[3])
+        self.assertEqual(window.compose_args[4], "")
         idle_add.assert_called_once_with(
             window._finish_case_agent_prepare,
             Path("/tmp/prompt.txt"),
             Path("/tmp/workspace"),
             ["source"],
+            True,
+            "",
+        )
+
+    def test_case_agent_worker_does_not_export_unchecked_socf(self) -> None:
+        authority_export = SimpleNamespace(
+            authority_count=1,
+            case_count=1,
+            text_sources=["source"],
+        )
+
+        class DummyWindow:
+            client = object()
+
+            def _create_agent_workspace(self) -> Path:
+                return Path("/tmp/workspace")
+
+            def _compose_case_agent_prompt(self, *args: object) -> str:
+                self.compose_args = args
+                return "prompt"
+
+            def _write_prompt_file(self, _prompt: str) -> Path:
+                return Path("/tmp/prompt.txt")
+
+            def _finish_case_agent_prepare(self, *args: object) -> bool:
+                return False
+
+            def _set_status(self, status: str) -> None:
+                self.status = status
+
+        window = DummyWindow()
+        with (
+            patch(
+                "open_law_lens.app.export_selected_authorities",
+                return_value=authority_export,
+            ),
+            patch("open_law_lens.app.export_fact_pattern") as export_current_case,
+            patch("open_law_lens.app.GLib.idle_add") as idle_add,
+        ):
+            OpenLawLensWindow._prepare_case_agent_worker(  # type: ignore[arg-type]
+                window,
+                "Explain the authorities.",
+                [{}],
+                [],
+                [],
+                [],
+                CurrentCaseSocf(
+                    case_name="B123456_Test",
+                    case_dir=Path("/case"),
+                    path=Path("/case/SOCF/B123456_SOCF_JM.odt"),
+                ),
+                False,
+            )
+
+        export_current_case.assert_not_called()
+        self.assertIsNone(window.compose_args[2])
+        self.assertFalse(window.compose_args[3])
+        idle_add.assert_called_once_with(
+            window._finish_case_agent_prepare,
+            Path("/tmp/prompt.txt"),
+            Path("/tmp/workspace"),
+            ["source"],
+            False,
+            "",
+        )
+
+    def test_case_agent_worker_allows_selected_socf_without_authorities(self) -> None:
+        fact_export = FactPatternExport(
+            source_path=Path("/case/SOCF/B123456_SOCF_JM.odt"),
+            source_copy_path=Path("/tmp/workspace/current_case/B123456_SOCF_JM.odt"),
+            text_path=Path("/tmp/workspace/current_case/B123456_SOCF_JM_extracted.txt"),
+            text="Current-case facts.",
+        )
+        authority_export = SimpleNamespace(
+            authority_count=0,
+            case_count=0,
+            text_sources=[],
+        )
+
+        class DummyWindow:
+            client = object()
+
+            def _create_agent_workspace(self) -> Path:
+                return Path("/tmp/workspace")
+
+            def _compose_case_agent_prompt(self, *args: object) -> str:
+                return "prompt"
+
+            def _write_prompt_file(self, _prompt: str) -> Path:
+                return Path("/tmp/prompt.txt")
+
+            def _finish_case_agent_prepare(self, *args: object) -> bool:
+                return False
+
+            def _set_status(self, status: str) -> None:
+                self.status = status
+
+        window = DummyWindow()
+        with (
+            patch(
+                "open_law_lens.app.export_selected_authorities",
+                return_value=authority_export,
+            ),
+            patch("open_law_lens.app.export_fact_pattern", return_value=fact_export),
+            patch("open_law_lens.app.GLib.idle_add") as idle_add,
+        ):
+            OpenLawLensWindow._prepare_case_agent_worker(  # type: ignore[arg-type]
+                window,
+                "Summarize the relevant facts.",
+                [],
+                [],
+                [],
+                [],
+                CurrentCaseSocf(
+                    case_name="B123456_Test",
+                    case_dir=Path("/case"),
+                    path=fact_export.source_path,
+                ),
+                True,
+            )
+
+        idle_add.assert_called_once_with(
+            window._finish_case_agent_prepare,
+            Path("/tmp/prompt.txt"),
+            Path("/tmp/workspace"),
+            [],
+            True,
             "",
         )
 

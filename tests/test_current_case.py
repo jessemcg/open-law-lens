@@ -8,6 +8,7 @@ from open_law_lens.current_case import (
     CurrentCaseError,
     case_number_from_case_dir,
     clean_case_name,
+    current_case_socf,
     current_case_socf_odt,
     find_socf_odt,
     resolve_case_dir,
@@ -75,6 +76,14 @@ class CurrentCaseTests(unittest.TestCase):
                 ),
                 expected,
             )
+
+            resolved = current_case_socf(
+                case_file=current_case_file,
+                roots=[root / "OPEN_CASES", root / "CLOSED_CASES"],
+            )
+            self.assertEqual(resolved.case_name, case_name)
+            self.assertEqual(resolved.case_dir, root / "OPEN_CASES" / case_name)
+            self.assertEqual(resolved.path, expected)
 
 
 if __name__ == "__main__":

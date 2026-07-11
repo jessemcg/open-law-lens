@@ -144,6 +144,9 @@ class JsonCache:
     def reader_highlights_path(self) -> Path:
         return self.root / "reader_highlights.json"
 
+    def current_case_context_path(self) -> Path:
+        return self.root / "current_case_context.json"
+
     def lookup_path(self, citation: str) -> Path:
         return self.root / "lookups" / f"{citation_cache_key(citation)}.json"
 
@@ -202,7 +205,7 @@ class JsonCache:
         if not isinstance(raw_positions, dict):
             return {}
         positions: dict[str, dict[str, int]] = {}
-        for item_type in ("case", "statute", "rule", "agent_answer"):
+        for item_type in ("case", "statute", "rule", "agent_answer", "socf"):
             raw_items = raw_positions.get(item_type)
             if not isinstance(raw_items, dict):
                 continue
@@ -229,7 +232,7 @@ class JsonCache:
     def set_reader_position(self, item_type: str, authority_id: str, offset: int) -> None:
         clean_type = str(item_type or "").strip()
         clean_id = str(authority_id or "").strip()
-        if clean_type not in {"case", "statute", "rule", "agent_answer"} or not clean_id:
+        if clean_type not in {"case", "statute", "rule", "agent_answer", "socf"} or not clean_id:
             return
         try:
             clean_offset = max(0, int(offset))
@@ -262,6 +265,42 @@ class JsonCache:
             )
         else:
             self.reader_positions_path().unlink(missing_ok=True)
+
+    def selected_current_case_contexts(self) -> set[str]:
+        data = self.read_json(self.current_case_context_path())
+        raw_names = data.get("selected_case_names") if isinstance(data, dict) else None
+        if not isinstance(raw_names, list):
+            return set()
+        return {
+            str(case_name).strip()
+            for case_name in raw_names
+            if str(case_name).strip()
+        }
+
+    def is_current_case_context_selected(self, case_name: str) -> bool:
+        clean_name = str(case_name or "").strip()
+        return bool(clean_name and clean_name in self.selected_current_case_contexts())
+
+    @_synchronized
+    def set_current_case_context_selected(self, case_name: str, selected: bool) -> None:
+        clean_name = str(case_name or "").strip()
+        if not clean_name:
+            return
+        selected_names = self.selected_current_case_contexts()
+        if selected:
+            selected_names.add(clean_name)
+        else:
+            selected_names.discard(clean_name)
+        if not selected_names:
+            self.current_case_context_path().unlink(missing_ok=True)
+            return
+        self.write_json(
+            self.current_case_context_path(),
+            {
+                "version": 1,
+                "selected_case_names": sorted(selected_names, key=str.casefold),
+            },
+        )
 
     def read_reader_highlights(self) -> dict[str, dict[str, list[ReaderHighlight]]]:
         data = self.read_json(self.reader_highlights_path())

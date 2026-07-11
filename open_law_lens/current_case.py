@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -15,6 +16,13 @@ CASE_NUMBER_RE = re.compile(r"[BDGE]\d{6}")
 
 class CurrentCaseError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class CurrentCaseSocf:
+    case_name: str
+    case_dir: Path
+    path: Path
 
 
 def clean_case_name(case_name: str) -> str:
@@ -79,6 +87,18 @@ def current_case_socf_odt(
     case_file: Path = CURRENT_CASE_FILE,
     roots: list[Path] | None = None,
 ) -> Path:
+    return current_case_socf(case_file=case_file, roots=roots).path
+
+
+def current_case_socf(
+    *,
+    case_file: Path = CURRENT_CASE_FILE,
+    roots: list[Path] | None = None,
+) -> CurrentCaseSocf:
     case_name = read_current_case(case_file)
     case_dir = resolve_case_dir(case_name, roots)
-    return find_socf_odt(case_dir)
+    return CurrentCaseSocf(
+        case_name=case_name,
+        case_dir=case_dir,
+        path=find_socf_odt(case_dir),
+    )
