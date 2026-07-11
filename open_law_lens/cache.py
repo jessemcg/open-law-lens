@@ -117,6 +117,7 @@ class JsonCache:
             "opinions",
             "statutes",
             "rules",
+            "prior_briefs",
             "agent_answers",
             "slip_opinions",
         ):
@@ -134,6 +135,9 @@ class JsonCache:
 
     def agent_answer_index_path(self) -> Path:
         return self.root / "agent_answers_index.json"
+
+    def prior_brief_index_path(self) -> Path:
+        return self.root / "prior_briefs_index.json"
 
     def metadata_path(self) -> Path:
         return self.root / "metadata.json"
@@ -167,6 +171,9 @@ class JsonCache:
 
     def agent_answer_path(self, answer_id: str) -> Path:
         return self.resource_path("agent_answers", answer_id)
+
+    def prior_brief_path(self, brief_id: str) -> Path:
+        return self.resource_path("prior_briefs", brief_id)
 
     def slip_opinion_payload_path(self, case_number: str) -> Path:
         clean_case_number = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(case_number or "").strip().upper())
@@ -205,7 +212,7 @@ class JsonCache:
         if not isinstance(raw_positions, dict):
             return {}
         positions: dict[str, dict[str, int]] = {}
-        for item_type in ("case", "statute", "rule", "agent_answer", "socf"):
+        for item_type in ("case", "statute", "rule", "prior_brief", "agent_answer", "socf"):
             raw_items = raw_positions.get(item_type)
             if not isinstance(raw_items, dict):
                 continue
@@ -232,7 +239,7 @@ class JsonCache:
     def set_reader_position(self, item_type: str, authority_id: str, offset: int) -> None:
         clean_type = str(item_type or "").strip()
         clean_id = str(authority_id or "").strip()
-        if clean_type not in {"case", "statute", "rule", "agent_answer", "socf"} or not clean_id:
+        if clean_type not in {"case", "statute", "rule", "prior_brief", "agent_answer", "socf"} or not clean_id:
             return
         try:
             clean_offset = max(0, int(offset))
@@ -308,7 +315,7 @@ class JsonCache:
         if not isinstance(raw_highlights, dict):
             return {}
         highlights: dict[str, dict[str, list[ReaderHighlight]]] = {}
-        for item_type in ("case", "statute", "rule"):
+        for item_type in ("case", "statute", "rule", "prior_brief"):
             raw_items = raw_highlights.get(item_type)
             if not isinstance(raw_items, dict):
                 continue
@@ -344,7 +351,7 @@ class JsonCache:
     ) -> None:
         clean_type = str(item_type or "").strip()
         clean_id = str(authority_id or "").strip()
-        if clean_type not in {"case", "statute", "rule"} or not clean_id:
+        if clean_type not in {"case", "statute", "rule", "prior_brief"} or not clean_id:
             return
         highlights = self.read_reader_highlights()
         if entries:
@@ -848,6 +855,89 @@ class JsonCache:
         self.mark_active_research_set_dirty()
         return True
 
+    def read_prior_brief_index(self) -> dict[str, dict[str, Any]]:
+        data = self.read_json(self.prior_brief_index_path())
+        return data if isinstance(data, dict) else {}
+
+    def write_prior_brief_index(self, index: dict[str, dict[str, Any]]) -> None:
+        self.write_json(self.prior_brief_index_path(), index)
+
+    @_synchronized
+    def upsert_prior_brief(self, brief: dict[str, Any]) -> str:
+        brief_id = str(brief.get("brief_id") or "").strip()
+        text = str(brief.get("text") or "").strip()
+        if not brief_id or not text:
+            return ""
+        self.write_json(self.prior_brief_path(brief_id), brief)
+        index = self.read_prior_brief_index()
+        existing = index.get(brief_id, {})
+        index[brief_id] = {
+            "brief_id": brief_id,
+            "title": str(brief.get("title") or "Untitled prior brief"),
+            "case_number": str(brief.get("case_number") or ""),
+            "document_type": str(brief.get("document_type") or "Prior brief"),
+            "document_date": str(brief.get("document_date") or ""),
+            "date_source": str(brief.get("date_source") or ""),
+            "relative_path": str(brief.get("relative_path") or ""),
+            "brief_path": str(self.prior_brief_path(brief_id)),
+            "agent_selected": bool(existing.get("agent_selected", False)),
+            "added_at": str(existing.get("added_at") or _utc_now()),
+            "loaded_at": _utc_now(),
+        }
+        self.write_prior_brief_index(index)
+        self.mark_active_research_set_dirty()
+        return brief_id
+
+    def list_prior_brief_entries(self) -> list[dict[str, Any]]:
+        entries = list(self.read_prior_brief_index().values())
+        entries.sort(
+            key=lambda item: (
+                str(item.get("document_date") or ""),
+                str(item.get("title") or "").casefold(),
+            ),
+            reverse=True,
+        )
+        return entries
+
+    def read_prior_brief(self, brief_id: str) -> dict[str, Any] | None:
+        data = self.read_json(self.prior_brief_path(brief_id))
+        return data if isinstance(data, dict) else None
+
+    def is_prior_brief_agent_selected(self, brief_id: str) -> bool:
+        entry = self.read_prior_brief_index().get(brief_id)
+        return bool(entry.get("agent_selected")) if isinstance(entry, dict) else False
+
+    @_synchronized
+    def set_prior_brief_agent_selected(self, brief_id: str, selected: bool) -> None:
+        index = self.read_prior_brief_index()
+        entry = index.get(brief_id)
+        if not isinstance(entry, dict):
+            return
+        entry["agent_selected"] = bool(selected)
+        index[brief_id] = entry
+        self.write_prior_brief_index(index)
+        self.mark_active_research_set_dirty()
+
+    def selected_prior_brief_entries(self) -> list[dict[str, Any]]:
+        return [
+            entry
+            for entry in self.list_prior_brief_entries()
+            if bool(entry.get("agent_selected"))
+        ]
+
+    @_synchronized
+    def remove_prior_brief(self, brief_id: str) -> bool:
+        index = self.read_prior_brief_index()
+        entry = index.pop(brief_id, None)
+        if not isinstance(entry, dict):
+            return False
+        self.prior_brief_path(brief_id).unlink(missing_ok=True)
+        self.write_prior_brief_index(index)
+        self.remove_reader_position("prior_brief", brief_id)
+        self.remove_reader_highlights("prior_brief", brief_id)
+        self.mark_active_research_set_dirty()
+        return True
+
     @_synchronized
     def save_agent_answer(self, text: str, *, mode: str = "", title: str = "") -> str:
         clean_text = text.strip()
@@ -976,10 +1066,12 @@ class JsonCache:
                 self.root / "opinions",
                 self.root / "statutes",
                 self.root / "rules",
+                self.root / "prior_briefs",
                 self.root / "agent_answers",
                 self.case_index_path(),
                 self.statute_index_path(),
                 self.rule_index_path(),
+                self.prior_brief_index_path(),
                 self.agent_answer_index_path(),
                 self.metadata_path(),
             ]

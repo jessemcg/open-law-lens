@@ -87,6 +87,7 @@ from .config import (
     BARE_STATUTE_LAW_CODE_OPTIONS,
     DEFAULT_APPEAL_ISSUE_PRESETS,
     DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
+    DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE,
     DEFAULT_CASE_AGENT_PROMPT_TEMPLATE,
     DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE,
     DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
@@ -133,6 +134,7 @@ from .library import (
     normalize_display_quote_stacks,
     opinion_display_text,
 )
+from .prior_briefs import PriorBrief, PriorBriefError, PriorBriefLibrary
 from .quality import official_pagination_quality
 from .reader_highlights import (
     ReaderHighlight,
@@ -190,12 +192,17 @@ AGENT_SUBVIEW_ANSWER = "answer"
 AGENT_SUBVIEW_SESSION = "session"
 AGENT_MODE_GENERAL = "general"
 AGENT_MODE_CASE = "case"
+AGENT_MODE_BRIEF = "brief"
 AGENT_MODE_APPEAL = "appeal"
 CODEX_REASONING_EFFORT_XHIGH = "xhigh"
 AGENT_MODE_ICONS = {
     AGENT_MODE_GENERAL: "license-symbolic",
     AGENT_MODE_CASE: "file-cabinet-symbolic",
+    AGENT_MODE_BRIEF: "library-symbolic",
 }
+PRIOR_BRIEF_MARKDOWN_LINK_RE = re.compile(
+    r"\[([^\]\n]+)\]\(open-law-lens://prior-brief/([a-fA-F0-9]{16,64})\)"
+)
 GOOGLE_SCHOLAR_CASE_SEARCH_TEMPLATE = "https://scholar.google.com/scholar?hl=en&as_sdt=6,33&q={query}"
 EXTERNAL_URL_RE = re.compile(r"https?://\S+")
 SCHOLAR_FALLBACK_MANUAL_WINDOW = "manual_window"
@@ -276,10 +283,17 @@ def build_agent_launch_env(
     library_path = getattr(library, "path", None)
     if library_path is not None:
         env["OPEN_LAW_LENS_LIBRARY_DB"] = str(library_path)
+    prior_brief_snapshot = workspace / "prior_briefs.sqlite3"
+    if prior_brief_snapshot.is_file():
+        env["OPEN_LAW_LENS_PRIOR_BRIEFS_DB"] = str(prior_brief_snapshot)
+        env["OPEN_LAW_LENS_PRIOR_BRIEFS_DIR"] = str(workspace / "prior-brief-sources")
     return env
 
 
-MARKDOWN_TOKEN_RE = re.compile(r"(\*\*([^*\n]+)\*\*|\*([^*\n]+)\*)")
+MARKDOWN_TOKEN_RE = re.compile(
+    r"(\[([^\]\n]+)\]\(open-law-lens://prior-brief/([a-fA-F0-9]{16,64})\)"
+    r"|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*)"
+)
 BACKTICK_TOKEN_RE = re.compile(r"`([^`\n]+)`")
 TERMINAL_DARK_FOREGROUND = "#f2f4f8"
 TERMINAL_DARK_BACKGROUND = "#3d3d3d"
@@ -835,6 +849,16 @@ class SettingsWindow(Adw.ApplicationWindow):
             config.case_agent_xhigh_reasoning,
         )
         (
+            brief_prompt_page,
+            self.brief_agent_prompt_buffer,
+            self.brief_agent_xhigh_switch,
+        ) = self._build_prompt_settings_page(
+            "Prior Brief Agent Prompt",
+            "Prompt",
+            config.brief_agent_prompt_template,
+            config.brief_agent_xhigh_reasoning,
+        )
+        (
             appeal_prompt_page,
             self.appeal_issue_agent_prompt_buffer,
             self.appeal_issue_xhigh_switch,
@@ -859,6 +883,7 @@ class SettingsWindow(Adw.ApplicationWindow):
             ("appeal", "Appeal Arguments", appeal_scroller),
             ("general_prompt", "General Prompt", general_prompt_page),
             ("cache_prompt", "Research Cache Prompt", case_prompt_page),
+            ("brief_prompt", "Prior Brief Prompt", brief_prompt_page),
             ("appeal_prompt", "Appeal Prompt", appeal_prompt_page),
             ("later_treatment_prompt", "Subsequent Treatment Prompt", later_treatment_prompt_page),
         ]
@@ -1182,6 +1207,10 @@ class SettingsWindow(Adw.ApplicationWindow):
                     self._prompt_text(self.case_agent_prompt_buffer).strip()
                     or DEFAULT_CASE_AGENT_PROMPT_TEMPLATE
                 ),
+                brief_agent_prompt_template=(
+                    self._prompt_text(self.brief_agent_prompt_buffer).strip()
+                    or DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE
+                ),
                 appeal_issue_agent_prompt_template=(
                     self._prompt_text(self.appeal_issue_agent_prompt_buffer).strip()
                     or DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
@@ -1192,6 +1221,7 @@ class SettingsWindow(Adw.ApplicationWindow):
                 ),
                 general_agent_xhigh_reasoning=bool(self.general_agent_xhigh_switch.get_active()),
                 case_agent_xhigh_reasoning=bool(self.case_agent_xhigh_switch.get_active()),
+                brief_agent_xhigh_reasoning=bool(self.brief_agent_xhigh_switch.get_active()),
                 appeal_issue_xhigh_reasoning=bool(self.appeal_issue_xhigh_switch.get_active()),
                 later_treatment_xhigh_reasoning=bool(self.later_treatment_xhigh_switch.get_active()),
                 appeal_issue_presets=appeal_issue_presets,
@@ -1252,6 +1282,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def __init__(self, app: Adw.Application) -> None:
         super().__init__(application=app)
         self.client = CourtListenerClient.default()
+        self.prior_briefs = PriorBriefLibrary.default()
         self._clusters: list[dict[str, Any]] = []
         self._selected_cluster: dict[str, Any] | None = None
         self._statutes: list[dict[str, Any]] = []
@@ -1259,7 +1290,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._rules: list[dict[str, Any]] = []
         self._selected_rule: dict[str, Any] | None = None
         self._agent_answers: list[dict[str, Any]] = []
+        self._prior_brief_entries: list[dict[str, Any]] = []
         self._selected_agent_answer: dict[str, Any] | None = None
+        self._selected_prior_brief: PriorBrief | None = None
         self._suppress_sidebar_selection_lookup = False
         self._current_case_name = ""
         self._current_case_socf_path: Path | None = None
@@ -1405,6 +1438,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         clear_cache = Gio.SimpleAction.new("clear_cache", None)
         clear_cache.connect("activate", self._on_clear_cache)
         self.add_action(clear_cache)
+        update_brief_library = Gio.SimpleAction.new("update_brief_library", None)
+        update_brief_library.connect("activate", self._on_update_brief_library)
+        self.add_action(update_brief_library)
         save_research_set = Gio.SimpleAction.new("save_research_set", None)
         save_research_set.connect("activate", self._on_save_research_set)
         self.add_action(save_research_set)
@@ -1714,6 +1750,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         menu.append("Keyboard Shortcuts", "win.show_shortcuts")
         menu.append("CLI Commands", "win.show_cli_commands")
         menu.append("D-Bus Commands", "win.show_dbus_commands")
+        menu.append("Update Prior Brief Library", "win.update_brief_library")
         menu.append("Settings", "win.settings")
         button = Gtk.MenuButton(icon_name="open-menu-symbolic")
         button.set_tooltip_text("Menu")
@@ -2300,6 +2337,26 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         )
         self.reader_header_action_box.append(self.reader_helper_case_button)
 
+        self.reader_add_prior_brief_button = Gtk.Button(icon_name="list-add-symbolic")
+        self.reader_add_prior_brief_button.add_css_class("case-reader-header-action-button")
+        self.reader_add_prior_brief_button.set_tooltip_text("Add brief to Research Cache")
+        self.reader_add_prior_brief_button.set_visible(False)
+        self.reader_add_prior_brief_button.connect(
+            "clicked",
+            self._on_add_prior_brief_to_cache_clicked,
+        )
+        self.reader_header_action_box.append(self.reader_add_prior_brief_button)
+
+        self.reader_save_prior_brief_button = Gtk.Button(icon_name="document-save-symbolic")
+        self.reader_save_prior_brief_button.add_css_class("case-reader-header-action-button")
+        self.reader_save_prior_brief_button.set_tooltip_text("Save original ODT as...")
+        self.reader_save_prior_brief_button.set_visible(False)
+        self.reader_save_prior_brief_button.connect(
+            "clicked",
+            self._on_save_prior_brief_clicked,
+        )
+        self.reader_header_action_box.append(self.reader_save_prior_brief_button)
+
         self.reader_view = Gtk.TextView(buffer=self.reader_buffer)
         self.reader_view.set_editable(False)
         self.reader_view.set_cursor_visible(False)
@@ -2516,6 +2573,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         mode_strip.add_css_class("focus-pill-group")
         mode_strip.append(self._build_agent_mode_button(AGENT_MODE_GENERAL))
         mode_strip.append(self._build_agent_mode_button(AGENT_MODE_CASE))
+        mode_strip.append(self._build_agent_mode_button(AGENT_MODE_BRIEF))
         row.append(mode_strip)
 
         self.agent_question_entry = Gtk.Entry()
@@ -2615,7 +2673,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         tooltip = (
             "Ask from CourtListener legal authority"
             if mode == AGENT_MODE_GENERAL
-            else "Ask from marked Research Cache authorities"
+            else (
+                "Ask from marked Research Cache authorities"
+                if mode == AGENT_MODE_CASE
+                else "Ask across the indexed prior brief archive"
+            )
         )
         button.set_tooltip_text(tooltip)
         button.connect("toggled", self._on_agent_mode_button_toggled, mode)
@@ -2775,6 +2837,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._selected_statute = None
         self._selected_rule = None
         self._selected_agent_answer = None
+        self._selected_prior_brief = None
         self._reader_has_official_pagination = False
         self._reader_pagination_mode = READER_PAGINATION_NONE
         self._reader_slip_source_url = ""
@@ -3096,6 +3159,24 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self.reader_subsequent_treatment_button.set_sensitive(
                 self._reader_display_cluster is not None
             )
+        if hasattr(self, "reader_add_prior_brief_button"):
+            is_prior_brief = self._selected_prior_brief is not None
+            self.reader_add_prior_brief_button.set_visible(bool(header and is_prior_brief))
+            if is_prior_brief:
+                cached = self.client.cache.read_prior_brief(
+                    self._selected_prior_brief.brief_id
+                )
+                self.reader_add_prior_brief_button.set_sensitive(cached is None)
+                self.reader_add_prior_brief_button.set_tooltip_text(
+                    "Already in Research Cache" if cached else "Add brief to Research Cache"
+                )
+        if hasattr(self, "reader_save_prior_brief_button"):
+            source_exists = bool(
+                self._selected_prior_brief is not None
+                and Path(self._selected_prior_brief.source_path).is_file()
+            )
+            self.reader_save_prior_brief_button.set_visible(bool(header and is_prior_brief))
+            self.reader_save_prior_brief_button.set_sensitive(source_exists)
         self._update_reader_helper_case_button()
         self.reader_header_box.set_visible(bool(header))
 
@@ -4181,14 +4262,16 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _set_agent_mode(self, mode: str) -> None:
         self._selected_agent_mode = (
             mode
-            if mode in {AGENT_MODE_GENERAL, AGENT_MODE_CASE}
+            if mode in {AGENT_MODE_GENERAL, AGENT_MODE_CASE, AGENT_MODE_BRIEF}
             else AGENT_MODE_GENERAL
         )
         if hasattr(self, "agent_question_entry"):
             if self._selected_agent_mode == AGENT_MODE_GENERAL:
                 placeholder = "Ask a California law question"
-            else:
+            elif self._selected_agent_mode == AGENT_MODE_CASE:
                 placeholder = "Ask about marked Research Cache authorities"
+            else:
+                placeholder = "Ask about prior briefing"
             self.agent_question_entry.set_placeholder_text(placeholder)
         self._agent_mode_toggle_guard = True
         try:
@@ -4558,6 +4641,28 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         )
         thread.start()
 
+    def _on_update_brief_library(
+        self,
+        _action: Gio.SimpleAction,
+        _parameter: GLib.Variant | None,
+    ) -> None:
+        self._set_status("Updating Prior Brief Library...")
+        self._start_background_worker(
+            self.prior_briefs.sync,
+            on_success=self._finish_prior_brief_library_update,
+            on_error=lambda exc: self._set_status(
+                f"Unable to update Prior Brief Library: {exc}"
+            ),
+            handled_exceptions=(PriorBriefError, OSError, ValueError),
+        )
+
+    def _finish_prior_brief_library_update(self, result: Any) -> None:
+        error_text = f"; {len(result.errors)} error(s)" if result.errors else ""
+        self._set_status(
+            f"Prior Brief Library: {result.total} files; {result.added} added, "
+            f"{result.updated} updated, {result.removed} removed{error_text}."
+        )
+
     def _delete_detached_cache_worker(self, trash_path: Path) -> None:
         try:
             shutil.rmtree(trash_path)
@@ -4640,11 +4745,17 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 self._research_set_label.set_visible(False)
 
     def _research_cache_authority_count(self) -> int:
+        list_prior_briefs = getattr(
+            self.client.cache,
+            "list_prior_brief_entries",
+            lambda: [],
+        )
         return (
             len(self.client.cache.list_case_entries())
             + len(self.client.cache.list_statute_entries())
             + len(self.client.cache.list_rule_entries())
             + len(self.client.cache.list_agent_answer_entries())
+            + len(list_prior_briefs())
         )
 
     def _on_save_research_set(
@@ -6109,6 +6220,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             + len(statutes)
             + len(rules)
             + len(self.client.cache.list_agent_answer_entries())
+            + len(self.client.cache.list_prior_brief_entries())
         )
         if count:
             self._set_status(f"{count} Research Cache item(s).")
@@ -6176,6 +6288,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             str(entry.get("answer_id") or "").strip(): entry
             for entry in self._agent_answers
         }
+        self._prior_brief_entries = self.client.cache.list_prior_brief_entries()
         for index, cluster in enumerate(clusters):
             row = Gtk.ListBoxRow()
             row.set_selectable(True)
@@ -6344,6 +6457,77 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self.case_list.append(row)
             if select_rule_id and rule_id == select_rule_id:
                 selected_row = row
+        if self._prior_brief_entries:
+            header_row = Gtk.ListBoxRow()
+            header_row.set_selectable(False)
+            header_row.set_activatable(False)
+            header = Gtk.Label(label="Prior Briefing", xalign=0)
+            header.add_css_class("dim-label")
+            header.set_margin_top(12)
+            header.set_margin_bottom(2)
+            header.set_margin_start(8)
+            header.set_margin_end(8)
+            header_row.set_child(header)
+            header_row._open_law_lens_cache_section = "prior_brief_header"
+            header_row._open_law_lens_cache_sort_key = ("", "", "", "", "")
+            self.case_list.append(header_row)
+        for index, entry in enumerate(self._prior_brief_entries):
+            row = Gtk.ListBoxRow()
+            row.set_selectable(True)
+            row.set_activatable(True)
+            row.add_css_class("case-cache-row")
+            row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            row_box.set_margin_top(8)
+            row_box.set_margin_bottom(8)
+            row_box.set_margin_start(8)
+            row_box.set_margin_end(8)
+            brief_id = str(entry.get("brief_id") or "")
+            remove_button = Gtk.Button(icon_name="user-trash-symbolic")
+            remove_button.add_css_class("flat")
+            remove_button.add_css_class("case-row-icon-button")
+            remove_button.set_tooltip_text("Remove from Research Cache")
+            remove_button.connect("clicked", self._on_remove_prior_brief_clicked, brief_id)
+            row_box.append(remove_button)
+            text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            text_box.set_hexpand(True)
+            title_text = str(entry.get("title") or "Untitled prior brief")
+            title = Gtk.Label(label=title_text, xalign=0)
+            title.set_wrap(True)
+            text_box.append(title)
+            subtitle_text = " · ".join(
+                value
+                for value in (
+                    str(entry.get("document_type") or ""),
+                    str(entry.get("document_date") or ""),
+                )
+                if value
+            )
+            subtitle = Gtk.Label(label=subtitle_text, xalign=0)
+            subtitle.add_css_class("dim-label")
+            subtitle.set_wrap(True)
+            text_box.append(subtitle)
+            row_box.append(text_box)
+            check = Gtk.CheckButton()
+            check.add_css_class("neutral-agent-check")
+            check.set_valign(Gtk.Align.START)
+            check.set_tooltip_text("Make prior advocacy available to Cache Agent")
+            check.set_active(self.client.cache.is_prior_brief_agent_selected(brief_id))
+            check.connect("toggled", self._on_agent_prior_brief_toggled, brief_id)
+            row_box.append(check)
+            row.set_child(row_box)
+            row._open_law_lens_prior_brief_index = index
+            row._open_law_lens_authority_type = "prior_brief"
+            row._open_law_lens_authority_id = brief_id
+            row._open_law_lens_cache_section = "prior_brief"
+            row._open_law_lens_cache_sort_key = self._research_cache_row_sort_key(
+                entry,
+                title_text,
+                subtitle_text,
+                "prior_brief",
+                brief_id,
+            )
+            self.case_list.append(row)
+
         if self._agent_answers:
             header_row = Gtk.ListBoxRow()
             header_row.set_selectable(False)
@@ -6451,8 +6635,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     ) -> int:
         section_order = {
             "authority": 0,
-            "agent_answer_header": 1,
-            "agent_answer": 2,
+            "prior_brief_header": 1,
+            "prior_brief": 2,
+            "agent_answer_header": 3,
+            "agent_answer": 4,
         }
         section_a = section_order.get(getattr(row_a, "_open_law_lens_cache_section", "authority"), 0)
         section_b = section_order.get(getattr(row_b, "_open_law_lens_cache_section", "authority"), 0)
@@ -6472,6 +6658,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return "Issue assessment answer"
         if mode == AGENT_MODE_CASE:
             return "Research Cache answer"
+        if mode == AGENT_MODE_BRIEF:
+            return "Prior Brief answer"
         return "General legal answer"
 
     def _on_agent_case_toggled(self, button: Gtk.CheckButton, cluster_id: str) -> None:
@@ -6485,6 +6673,29 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def _on_agent_answer_toggled(self, button: Gtk.CheckButton, answer_id: str) -> None:
         self.client.cache.set_agent_answer_selected(answer_id, button.get_active())
+
+    def _on_agent_prior_brief_toggled(self, button: Gtk.CheckButton, brief_id: str) -> None:
+        self.client.cache.set_prior_brief_agent_selected(brief_id, button.get_active())
+
+    def _on_remove_prior_brief_clicked(
+        self,
+        _button: Gtk.Button,
+        brief_id: str,
+    ) -> None:
+        entry = next(
+            (
+                item
+                for item in self.client.cache.list_prior_brief_entries()
+                if str(item.get("brief_id") or "") == brief_id
+            ),
+            {},
+        )
+        title = str(entry.get("title") or "Prior brief")
+        if not self.client.cache.remove_prior_brief(brief_id):
+            self._set_status("Prior brief was not found in Research Cache.")
+            return
+        self._load_cached_cases()
+        self._set_status(f"Removed {title} from Research Cache. Brief Library preserved.")
 
     def _on_remove_cached_case_clicked(
         self,
@@ -6736,6 +6947,31 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 return
             self._open_agent_answer(self._agent_answers[index])
             return
+        if authority_type == "prior_brief":
+            index = getattr(row, "_open_law_lens_prior_brief_index", None)
+            if not isinstance(index, int) or index < 0 or index >= len(self._prior_brief_entries):
+                return
+            entry = self._prior_brief_entries[index]
+            brief_id = str(entry.get("brief_id") or "")
+            payload = self.client.cache.read_prior_brief(brief_id)
+            if not isinstance(payload, dict):
+                self._set_status("Cached prior brief text is unavailable.")
+                return
+            live = self.prior_briefs.read(brief_id)
+            if live is not None:
+                self._open_prior_brief(brief_id)
+                return
+            try:
+                brief = PriorBrief(**payload)
+            except TypeError:
+                self._set_status("Cached prior brief metadata is invalid.")
+                return
+            self._selected_prior_brief = brief
+            self._set_reader_position_key("prior_brief", brief.brief_id)
+            self._set_reader_header(brief.title)
+            self._set_reader_text(brief.text)
+            self._set_status(f"Loaded {brief.title} from Research Cache.")
+            return
         index = getattr(row, "_open_law_lens_cluster_index", None)
         if not isinstance(index, int) or index < 0 or index >= len(self._clusters):
             return
@@ -6761,6 +6997,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._selected_statute = statute
         self._selected_rule = None
         self._selected_agent_answer = None
+        self._selected_prior_brief = None
         self._reader_has_official_pagination = False
         self._reader_pagination_mode = READER_PAGINATION_NONE
         self._reader_slip_source_url = ""
@@ -6788,6 +7025,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._selected_statute = None
         self._selected_rule = rule
         self._selected_agent_answer = None
+        self._selected_prior_brief = None
         self._reader_has_official_pagination = False
         self._reader_pagination_mode = READER_PAGINATION_NONE
         self._reader_slip_source_url = ""
@@ -6816,6 +7054,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._selected_statute = None
         self._selected_rule = None
         self._selected_agent_answer = None
+        self._selected_prior_brief = None
         self._reader_has_official_pagination = False
         self._reader_pagination_mode = READER_PAGINATION_NONE
         self._reader_slip_source_url = ""
@@ -7083,6 +7322,32 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         )
         return f"{prompt}\n\n{context}"
 
+    def _compose_brief_agent_prompt(
+        self,
+        question: str,
+        database_path: Path,
+        brief_count: int,
+        current_case_export: FactPatternExport | None = None,
+        current_case_selected: bool = False,
+        current_case_warning: str = "",
+    ) -> str:
+        config = load_config()
+        prompt = self._format_agent_prompt(
+            config.brief_agent_prompt_template,
+            DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE,
+            {
+                "question": question,
+                "brief_database": str(database_path),
+                "brief_count": brief_count,
+            },
+        )
+        context = OpenLawLensWindow._compose_current_case_context(
+            current_case_export,
+            current_case_selected,
+            current_case_warning,
+        )
+        return f"{prompt}\n\n{context}"
+
     @staticmethod
     def _compose_current_case_context(
         current_case_export: FactPatternExport | None,
@@ -7188,6 +7453,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 answers.append({**entry, **answer})
         return answers
 
+    def _selected_agent_prior_briefs(self) -> list[dict[str, Any]]:
+        briefs: list[dict[str, Any]] = []
+        for entry in self.client.cache.selected_prior_brief_entries():
+            brief_id = str(entry.get("brief_id") or "").strip()
+            brief = self.client.cache.read_prior_brief(brief_id) if brief_id else None
+            if isinstance(brief, dict):
+                briefs.append({**entry, **brief})
+        return briefs
+
     def start_appeal_issue_assessment(self, issue: str, fact_pattern_path: Path) -> bool:
         issue = issue.strip()
         if not issue:
@@ -7261,16 +7535,31 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         current_case, current_case_selected, current_case_warning = (
             self._current_case_context_for_launch()
         )
+        if mode == AGENT_MODE_BRIEF:
+            self._set_status("Updating Prior Brief Library...")
+            threading.Thread(
+                target=self._prepare_brief_agent_worker,
+                args=(
+                    question,
+                    current_case,
+                    current_case_selected,
+                    current_case_warning,
+                ),
+                daemon=True,
+            ).start()
+            return
         if mode == AGENT_MODE_CASE:
             clusters = self._selected_agent_clusters()
             statutes = self._selected_agent_statutes()
             rules = self._selected_agent_rules()
             agent_answers = self._selected_agent_answers()
+            prior_briefs = self._selected_agent_prior_briefs()
             if (
                 not clusters
                 and not statutes
                 and not rules
                 and not agent_answers
+                and not prior_briefs
                 and not (current_case_selected and current_case is not None)
             ):
                 if current_case_selected and current_case_warning:
@@ -7294,6 +7583,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                     current_case,
                     current_case_selected,
                     current_case_warning,
+                    prior_briefs,
                 ),
                 daemon=True,
             )
@@ -7310,6 +7600,92 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             ),
             daemon=True,
         ).start()
+
+    def _prepare_brief_agent_worker(
+        self,
+        question: str,
+        current_case: CurrentCaseSocf | None,
+        current_case_selected: bool,
+        current_case_warning: str,
+    ) -> None:
+        try:
+            sync_result = self.prior_briefs.sync()
+            if sync_result.errors:
+                raise PriorBriefError("; ".join(sync_result.errors[:3]))
+            if self.prior_briefs.count() == 0:
+                raise PriorBriefError("The Prior Brief Library is empty.")
+            workspace = self._create_agent_workspace()
+            snapshot_path = self.prior_briefs.backup(workspace / "prior_briefs.sqlite3")
+            current_case_export: FactPatternExport | None = None
+            warning = current_case_warning
+            if current_case_selected and current_case is not None:
+                try:
+                    current_case_export = export_fact_pattern(
+                        current_case.path,
+                        workspace / "current_case_fact_pattern",
+                    )
+                except (FactPatternError, OSError) as exc:
+                    warning = str(exc)
+            briefs = self.prior_briefs.list_briefs()
+            text_sources = [
+                CaseTextSource(
+                    cluster_id="",
+                    opinion_id="",
+                    title=brief.title,
+                    citation=brief.document_date,
+                    text_path=brief.source_path,
+                    text=brief.text,
+                    authority_type="prior_brief",
+                    prior_brief_id=brief.brief_id,
+                )
+                for brief in briefs
+            ]
+            prompt_path = self._write_prompt_file(
+                self._compose_brief_agent_prompt(
+                    question,
+                    snapshot_path,
+                    len(briefs),
+                    current_case_export,
+                    current_case_selected,
+                    warning,
+                )
+            )
+            GLib.idle_add(
+                self._finish_brief_agent_prepare,
+                prompt_path,
+                workspace,
+                text_sources,
+                current_case_export is not None,
+                warning if current_case_selected and current_case_export is None else "",
+            )
+        except (PriorBriefError, OSError, ValueError) as exc:
+            GLib.idle_add(self._set_status, f"Unable to prepare Brief Agent: {exc}")
+
+    def _finish_brief_agent_prepare(
+        self,
+        prompt_path: Path,
+        workspace: Path,
+        text_sources: list[CaseTextSource],
+        current_case_included: bool,
+        current_case_warning: str = "",
+    ) -> bool:
+        self._case_agent_text_sources = text_sources
+        self._agent_mode = AGENT_MODE_BRIEF
+        config = load_config()
+        if current_case_included:
+            status = "Started Brief Agent with current-case SOCF."
+        elif current_case_warning:
+            status = "Started Brief Agent without selected current-case SOCF; see the session."
+        else:
+            status = "Started Brief Agent."
+        self._launch_agent_with_prompt(
+            prompt_path,
+            workspace,
+            AGENT_MODE_BRIEF,
+            xhigh_reasoning_effort(config.brief_agent_xhigh_reasoning),
+            success_status=status,
+        )
+        return False
 
     def _prepare_general_agent_worker(
         self,
@@ -7412,6 +7788,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         current_case: CurrentCaseSocf | None,
         current_case_selected: bool,
         current_case_warning: str = "",
+        prior_briefs: list[dict[str, Any]] | None = None,
     ) -> None:
         try:
             workspace = self._create_agent_workspace()
@@ -7422,6 +7799,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 rules,
                 workspace / "selected_authorities",
                 agent_answers,
+                prior_briefs or [],
             )
             current_case_export: FactPatternExport | None = None
             warning = current_case_warning
@@ -7700,8 +8078,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             for idx in range(cursor, start):
                 orig_to_clean[idx] = clean_offset + (idx - cursor)
             clean_offset += len(before)
-            content = match.group(2) or match.group(3) or ""
-            kind = "bold" if match.group(2) is not None else "italic"
+            if match.group(2) is not None:
+                content = match.group(2)
+                kind = f"prior_brief:{match.group(3)}"
+            elif match.group(4) is not None:
+                content = match.group(4)
+                kind = "bold"
+            else:
+                content = match.group(5) or ""
+                kind = "italic"
             span_start = clean_offset
             out.append(content)
             clean_offset += len(content)
@@ -7746,12 +8131,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_search_highlight_tags.clear()
         quote_spans = (
             resolved_agent_quote_spans(text, self._case_agent_text_sources)
-            if self._agent_mode == AGENT_MODE_CASE
+            if self._agent_mode in {AGENT_MODE_CASE, AGENT_MODE_BRIEF}
             else []
         )
         rendered, markdown_spans, offset_map = self._render_markdown_text(text)
         buffer.set_text(rendered)
         self._apply_agent_markdown_spans(buffer, markdown_spans)
+        if self._agent_mode == AGENT_MODE_BRIEF:
+            self._apply_agent_prior_brief_title_links(buffer, rendered)
         self._apply_agent_citation_italics(buffer, rendered)
         quote_color = self._resolve_agent_quote_color()
         for span in quote_spans:
@@ -7765,7 +8152,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 None,
                 foreground_rgba=quote_color,
                 underline=Pango.Underline.NONE,
-                weight=Pango.Weight.MEDIUM,
+                weight=Pango.Weight.BOLD,
             )
             buffer.apply_tag(
                 tag,
@@ -7779,6 +8166,54 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._apply_agent_statute_links(buffer, rendered)
             self._apply_agent_rule_links(buffer, rendered)
         self._apply_agent_external_url_links(buffer, rendered)
+
+    def _apply_agent_prior_brief_title_links(
+        self,
+        buffer: Gtk.TextBuffer,
+        text: str,
+    ) -> None:
+        occupied: list[tuple[int, int]] = []
+        sources = sorted(
+            (
+                source
+                for source in self._case_agent_text_sources
+                if source.authority_type == "prior_brief"
+                and source.prior_brief_id
+                and source.title
+            ),
+            key=lambda source: len(source.title),
+            reverse=True,
+        )
+        for source in sources:
+            for match in re.finditer(re.escape(source.title), text, flags=re.IGNORECASE):
+                start, end = match.span()
+                if any(start < prior_end and end > prior_start for prior_start, prior_end in occupied):
+                    continue
+                tag = buffer.create_tag(
+                    None,
+                    foreground_rgba=self._resolve_agent_quote_color(),
+                    underline=Pango.Underline.SINGLE,
+                    weight=Pango.Weight.MEDIUM,
+                )
+                buffer.apply_tag(
+                    tag,
+                    buffer.get_iter_at_offset(start),
+                    buffer.get_iter_at_offset(end),
+                )
+                self._agent_link_tags.append(tag)
+                self._agent_link_lookup[tag] = QuoteTarget(
+                    phrase=match.group(0),
+                    cluster_id="",
+                    opinion_id="",
+                    title=source.title,
+                    citation=source.citation,
+                    text_path=source.text_path,
+                    offset=0,
+                    end_offset=0,
+                    authority_type="prior_brief",
+                    prior_brief_id=source.prior_brief_id,
+                )
+                occupied.append((start, end))
 
     def _apply_agent_citation_italics(self, buffer: Gtk.TextBuffer, text: str) -> None:
         table = buffer.get_tag_table()
@@ -8229,6 +8664,39 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 tag = heading_tags.get(kind)
                 if tag is not None:
                     buffer.apply_tag(tag, start_iter, end_iter)
+            elif kind.startswith("prior_brief:"):
+                brief_id = kind.partition(":")[2]
+                source = next(
+                    (
+                        item
+                        for item in self._case_agent_text_sources
+                        if item.authority_type == "prior_brief"
+                        and item.prior_brief_id == brief_id
+                    ),
+                    None,
+                )
+                if source is None:
+                    continue
+                tag = buffer.create_tag(
+                    None,
+                    foreground_rgba=self._resolve_agent_quote_color(),
+                    underline=Pango.Underline.SINGLE,
+                    weight=Pango.Weight.MEDIUM,
+                )
+                buffer.apply_tag(tag, start_iter, end_iter)
+                self._agent_link_tags.append(tag)
+                self._agent_link_lookup[tag] = QuoteTarget(
+                    phrase=source.title,
+                    cluster_id="",
+                    opinion_id="",
+                    title=source.title,
+                    citation=source.citation,
+                    text_path=source.text_path,
+                    offset=0,
+                    end_offset=0,
+                    authority_type="prior_brief",
+                    prior_brief_id=brief_id,
+                )
 
     def _install_agent_answer_link_controllers(self) -> None:
         view = self._agent_answer_view
@@ -8418,6 +8886,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return False
 
     def _open_quote_target(self, target: QuoteTarget) -> None:
+        if target.authority_type == "prior_brief":
+            if self._quote_target_is_selected(target) and self._reader_text:
+                self._highlight_reader_quote_target(target)
+                return
+            self._open_prior_brief(target.prior_brief_id, target)
+            return
         authority_id = self._quote_target_authority_id(target)
         row = self._research_cache_authority_row(target.authority_type, authority_id)
         if row is None:
@@ -8430,12 +8904,109 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if self.case_list.get_selected_row() is not row:
             self.case_list.select_row(row)
 
+    def _open_prior_brief(
+        self,
+        brief_id: str,
+        target: QuoteTarget | None = None,
+    ) -> None:
+        brief = self.prior_briefs.read(brief_id)
+        added_to_cache = False
+        if brief is None:
+            payload = self.client.cache.read_prior_brief(brief_id)
+            try:
+                brief = PriorBrief(**payload) if isinstance(payload, dict) else None
+            except TypeError:
+                brief = None
+            if brief is None:
+                self._set_status("Prior brief is no longer available in the Brief Library.")
+                return
+        elif self.client.cache.read_prior_brief(brief_id) is None:
+            added_to_cache = bool(
+                self.client.cache.upsert_prior_brief(brief.to_json())
+            )
+            if added_to_cache:
+                self._load_cached_cases()
+        capture_position = getattr(self, "_capture_current_reader_position", None)
+        if capture_position is not None:
+            capture_position()
+        if hasattr(self, "case_list"):
+            self.case_list.unselect_all()
+        self._selected_cluster = None
+        self._selected_statute = None
+        self._selected_rule = None
+        self._selected_agent_answer = None
+        self._selected_prior_brief = brief
+        self._set_reader_position_key("prior_brief", brief.brief_id)
+        metadata = " · ".join(
+            value
+            for value in (brief.document_type, brief.case_number, brief.document_date)
+            if value
+        )
+        self._set_reader_header(f"{brief.title}\n{metadata}" if metadata else brief.title)
+        if target is not None and target.end_offset > target.offset:
+            self._pending_quote_target = target
+        self._set_reader_text(brief.text)
+        self._set_status(
+            f"Opened prior brief: {brief.title}."
+            + (" Added to Research Cache." if added_to_cache else "")
+        )
+
+    def _on_add_prior_brief_to_cache_clicked(self, _button: Gtk.Button) -> None:
+        brief = self._selected_prior_brief
+        if brief is None:
+            self._set_status("No prior brief is open.")
+            return
+        brief_id = self.client.cache.upsert_prior_brief(brief.to_json())
+        if not brief_id:
+            self._set_status("Could not add prior brief to Research Cache.")
+            return
+        header = self.reader_header_label.get_text()
+        self._load_cached_cases()
+        self._selected_prior_brief = brief
+        self._set_reader_header(header)
+        self._set_status(f"Added {brief.title} to Research Cache.")
+
+    def _on_save_prior_brief_clicked(self, _button: Gtk.Button) -> None:
+        brief = self._selected_prior_brief
+        if brief is None or not Path(brief.source_path).is_file():
+            self._set_status("Original prior brief ODT is unavailable.")
+            return
+        dialog = Gtk.FileDialog(title="Save Prior Brief ODT")
+        source_path = Path(brief.source_path)
+        dialog.set_initial_name(source_path.name)
+        dialog.save(self, None, self._on_save_prior_brief_ready, source_path)
+
+    def _on_save_prior_brief_ready(
+        self,
+        dialog: Gtk.FileDialog,
+        result: Gio.AsyncResult,
+        source_path: Path,
+    ) -> None:
+        try:
+            destination = dialog.save_finish(result)
+        except GLib.Error:
+            return
+        destination_path = destination.get_path() if destination is not None else None
+        if not destination_path:
+            self._set_status("Choose a local destination for the ODT.")
+            return
+        self._start_background_worker(
+            lambda: shutil.copy2(source_path, Path(destination_path)),
+            on_success=lambda _value: self._set_status(
+                f"Saved prior brief ODT: {Path(destination_path).name}."
+            ),
+            on_error=lambda exc: self._set_status(f"Unable to save prior brief ODT: {exc}"),
+            handled_exceptions=(OSError,),
+        )
+
     @staticmethod
     def _quote_target_authority_id(target: QuoteTarget) -> str:
         if target.authority_type == "statute":
             return target.statute_id
         if target.authority_type == "rule":
             return target.rule_id
+        if target.authority_type == "prior_brief":
+            return target.prior_brief_id
         return target.cluster_id
 
     def _research_cache_authority_row(
@@ -8454,6 +9025,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return None
 
     def _quote_target_is_selected(self, target: QuoteTarget) -> bool:
+        if target.authority_type == "prior_brief":
+            return bool(
+                self._selected_prior_brief is not None
+                and target.prior_brief_id == self._selected_prior_brief.brief_id
+            )
         if target.authority_type == "statute":
             selected_id = str((self._selected_statute or {}).get("statute_id") or "")
             return bool(target.statute_id and selected_id == target.statute_id)
@@ -8579,6 +9155,13 @@ class OpenLawLensApp(Adw.Application):
         )
         self.add_action(submit_speech_cache_question)
 
+        submit_speech_brief_question = Gio.SimpleAction.new("submit_speech_brief_question", None)
+        submit_speech_brief_question.connect(
+            "activate",
+            self._on_submit_speech_brief_question,
+        )
+        self.add_action(submit_speech_brief_question)
+
     def _on_activate(self, _app: Adw.Application) -> None:
         install_bundled_icons = getattr(self, "_install_bundled_icon_path", None)
         if install_bundled_icons is not None:
@@ -8636,6 +9219,13 @@ class OpenLawLensApp(Adw.Application):
         _parameter: GLib.Variant | None,
     ) -> None:
         self._main_window().submit_speech_question(AGENT_MODE_CASE)
+
+    def _on_submit_speech_brief_question(
+        self,
+        _action: Gio.SimpleAction,
+        _parameter: GLib.Variant | None,
+    ) -> None:
+        self._main_window().submit_speech_question(AGENT_MODE_BRIEF)
 
     def _on_open_authority(
         self,

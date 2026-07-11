@@ -19,6 +19,7 @@ from .client import (
 )
 from .launch_request import discard_open_authority_request, write_open_authority_request
 from .library import CaseLibrary, LibraryPruneCandidate
+from .prior_briefs import PriorBriefLibrary
 from .rules import CaliforniaRulesError
 from .slip_opinions import (
     DEFAULT_SLIP_OPINION_MAX_AGE_DAYS,
@@ -575,7 +576,8 @@ def _cmd_show_cache(_args: argparse.Namespace) -> int:
     statutes = cache.list_statute_entries()
     rules = cache.list_rule_entries()
     answers = cache.list_agent_answer_entries()
-    if not entries and not statutes and not rules and not answers:
+    prior_briefs = cache.list_prior_brief_entries()
+    if not entries and not statutes and not rules and not answers and not prior_briefs:
         print("No Research Cache items.")
         return 0
     for entry in entries:
@@ -603,6 +605,11 @@ def _cmd_show_cache(_args: argparse.Namespace) -> int:
         mode = str(entry.get("mode") or "").strip() or "general"
         answer_id = str(entry.get("answer_id") or "").strip()
         print(f"{title} | saved answer {answer_id} | mode {mode}")
+    for entry in prior_briefs:
+        title = str(entry.get("title") or "Prior brief")
+        document_date = str(entry.get("document_date") or "")
+        brief_id = str(entry.get("brief_id") or "")
+        print(f"{title} | prior brief {brief_id} | date {document_date}")
     return 0
 
 
@@ -610,6 +617,61 @@ def _cmd_clear_cache(_args: argparse.Namespace) -> int:
     cache = JsonCache.default()
     cache.clear()
     print(f"Cleared Research Cache: {cache.root}")
+    return 0
+
+
+def _cmd_update_brief_library(_args: argparse.Namespace) -> int:
+    library = PriorBriefLibrary.default()
+    result = library.sync()
+    _print_json(result.to_json())
+    return 1 if result.errors else 0
+
+
+def _cmd_search_briefs(args: argparse.Namespace) -> int:
+    library = PriorBriefLibrary.default()
+    results = library.search(
+        args.query,
+        match=args.match,
+        sort=args.sort,
+        limit=args.limit,
+    )
+    _print_json(
+        {
+            "query": args.query,
+            "match": args.match,
+            "sort": args.sort,
+            "count": len(results),
+            "results": [result.to_json() for result in results],
+        }
+    )
+    return 0
+
+
+def _cmd_extract_brief(args: argparse.Namespace) -> int:
+    brief = PriorBriefLibrary.default().read(args.brief_id)
+    if brief is None:
+        print(f"Prior brief not found: {args.brief_id}", file=sys.stderr)
+        return 1
+    if args.text:
+        print(brief.text)
+    else:
+        _print_json(brief.to_json())
+    return 0
+
+
+def _cmd_show_briefs(_args: argparse.Namespace) -> int:
+    briefs = PriorBriefLibrary.default().list_briefs()
+    _print_json(
+        {
+            "count": len(briefs),
+            "briefs": [brief.to_json(include_text=False) for brief in briefs],
+        }
+    )
+    return 0
+
+
+def _cmd_brief_library_db(_args: argparse.Namespace) -> int:
+    print(PriorBriefLibrary.default().path)
     return 0
 
 
@@ -624,7 +686,8 @@ def _cmd_show_research_sets(_args: argparse.Namespace) -> int:
             f"{research_set.name} | id {research_set.set_id} | "
             f"{research_set.item_count} Research Cache items "
             f"({research_set.case_count} cases, {research_set.statute_count} statutes, "
-            f"{research_set.rule_count} rules, {research_set.agent_answer_count} saved answers) "
+            f"{research_set.rule_count} rules, {research_set.prior_brief_count} prior briefs, "
+            f"{research_set.agent_answer_count} saved answers) "
             f"| updated {research_set.updated_at}"
         )
     return 0
@@ -853,6 +916,52 @@ def build_parser() -> argparse.ArgumentParser:
 
     clear_cache_parser = subparsers.add_parser("clear-cache", help="delete Research Cache data")
     clear_cache_parser.set_defaults(func=_cmd_clear_cache)
+
+    update_briefs_parser = subparsers.add_parser(
+        "update-brief-library",
+        help="incrementally update the prior brief text index",
+    )
+    update_briefs_parser.set_defaults(func=_cmd_update_brief_library)
+
+    search_briefs_parser = subparsers.add_parser(
+        "search-briefs",
+        help="search indexed prior briefs",
+    )
+    search_briefs_parser.add_argument("query")
+    search_briefs_parser.add_argument(
+        "--match",
+        choices=("all", "any", "phrase"),
+        default="all",
+        help="how query terms must match",
+    )
+    search_briefs_parser.add_argument(
+        "--sort",
+        choices=("relevance", "newest"),
+        default="relevance",
+        help="result ordering",
+    )
+    search_briefs_parser.add_argument("--limit", type=int, default=20)
+    search_briefs_parser.set_defaults(func=_cmd_search_briefs)
+
+    extract_brief_parser = subparsers.add_parser(
+        "extract-brief",
+        help="extract an indexed prior brief by ID",
+    )
+    extract_brief_parser.add_argument("brief_id")
+    extract_brief_parser.add_argument("--text", action="store_true")
+    extract_brief_parser.set_defaults(func=_cmd_extract_brief)
+
+    show_briefs_parser = subparsers.add_parser(
+        "show-briefs",
+        help="list indexed prior briefs",
+    )
+    show_briefs_parser.set_defaults(func=_cmd_show_briefs)
+
+    brief_library_db_parser = subparsers.add_parser(
+        "brief-library-db",
+        help="print the prior brief database path",
+    )
+    brief_library_db_parser.set_defaults(func=_cmd_brief_library_db)
 
     show_research_sets_parser = subparsers.add_parser(
         "show-research-sets",

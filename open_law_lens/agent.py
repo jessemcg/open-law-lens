@@ -32,6 +32,7 @@ class QuoteTarget:
     authority_type: str = "case"
     statute_id: str = ""
     rule_id: str = ""
+    prior_brief_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,7 @@ class CaseTextSource:
     statute_id: str = ""
     rule_id: str = ""
     agent_answer_id: str = ""
+    prior_brief_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -72,10 +74,17 @@ class CaseExport:
     statute_count: int = 0
     rule_count: int = 0
     agent_answer_count: int = 0
+    prior_brief_count: int = 0
 
     @property
     def authority_count(self) -> int:
-        return self.case_count + self.statute_count + self.rule_count + self.agent_answer_count
+        return (
+            self.case_count
+            + self.statute_count
+            + self.rule_count
+            + self.agent_answer_count
+            + self.prior_brief_count
+        )
 
 
 def _json_dumps(value: Any) -> str:
@@ -178,7 +187,7 @@ def extract_quoted_phrases(text: str) -> list[tuple[int, int, str]]:
         if not phrase:
             continue
         word_count = len(re.findall(r"\b[\w'-]+\b", phrase))
-        if 2 <= word_count <= 5:
+        if 2 <= word_count <= 10:
             group_index = 1 if match.group(1) is not None else 2
             spans.append((match.start(group_index), match.end(group_index), phrase))
     return spans
@@ -242,6 +251,7 @@ def resolve_quote_target(
         authority_type=source.authority_type,
         statute_id=source.statute_id,
         rule_id=source.rule_id,
+        prior_brief_id=source.prior_brief_id,
     )
 
 
@@ -316,6 +326,8 @@ def _source_authority_key(source: CaseTextSource) -> tuple[str, str] | None:
         return ("statute", source.statute_id)
     if source.authority_type == "rule" and source.rule_id:
         return ("rule", source.rule_id)
+    if source.authority_type == "prior_brief" and source.prior_brief_id:
+        return ("prior_brief", source.prior_brief_id)
     return None
 
 
@@ -343,6 +355,12 @@ def _authority_citation_hints(
         elif source.authority_type == "rule":
             rule_keys.setdefault(source.rule_id, set()).add(authority_key)
 
+    prior_brief_keys = {
+        source.prior_brief_id: ("prior_brief", source.prior_brief_id)
+        for source in sources
+        if source.authority_type == "prior_brief" and source.prior_brief_id
+    }
+
     hints: list[_CitationHint] = []
     for link in cited_case_links(text):
         keys = case_keys.get(_case_citation_key(link.lookup_text), set())
@@ -358,6 +376,24 @@ def _authority_citation_hints(
         keys = rule_keys.get(citation.rule_id, set()) if citation is not None else set()
         if len(keys) == 1:
             hints.append(_CitationHint(link.start_offset, link.end_offset, next(iter(keys))))
+    for match in re.finditer(
+        r"\[[^\]\n]+\]\(open-law-lens://prior-brief/([a-fA-F0-9]{16,64})\)",
+        text,
+    ):
+        key = prior_brief_keys.get(match.group(1))
+        if key is not None:
+            hints.append(_CitationHint(match.start(), match.end(), key))
+    for source in sources:
+        if source.authority_type != "prior_brief" or not source.prior_brief_id:
+            continue
+        for match in re.finditer(re.escape(source.title), text, flags=re.IGNORECASE):
+            hints.append(
+                _CitationHint(
+                    match.start(),
+                    match.end(),
+                    ("prior_brief", source.prior_brief_id),
+                )
+            )
     return sorted(hints, key=lambda hint: hint.start_offset)
 
 
@@ -382,6 +418,22 @@ def _preferred_quote_authority_key(
     preceding = [hint for hint in same_paragraph if hint.end_offset <= quote_start]
     if preceding:
         return max(preceding, key=lambda hint: hint.end_offset).authority_key
+    nearby_prior_briefs = [
+        hint
+        for hint in hints
+        if hint.authority_key[0] == "prior_brief"
+        and (
+            0 <= quote_start - hint.end_offset <= 600
+            or 0 <= hint.start_offset - quote_end <= 300
+        )
+    ]
+    nearby_preceding = [
+        hint for hint in nearby_prior_briefs if hint.end_offset <= quote_start
+    ]
+    if nearby_preceding:
+        return max(nearby_preceding, key=lambda hint: hint.end_offset).authority_key
+    if nearby_prior_briefs:
+        return min(nearby_prior_briefs, key=lambda hint: hint.start_offset).authority_key
     return None
 
 
@@ -400,15 +452,18 @@ def export_selected_authorities(
     rules: list[dict[str, Any]] | None,
     case_dir: Path,
     agent_answers: list[dict[str, Any]] | None = None,
+    prior_briefs: list[dict[str, Any]] | None = None,
 ) -> CaseExport:
     case_dir.mkdir(parents=True, exist_ok=True)
     manifest_cases: list[dict[str, Any]] = []
     manifest_statutes: list[dict[str, Any]] = []
     manifest_rules: list[dict[str, Any]] = []
     manifest_agent_answers: list[dict[str, Any]] = []
+    manifest_prior_briefs: list[dict[str, Any]] = []
     text_sources: list[CaseTextSource] = []
     rules = rules or []
     agent_answers = agent_answers or []
+    prior_briefs = prior_briefs or []
 
     for cluster in clusters:
         cluster_id = cluster_id_from_cluster(cluster)
@@ -578,16 +633,58 @@ def export_selected_authorities(
             )
         )
 
+    for brief in prior_briefs:
+        brief_id = str(brief.get("brief_id") or "").strip()
+        title = str(brief.get("title") or "Untitled prior brief").strip()
+        text = str(brief.get("text") or "").strip()
+        if not brief_id or not text:
+            continue
+        filename = f"prior_brief_{re.sub(r'[^A-Za-z0-9_.-]+', '_', brief_id)}.txt"
+        text_path = case_dir / filename
+        header = (
+            f"Title: {title}\n"
+            f"Prior brief ID: {brief_id}\n"
+            f"Document type: {brief.get('document_type') or 'Prior brief'}\n"
+            f"Document date: {brief.get('document_date') or ''}\n"
+            "Source type: prior advocacy, not legal authority\n\n"
+        )
+        text_path.write_text(header + text, encoding="utf-8")
+        manifest_prior_briefs.append(
+            {
+                "brief_id": brief_id,
+                "title": title,
+                "document_type": str(brief.get("document_type") or "Prior brief"),
+                "document_date": str(brief.get("document_date") or ""),
+                "text_path": str(text_path),
+                "source_type": "prior_advocacy",
+            }
+        )
+        text_sources.append(
+            CaseTextSource(
+                cluster_id="",
+                opinion_id="",
+                title=title,
+                citation=str(brief.get("document_date") or "Prior brief"),
+                text_path=str(text_path),
+                text=text,
+                authority_type="prior_brief",
+                prior_brief_id=brief_id,
+            )
+        )
+
     manifest = {
         "cases": manifest_cases,
         "statutes": manifest_statutes,
         "rules": manifest_rules,
         "agent_answers": manifest_agent_answers,
+        "prior_briefs": manifest_prior_briefs,
         "instructions": (
             "Use only these selected Open Law Lens Research Cache materials. "
-            "Quote exact continuous phrases only from selected cases, statutes, and rules. "
+            "Quote exact continuous phrases only from selected cases, statutes, rules, and "
+            "prior briefs. "
             "Saved agent answers are prior analysis for context, not legal authority or a "
-            "source of direct quotations."
+            "source of direct quotations. Prior briefs are prior advocacy, not legal authority; "
+            "they may be quoted only when clearly identified as prior briefing."
         ),
     }
     manifest_path = case_dir / "manifest.json"
@@ -599,5 +696,6 @@ def export_selected_authorities(
         statute_count=len(manifest_statutes),
         rule_count=len(manifest_rules),
         agent_answer_count=len(manifest_agent_answers),
+        prior_brief_count=len(manifest_prior_briefs),
         text_sources=text_sources,
     )

@@ -96,6 +96,36 @@ CLI_COMMANDS: tuple[CliCommand, ...] = (
         description="Replace the current Research Cache with a saved set.",
         example='uv run open-law-lens load-research-set "Case Name_research"',
     ),
+    CliCommand(
+        name="update-brief-library",
+        title="Update Prior Brief Library",
+        description="Incrementally index the local ODT prior brief archive without embeddings.",
+        example="uv run open-law-lens update-brief-library",
+    ),
+    CliCommand(
+        name="search-briefs",
+        title="Search Prior Briefs",
+        description="Search indexed prior briefs and print linked result metadata and snippets.",
+        example='uv run open-law-lens search-briefs "adequate ICWA inquiry"',
+    ),
+    CliCommand(
+        name="extract-brief",
+        title="Extract Prior Brief",
+        description="Print metadata and full text for an indexed prior brief ID.",
+        example="uv run open-law-lens extract-brief <brief_id>",
+    ),
+    CliCommand(
+        name="show-briefs",
+        title="Show Prior Briefs",
+        description="List indexed prior brief metadata without printing full text.",
+        example="uv run open-law-lens show-briefs",
+    ),
+    CliCommand(
+        name="brief-library-db",
+        title="Show Prior Brief Database",
+        description="Print the active prior brief SQLite database path.",
+        example="uv run open-law-lens brief-library-db",
+    ),
 )
 
 

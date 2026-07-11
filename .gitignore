@@ -7,3 +7,4 @@ __pycache__/
 config.json
 cache/
 library/
+prior_briefs/

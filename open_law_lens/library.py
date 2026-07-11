@@ -6,7 +6,7 @@ import os
 import re
 import sqlite3
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from html.parser import HTMLParser
 from pathlib import Path
@@ -224,7 +224,8 @@ class ResearchSet:
     statute_count: int
     rule_count: int
     agent_answer_count: int
-    items: list[ResearchSetItem]
+    prior_brief_count: int = 0
+    items: list[ResearchSetItem] = field(default_factory=list)
 
 
 class _DisplayTextExtractor(HTMLParser):
@@ -1379,6 +1380,25 @@ class CaseLibrary:
                 )
             )
             position += 1
+        for entry in cache.list_prior_brief_entries():
+            brief_id = str(entry.get("brief_id", "")).strip()
+            if not brief_id:
+                continue
+            brief = cache.read_prior_brief(brief_id)
+            if not isinstance(brief, dict):
+                continue
+            items.append(
+                ResearchSetItem(
+                    item_type="prior_brief",
+                    authority_id=brief_id,
+                    title=str(entry.get("title") or brief.get("title") or "Prior brief"),
+                    citation=str(entry.get("document_date") or brief.get("document_date") or ""),
+                    payload=brief,
+                    position=position,
+                    agent_selected=bool(entry.get("agent_selected")),
+                )
+            )
+            position += 1
         return items
 
     def matching_research_set_for_cache(self, cache: JsonCache) -> ResearchSet | None:
@@ -1422,6 +1442,10 @@ class CaseLibrary:
         identifiers.extend(
             ("agent_answer", str(entry.get("answer_id") or "").strip())
             for entry in cache.list_agent_answer_entries()
+        )
+        identifiers.extend(
+            ("prior_brief", str(entry.get("brief_id") or "").strip())
+            for entry in cache.list_prior_brief_entries()
         )
         return tuple(sorted((item_type, authority_id) for item_type, authority_id in identifiers if authority_id))
 
@@ -1485,6 +1509,7 @@ class CaseLibrary:
             statute_count=counts.get("statute", 0),
             rule_count=counts.get("rule", 0),
             agent_answer_count=counts.get("agent_answer", 0),
+            prior_brief_count=counts.get("prior_brief", 0),
             items=items,
         )
 
@@ -1584,6 +1609,13 @@ class CaseLibrary:
                     )
                     if item.agent_selected:
                         cache.set_agent_answer_selected(answer_id or item.authority_id, True)
+                elif item.item_type == "prior_brief":
+                    brief_id = cache.upsert_prior_brief(item.payload)
+                    if item.agent_selected:
+                        cache.set_prior_brief_agent_selected(
+                            brief_id or item.authority_id,
+                            True,
+                        )
         with self.connection() as conn:
             conn.execute(
                 "UPDATE research_sets SET last_accessed = ? WHERE set_id = ?",

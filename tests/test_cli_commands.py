@@ -58,6 +58,15 @@ class CliCommandTests(unittest.TestCase):
             "load-research-set",
         )
         self.assertEqual(
+            parser.parse_args(["search-briefs", "ICWA", "--sort", "newest"]).command,
+            "search-briefs",
+        )
+        self.assertEqual(
+            parser.parse_args(["extract-brief", "a" * 64, "--text"]).command,
+            "extract-brief",
+        )
+        self.assertEqual(parser.parse_args(["update-brief-library"]).command, "update-brief-library")
+        self.assertEqual(
             parser.parse_args(["app", "--open-authority", "13 Cal.4th 952"]).open_authority,
             "13 Cal.4th 952",
         )

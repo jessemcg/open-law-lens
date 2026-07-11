@@ -29,6 +29,11 @@ DBUS_COMMAND_GROUPS = (
                 description="Read /dev/shm/speech.txt and submit it to the Research Cache mode.",
                 action_name="submit_speech_cache_question",
             ),
+            DbusCommand(
+                title="Submit speech Prior Briefing question",
+                description="Read /dev/shm/speech.txt and submit it to the Prior Brief mode.",
+                action_name="submit_speech_brief_question",
+            ),
         ),
     ),
 )

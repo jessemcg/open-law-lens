@@ -8,9 +8,12 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from open_law_lens.app import (
+    AGENT_MODE_BRIEF,
+    AGENT_MODE_ICONS,
     SCHOLAR_FALLBACK_NOTICE_ONLY,
     SCHOLAR_FALLBACK_TRANSIENT_NOTICE,
     Gtk,
+    Pango,
     LinkPressState,
     OpenLawLensApp,
     OpenLawLensWindow,
@@ -33,6 +36,19 @@ from open_law_lens.web_import import ExtractedWebpage
 
 
 class AppReaderPayloadTests(unittest.TestCase):
+    def test_prior_brief_agent_uses_bundled_library_icon(self) -> None:
+        icon_ref = resources.files("open_law_lens").joinpath(
+            "icons",
+            "hicolor",
+            "scalable",
+            "actions",
+            "library-symbolic.svg",
+        )
+
+        self.assertEqual(AGENT_MODE_ICONS[AGENT_MODE_BRIEF], "library-symbolic")
+        self.assertTrue(icon_ref.is_file())
+        self.assertIn("<svg", icon_ref.read_text(encoding="utf-8"))
+
     def test_window_activation_refreshes_current_case_without_reloading_reader(self) -> None:
         class DummyWindow:
             def __init__(self) -> None:
@@ -338,6 +354,7 @@ class AppReaderPayloadTests(unittest.TestCase):
             def __init__(self) -> None:
                 self.text = ""
                 self.tags: list[tuple[object, int, int]] = []
+                self.created_props: list[dict[str, object]] = []
                 self.table = DummyTagTable()
 
             def get_tag_table(self) -> DummyTagTable:
@@ -347,6 +364,7 @@ class AppReaderPayloadTests(unittest.TestCase):
                 self.text = text
 
             def create_tag(self, _name: object, **_props: object) -> object:
+                self.created_props.append(_props)
                 return object()
 
             def get_iter_at_offset(self, offset: int) -> int:
@@ -410,6 +428,50 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(window._agent_answer_buffer.text, answer)
         self.assertEqual(len(window._agent_link_lookup), 1)
         self.assertEqual(len(window._agent_answer_buffer.tags), 1)
+        self.assertEqual(window._agent_answer_buffer.created_props[0]["weight"], Pango.Weight.BOLD)
+
+    def test_plain_prior_brief_title_is_automatically_linked(self) -> None:
+        class DummyBuffer:
+            def __init__(self) -> None:
+                self.tags: list[tuple[object, int, int]] = []
+
+            def create_tag(self, _name: object, **_props: object) -> object:
+                return object()
+
+            def get_iter_at_offset(self, offset: int) -> int:
+                return offset
+
+            def apply_tag(self, tag: object, start: int, end: int) -> None:
+                self.tags.append((tag, start, end))
+
+        brief_id = "a" * 64
+        source = CaseTextSource(
+            cluster_id="",
+            opinion_id="",
+            title="B348009_RB_Breana_R",
+            citation="2026-06-08",
+            text_path="/tmp/brief.odt",
+            text="Brief text",
+            authority_type="prior_brief",
+            prior_brief_id=brief_id,
+        )
+        window = SimpleNamespace(
+            _case_agent_text_sources=[source],
+            _agent_link_tags=[],
+            _agent_link_lookup={},
+            _resolve_agent_quote_color=lambda: object(),
+        )
+        buffer = DummyBuffer()
+
+        OpenLawLensWindow._apply_agent_prior_brief_title_links(  # type: ignore[arg-type]
+            window,
+            buffer,  # type: ignore[arg-type]
+            "The latest is B348009_RB_Breana_R.",
+        )
+
+        self.assertEqual(len(buffer.tags), 1)
+        target = next(iter(window._agent_link_lookup.values()))
+        self.assertEqual(target.prior_brief_id, brief_id)
 
     def test_quote_target_finds_sorted_sidebar_row_by_stable_identity(self) -> None:
         class DummyRow:

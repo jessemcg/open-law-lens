@@ -4,6 +4,8 @@ set -euo pipefail
 prompt_file="${OPEN_LAW_LENS_AGENT_PROMPT_FILE:-}"
 cache_root="${OPEN_LAW_LENS_CACHE_DIR:-${XDG_CACHE_HOME:-${HOME:-}/.cache}/open-law-lens}"
 library_db="${OPEN_LAW_LENS_LIBRARY_DB:-}"
+prior_briefs_db="${OPEN_LAW_LENS_PRIOR_BRIEFS_DB:-}"
+prior_briefs_dir="${OPEN_LAW_LENS_PRIOR_BRIEFS_DIR:-}"
 agent_mode="${OPEN_LAW_LENS_AGENT_MODE:-general}"
 workspace="${OPEN_LAW_LENS_AGENT_WORKSPACE:-}"
 codex_bin="${CODEX_BIN:-codex}"
@@ -67,6 +69,12 @@ export TMPDIR="$workspace/tmp"
 export OPEN_LAW_LENS_CACHE_DIR="$cache_root"
 if [[ -n "$library_db" ]]; then
   export OPEN_LAW_LENS_LIBRARY_DB="$library_db"
+fi
+if [[ -n "$prior_briefs_db" ]]; then
+  export OPEN_LAW_LENS_PRIOR_BRIEFS_DB="$prior_briefs_db"
+fi
+if [[ -n "$prior_briefs_dir" ]]; then
+  export OPEN_LAW_LENS_PRIOR_BRIEFS_DIR="$prior_briefs_dir"
 fi
 
 python3 "$script_dir/open-law-lens-codex-agent-pty.py" \

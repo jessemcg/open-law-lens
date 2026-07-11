@@ -94,9 +94,15 @@ class AgentTests(unittest.TestCase):
             self.assertTrue(codex_session_log_matches_cwd(new_log, workspace))
             self.assertEqual(find_latest_codex_session_log_for_cwd(root, workspace), new_log)
 
-    def test_extract_quoted_phrases_limits_to_two_to_five_words(self) -> None:
-        spans = extract_quoted_phrases('Use "active risk today" and skip "one" and "too many words in this quote".')
-        self.assertEqual([span[2] for span in spans], ["active risk today"])
+    def test_extract_quoted_phrases_limits_to_two_to_ten_words(self) -> None:
+        spans = extract_quoted_phrases(
+            'Use "active risk today" and "reasonable, credible, and of solid value"; '
+            'skip "one" and "this quotation contains far too many words to remain a short direct quotation".'
+        )
+        self.assertEqual(
+            [span[2] for span in spans],
+            ["active risk today", "reasonable, credible, and of solid value"],
+        )
 
     def test_resolve_quote_target_uses_first_canonical_source_match(self) -> None:
         sources = [
@@ -171,6 +177,64 @@ class AgentTests(unittest.TestCase):
         self.assertIsNotNone(spans[0].target)
         assert spans[0].target is not None
         self.assertEqual(spans[0].target.cluster_id, "2")
+
+    def test_resolved_quote_uses_prior_brief_markdown_link_hint(self) -> None:
+        brief_id = "a" * 64
+        sources = [
+            CaseTextSource(
+                cluster_id="",
+                opinion_id="",
+                title="B353817_AOB_Joseph_A",
+                citation="2026-07-09",
+                text_path="/tmp/brief.odt",
+                text="The court found the inquiry was inadequate.",
+                authority_type="prior_brief",
+                prior_brief_id=brief_id,
+            )
+        ]
+        answer = (
+            'The argument used "inquiry was inadequate" in '
+            f"[B353817_AOB_Joseph_A](open-law-lens://prior-brief/{brief_id})."
+        )
+
+        spans = resolved_agent_quote_spans(answer, sources)
+
+        self.assertEqual(spans[0].target.prior_brief_id, brief_id)
+
+    def test_resolved_quote_uses_nearby_plain_prior_brief_title_across_paragraphs(self) -> None:
+        wanted_id = "a" * 64
+        other_id = "b" * 64
+        phrase = "reasonable, credible, and of solid value"
+        sources = [
+            CaseTextSource(
+                cluster_id="",
+                opinion_id="",
+                title="B348009_RB_Breana_R",
+                citation="2026-06-08",
+                text_path="/tmp/wanted.odt",
+                text=f"The evidence was {phrase}.",
+                authority_type="prior_brief",
+                prior_brief_id=wanted_id,
+            ),
+            CaseTextSource(
+                cluster_id="",
+                opinion_id="",
+                title="Older_AOB",
+                citation="2025-01-01",
+                text_path="/tmp/other.odt",
+                text=f"Evidence must be {phrase}.",
+                authority_type="prior_brief",
+                prior_brief_id=other_id,
+            ),
+        ]
+        answer = (
+            "The latest is B348009_RB_Breana_R, dated June 8, 2026.\n\n"
+            f'It described the test as asking whether evidence was "{phrase}."'
+        )
+
+        spans = resolved_agent_quote_spans(answer, sources)
+
+        self.assertEqual(spans[0].target.prior_brief_id, wanted_id)
 
     def test_resolved_quote_leaves_cross_authority_ambiguity_unlinked(self) -> None:
         sources = [

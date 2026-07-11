@@ -15,11 +15,13 @@ CONFIG_KEY_COURTLISTENER_TOKEN = "courtlistener_token"
 CONFIG_KEY_CONCORDANCE_FILE_PATH = "concordance_file_path"
 CONFIG_KEY_GENERAL_AGENT_PROMPT_TEMPLATE = "general_agent_prompt_template"
 CONFIG_KEY_CASE_AGENT_PROMPT_TEMPLATE = "case_agent_prompt_template"
+CONFIG_KEY_BRIEF_AGENT_PROMPT_TEMPLATE = "brief_agent_prompt_template"
 CONFIG_KEY_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE = "appeal_issue_agent_prompt_template"
 CONFIG_KEY_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE = "subsequent_treatment_agent_prompt_template"
 CONFIG_KEY_LEGACY_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE = "later_treatment_agent_prompt_template"
 CONFIG_KEY_GENERAL_AGENT_XHIGH_REASONING = "general_agent_xhigh_reasoning"
 CONFIG_KEY_CASE_AGENT_XHIGH_REASONING = "case_agent_xhigh_reasoning"
+CONFIG_KEY_BRIEF_AGENT_XHIGH_REASONING = "brief_agent_xhigh_reasoning"
 CONFIG_KEY_APPEAL_ISSUE_XHIGH_REASONING = "appeal_issue_xhigh_reasoning"
 CONFIG_KEY_LATER_TREATMENT_XHIGH_REASONING = "later_treatment_xhigh_reasoning"
 CONFIG_KEY_APPEAL_ISSUE_PRESETS = "appeal_issue_presets"
@@ -73,6 +75,7 @@ LEGACY_CASE_AGENT_PROMPT_SHA256ES = (
     "5c11542ccdffaef4e88e0fa568bc1dc9b35204cb3d4cf2d1983db829217596a9",
     "b34a8f1ffb8ae9e574c5caf791739d2745ed330013c420b85fb30c384d15123f",
     "11b5512669311cff769c62e9e91f7ed27ef2793042a2807584375d36fba64cdb",
+    "e33c90f7bb6f972b9ed934f155420a51c51dd8e64b613ca41cbda250fe37847a",
 )
 LEGACY_APPEAL_ISSUE_AGENT_PROMPT_SHA256ES = (
     "b57fb338bb6148eaa4937be89de687884b1f42f2ef2d966d9d4a21cb3816d338",
@@ -102,11 +105,11 @@ Question:
 
 DEFAULT_CASE_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens Marked Research Cache Agent.
 
-Answer only from the selected Research Cache materials and any current-case factual context explicitly selected for this run. Do not use web browsing or unselected Open Law Lens materials. Treat cases, statutes, and rules as legal authority. Treat any current-case fact pattern as factual context only, not as legal authority. Treat saved agent answers as prior analysis for context only, not as legal authority. If the exported materials do not answer the question, say that plainly.
+Answer only from the selected Research Cache materials and any current-case factual context explicitly selected for this run. Do not use web browsing or unselected Open Law Lens materials. Treat cases, statutes, and rules as legal authority. Treat prior briefs as prior advocacy that may supply argument language but is not legal authority. Treat any current-case fact pattern as factual context only, not as legal authority. Treat saved agent answers as prior analysis for context only, not as legal authority. If the exported materials do not answer the question, say that plainly.
 
 When current-case factual context is provided and the question calls for comparison, compare the current case with the selected authorities using legally significant facts, procedural posture, legal issues, and governing standards. Cite current-case facts with the record citations already present in the fact pattern. Do not cite local paths, filenames, or line numbers.
 
-In your answer, include short direct quotes from the selected cases, statutes, and rules to highlight legally significant statements. Do not use the current-case fact pattern or saved agent answers as the source of these quotes. Each quote should be only two to five words long, enclosed in quotation marks, and must include continuous phrases exactly as they appear in the source text. Put a full identifying case, statute, or rule citation in the same paragraph as each quote; one citation may support multiple quotes from the same authority.
+In your answer, include short direct quotes from selected cases, statutes, and rules, and from selected prior briefs when useful. Do not use the current-case fact pattern or saved agent answers as the source of these quotes. Each quote should be only two to five words long, enclosed in quotation marks, and must include continuous phrases exactly as they appear in the source text. Put a full identifying case, statute, rule, or prior-brief title in the same paragraph as each quote; one identifier may support multiple quotes from the same source. Clearly label prior-brief quotations as prior advocacy rather than law.
 
 Question:
 {question}
@@ -118,6 +121,27 @@ Selected authority text directory:
 {case_dir}
 
 Selected authority count: {case_count}"""
+
+DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens Prior Brief Agent.
+
+Answer only from the indexed prior brief archive and any current-case factual context explicitly selected for this run. Do not browse the web, research CourtListener, or treat prior advocacy as legal authority. Use the Open Law Lens CLI iteratively to find candidate briefs, then inspect the full text of every brief relied upon.
+
+Start with focused searches such as:
+`uv run --no-sync open-law-lens search-briefs "<terms>" --match all`
+Try related wording, phrase, and any-term searches when the first search is incomplete. Use `--sort newest` when recency matters. Read a candidate with:
+`uv run --no-sync open-law-lens extract-brief <brief_id>`
+
+Identify every discussed source with the exact Markdown link returned by search, in this form: `[Exact indexed title](open-law-lens://prior-brief/<brief_id>)`. Put that linked title close to the discussion and any quote from that brief. Include useful direct quotes of only two to ten words, copied as exact continuous phrases. If the archive does not answer the question, say so plainly.
+
+Distinguish opening briefs, reply briefs, respondent's briefs, oppositions, Phoenix H. memos, and other documents. For a request for the most recent document, use the indexed document date and explain when it is a file-date fallback.
+
+Question:
+{question}
+
+Prior brief database snapshot:
+{brief_database}
+
+Indexed brief count: {brief_count}"""
 
 DEFAULT_APPEAL_ISSUE_PRESETS: tuple[str, ...] = (
     "Substantial evidence does not support the challenged finding.",
@@ -196,10 +220,12 @@ class AppConfig:
     concordance_file_path: str = ""
     general_agent_prompt_template: str = DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE
     case_agent_prompt_template: str = DEFAULT_CASE_AGENT_PROMPT_TEMPLATE
+    brief_agent_prompt_template: str = DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE
     appeal_issue_agent_prompt_template: str = DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
     later_treatment_agent_prompt_template: str = DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE
     general_agent_xhigh_reasoning: bool = False
     case_agent_xhigh_reasoning: bool = False
+    brief_agent_xhigh_reasoning: bool = False
     appeal_issue_xhigh_reasoning: bool = False
     later_treatment_xhigh_reasoning: bool = False
     appeal_issue_presets: list[str] = field(
@@ -325,8 +351,21 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
         DEFAULT_CASE_AGENT_PROMPT_TEMPLATE,
     )
     case_prompt_hash = hashlib.sha256(str(case_agent_prompt).strip().encode()).hexdigest()
-    if case_prompt_hash in LEGACY_CASE_AGENT_PROMPT_SHA256ES:
+    if (
+        case_prompt_hash in LEGACY_CASE_AGENT_PROMPT_SHA256ES
+        or "current-case factual context exported into this workspace."
+        in str(case_agent_prompt)
+    ):
         case_agent_prompt = DEFAULT_CASE_AGENT_PROMPT_TEMPLATE
+    brief_agent_prompt = raw.get(
+        CONFIG_KEY_BRIEF_AGENT_PROMPT_TEMPLATE,
+        DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE,
+    )
+    if (
+        "Open Law Lens Prior Brief Agent" in str(brief_agent_prompt)
+        and "direct quotes of only two to five words" in str(brief_agent_prompt)
+    ):
+        brief_agent_prompt = DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE
     appeal_issue_agent_prompt = raw.get(
         CONFIG_KEY_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
         DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
@@ -355,6 +394,9 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
         case_agent_prompt_template=(
             str(case_agent_prompt).strip() or DEFAULT_CASE_AGENT_PROMPT_TEMPLATE
         ),
+        brief_agent_prompt_template=(
+            str(brief_agent_prompt).strip() or DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE
+        ),
         appeal_issue_agent_prompt_template=(
             str(appeal_issue_agent_prompt).strip()
             or DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
@@ -369,6 +411,10 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
         ),
         case_agent_xhigh_reasoning=normalize_bool(
             raw.get(CONFIG_KEY_CASE_AGENT_XHIGH_REASONING),
+            False,
+        ),
+        brief_agent_xhigh_reasoning=normalize_bool(
+            raw.get(CONFIG_KEY_BRIEF_AGENT_XHIGH_REASONING),
             False,
         ),
         appeal_issue_xhigh_reasoning=normalize_bool(
@@ -412,6 +458,9 @@ def save_config(config: AppConfig, path: Path = CONFIG_PATH) -> None:
         CONFIG_KEY_CASE_AGENT_PROMPT_TEMPLATE: (
             config.case_agent_prompt_template.strip() or DEFAULT_CASE_AGENT_PROMPT_TEMPLATE
         ),
+        CONFIG_KEY_BRIEF_AGENT_PROMPT_TEMPLATE: (
+            config.brief_agent_prompt_template.strip() or DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE
+        ),
         CONFIG_KEY_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE: (
             config.appeal_issue_agent_prompt_template.strip()
             or DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
@@ -422,6 +471,7 @@ def save_config(config: AppConfig, path: Path = CONFIG_PATH) -> None:
         ),
         CONFIG_KEY_GENERAL_AGENT_XHIGH_REASONING: bool(config.general_agent_xhigh_reasoning),
         CONFIG_KEY_CASE_AGENT_XHIGH_REASONING: bool(config.case_agent_xhigh_reasoning),
+        CONFIG_KEY_BRIEF_AGENT_XHIGH_REASONING: bool(config.brief_agent_xhigh_reasoning),
         CONFIG_KEY_APPEAL_ISSUE_XHIGH_REASONING: bool(config.appeal_issue_xhigh_reasoning),
         CONFIG_KEY_LATER_TREATMENT_XHIGH_REASONING: bool(config.later_treatment_xhigh_reasoning),
         CONFIG_KEY_APPEAL_ISSUE_PRESETS: appeal_issue_presets,
