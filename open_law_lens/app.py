@@ -2337,16 +2337,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         )
         self.reader_header_action_box.append(self.reader_helper_case_button)
 
-        self.reader_add_prior_brief_button = Gtk.Button(icon_name="list-add-symbolic")
-        self.reader_add_prior_brief_button.add_css_class("case-reader-header-action-button")
-        self.reader_add_prior_brief_button.set_tooltip_text("Add brief to Research Cache")
-        self.reader_add_prior_brief_button.set_visible(False)
-        self.reader_add_prior_brief_button.connect(
-            "clicked",
-            self._on_add_prior_brief_to_cache_clicked,
-        )
-        self.reader_header_action_box.append(self.reader_add_prior_brief_button)
-
         self.reader_save_prior_brief_button = Gtk.Button(icon_name="document-save-symbolic")
         self.reader_save_prior_brief_button.add_css_class("case-reader-header-action-button")
         self.reader_save_prior_brief_button.set_tooltip_text("Save original ODT as...")
@@ -3159,18 +3149,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self.reader_subsequent_treatment_button.set_sensitive(
                 self._reader_display_cluster is not None
             )
-        if hasattr(self, "reader_add_prior_brief_button"):
-            is_prior_brief = self._selected_prior_brief is not None
-            self.reader_add_prior_brief_button.set_visible(bool(header and is_prior_brief))
-            if is_prior_brief:
-                cached = self.client.cache.read_prior_brief(
-                    self._selected_prior_brief.brief_id
-                )
-                self.reader_add_prior_brief_button.set_sensitive(cached is None)
-                self.reader_add_prior_brief_button.set_tooltip_text(
-                    "Already in Research Cache" if cached else "Add brief to Research Cache"
-                )
         if hasattr(self, "reader_save_prior_brief_button"):
+            is_prior_brief = self._selected_prior_brief is not None
             source_exists = bool(
                 self._selected_prior_brief is not None
                 and Path(self._selected_prior_brief.source_path).is_file()
@@ -8950,21 +8930,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             f"Opened prior brief: {brief.title}."
             + (" Added to Research Cache." if added_to_cache else "")
         )
-
-    def _on_add_prior_brief_to_cache_clicked(self, _button: Gtk.Button) -> None:
-        brief = self._selected_prior_brief
-        if brief is None:
-            self._set_status("No prior brief is open.")
-            return
-        brief_id = self.client.cache.upsert_prior_brief(brief.to_json())
-        if not brief_id:
-            self._set_status("Could not add prior brief to Research Cache.")
-            return
-        header = self.reader_header_label.get_text()
-        self._load_cached_cases()
-        self._selected_prior_brief = brief
-        self._set_reader_header(header)
-        self._set_status(f"Added {brief.title} to Research Cache.")
 
     def _on_save_prior_brief_clicked(self, _button: Gtk.Button) -> None:
         brief = self._selected_prior_brief
