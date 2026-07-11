@@ -1777,7 +1777,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         list_box = Gtk.ListBox()
         list_box.add_css_class("case-list")
         list_box.set_selection_mode(Gtk.SelectionMode.SINGLE)
-        list_box.connect("row-selected", self._on_current_case_context_selected)
+        list_box.connect("row-activated", self._on_current_case_context_activated)
 
         row = Gtk.ListBoxRow()
         row.set_selectable(True)
@@ -2682,13 +2682,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _on_window_active_changed(self, _window: Gtk.Window, _param: Any) -> None:
         if not self.is_active():
             return
-        resolved = self._refresh_current_case_context()
-        if (
-            resolved is not None
-            and self._current_case_context_list is not None
-            and self._current_case_context_list.get_selected_row() is not None
-        ):
-            self._open_current_case_socf()
+        self._refresh_current_case_context()
 
     def _refresh_current_case_context(self) -> CurrentCaseSocf | None:
         try:
@@ -2758,7 +2752,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         state = "included in" if selected else "excluded from"
         self._set_status(f"Current-case SOCF will be {state} Law and Cache questions.")
 
-    def _on_current_case_context_selected(
+    def _on_current_case_context_activated(
         self,
         _list_box: Gtk.ListBox,
         row: Gtk.ListBoxRow | None,

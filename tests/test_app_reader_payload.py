@@ -33,6 +33,66 @@ from open_law_lens.web_import import ExtractedWebpage
 
 
 class AppReaderPayloadTests(unittest.TestCase):
+    def test_window_activation_refreshes_current_case_without_reloading_reader(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.refresh_count = 0
+
+            def is_active(self) -> bool:
+                return True
+
+            def _refresh_current_case_context(self) -> CurrentCaseSocf | None:
+                self.refresh_count += 1
+                return CurrentCaseSocf(
+                    case_name="B123456_Test",
+                    case_dir=Path("/case"),
+                    path=Path("/case/SOCF/B123456_SOCF_JM.odt"),
+                )
+
+            def _open_current_case_socf(self) -> None:
+                raise AssertionError("Window activation must not reload reader text")
+
+        window = DummyWindow()
+
+        OpenLawLensWindow._on_window_active_changed(  # type: ignore[arg-type]
+            window,
+            MagicMock(),
+            MagicMock(),
+        )
+
+        self.assertEqual(window.refresh_count, 1)
+
+    def test_inactive_window_does_not_refresh_current_case(self) -> None:
+        class DummyWindow:
+            def is_active(self) -> bool:
+                return False
+
+            def _refresh_current_case_context(self) -> None:
+                raise AssertionError("Inactive windows must not refresh current-case state")
+
+        OpenLawLensWindow._on_window_active_changed(  # type: ignore[arg-type]
+            DummyWindow(),
+            MagicMock(),
+            MagicMock(),
+        )
+
+    def test_current_case_row_activation_explicitly_reloads_reader(self) -> None:
+        case_list = MagicMock()
+        open_current_case = MagicMock()
+        window = SimpleNamespace(
+            case_list=case_list,
+            _open_current_case_socf=open_current_case,
+        )
+
+        OpenLawLensWindow._on_current_case_context_activated(  # type: ignore[arg-type]
+            window,
+            MagicMock(),
+            MagicMock(),
+        )
+
+        case_list.unselect_all.assert_called_once_with()
+        open_current_case.assert_called_once_with()
+
     def test_reader_highlight_button_uses_bundled_icon(self) -> None:
         class DummyWindow:
             def _on_toggle_reader_highlight_clicked(self, *_args: object) -> None:
