@@ -219,6 +219,7 @@ OFFICIAL_PAGINATION_NOT_FOUND_ONLY_MESSAGE = (
 READER_PAGINATION_NONE = "none"
 READER_PAGINATION_OFFICIAL = "official"
 READER_PAGINATION_SLIP = "slip"
+READER_CLIPBOARD_ICON = "clipboard-symbolic"
 SEARCH_NEXT_PAGE_TARGET = "search-next-page"
 AGENT_ANSWER_FONT_SIZE_PT = 14
 SEARCH_RESULTS_FONT_SIZE_PT = 11
@@ -1379,7 +1380,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._active_research_set_dirty = False
         self._research_set_label: Gtk.Label | None = None
         self._research_sets_menu_button: Gtk.MenuButton | None = None
-        self.reader_selection_pinpoint_button: Gtk.Button | None = None
+        self.reader_clipboard_button: Gtk.Button | None = None
         self.reader_subsequent_treatment_button: Gtk.Button | None = None
         self.reader_helper_case_button: Gtk.Button | None = None
         self._reader_highlight_button: Gtk.Button | None = None
@@ -2294,25 +2295,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.reader_header_size_group.add_widget(self.reader_header_leading_spacer)
         self.reader_header_size_group.add_widget(self.reader_header_action_box)
 
-        self.reader_header_copy_button = Gtk.Button(icon_name="edit-copy-symbolic")
-        self.reader_header_copy_button.add_css_class("case-reader-header-action-button")
-        self.reader_header_copy_button.set_tooltip_text("Copy citation")
-        self.reader_header_copy_button.set_valign(Gtk.Align.CENTER)
-        self.reader_header_copy_button.connect("clicked", self._on_copy_reader_citation_clicked)
-        self.reader_header_action_box.append(self.reader_header_copy_button)
-
-        self.reader_selection_pinpoint_button = Gtk.Button(icon_name="insert-text-symbolic")
-        self.reader_selection_pinpoint_button.add_css_class("case-reader-header-action-button")
-        self.reader_selection_pinpoint_button.set_tooltip_text(
-            "Copy selected text with pinpoint citation"
-        )
-        self.reader_selection_pinpoint_button.set_valign(Gtk.Align.CENTER)
-        self.reader_selection_pinpoint_button.set_sensitive(False)
-        self.reader_selection_pinpoint_button.connect(
-            "clicked",
-            self._on_copy_reader_selection_pinpoint_clicked,
-        )
-        self.reader_header_action_box.append(self.reader_selection_pinpoint_button)
+        self.reader_clipboard_button = self._build_reader_clipboard_button()
+        self.reader_header_action_box.append(self.reader_clipboard_button)
 
         self.reader_subsequent_treatment_button = Gtk.Button(icon_name="go-next-symbolic")
         self.reader_subsequent_treatment_button.add_css_class("case-reader-header-action-button")
@@ -2603,6 +2587,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         button.set_sensitive(False)
         button.connect("clicked", self._on_toggle_reader_highlight_clicked)
         self._reader_highlight_button = button
+        return button
+
+    def _build_reader_clipboard_button(self) -> Gtk.Button:
+        button = Gtk.Button(icon_name=READER_CLIPBOARD_ICON)
+        button.add_css_class("case-reader-header-action-button")
+        button.set_tooltip_text("Copy citation")
+        button.set_valign(Gtk.Align.CENTER)
+        button.set_sensitive(False)
+        button.connect("clicked", self._on_copy_reader_clipboard_clicked)
         return button
 
     def _refresh_appeal_issue_menu(self) -> None:
@@ -2961,7 +2954,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._reader_slip_source_url = ""
             self._reader_slip_case_number = ""
         self.reader_buffer.set_text(text)
-        self._update_reader_selection_pinpoint_button()
+        self._update_reader_clipboard_button()
         if page_markers:
             for marker in page_markers:
                 start = max(0, min(marker.start_offset, len(text)))
@@ -3020,7 +3013,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 self._set_reader_header(formatted.plain_text, formatted, payload.cluster)
         self._clear_reader_citation_links()
         self.reader_buffer.set_text("")
-        self._update_reader_selection_pinpoint_button()
+        self._update_reader_clipboard_button()
         GLib.idle_add(self._insert_reader_payload_text_chunk, payload, 0)
         return False
 
@@ -3130,18 +3123,17 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_header_citation = citation
         self._reader_display_cluster = cluster
         self.reader_header_label.set_text(header)
-        self.reader_header_copy_button.set_visible(citation is not None)
-        if self.reader_selection_pinpoint_button is not None:
+        if self.reader_clipboard_button is not None:
             has_selected_authority = (
                 self._reader_display_cluster is not None
                 or self._selected_cluster is not None
                 or self._selected_statute is not None
                 or self._selected_rule is not None
             )
-            self.reader_selection_pinpoint_button.set_visible(
-                bool(header and has_selected_authority)
+            self.reader_clipboard_button.set_visible(
+                bool(header and (citation is not None or has_selected_authority))
             )
-            self._update_reader_selection_pinpoint_button()
+            self._update_reader_clipboard_button()
         if self.reader_subsequent_treatment_button is not None:
             self.reader_subsequent_treatment_button.set_visible(
                 bool(header and self._reader_display_cluster is not None)
@@ -3171,14 +3163,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _case_header_citation(self, cluster: dict[str, Any]) -> FormattedCitation | None:
         return format_official_california_citation(cluster)
 
-    def _on_copy_reader_citation_clicked(self, _button: Gtk.Button) -> None:
-        if self._reader_header_citation is None:
-            self._set_status("No citation available to copy.")
-            return
-        self._copy_formatted_citation(self._reader_header_citation)
-
     def _on_reader_selection_changed(self, *_args: object) -> None:
-        self._update_reader_selection_pinpoint_button()
+        self._update_reader_clipboard_button()
         update_highlight = getattr(self, "_update_reader_highlight_button", None)
         if update_highlight is not None:
             update_highlight()
@@ -3263,7 +3249,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             "Removed highlight." if action == "removed" else "Highlighted selected text."
         )
 
-    def _update_reader_selection_pinpoint_button(self) -> None:
+    def _update_reader_clipboard_button(self) -> None:
         has_authority = (
             getattr(self, "_reader_display_cluster", None) is not None
             or getattr(self, "_selected_cluster", None) is not None
@@ -3271,9 +3257,18 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             or getattr(self, "_selected_rule", None) is not None
         )
         has_selection = self._reader_selection_bounds() is not None
-        if self.reader_selection_pinpoint_button is not None:
-            self.reader_selection_pinpoint_button.set_sensitive(
-                bool(has_authority and has_selection)
+        if self.reader_clipboard_button is not None:
+            self.reader_clipboard_button.set_sensitive(
+                bool(
+                    has_authority
+                    if has_selection
+                    else getattr(self, "_reader_header_citation", None) is not None
+                )
+            )
+            self.reader_clipboard_button.set_tooltip_text(
+                "Copy selected text with pinpoint citation"
+                if has_selection
+                else "Copy citation"
             )
         self._update_reader_helper_case_button()
 
@@ -3322,12 +3317,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         selected_text = self.reader_buffer.get_text(start_iter, end_iter, True)
         return start_offset, end_offset, selected_text
 
-    def _on_copy_reader_selection_pinpoint_clicked(self, _button: Gtk.Button) -> None:
+    def _on_copy_reader_clipboard_clicked(self, _button: Gtk.Button) -> None:
         selection = self._reader_selection_bounds()
         if selection is None:
-            self._set_status(
-                "Select case, statute, or rule text before copying a pinpoint citation."
-            )
+            if self._reader_header_citation is None:
+                self._set_status("No citation available to copy.")
+                return
+            self._copy_formatted_citation(self._reader_header_citation)
             return
         start_offset, end_offset, selected_text = selection
         citation = self._reader_selection_pinpoint_formatted_citation(start_offset, end_offset)
@@ -7233,7 +7229,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             )
         elif reason:
             self._set_status(f"Transient view only: {reason} Use Find Official Text or Import Official Text.")
-        self._update_reader_selection_pinpoint_button()
+        self._update_reader_clipboard_button()
         return False
 
     def _official_pagination_status(self, source: str) -> str:

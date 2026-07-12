@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 from open_law_lens.app import (
     AGENT_MODE_BRIEF,
     AGENT_MODE_ICONS,
+    READER_CLIPBOARD_ICON,
     SCHOLAR_FALLBACK_NOTICE_ONLY,
     SCHOLAR_FALLBACK_TRANSIENT_NOTICE,
     Gtk,
@@ -128,6 +129,18 @@ class AppReaderPayloadTests(unittest.TestCase):
 
         self.assertEqual(button.get_icon_name(), "highlighter-symbolic")
         self.assertFalse(button.get_sensitive())
+        self.assertTrue(icon_ref.is_file())
+
+    def test_reader_clipboard_button_uses_bundled_icon(self) -> None:
+        icon_ref = resources.files("open_law_lens").joinpath(
+            "icons",
+            "hicolor",
+            "scalable",
+            "actions",
+            "clipboard-symbolic.svg",
+        )
+
+        self.assertEqual(READER_CLIPBOARD_ICON, "clipboard-symbolic")
         self.assertTrue(icon_ref.is_file())
 
     def test_reader_highlight_button_excludes_saved_agent_answers(self) -> None:
@@ -1735,7 +1748,7 @@ class AppReaderPayloadTests(unittest.TestCase):
                     }
                 )
 
-            def _update_reader_selection_pinpoint_button(self) -> None:
+            def _update_reader_clipboard_button(self) -> None:
                 pass
 
         window = DummyWindow()
@@ -1980,7 +1993,7 @@ class AppReaderPayloadTests(unittest.TestCase):
             def _clear_reader_citation_links(self) -> None:
                 pass
 
-            def _update_reader_selection_pinpoint_button(self) -> None:
+            def _update_reader_clipboard_button(self) -> None:
                 pass
 
             def _insert_reader_payload_text_chunk(self, *_args: object) -> bool:
@@ -2039,7 +2052,7 @@ class AppReaderPayloadTests(unittest.TestCase):
             def _clear_reader_citation_links(self) -> None:
                 pass
 
-            def _update_reader_selection_pinpoint_button(self) -> None:
+            def _update_reader_clipboard_button(self) -> None:
                 pass
 
             def _insert_reader_payload_text_chunk(self, *_args: object) -> bool:
@@ -3996,7 +4009,7 @@ class AppReaderPayloadTests(unittest.TestCase):
 
         window = DummyWindow()
 
-        OpenLawLensWindow._on_copy_reader_selection_pinpoint_clicked(window, object())  # type: ignore[arg-type]
+        OpenLawLensWindow._on_copy_reader_clipboard_clicked(window, object())  # type: ignore[arg-type]
 
         self.assertEqual(
             window.copied[0].plain_text,
@@ -4195,6 +4208,7 @@ class AppReaderPayloadTests(unittest.TestCase):
             def __init__(self) -> None:
                 self.visible = False
                 self.sensitive = False
+                self.tooltip = ""
 
             def set_visible(self, value: bool) -> None:
                 self.visible = value
@@ -4202,9 +4216,12 @@ class AppReaderPayloadTests(unittest.TestCase):
             def set_sensitive(self, value: bool) -> None:
                 self.sensitive = value
 
+            def set_tooltip_text(self, value: str) -> None:
+                self.tooltip = value
+
         class DummyWindow:
             def __init__(self) -> None:
-                self.reader_selection_pinpoint_button = DummyButton()
+                self.reader_clipboard_button = DummyButton()
                 self.reader_helper_case_button = DummyButton()
                 self._selected_cluster = {
                     "case_name_short": "In re Caden C.",
@@ -4228,15 +4245,65 @@ class AppReaderPayloadTests(unittest.TestCase):
 
         window = DummyWindow()
 
-        OpenLawLensWindow._update_reader_selection_pinpoint_button(window)  # type: ignore[arg-type]
+        OpenLawLensWindow._update_reader_clipboard_button(window)  # type: ignore[arg-type]
         self.assertTrue(window.reader_helper_case_button.visible)
         self.assertTrue(window.reader_helper_case_button.sensitive)
 
         window._reader_has_official_pagination = True
-        OpenLawLensWindow._update_reader_selection_pinpoint_button(window)  # type: ignore[arg-type]
+        OpenLawLensWindow._update_reader_clipboard_button(window)  # type: ignore[arg-type]
 
         self.assertFalse(window.reader_helper_case_button.visible)
         self.assertFalse(window.reader_helper_case_button.sensitive)
+
+    def test_reader_clipboard_button_tracks_selection_mode(self) -> None:
+        class DummyButton:
+            def __init__(self) -> None:
+                self.sensitive = False
+                self.tooltip = ""
+
+            def set_sensitive(self, value: bool) -> None:
+                self.sensitive = value
+
+            def set_tooltip_text(self, value: str) -> None:
+                self.tooltip = value
+
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.reader_clipboard_button = DummyButton()
+                self._reader_header_citation = FormattedCitation(
+                    plain_text="In re Caden C. (2021) 11 Cal.5th 614",
+                    html_text="<i>In re Caden C.</i> (2021) 11 Cal.5th 614",
+                )
+                self._reader_display_cluster = None
+                self._selected_cluster: dict[str, object] | None = {}
+                self._selected_statute = None
+                self._selected_rule = None
+                self.selection: tuple[int, int, str] | None = None
+
+            def _reader_selection_bounds(self) -> tuple[int, int, str] | None:
+                return self.selection
+
+            def _update_reader_helper_case_button(self) -> None:
+                pass
+
+        window = DummyWindow()
+
+        OpenLawLensWindow._update_reader_clipboard_button(window)  # type: ignore[arg-type]
+        self.assertTrue(window.reader_clipboard_button.sensitive)
+        self.assertEqual(window.reader_clipboard_button.tooltip, "Copy citation")
+
+        window.selection = (0, 4, "Text")
+        OpenLawLensWindow._update_reader_clipboard_button(window)  # type: ignore[arg-type]
+        self.assertTrue(window.reader_clipboard_button.sensitive)
+        self.assertEqual(
+            window.reader_clipboard_button.tooltip,
+            "Copy selected text with pinpoint citation",
+        )
+
+        window.selection = None
+        window._reader_header_citation = None
+        OpenLawLensWindow._update_reader_clipboard_button(window)  # type: ignore[arg-type]
+        self.assertFalse(window.reader_clipboard_button.sensitive)
 
     def test_case_header_shows_subsequent_treatment_button_for_displayed_cluster(self) -> None:
         class DummyLabel:
@@ -4250,12 +4317,16 @@ class AppReaderPayloadTests(unittest.TestCase):
             def __init__(self) -> None:
                 self.visible = False
                 self.sensitive = False
+                self.tooltip = ""
 
             def set_visible(self, value: bool) -> None:
                 self.visible = value
 
             def set_sensitive(self, value: bool) -> None:
                 self.sensitive = value
+
+            def set_tooltip_text(self, value: str) -> None:
+                self.tooltip = value
 
         class DummyWindow:
             def __init__(self) -> None:
@@ -4265,8 +4336,7 @@ class AppReaderPayloadTests(unittest.TestCase):
                 self._selected_rule = None
                 self._reader_header_citation = None
                 self.reader_header_label = DummyLabel()
-                self.reader_header_copy_button = DummyButton()
-                self.reader_selection_pinpoint_button = DummyButton()
+                self.reader_clipboard_button = DummyButton()
                 self.reader_subsequent_treatment_button = DummyButton()
                 self.reader_helper_case_button = DummyButton()
                 self.reader_header_box = DummyButton()
@@ -4274,8 +4344,8 @@ class AppReaderPayloadTests(unittest.TestCase):
             def _reader_selection_bounds(self) -> None:
                 return None
 
-            def _update_reader_selection_pinpoint_button(self) -> None:
-                OpenLawLensWindow._update_reader_selection_pinpoint_button(self)  # type: ignore[arg-type]
+            def _update_reader_clipboard_button(self) -> None:
+                OpenLawLensWindow._update_reader_clipboard_button(self)  # type: ignore[arg-type]
 
             def _helper_case_available(self) -> bool:
                 return False
@@ -4455,18 +4525,22 @@ class AppReaderPayloadTests(unittest.TestCase):
             def _copy_formatted_citation(self, citation: FormattedCitation) -> None:
                 self.copied.append(citation)
 
+            def _reader_selection_bounds(self) -> None:
+                return None
+
         window = DummyWindow()
 
-        OpenLawLensWindow._on_copy_reader_citation_clicked(window, object())  # type: ignore[arg-type]
+        OpenLawLensWindow._on_copy_reader_clipboard_clicked(window, object())  # type: ignore[arg-type]
 
         self.assertEqual(
             window.copied[0].plain_text,
             "In re L.G. (Mar. 6, 2026, A173218) ___ Cal.App.5th ___",
         )
 
-    def test_copy_reader_selection_pinpoint_warns_without_selection(self) -> None:
+    def test_copy_reader_clipboard_warns_without_citation_or_selection(self) -> None:
         class DummyWindow:
             def __init__(self) -> None:
+                self._reader_header_citation = None
                 self.statuses: list[str] = []
 
             def _reader_selection_bounds(self) -> None:
@@ -4477,14 +4551,50 @@ class AppReaderPayloadTests(unittest.TestCase):
 
         window = DummyWindow()
 
-        OpenLawLensWindow._on_copy_reader_selection_pinpoint_clicked(  # type: ignore[arg-type]
+        OpenLawLensWindow._on_copy_reader_clipboard_clicked(  # type: ignore[arg-type]
             window,
             object(),
         )
 
         self.assertEqual(
             window.statuses,
-            ["Select case, statute, or rule text before copying a pinpoint citation."],
+            ["No citation available to copy."],
+        )
+
+    def test_copy_reader_clipboard_does_not_fall_back_when_pinpoint_is_unavailable(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self._reader_header_citation = FormattedCitation(
+                    plain_text="In re Caden C. (2021) 11 Cal.5th 614",
+                    html_text="<i>In re Caden C.</i> (2021) 11 Cal.5th 614",
+                )
+                self.copied: list[FormattedCitation] = []
+                self.statuses: list[str] = []
+
+            def _reader_selection_bounds(self) -> tuple[int, int, str]:
+                return 0, 4, "Text"
+
+            def _reader_selection_pinpoint_formatted_citation(
+                self,
+                _start_offset: int,
+                _end_offset: int,
+            ) -> None:
+                return None
+
+            def _copy_formatted_citation(self, citation: FormattedCitation) -> None:
+                self.copied.append(citation)
+
+            def _set_status(self, text: str) -> None:
+                self.statuses.append(text)
+
+        window = DummyWindow()
+
+        OpenLawLensWindow._on_copy_reader_clipboard_clicked(window, object())  # type: ignore[arg-type]
+
+        self.assertEqual(window.copied, [])
+        self.assertEqual(
+            window.statuses,
+            ["Could not determine a pinpoint citation for the selected text."],
         )
 
     def test_background_worker_marshals_success_to_idle(self) -> None:
