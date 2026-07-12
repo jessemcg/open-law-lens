@@ -1593,12 +1593,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
               border-radius: 8px;
             }}
             list.case-list row.case-cache-row {{
-              border-radius: 8px;
-              margin: 3px 4px;
-              background-color: alpha(@window_fg_color, 0.03);
+              border-radius: 6px;
+              margin: 1px 2px;
+              background-color: transparent;
             }}
             list.case-list row.case-cache-row > box {{
-              border-radius: 8px;
+              border-radius: 6px;
             }}
             list.case-list row.case-cache-row:hover {{
               background-color: alpha(@window_fg_color, 0.06);
@@ -1640,7 +1640,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
               color: alpha(@window_fg_color, 0.14);
             }}
             list.case-list row.case-cache-row:hover button.cache-row-remove-button,
-            list.case-list row.case-cache-row:selected button.cache-row-remove-button {{
+            list.case-list row.case-cache-row:selected button.cache-row-remove-button,
+            button.cache-row-remove-button:focus-visible {{
               color: alpha(@window_fg_color, 0.52);
             }}
             button.cache-row-remove-button:hover {{
@@ -1651,6 +1652,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
               background-color: alpha(@window_fg_color, 0.18);
               color: @window_fg_color;
               border-color: alpha(@window_fg_color, 0.38);
+            }}
+            label.cache-section-label {{
+              font-weight: 600;
             }}
             .case-completion-results {{
               background: transparent;
@@ -6220,6 +6224,72 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             suppress_selection_lookup=suppress_selection_lookup,
         )
 
+    @staticmethod
+    def _build_research_cache_row_content(
+        title_text: str,
+        subtitle_text: str,
+        remove_button: Gtk.Button,
+        context_check: Gtk.CheckButton,
+    ) -> Gtk.Box:
+        row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        row_box.set_margin_top(8)
+        row_box.set_margin_bottom(8)
+        row_box.set_margin_start(8)
+        row_box.set_margin_end(8)
+
+        text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        text_box.set_hexpand(True)
+        title = Gtk.Label(label=title_text, xalign=0)
+        title.set_wrap(True)
+        text_box.append(title)
+        if subtitle_text:
+            subtitle = Gtk.Label(label=subtitle_text, xalign=0)
+            subtitle.add_css_class("dim-label")
+            subtitle.set_wrap(True)
+            text_box.append(subtitle)
+        row_box.append(text_box)
+
+        remove_button.add_css_class("flat")
+        remove_button.add_css_class("case-row-icon-button")
+        remove_button.add_css_class("cache-row-remove-button")
+        context_check.add_css_class("neutral-agent-check")
+        context_check.set_valign(Gtk.Align.START)
+        actions_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        actions_box.add_css_class("cache-row-actions")
+        actions_box.set_valign(Gtk.Align.START)
+        actions_box.append(remove_button)
+        actions_box.append(context_check)
+        row_box.append(actions_box)
+        return row_box
+
+    @staticmethod
+    def _build_research_cache_section_header(
+        title: str,
+        section: str,
+    ) -> Gtk.ListBoxRow:
+        row = Gtk.ListBoxRow()
+        row.set_selectable(False)
+        row.set_activatable(False)
+        label = Gtk.Label(label=title, xalign=0)
+        label.add_css_class("dim-label")
+        label.add_css_class("cache-section-label")
+        label.set_margin_top(8)
+        label.set_margin_bottom(2)
+        label.set_margin_start(8)
+        label.set_margin_end(8)
+        row.set_child(label)
+        row._open_law_lens_cache_section = section
+        row._open_law_lens_cache_sort_key = ("", "", "", "", "")
+        return row
+
+    def _first_selectable_research_cache_row(self) -> Gtk.ListBoxRow | None:
+        index = 0
+        while row := self.case_list.get_row_at_index(index):
+            if row.get_selectable():
+                return row
+            index += 1
+        return None
+
     def _set_sidebar_authorities(
         self,
         clusters: list[dict[str, Any]],
@@ -6265,48 +6335,36 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             for entry in self._agent_answers
         }
         self._prior_brief_entries = self.client.cache.list_prior_brief_entries()
+        if clusters or statutes or rules:
+            self.case_list.append(
+                self._build_research_cache_section_header(
+                    "Authorities",
+                    "authority_header",
+                )
+            )
         for index, cluster in enumerate(clusters):
             row = Gtk.ListBoxRow()
             row.set_selectable(True)
             row.set_activatable(True)
             row.add_css_class("case-cache-row")
-            row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            row_box.set_margin_top(8)
-            row_box.set_margin_bottom(8)
-            row_box.set_margin_start(8)
-            row_box.set_margin_end(8)
             cluster_id = cluster_id_from_cluster(cluster)
-            actions_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
-            actions_box.set_valign(Gtk.Align.START)
             remove_button = Gtk.Button(icon_name="user-trash-symbolic")
-            remove_button.add_css_class("flat")
-            remove_button.add_css_class("case-row-icon-button")
-            remove_button.add_css_class("cache-row-remove-button")
             remove_button.set_tooltip_text("Remove from Research Cache")
             remove_button.set_sensitive(bool(cluster_id))
             remove_button.connect("clicked", self._on_remove_cached_case_clicked, cluster_id, cluster)
-            actions_box.append(remove_button)
-            row_box.append(actions_box)
-            text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-            text_box.set_hexpand(True)
             title_text, citation_text = self._research_cache_case_row_text(cluster)
-            title = Gtk.Label(label=title_text, xalign=0)
-            title.set_wrap(True)
-            text_box.append(title)
-            if citation_text:
-                citation = Gtk.Label(label=citation_text, xalign=0)
-                citation.add_css_class("dim-label")
-                citation.set_wrap(True)
-                text_box.append(citation)
-            row_box.append(text_box)
             check = Gtk.CheckButton()
-            check.add_css_class("neutral-agent-check")
-            check.set_valign(Gtk.Align.START)
             check.set_tooltip_text("Make case available to Cache Agent")
             check.set_active(self.client.cache.is_agent_selected(cluster_id))
             check.connect("toggled", self._on_agent_case_toggled, cluster_id)
-            row_box.append(check)
-            row.set_child(row_box)
+            row.set_child(
+                self._build_research_cache_row_content(
+                    title_text,
+                    citation_text,
+                    remove_button,
+                    check,
+                )
+            )
             row._open_law_lens_cluster_index = index
             row._open_law_lens_authority_type = "case"
             row._open_law_lens_authority_id = cluster_id
@@ -6326,50 +6384,32 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             row.set_selectable(True)
             row.set_activatable(True)
             row.add_css_class("case-cache-row")
-            row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            row_box.set_margin_top(8)
-            row_box.set_margin_bottom(8)
-            row_box.set_margin_start(8)
-            row_box.set_margin_end(8)
             statute_id = str(statute.get("statute_id") or "").strip()
-            actions_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
-            actions_box.set_valign(Gtk.Align.START)
             remove_button = Gtk.Button(icon_name="user-trash-symbolic")
-            remove_button.add_css_class("flat")
-            remove_button.add_css_class("case-row-icon-button")
-            remove_button.add_css_class("cache-row-remove-button")
             remove_button.set_tooltip_text("Remove from Research Cache")
             remove_button.set_sensitive(bool(statute_id))
             remove_button.connect("clicked", self._on_remove_cached_statute_clicked, statute_id, statute)
-            actions_box.append(remove_button)
-            row_box.append(actions_box)
-            text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-            text_box.set_hexpand(True)
-            title = Gtk.Label(label=str(statute.get("title") or "Untitled statute"), xalign=0)
-            title.set_wrap(True)
-            text_box.append(title)
+            title_text = str(statute.get("title") or "Untitled statute")
             citation_text = str(statute.get("citation") or "").strip()
-            if citation_text:
-                citation = Gtk.Label(label=citation_text, xalign=0)
-                citation.add_css_class("dim-label")
-                citation.set_wrap(True)
-                text_box.append(citation)
-            row_box.append(text_box)
             check = Gtk.CheckButton()
-            check.add_css_class("neutral-agent-check")
-            check.set_valign(Gtk.Align.START)
             check.set_tooltip_text("Make statute available to Cache Agent")
             check.set_active(self.client.cache.is_statute_agent_selected(statute_id))
             check.connect("toggled", self._on_agent_statute_toggled, statute_id)
-            row_box.append(check)
-            row.set_child(row_box)
+            row.set_child(
+                self._build_research_cache_row_content(
+                    title_text,
+                    citation_text,
+                    remove_button,
+                    check,
+                )
+            )
             row._open_law_lens_statute_index = index
             row._open_law_lens_authority_type = "statute"
             row._open_law_lens_authority_id = statute_id
             row._open_law_lens_cache_section = "authority"
             row._open_law_lens_cache_sort_key = self._research_cache_row_sort_key(
                 statute_entries.get(statute_id, {}),
-                str(statute.get("title") or "Untitled statute"),
+                title_text,
                 citation_text,
                 "statute",
                 statute_id,
@@ -6382,50 +6422,32 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             row.set_selectable(True)
             row.set_activatable(True)
             row.add_css_class("case-cache-row")
-            row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            row_box.set_margin_top(8)
-            row_box.set_margin_bottom(8)
-            row_box.set_margin_start(8)
-            row_box.set_margin_end(8)
             rule_id = str(rule.get("rule_id") or "").strip()
-            actions_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
-            actions_box.set_valign(Gtk.Align.START)
             remove_button = Gtk.Button(icon_name="user-trash-symbolic")
-            remove_button.add_css_class("flat")
-            remove_button.add_css_class("case-row-icon-button")
-            remove_button.add_css_class("cache-row-remove-button")
             remove_button.set_tooltip_text("Remove from Research Cache")
             remove_button.set_sensitive(bool(rule_id))
             remove_button.connect("clicked", self._on_remove_cached_rule_clicked, rule_id, rule)
-            actions_box.append(remove_button)
-            row_box.append(actions_box)
-            text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-            text_box.set_hexpand(True)
-            title = Gtk.Label(label=str(rule.get("title") or "Untitled rule"), xalign=0)
-            title.set_wrap(True)
-            text_box.append(title)
+            title_text = str(rule.get("title") or "Untitled rule")
             citation_text = str(rule.get("citation") or "").strip()
-            if citation_text:
-                citation = Gtk.Label(label=citation_text, xalign=0)
-                citation.add_css_class("dim-label")
-                citation.set_wrap(True)
-                text_box.append(citation)
-            row_box.append(text_box)
             check = Gtk.CheckButton()
-            check.add_css_class("neutral-agent-check")
-            check.set_valign(Gtk.Align.START)
             check.set_tooltip_text("Make rule available to Cache Agent")
             check.set_active(self.client.cache.is_rule_agent_selected(rule_id))
             check.connect("toggled", self._on_agent_rule_toggled, rule_id)
-            row_box.append(check)
-            row.set_child(row_box)
+            row.set_child(
+                self._build_research_cache_row_content(
+                    title_text,
+                    citation_text,
+                    remove_button,
+                    check,
+                )
+            )
             row._open_law_lens_rule_index = index
             row._open_law_lens_authority_type = "rule"
             row._open_law_lens_authority_id = rule_id
             row._open_law_lens_cache_section = "authority"
             row._open_law_lens_cache_sort_key = self._research_cache_row_sort_key(
                 rule_entries.get(rule_id, {}),
-                str(rule.get("title") or "Untitled rule"),
+                title_text,
                 citation_text,
                 "rule",
                 rule_id,
@@ -6434,42 +6456,22 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             if select_rule_id and rule_id == select_rule_id:
                 selected_row = row
         if self._prior_brief_entries:
-            header_row = Gtk.ListBoxRow()
-            header_row.set_selectable(False)
-            header_row.set_activatable(False)
-            header = Gtk.Label(label="Prior Briefing", xalign=0)
-            header.add_css_class("dim-label")
-            header.set_margin_top(12)
-            header.set_margin_bottom(2)
-            header.set_margin_start(8)
-            header.set_margin_end(8)
-            header_row.set_child(header)
-            header_row._open_law_lens_cache_section = "prior_brief_header"
-            header_row._open_law_lens_cache_sort_key = ("", "", "", "", "")
-            self.case_list.append(header_row)
+            self.case_list.append(
+                self._build_research_cache_section_header(
+                    "Prior Briefing",
+                    "prior_brief_header",
+                )
+            )
         for index, entry in enumerate(self._prior_brief_entries):
             row = Gtk.ListBoxRow()
             row.set_selectable(True)
             row.set_activatable(True)
             row.add_css_class("case-cache-row")
-            row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            row_box.set_margin_top(8)
-            row_box.set_margin_bottom(8)
-            row_box.set_margin_start(8)
-            row_box.set_margin_end(8)
             brief_id = str(entry.get("brief_id") or "")
             remove_button = Gtk.Button(icon_name="user-trash-symbolic")
-            remove_button.add_css_class("flat")
-            remove_button.add_css_class("case-row-icon-button")
             remove_button.set_tooltip_text("Remove from Research Cache")
             remove_button.connect("clicked", self._on_remove_prior_brief_clicked, brief_id)
-            row_box.append(remove_button)
-            text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-            text_box.set_hexpand(True)
             title_text = str(entry.get("title") or "Untitled prior brief")
-            title = Gtk.Label(label=title_text, xalign=0)
-            title.set_wrap(True)
-            text_box.append(title)
             subtitle_text = " · ".join(
                 value
                 for value in (
@@ -6478,19 +6480,18 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 )
                 if value
             )
-            subtitle = Gtk.Label(label=subtitle_text, xalign=0)
-            subtitle.add_css_class("dim-label")
-            subtitle.set_wrap(True)
-            text_box.append(subtitle)
-            row_box.append(text_box)
             check = Gtk.CheckButton()
-            check.add_css_class("neutral-agent-check")
-            check.set_valign(Gtk.Align.START)
             check.set_tooltip_text("Make prior advocacy available to Cache Agent")
             check.set_active(self.client.cache.is_prior_brief_agent_selected(brief_id))
             check.connect("toggled", self._on_agent_prior_brief_toggled, brief_id)
-            row_box.append(check)
-            row.set_child(row_box)
+            row.set_child(
+                self._build_research_cache_row_content(
+                    title_text,
+                    subtitle_text,
+                    remove_button,
+                    check,
+                )
+            )
             row._open_law_lens_prior_brief_index = index
             row._open_law_lens_authority_type = "prior_brief"
             row._open_law_lens_authority_id = brief_id
@@ -6505,63 +6506,36 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self.case_list.append(row)
 
         if self._agent_answers:
-            header_row = Gtk.ListBoxRow()
-            header_row.set_selectable(False)
-            header_row.set_activatable(False)
-            header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            header_box.set_margin_top(12)
-            header_box.set_margin_bottom(2)
-            header_box.set_margin_start(8)
-            header_box.set_margin_end(8)
-            header = Gtk.Label(label="Saved Answers", xalign=0)
-            header.add_css_class("dim-label")
-            header_box.append(header)
-            header_row.set_child(header_box)
-            header_row._open_law_lens_cache_section = "agent_answer_header"
-            header_row._open_law_lens_cache_sort_key = ("", "", "", "", "")
-            self.case_list.append(header_row)
+            self.case_list.append(
+                self._build_research_cache_section_header(
+                    "Saved Answers",
+                    "agent_answer_header",
+                )
+            )
         for index, answer_entry in enumerate(self._agent_answers):
             row = Gtk.ListBoxRow()
             row.set_selectable(True)
             row.set_activatable(True)
             row.add_css_class("case-cache-row")
-            row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            row_box.set_margin_top(8)
-            row_box.set_margin_bottom(8)
-            row_box.set_margin_start(8)
-            row_box.set_margin_end(8)
             answer_id = str(answer_entry.get("answer_id") or "").strip()
-            actions_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
-            actions_box.set_valign(Gtk.Align.START)
             remove_button = Gtk.Button(icon_name="user-trash-symbolic")
-            remove_button.add_css_class("flat")
-            remove_button.add_css_class("case-row-icon-button")
-            remove_button.add_css_class("cache-row-remove-button")
             remove_button.set_tooltip_text("Remove from Research Cache")
             remove_button.set_sensitive(bool(answer_id))
             remove_button.connect("clicked", self._on_remove_agent_answer_clicked, answer_id, answer_entry)
-            actions_box.append(remove_button)
-            row_box.append(actions_box)
-            text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-            text_box.set_hexpand(True)
             title_text = str(answer_entry.get("title") or "Saved agent answer")
-            title = Gtk.Label(label=title_text, xalign=0)
-            title.set_wrap(True)
-            text_box.append(title)
             mode_text = self._agent_answer_mode_label(str(answer_entry.get("mode") or ""))
-            subtitle = Gtk.Label(label=mode_text, xalign=0)
-            subtitle.add_css_class("dim-label")
-            subtitle.set_wrap(True)
-            text_box.append(subtitle)
-            row_box.append(text_box)
             check = Gtk.CheckButton()
-            check.add_css_class("neutral-agent-check")
-            check.set_valign(Gtk.Align.START)
             check.set_tooltip_text("Make saved answer available to Cache Agent")
             check.set_active(self.client.cache.is_agent_answer_selected(answer_id))
             check.connect("toggled", self._on_agent_answer_toggled, answer_id)
-            row_box.append(check)
-            row.set_child(row_box)
+            row.set_child(
+                self._build_research_cache_row_content(
+                    title_text,
+                    mode_text,
+                    remove_button,
+                    check,
+                )
+            )
             row._open_law_lens_agent_answer_index = index
             row._open_law_lens_authority_type = "agent_answer"
             row._open_law_lens_authority_id = answer_id
@@ -6577,7 +6551,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             if select_agent_answer_id and answer_id == select_agent_answer_id:
                 selected_row = row
         if selected_row is None and select_first:
-            selected_row = self.case_list.get_row_at_index(0)
+            selected_row = self._first_selectable_research_cache_row()
         if selected_row is not None:
             old_suppress = self._suppress_sidebar_selection_lookup
             self._suppress_sidebar_selection_lookup = suppress_selection_lookup
@@ -6610,11 +6584,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         _user_data: Any = None,
     ) -> int:
         section_order = {
-            "authority": 0,
-            "prior_brief_header": 1,
-            "prior_brief": 2,
-            "agent_answer_header": 3,
-            "agent_answer": 4,
+            "authority_header": 0,
+            "authority": 1,
+            "prior_brief_header": 2,
+            "prior_brief": 3,
+            "agent_answer_header": 4,
+            "agent_answer": 5,
         }
         section_a = section_order.get(getattr(row_a, "_open_law_lens_cache_section", "authority"), 0)
         section_b = section_order.get(getattr(row_b, "_open_law_lens_cache_section", "authority"), 0)
@@ -6850,7 +6825,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._refresh_case_suggestion_index_async(force=True)
         if clusters:
             if self.case_list.get_selected_row() is None:
-                first = self.case_list.get_row_at_index(0)
+                first = self._first_selectable_research_cache_row()
                 if first:
                     self.case_list.select_row(first)
         else:

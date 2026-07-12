@@ -3675,6 +3675,83 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(app.main_window_calls, 1)
         self.assertEqual(app.request_windows, [app.window])
 
+    def test_research_cache_row_content_uses_trailing_action_rail(self) -> None:
+        remove_button = Gtk.Button(icon_name="user-trash-symbolic")
+        check = Gtk.CheckButton()
+
+        content = OpenLawLensWindow._build_research_cache_row_content(
+            "In re Caden C.",
+            "(2021) 11 Cal.5th 614",
+            remove_button,
+            check,
+        )
+
+        text_box = content.get_first_child()
+        actions_box = text_box.get_next_sibling()
+        self.assertEqual(text_box.get_first_child().get_text(), "In re Caden C.")
+        self.assertEqual(
+            text_box.get_last_child().get_text(),
+            "(2021) 11 Cal.5th 614",
+        )
+        self.assertTrue(actions_box.has_css_class("cache-row-actions"))
+        self.assertIs(actions_box.get_first_child(), remove_button)
+        self.assertIs(actions_box.get_last_child(), check)
+        self.assertTrue(remove_button.has_css_class("cache-row-remove-button"))
+        self.assertTrue(check.has_css_class("neutral-agent-check"))
+
+    def test_research_cache_section_header_is_plain_and_nonselectable(self) -> None:
+        row = OpenLawLensWindow._build_research_cache_section_header(
+            "Authorities",
+            "authority_header",
+        )
+
+        label = row.get_child()
+        self.assertEqual(label.get_text(), "Authorities")
+        self.assertTrue(label.has_css_class("dim-label"))
+        self.assertTrue(label.has_css_class("cache-section-label"))
+        self.assertFalse(row.get_selectable())
+        self.assertFalse(row.get_activatable())
+        self.assertEqual(row._open_law_lens_cache_section, "authority_header")
+
+    def test_research_cache_sort_orders_section_headers_before_items(self) -> None:
+        window = OpenLawLensWindow.__new__(OpenLawLensWindow)
+        sections = (
+            "authority_header",
+            "authority",
+            "prior_brief_header",
+            "prior_brief",
+            "agent_answer_header",
+            "agent_answer",
+        )
+        rows = []
+        for section in sections:
+            row = Gtk.ListBoxRow()
+            row._open_law_lens_cache_section = section
+            row._open_law_lens_cache_sort_key = ("", "", "", "", "")
+            rows.append(row)
+
+        for earlier, later in zip(rows, rows[1:]):
+            self.assertLess(
+                OpenLawLensWindow._sort_research_cache_rows(window, earlier, later),
+                0,
+            )
+
+    def test_first_selectable_research_cache_row_skips_section_header(self) -> None:
+        window = OpenLawLensWindow.__new__(OpenLawLensWindow)
+        window.case_list = Gtk.ListBox()
+        header = OpenLawLensWindow._build_research_cache_section_header(
+            "Authorities",
+            "authority_header",
+        )
+        item = Gtk.ListBoxRow()
+        item.set_selectable(True)
+        window.case_list.append(header)
+        window.case_list.append(item)
+
+        selected = OpenLawLensWindow._first_selectable_research_cache_row(window)
+
+        self.assertIs(selected, item)
+
     def test_research_cache_clear_action_lives_in_sidebar_header_not_menu(self) -> None:
         class DummyWindow:
             pass
