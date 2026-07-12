@@ -545,6 +545,60 @@ class JsonCache:
         return cluster_id
 
     @_synchronized
+    def upsert_preferred_cluster(
+        self,
+        cluster: dict[str, Any],
+        *,
+        mark_dirty: bool = True,
+    ) -> str:
+        cluster = canonicalize_cluster_citations(cluster)
+        cluster_id = cluster_id_from_cluster(cluster)
+        if not cluster_id:
+            return ""
+        official_citation = normalize_citation(
+            official_citation_from_cluster(cluster)
+        ).casefold()
+        if not official_citation:
+            return self.upsert_cluster(cluster, mark_dirty=mark_dirty)
+
+        existing_index = self.read_case_index()
+        duplicate_ids: set[str] = set()
+        inherit_agent_selection = False
+        for existing_id, entry in existing_index.items():
+            if existing_id == cluster_id:
+                continue
+            citation_text = normalize_citation(
+                str(entry.get("citation_text") or "")
+            ).casefold()
+            if not citation_text:
+                existing_cluster = self.read_cached_cluster(existing_id)
+                if existing_cluster is not None:
+                    citation_text = normalize_citation(
+                        official_citation_from_cluster(existing_cluster)
+                    ).casefold()
+            if citation_text != official_citation:
+                continue
+            duplicate_ids.add(existing_id)
+            inherit_agent_selection = (
+                inherit_agent_selection or bool(entry.get("agent_selected"))
+            )
+
+        preferred_id = self.upsert_cluster(cluster, mark_dirty=False)
+        if not preferred_id:
+            return ""
+        index = self.read_case_index()
+        for duplicate_id in duplicate_ids:
+            index.pop(duplicate_id, None)
+        preferred_entry = index.get(preferred_id)
+        if isinstance(preferred_entry, dict) and inherit_agent_selection:
+            preferred_entry["agent_selected"] = True
+            index[preferred_id] = preferred_entry
+        self.write_case_index(index)
+        if mark_dirty:
+            self.mark_active_research_set_dirty()
+        return preferred_id
+
+    @_synchronized
     def update_case_opinions(
         self,
         cluster: dict[str, Any],

@@ -820,6 +820,161 @@ class ClientTests(unittest.TestCase):
 
         self.assertEqual(dedupe_case_clusters(clusters), clusters)
 
+    def test_preferred_lookup_clusters_uses_officially_paginated_duplicate(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            library = CaseLibrary(temp_path / "library.sqlite3")
+            library.ensure()
+            client = CourtListenerClient(
+                cache=JsonCache(temp_path / "cache"),
+                library=library,
+            )
+            older = {
+                "id": 2282485,
+                "case_name": "In Re Janet T.",
+                "case_name_short": "In Re Janet T.",
+                "citations": [
+                    {"volume": "93", "reporter": "Cal.App.4th", "page": "377"}
+                ],
+            }
+            official = {
+                "id": 5808769,
+                "case_name": (
+                    "Los Angeles County Department of Children & Family Services v. Tricia T."
+                ),
+                "case_name_short": "",
+                "case_name_full": (
+                    "In re JANET T., Persons Coming Under the Juvenile Court Law. "
+                    "LOS ANGELES COUNTY DEPARTMENT OF CHILDREN AND FAMILY SERVICES v. TRICIA T."
+                ),
+                "citations": [
+                    {"volume": "93", "reporter": "Cal.App.4th", "page": "377"}
+                ],
+            }
+            opinions = {
+                2282485: [{"id": 2282485, "plain_text": "[*164]Old.\n\n[*165]Next."}],
+                5808769: [{"id": 5664135, "plain_text": "[*381]Official.\n\n[*382]Next."}],
+            }
+
+            def fetch(
+                cluster: dict[str, object],
+                **kwargs: object,
+            ) -> list[dict[str, object]]:
+                self.assertEqual(
+                    kwargs,
+                    {"persist_to_library": False, "populate_research_cache": False},
+                )
+                return opinions[int(cluster["id"])]
+
+            with patch.object(client, "fetch_cluster_opinions", side_effect=fetch) as fetch_mock:
+                selected = client.preferred_lookup_clusters([official, older])
+
+            self.assertEqual([cluster["id"] for cluster in selected], [5808769])
+            self.assertEqual(cluster_short_title(selected[0]), "In re Janet T.")
+            self.assertEqual(
+                [call.args[0]["id"] for call in fetch_mock.call_args_list],
+                [2282485, 5808769],
+            )
+            self.assertEqual(client.cache.list_case_entries(), [])
+            self.assertEqual(client.library.saved_clusters(), [])
+
+    def test_preferred_lookup_clusters_does_not_probe_singletons(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            library = CaseLibrary(temp_path / "library.sqlite3")
+            library.ensure()
+            client = CourtListenerClient(
+                cache=JsonCache(temp_path / "cache"),
+                library=library,
+            )
+            cluster = {
+                "id": 42,
+                "case_name": "Example v. State",
+                "citations": [
+                    {"volume": "10", "reporter": "Cal.App.5th", "page": "25"}
+                ],
+            }
+
+            with patch.object(client, "fetch_cluster_opinions") as fetch_mock:
+                selected = client.preferred_lookup_clusters([cluster])
+
+            self.assertEqual(selected, [cluster])
+            fetch_mock.assert_not_called()
+
+    def test_preferred_lookup_clusters_continues_after_candidate_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            library = CaseLibrary(temp_path / "library.sqlite3")
+            library.ensure()
+            client = CourtListenerClient(
+                cache=JsonCache(temp_path / "cache"),
+                library=library,
+            )
+            first = {
+                "id": 1,
+                "case_name_short": "Example",
+                "citations": [
+                    {"volume": "10", "reporter": "Cal.App.5th", "page": "25"}
+                ],
+            }
+            second = {
+                "id": 2,
+                "case_name": "Example",
+                "case_name_short": "",
+                "citations": [
+                    {"volume": "10", "reporter": "Cal.App.5th", "page": "25"}
+                ],
+            }
+
+            def fetch(
+                cluster: dict[str, object],
+                **_kwargs: object,
+            ) -> list[dict[str, object]]:
+                if cluster["id"] == 1:
+                    raise CourtListenerError("temporary failure")
+                return [{"id": 20, "plain_text": "[*25]Opening.\n\n[*26]Next."}]
+
+            with patch.object(client, "fetch_cluster_opinions", side_effect=fetch):
+                selected = client.preferred_lookup_clusters([first, second])
+
+            self.assertEqual(selected, [second])
+
+    def test_preferred_lookup_clusters_keeps_metadata_winner_when_all_fetches_fail(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            library = CaseLibrary(temp_path / "library.sqlite3")
+            library.ensure()
+            client = CourtListenerClient(
+                cache=JsonCache(temp_path / "cache"),
+                library=library,
+            )
+            metadata_winner = {
+                "id": 1,
+                "case_name_short": "Example",
+                "citations": [
+                    {"volume": "10", "reporter": "Cal.App.5th", "page": "25"}
+                ],
+            }
+            alternate = {
+                "id": 2,
+                "case_name": "Example",
+                "case_name_short": "",
+                "citations": [
+                    {"volume": "10", "reporter": "Cal.App.5th", "page": "25"}
+                ],
+            }
+
+            with patch.object(
+                client,
+                "fetch_cluster_opinions",
+                side_effect=CourtListenerError("temporary failure"),
+            ):
+                selected = client.preferred_lookup_clusters(
+                    [alternate, metadata_winner]
+                )
+
+            self.assertEqual(selected, [metadata_winner])
+
     def test_format_official_california_citation_omits_missing_year(self) -> None:
         cluster = {
             "case_name": "Example v. State",

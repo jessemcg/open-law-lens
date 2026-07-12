@@ -141,6 +141,54 @@ class CacheTests(unittest.TestCase):
             self.assertEqual(entries[0]["title"], "Example v. State")
             self.assertEqual(entries[0]["citation_text"], "1 Cal. 2")
 
+    def test_upsert_preferred_cluster_replaces_active_official_citation_duplicate(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            older = {
+                "id": 2282485,
+                "case_name": "In Re Janet T.",
+                "citations": [
+                    {"volume": "93", "reporter": "Cal.App.4th", "page": "377"}
+                ],
+            }
+            preferred = {
+                "id": 5808769,
+                "case_name": (
+                    "Los Angeles County Department of Children & Family Services v. Tricia T."
+                ),
+                "case_name_full": (
+                    "In re JANET T., Persons Coming Under the Juvenile Court Law."
+                ),
+                "citations": [
+                    {"volume": "93", "reporter": "Cal.App.4th", "page": "377"}
+                ],
+            }
+            unrelated = {
+                "id": 99,
+                "case_name": "Unrelated v. State",
+                "citations": [
+                    {"volume": "10", "reporter": "Cal.App.5th", "page": "25"}
+                ],
+            }
+            cache.upsert_cluster(older)
+            cache.upsert_cluster(unrelated)
+            cache.set_agent_selected("2282485", True)
+            cache.set_reader_position("case", "2282485", 120)
+            cache.set_active_research_set(7, "Example", dirty=False)
+
+            preferred_id = cache.upsert_preferred_cluster(preferred)
+
+            self.assertEqual(preferred_id, "5808769")
+            entries = {entry["cluster_id"]: entry for entry in cache.list_case_entries()}
+            self.assertEqual(set(entries), {"5808769", "99"})
+            self.assertTrue(entries["5808769"]["agent_selected"])
+            self.assertIsNotNone(cache.read_cached_cluster("2282485"))
+            self.assertEqual(cache.reader_position("case", "2282485"), 120)
+            metadata = cache.active_research_set_metadata()
+            self.assertIsNotNone(metadata)
+            assert metadata is not None
+            self.assertTrue(metadata["dirty"])
+
     def test_case_entries_sort_newest_added_first(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = JsonCache(Path(temp_dir))

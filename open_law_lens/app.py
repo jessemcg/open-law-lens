@@ -6103,7 +6103,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 populate_research_cache=False,
             )
             raw_clusters = self.client.clusters_from_lookup(result)
-            shown_clusters = self._lookup_clusters_for_display(raw_clusters, link)
+            preferred_clusters = self.client.preferred_lookup_clusters(raw_clusters)
+            shown_clusters = self._lookup_clusters_for_display(preferred_clusters, link)
             if link is not None and shown_clusters:
                 shown_clusters = shown_clusters[:1]
             status = self._lookup_status_text(result, raw_clusters, shown_clusters)
@@ -6834,8 +6835,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if clusters:
             self._pending_auto_scholar_cluster_id = select_cluster_id
             self._pending_auto_scholar_query = (scholar_query or citation).strip()
+            upsert_preferred = getattr(
+                self.client.cache,
+                "upsert_preferred_cluster",
+                None,
+            )
+            if upsert_preferred is None:
+                upsert_preferred = self.client.cache.upsert_cluster
             for cluster in clusters:
-                self.client.cache.upsert_cluster(cluster)
+                upsert_preferred(cluster)
         else:
             self._pending_auto_scholar_cluster_id = ""
             self._pending_auto_scholar_query = ""

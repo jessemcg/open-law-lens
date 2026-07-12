@@ -3451,6 +3451,90 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(window._pending_auto_scholar_cluster_id, "")
         self.assertEqual(window._pending_auto_scholar_query, "")
 
+    def test_lookup_worker_prefers_quality_resolved_duplicate_before_display(self) -> None:
+        older = {
+            "id": 2282485,
+            "case_name": "In Re Janet T.",
+            "citations": [
+                {"volume": "93", "reporter": "Cal.App.4th", "page": "377"}
+            ],
+        }
+        preferred = {
+            "id": 5808769,
+            "case_name": (
+                "Los Angeles County Department of Children & Family Services v. Tricia T."
+            ),
+            "case_name_full": "In re JANET T., Persons Coming Under the Juvenile Court Law.",
+            "citations": [
+                {"volume": "93", "reporter": "Cal.App.4th", "page": "377"}
+            ],
+        }
+
+        class DummyClient:
+            last_lookup_source = "CourtListener API"
+
+            def __init__(self) -> None:
+                self.preferred_inputs: list[list[dict[str, object]]] = []
+
+            def lookup_citation(
+                self,
+                _citation: str,
+                **_kwargs: object,
+            ) -> list[dict[str, object]]:
+                return [{"status": 300, "clusters": [older, preferred]}]
+
+            def clusters_from_lookup(
+                self,
+                _result: list[dict[str, object]],
+            ) -> list[dict[str, object]]:
+                return [older, preferred]
+
+            def preferred_lookup_clusters(
+                self,
+                clusters: list[dict[str, object]],
+            ) -> list[dict[str, object]]:
+                self.preferred_inputs.append(clusters)
+                return [preferred]
+
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.client = DummyClient()
+
+            def _lookup_clusters_for_display(
+                self,
+                clusters: list[dict[str, object]],
+                _link: CitedCaseLink | None,
+            ) -> list[dict[str, object]]:
+                return clusters
+
+            def _lookup_status_text(self, *_args: object) -> str:
+                return "CourtListener API: 2 matches, 1 shown, status 300"
+
+            def _lookup_context_text(
+                self,
+                citation: str,
+                _link: CitedCaseLink | None,
+            ) -> str:
+                return citation
+
+            def _scholar_lookup_query(
+                self,
+                citation: str,
+                _link: CitedCaseLink | None,
+            ) -> str:
+                return citation
+
+        window = DummyWindow()
+
+        payload = OpenLawLensWindow._lookup_worker_result(  # type: ignore[arg-type]
+            window,
+            "93 Cal.App.4th 377",
+        )
+
+        self.assertEqual(payload[0], "success")
+        self.assertEqual(payload[2], [preferred])
+        self.assertEqual(window.client.preferred_inputs, [[older, preferred]])
+
     def test_clicked_link_cluster_match_sets_clean_pending_scholar_query(self) -> None:
         class DummyList:
             def get_selected_row(self) -> object:

@@ -1111,6 +1111,50 @@ class CourtListenerClient:
                 clusters.extend(cluster for cluster in values if isinstance(cluster, dict))
         return clusters
 
+    def preferred_lookup_clusters(
+        self,
+        clusters: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        grouped: dict[tuple[str, str, str], list[tuple[int, dict[str, Any]]]] = {}
+        keep: list[tuple[int, dict[str, Any]]] = []
+        for index, cluster in enumerate(clusters):
+            key = _official_california_reporter_key(cluster)
+            if key is None:
+                keep.append((index, cluster))
+                continue
+            grouped.setdefault(key, []).append((index, cluster))
+
+        for values in grouped.values():
+            first_index = min(index for index, _cluster in values)
+            if len(values) == 1:
+                keep.append((first_index, values[0][1]))
+                continue
+            ordered = sorted(values, key=lambda item: _dedupe_sort_key(item[1]))
+            selected = ordered[0][1]
+            first_evaluated: dict[str, Any] | None = None
+            for _index, candidate in ordered:
+                try:
+                    opinions = self.fetch_cluster_opinions(
+                        candidate,
+                        persist_to_library=False,
+                        populate_research_cache=False,
+                    )
+                except CourtListenerError:
+                    continue
+                if first_evaluated is None:
+                    first_evaluated = candidate
+                reader_opinions = self.reader_opinions(opinions)
+                displays = [self.opinion_display(opinion) for opinion in reader_opinions]
+                if official_pagination_quality(candidate, displays).eligible:
+                    selected = candidate
+                    break
+            else:
+                if first_evaluated is not None:
+                    selected = first_evaluated
+            keep.append((first_index, selected))
+
+        return [cluster for _, cluster in sorted(keep, key=lambda item: item[0])]
+
     def cached_clusters(self) -> list[dict[str, Any]]:
         clusters: list[dict[str, Any]] = []
         for entry in self.cache.list_case_entries():
