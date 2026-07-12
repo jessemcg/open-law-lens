@@ -1812,9 +1812,23 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         box.set_hexpand(True)
 
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        header.set_hexpand(True)
+
         heading = Gtk.Label(label="Current Case", xalign=0)
         heading.add_css_class("heading")
-        box.append(heading)
+        heading.set_hexpand(True)
+        header.append(heading)
+
+        refresh_button = Gtk.Button(icon_name="view-refresh-symbolic")
+        refresh_button.add_css_class("flat")
+        refresh_button.add_css_class("case-row-icon-button")
+        refresh_button.set_tooltip_text("Refresh current-case facts")
+        refresh_button.set_valign(Gtk.Align.CENTER)
+        refresh_button.connect("clicked", self._on_refresh_current_case_clicked)
+        header.append(refresh_button)
+
+        box.append(header)
 
         list_box = Gtk.ListBox()
         list_box.add_css_class("case-list")
@@ -2809,6 +2823,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if row is None:
             return
         self.case_list.unselect_all()
+        self._open_current_case_socf()
+
+    def _on_refresh_current_case_clicked(self, _button: Gtk.Button) -> None:
+        self.case_list.unselect_all()
+        if (
+            self._current_case_context_list is not None
+            and self._current_case_context_row is not None
+        ):
+            self._current_case_context_list.select_row(self._current_case_context_row)
         self._open_current_case_socf()
 
     def _open_current_case_socf(self) -> None:

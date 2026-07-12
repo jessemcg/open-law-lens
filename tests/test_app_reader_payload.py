@@ -110,6 +110,27 @@ class AppReaderPayloadTests(unittest.TestCase):
         case_list.unselect_all.assert_called_once_with()
         open_current_case.assert_called_once_with()
 
+    def test_current_case_refresh_selects_context_and_reloads_reader(self) -> None:
+        case_list = MagicMock()
+        current_case_list = MagicMock()
+        current_case_row = object()
+        open_current_case = MagicMock()
+        window = SimpleNamespace(
+            case_list=case_list,
+            _current_case_context_list=current_case_list,
+            _current_case_context_row=current_case_row,
+            _open_current_case_socf=open_current_case,
+        )
+
+        OpenLawLensWindow._on_refresh_current_case_clicked(  # type: ignore[arg-type]
+            window,
+            MagicMock(),
+        )
+
+        case_list.unselect_all.assert_called_once_with()
+        current_case_list.select_row.assert_called_once_with(current_case_row)
+        open_current_case.assert_called_once_with()
+
     def test_reader_highlight_button_uses_bundled_icon(self) -> None:
         class DummyWindow:
             def _on_toggle_reader_highlight_clicked(self, *_args: object) -> None:
