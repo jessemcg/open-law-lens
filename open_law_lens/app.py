@@ -184,6 +184,7 @@ AGENT_WRAPPER = PROJECT_DIR / "scripts" / "open-law-lens-codex-agent-vte.sh"
 DEFAULT_CODEX_BIN = "codex"
 READER_BG = "#ffffff"
 READER_FG = "#000000"
+READER_COOL_GRAY_BG = "#e8edf3"
 READER_RENDER_TEXT_CHUNK_SIZE = 8000
 READER_RENDER_TAG_CHUNK_SIZE = 250
 AGENT_PANEL_MIN_HEIGHT = 260
@@ -1491,13 +1492,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
               background-color: {READER_BG};
             }}
             box.case-reader-fixed-header {{
-              background-color: #fafafa;
-              border-bottom: 1px solid #e6e6e6;
+              background-color: {READER_COOL_GRAY_BG};
+              border-bottom: 1px solid #d4dbe4;
               padding: 6px 12px 8px 12px;
             }}
             label.case-reader-fixed-header {{
               color: {READER_FG};
-              background-color: #fafafa;
+              background-color: {READER_COOL_GRAY_BG};
               font-family: {reader_font_css(config.reader_font_family)};
               font-size: {config.reader_font_size_pt}pt;
               font-weight: bold;
@@ -1513,10 +1514,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
               min-height: 28px;
             }}
             button.case-reader-header-action-button:hover {{
-              background-color: #eeeeee;
+              background-color: #dce3eb;
             }}
             button.case-reader-header-action-button:active {{
-              background-color: #dddddd;
+              background-color: #d0d9e3;
             }}
             textview.case-reader {{
               color: {READER_FG};
@@ -2263,7 +2264,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.reader_buffer.connect("mark-set", self._on_reader_selection_changed)
         self.page_marker_tag = self.reader_buffer.create_tag(
             "page-marker",
-            weight=Pango.Weight.BOLD,
+            weight=Pango.Weight.ULTRABOLD,
+            background=READER_COOL_GRAY_BG,
         )
         self._reader_citation_italic_tag = self.reader_buffer.create_tag(
             "reader-citation-italic",
