@@ -657,17 +657,19 @@ class SettingsWindow(Adw.ApplicationWindow):
         root.set_margin_end(12)
         root.set_vexpand(True)
 
-        basic_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        basic_box.set_hexpand(True)
+        general_settings_group = Adw.PreferencesGroup()
+        self.general_settings_expander = Adw.ExpanderRow(
+            title="General Settings",
+            subtitle="CourtListener, display, lookup, concordance, and agent runtime.",
+        )
+        self.general_settings_expander.set_expanded(False)
+        general_settings_group.add(self.general_settings_expander)
 
-        group = Adw.PreferencesGroup(title="CourtListener")
         self.token_row = self._build_token_row()
         config = load_config()
         self.token_row.set_text(config.courtlistener_token)
-        group.add(self.token_row)
-        basic_box.append(group)
+        self.general_settings_expander.add_row(self.token_row)
 
-        display_group = Adw.PreferencesGroup(title="Display")
         reader_font_adjustment = Gtk.Adjustment(
             value=config.reader_font_size_pt,
             lower=8,
@@ -680,7 +682,7 @@ class SettingsWindow(Adw.ApplicationWindow):
             adjustment=reader_font_adjustment,
         )
         self.reader_font_size_row.set_digits(0)
-        display_group.add(self.reader_font_size_row)
+        self.general_settings_expander.add_row(self.reader_font_size_row)
 
         self.reader_font_family_values = [name for name, _css in READER_FONT_FAMILY_OPTIONS]
         self.reader_font_family_row = Adw.ComboRow(title="Case View Font")
@@ -690,10 +692,8 @@ class SettingsWindow(Adw.ApplicationWindow):
         except ValueError:
             selected_index = 0
         self.reader_font_family_row.set_selected(selected_index)
-        display_group.add(self.reader_font_family_row)
-        basic_box.append(display_group)
+        self.general_settings_expander.add_row(self.reader_font_family_row)
 
-        authority_group = Adw.PreferencesGroup(title="Authority Lookup")
         self.bare_statute_law_code_values = [code for code, _label in BARE_STATUTE_LAW_CODE_OPTIONS]
         bare_statute_labels = [
             f"{label} ({code})"
@@ -711,17 +711,13 @@ class SettingsWindow(Adw.ApplicationWindow):
         except ValueError:
             selected_bare_statute_index = 0
         self.bare_statute_law_code_row.set_selected(selected_bare_statute_index)
-        authority_group.add(self.bare_statute_law_code_row)
-        basic_box.append(authority_group)
+        self.general_settings_expander.add_row(self.bare_statute_law_code_row)
 
-        concordance_group = Adw.PreferencesGroup(title="Concordance")
         self.concordance_row = Adw.EntryRow(title="Concordance file")
         self.concordance_row.set_text(config.concordance_file_path)
         self._add_concordance_row_buttons()
-        concordance_group.add(self.concordance_row)
-        basic_box.append(concordance_group)
+        self.general_settings_expander.add_row(self.concordance_row)
 
-        agent_group = Adw.PreferencesGroup(title="Agent Runtime")
         self.agent_permission_mode_values = [
             mode for mode, _label in AGENT_PERMISSION_MODE_OPTIONS
         ]
@@ -740,10 +736,9 @@ class SettingsWindow(Adw.ApplicationWindow):
         except ValueError:
             selected_agent_permission_mode_index = 0
         self.agent_permission_mode_row.set_selected(selected_agent_permission_mode_index)
-        agent_group.add(self.agent_permission_mode_row)
-        basic_box.append(agent_group)
+        self.general_settings_expander.add_row(self.agent_permission_mode_row)
 
-        root.append(basic_box)
+        root.append(general_settings_group)
 
         split = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         split.set_hexpand(True)
