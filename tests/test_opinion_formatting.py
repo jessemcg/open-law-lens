@@ -57,7 +57,7 @@ class OpinionFormattingTests(unittest.TestCase):
 
         self.assertEqual(self.styled_text(text), [])
 
-    def test_infers_only_coherent_roman_outline_siblings(self) -> None:
+    def test_infers_roman_prefixed_legal_headings_without_sequence(self) -> None:
         text = (
             f"I. FACTUAL BACKGROUND\n\n{BODY}\n\n"
             f"II. DISCUSSION\n\n{BODY}\n\n"
@@ -66,8 +66,29 @@ class OpinionFormattingTests(unittest.TestCase):
 
         self.assertEqual(
             self.styled_text(text),
-            ["I. FACTUAL BACKGROUND", "II. DISCUSSION"],
+            ["I. FACTUAL BACKGROUND", "II. DISCUSSION", "IV. DISPOSITION"],
         )
+
+    def test_infers_single_roman_prefixed_legal_heading(self) -> None:
+        text = f"II. DISCUSSION\n\n{BODY}"
+
+        self.assertEqual(self.styled_text(text), ["II. DISCUSSION"])
+
+    def test_infers_nonconsecutive_letter_prefixed_legal_headings(self) -> None:
+        text = (
+            f"A. Governing Law\n\n{BODY}\n\n"
+            f"C. Application of the Law\n\n{BODY}"
+        )
+
+        self.assertEqual(
+            self.styled_text(text),
+            ["A. Governing Law", "C. Application of the Law"],
+        )
+
+    def test_infers_punctuation_only_roman_and_letter_headings(self) -> None:
+        text = f"II.\n\n{BODY}\n\nC.\n\n{BODY}"
+
+        self.assertEqual(self.styled_text(text), ["II.", "C."])
 
     def test_infers_coherent_letter_and_numbered_outline_siblings(self) -> None:
         text = (

@@ -1293,6 +1293,23 @@ class LibraryTests(unittest.TestCase):
             ["INTRODUCTION"],
         )
 
+    def test_opinion_display_text_styles_roman_prefixed_paragraph_heading(self) -> None:
+        opinion = {
+            "html_with_citations": (
+                "<p>The court granted review.</p>"
+                "<p>II. DISCUSSION</p>"
+                "<p>The issue before us is one of standing, not appealability. "
+                "(In re Aaron R. (2005) 130 Cal.App.4th 697, 702.)</p>"
+            )
+        }
+
+        display = opinion_display_text(opinion)
+
+        self.assertEqual(
+            [display.text[span.start_offset:span.end_offset] for span in display.style_spans],
+            ["II. DISCUSSION"],
+        )
+
     def test_opinion_display_text_does_not_style_flattened_pre_text(self) -> None:
         opinion = {
             "html_with_citations": (

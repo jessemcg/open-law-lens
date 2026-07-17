@@ -36,6 +36,7 @@ class _OutlineCandidate:
     outline_kind: str
     value: int
     paragraph: _Paragraph
+    independently_styled: bool = False
 
 
 _PARAGRAPH_SEPARATOR_RE = re.compile(r"(?:\r?\n[ \t]*){2,}")
@@ -151,6 +152,10 @@ _OUTLINE_WITH_TITLE_RE = re.compile(
     r"^(?P<label>(?:[IVXLCDM]+|[A-Za-z]|\d{1,2}))[.)]\s+(?P<title>\S.*)$",
     flags=re.IGNORECASE,
 )
+_PUNCTUATED_BARE_OUTLINE_RE = re.compile(
+    r"^(?P<label>(?:[IVXLCDM]+|[A-Za-z]))[.)]$",
+    flags=re.IGNORECASE,
+)
 _BARE_OUTLINE_RE = re.compile(r"^(?P<label>(?:[IVXLCDM]+|[A-Za-z]|\d{1,2}))$", re.IGNORECASE)
 
 
@@ -185,7 +190,7 @@ def infer_opinion_heading_spans(
             continue
         outline = _parse_outline(candidate)
         if outline is not None:
-            outline_kind, value, title = outline
+            outline_kind, value, title, is_punctuated = outline
             if notes_index is not None and index > notes_index:
                 continue
             if title and not _is_heading_phrase(title):
@@ -193,7 +198,15 @@ def infer_opinion_heading_spans(
             if not _has_following_body(paragraphs, index):
                 continue
             outline_candidates.append(
-                _OutlineCandidate(index, outline_kind, value, paragraph)
+                _OutlineCandidate(
+                    index,
+                    outline_kind,
+                    value,
+                    paragraph,
+                    independently_styled=(
+                        is_punctuated and outline_kind in {"roman", "letter"}
+                    ),
+                )
             )
             continue
         if not _is_heading_phrase(candidate):
@@ -206,7 +219,10 @@ def infer_opinion_heading_spans(
     inferred.extend(
         _heading_span(candidate.paragraph)
         for candidate in outline_candidates
-        if candidate.paragraph_index in coherent_outline_indexes
+        if (
+            candidate.independently_styled
+            or candidate.paragraph_index in coherent_outline_indexes
+        )
     )
 
     return _merge_spans(trusted, inferred)
@@ -335,12 +351,18 @@ def _is_title_like(text: str) -> bool:
     return capitalized / len(significant) >= 0.75
 
 
-def _is_metadata(text: str) -> bool:
+def _is_metadata(
+    text: str,
+    *,
+    reporter_citation_is_metadata: bool = True,
+) -> bool:
     stripped = text.strip()
     lower = stripped.casefold()
     if stripped.startswith(_QUOTE_STARTS):
         return True
-    if _CAPTION_ROLE_RE.search(stripped) or _REPORTER_CITATION_RE.search(stripped):
+    if _CAPTION_ROLE_RE.search(stripped):
+        return True
+    if reporter_citation_is_metadata and _REPORTER_CITATION_RE.search(stripped):
         return True
     if _DOCKET_RE.search(stripped) or _JUDGE_SIGNATURE_RE.search(stripped):
         return True
@@ -362,7 +384,10 @@ def _has_following_body(paragraphs: list[_Paragraph], index: int) -> bool:
 
 
 def _looks_like_body(text: str) -> bool:
-    if len(text) < 35 or _is_metadata(text):
+    if len(text) < 35 or _is_metadata(
+        text,
+        reporter_citation_is_metadata=False,
+    ):
         return False
     words = _WORD_RE.findall(text)
     if len(words) < 6:
@@ -371,26 +396,31 @@ def _looks_like_body(text: str) -> bool:
     return lowercase_words >= max(3, len(words) // 3)
 
 
-def _parse_outline(text: str) -> tuple[str, int, str] | None:
-    match = _OUTLINE_WITH_TITLE_RE.fullmatch(text)
+def _parse_outline(text: str) -> tuple[str, int, str, bool] | None:
+    titled_match = _OUTLINE_WITH_TITLE_RE.fullmatch(text)
     title = ""
+    if titled_match is not None:
+        match = titled_match
+        title = match.group("title").strip()
+        is_punctuated = True
+    else:
+        match = _PUNCTUATED_BARE_OUTLINE_RE.fullmatch(text)
+        is_punctuated = match is not None
     if match is None:
         match = _BARE_OUTLINE_RE.fullmatch(text)
         if match is None:
             return None
-    else:
-        title = match.group("title").strip()
     label = match.group("label")
     if label.isdigit():
         if not title:
             return None
         value = int(label)
-        return ("number", value, title) if value > 0 else None
+        return ("number", value, title, is_punctuated) if value > 0 else None
     upper = label.upper()
     if len(upper) > 1 or upper in {"I", "V", "X"}:
         value = _roman_value(upper)
-        return ("roman", value, title) if value is not None else None
-    return "letter", ord(upper) - ord("A") + 1, title
+        return ("roman", value, title, is_punctuated) if value is not None else None
+    return "letter", ord(upper) - ord("A") + 1, title, is_punctuated
 
 
 def _roman_value(label: str) -> int | None:
