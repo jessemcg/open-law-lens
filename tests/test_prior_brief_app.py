@@ -85,6 +85,7 @@ class PriorBriefAppTests(unittest.TestCase):
                 self._pending_quote_target = None
                 self.status = ""
                 self.rendered = ""
+                self.headers: list[str] = []
                 self.rendered_style_spans = []
                 self.cache_refreshes = 0
                 self.pending_targets_at_render: list[QuoteTarget | None] = []
@@ -98,8 +99,8 @@ class PriorBriefAppTests(unittest.TestCase):
             def _set_reader_position_key(self, *_args: object) -> None:
                 pass
 
-            def _set_reader_header(self, *_args: object) -> None:
-                pass
+            def _set_reader_header(self, text: str, *_args: object) -> None:
+                self.headers.append(text)
 
             def _set_reader_text(self, text: str, *, style_spans=None) -> None:
                 self.rendered = text
@@ -136,6 +137,13 @@ class PriorBriefAppTests(unittest.TestCase):
         self.assertEqual(window.cache_refreshes, 1)
         self.assertEqual(window.client.cache.mark_dirty_values, [True, False])
         self.assertEqual(window.rendered, brief.text)
+        self.assertEqual(
+            window.headers,
+            [
+                "B348009_RB_Breana_R · June 8, 2026",
+                "B348009_RB_Breana_R · June 8, 2026",
+            ],
+        )
         self.assertEqual(
             [span.kind for span in window.rendered_style_spans],
             ["heading", "brief-subheading"],

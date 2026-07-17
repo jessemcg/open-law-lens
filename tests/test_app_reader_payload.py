@@ -9,6 +9,8 @@ from unittest.mock import MagicMock, patch
 
 from open_law_lens.app import (
     AGENT_MODE_BRIEF,
+    AGENT_MODE_CASE,
+    AGENT_MODE_GENERAL,
     AGENT_MODE_ICONS,
     READER_CLIPBOARD_ICON,
     SCHOLAR_FALLBACK_CLIPBOARD_RECOVERY,
@@ -381,7 +383,7 @@ class AppReaderPayloadTests(unittest.TestCase):
 
         idle_add.assert_called_once_with(restore, ("rule", "CRC:8.11"), 4, 77)
 
-    def test_case_agent_render_links_only_resolved_quotes_and_keeps_delimiters(self) -> None:
+    def test_agent_modes_remove_quote_marks_and_case_mode_links_resolved_quote(self) -> None:
         class DummyTagTable:
             def remove(self, _tag: object) -> None:
                 pass
@@ -447,7 +449,19 @@ class AppReaderPayloadTests(unittest.TestCase):
             def _apply_agent_markdown_spans(self, *_args: object) -> None:
                 pass
 
+            def _apply_agent_prior_brief_title_links(self, *_args: object) -> None:
+                pass
+
             def _apply_agent_citation_italics(self, *_args: object) -> None:
+                pass
+
+            def _apply_agent_citation_links(self, *_args: object) -> None:
+                pass
+
+            def _apply_agent_statute_links(self, *_args: object) -> None:
+                pass
+
+            def _apply_agent_rule_links(self, *_args: object) -> None:
                 pass
 
             def _resolve_agent_quote_color(self) -> object:
@@ -461,10 +475,34 @@ class AppReaderPayloadTests(unittest.TestCase):
 
         OpenLawLensWindow._render_agent_answer(window, answer)  # type: ignore[arg-type]
 
-        self.assertEqual(window._agent_answer_buffer.text, answer)
+        self.assertEqual(
+            window._agent_answer_buffer.text,
+            "The court found active risk today. It rejected unmatched phrase here.",
+        )
         self.assertEqual(len(window._agent_link_lookup), 1)
         self.assertEqual(len(window._agent_answer_buffer.tags), 1)
+        _tag, start, end = window._agent_answer_buffer.tags[0]
+        self.assertEqual(
+            window._agent_answer_buffer.text[start:end],
+            "active risk today.",
+        )
         self.assertEqual(window._agent_answer_buffer.created_props[0]["weight"], Pango.Weight.BOLD)
+
+        for mode in (AGENT_MODE_GENERAL, AGENT_MODE_CASE, AGENT_MODE_BRIEF):
+            with self.subTest(mode=mode):
+                window = DummyWindow()
+                window._agent_mode = mode
+                window._case_agent_text_sources = []
+
+                OpenLawLensWindow._render_agent_answer(  # type: ignore[arg-type]
+                    window,
+                    'The opinion requires “active risk today.”',
+                )
+
+                self.assertEqual(
+                    window._agent_answer_buffer.text,
+                    "The opinion requires active risk today.",
+                )
 
     def test_plain_prior_brief_title_is_automatically_linked(self) -> None:
         class DummyBuffer:

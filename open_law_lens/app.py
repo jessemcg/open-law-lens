@@ -36,6 +36,7 @@ from .agent import (
     QuoteTarget,
     export_selected_authorities,
     extract_latest_codex_final_answer_from_jsonl,
+    extract_quoted_phrases,
     find_latest_codex_session_log_for_cwd,
     quote_match_spans,
     resolved_agent_quote_spans,
@@ -8458,6 +8459,36 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         offset = max(0, min(offset, len(offset_map) - 1))
         return offset_map[offset]
 
+    @staticmethod
+    def _remove_direct_quote_marks(
+        text: str,
+        spans: list[tuple[int, int, str]],
+    ) -> tuple[str, list[int]]:
+        omitted: set[int] = set()
+        for start, end, _phrase in spans:
+            opening = start - 1
+            closing = end
+            if opening < 0 or closing >= len(text):
+                continue
+            if (text[opening], text[closing]) not in {
+                ('"', '"'),
+                ("\u201c", "\u201d"),
+            }:
+                continue
+            omitted.update((opening, closing))
+
+        out: list[str] = []
+        offset_map = [0] * (len(text) + 1)
+        clean_offset = 0
+        for index, char in enumerate(text):
+            offset_map[index] = clean_offset
+            if index in omitted:
+                continue
+            out.append(char)
+            clean_offset += 1
+        offset_map[len(text)] = clean_offset
+        return "".join(out), offset_map
+
     def _render_agent_answer(self, text: str) -> None:
         if self._agent_answer_buffer is None:
             return
@@ -8482,7 +8513,17 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             if self._agent_mode in {AGENT_MODE_CASE, AGENT_MODE_BRIEF}
             else []
         )
-        rendered, markdown_spans, offset_map = self._render_markdown_text(text)
+        display_text, quote_offset_map = OpenLawLensWindow._remove_direct_quote_marks(
+            text,
+            extract_quoted_phrases(text),
+        )
+        rendered, markdown_spans, markdown_offset_map = self._render_markdown_text(
+            display_text
+        )
+        offset_map = [
+            self._map_offset(offset, markdown_offset_map)
+            for offset in quote_offset_map
+        ]
         buffer.set_text(rendered)
         self._apply_agent_markdown_spans(buffer, markdown_spans)
         if self._agent_mode == AGENT_MODE_BRIEF:
@@ -9300,12 +9341,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._selected_agent_answer = None
         self._selected_prior_brief = brief
         self._set_reader_position_key("prior_brief", brief.brief_id)
-        metadata = " · ".join(
-            value
-            for value in (brief.document_type, brief.case_number, brief.document_date)
-            if value
+        document_date = us_long_date(brief.document_date)
+        self._set_reader_header(
+            f"{brief.title} · {document_date}" if document_date else brief.title
         )
-        self._set_reader_header(f"{brief.title}\n{metadata}" if metadata else brief.title)
         if target is not None and target.end_offset > target.offset:
             self._pending_quote_target = target
         self._set_reader_text(
