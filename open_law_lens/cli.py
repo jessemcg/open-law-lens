@@ -18,7 +18,7 @@ from .client import (
     search_result_full_citation,
 )
 from .launch_request import discard_open_authority_request, write_open_authority_request
-from .library import CaseLibrary, LibraryPruneCandidate
+from .library import CaseLibrary, LibraryPruneCandidate, MissingCitationAudit
 from .prior_briefs import PriorBriefLibrary
 from .rules import CaliforniaRulesError
 from .slip_opinions import (
@@ -732,6 +732,33 @@ def _print_prune_candidate(candidate: LibraryPruneCandidate) -> None:
 
 def _cmd_prune_library(args: argparse.Namespace) -> int:
     library = CaseLibrary.default()
+    if args.missing_citation:
+        if args.apply:
+            result = library.prune_missing_official_citations(create_backup=True)
+            print(
+                f"Pruned {len(result.pruned)} uncited library case(s) and "
+                f"{result.removed_attached_opinion_count} attached opinion(s); "
+                f"kept {result.kept_count} officially cited case(s)."
+            )
+            print(
+                f"Removed {result.removed_orphan_opinion_count} orphan opinion(s), "
+                f"{result.removed_orphan_marker_count} orphan page marker(s), and "
+                f"{len(result.removed_research_sets)} invalid Research Set(s)."
+            )
+            print(
+                f"Rewrote or removed {result.rewritten_lookup_result_count} "
+                "durable lookup result(s)."
+            )
+            print(
+                f"Reparented {result.reparented_opinion_count} opinion(s) and "
+                f"repaired {result.repaired_case_reference_count} case opinion list(s)."
+            )
+            if result.backup_path is not None:
+                print(f"Backup: {result.backup_path}")
+            return 0
+        audit = library.missing_official_citation_audit()
+        _print_missing_citation_audit(audit)
+        return 0
     if args.apply:
         result = library.prune_ineligible_official_pagination(create_backup=True)
         print(
@@ -750,6 +777,31 @@ def _cmd_prune_library(args: argparse.Namespace) -> int:
     for candidate in ineligible:
         _print_prune_candidate(candidate)
     return 0
+
+
+def _print_missing_citation_audit(audit: MissingCitationAudit) -> None:
+    print(
+        f"Dry run: {len(audit.cases)} library case(s) lack an official California "
+        f"reporter citation; {audit.retained_case_count} cited case(s) retained."
+    )
+    print(
+        f"Would remove {audit.attached_opinion_count} attached opinion(s), "
+        f"{audit.orphan_opinion_count} orphan opinion(s), "
+        f"{audit.orphan_marker_count} orphan page marker(s), and "
+        f"{len(audit.invalid_research_sets)} invalid Research Set(s)."
+    )
+    print(
+        f"Would rewrite or remove {audit.lookup_result_count} durable lookup result(s)."
+    )
+    print(
+        f"Would reparent {audit.reparented_opinion_count} opinion(s) and repair "
+        f"{audit.repaired_case_reference_count} case opinion list(s)."
+    )
+    for research_set in audit.invalid_research_sets:
+        titles = "; ".join(research_set.uncited_case_titles)
+        print(f"Research Set: {research_set.name} | invalid case payloads: {titles}")
+    for candidate in audit.cases:
+        _print_prune_candidate(candidate)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -997,6 +1049,11 @@ def build_parser() -> argparse.ArgumentParser:
     prune_library_parser = subparsers.add_parser(
         "prune-library",
         help="remove durable library cases that lack official reporter pagination",
+    )
+    prune_library_parser.add_argument(
+        "--missing-citation",
+        action="store_true",
+        help="audit or remove only content without an official California reporter citation",
     )
     prune_library_mode = prune_library_parser.add_mutually_exclusive_group()
     prune_library_mode.add_argument(

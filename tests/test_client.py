@@ -1498,7 +1498,13 @@ class ClientTests(unittest.TestCase):
             cache = JsonCache(Path(temp_dir) / "cache")
             library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
             library.ensure()
-            library.upsert_cluster({"id": 42, "case_name": "Example v. State"})
+            library.upsert_cluster(
+                {
+                    "id": 42,
+                    "case_name": "Example v. State",
+                    "citations": [{"volume": 1, "reporter": "Cal.", "page": 2}],
+                }
+            )
             client = CourtListenerClient(cache=cache, library=library)
 
             cluster = client.fetch_url("/api/rest/v4/clusters/42/", kind="clusters")
@@ -1630,6 +1636,7 @@ class ClientTests(unittest.TestCase):
                 "id": 42,
                 "case_name": "Example v. State",
                 "sub_opinions": ["/api/rest/v4/opinions/10/"],
+                "citations": [{"volume": 1, "reporter": "Cal.", "page": 2}],
             }
             opinion = {"id": 10, "cluster_id": 42, "plain_text": "Opinion text"}
             library.upsert_cluster(cluster)

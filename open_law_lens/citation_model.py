@@ -70,7 +70,7 @@ def official_citation_parts_from_cluster(
             continue
         volume = str(citation.get("volume") or "").strip()
         page = str(citation.get("page") or "").strip()
-        if volume and page:
+        if re.fullmatch(r"\d+", volume) and re.fullmatch(r"\d+", page):
             return (volume, display_reporter, page)
     return None
 

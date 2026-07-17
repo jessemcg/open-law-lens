@@ -57,6 +57,9 @@ class CliCommandTests(unittest.TestCase):
             parser.parse_args(["load-research-set", "Case_research"]).command,
             "load-research-set",
         )
+        self.assertTrue(
+            parser.parse_args(["prune-library", "--missing-citation"]).missing_citation
+        )
         self.assertEqual(
             parser.parse_args(["search-briefs", "ICWA", "--sort", "newest"]).command,
             "search-briefs",

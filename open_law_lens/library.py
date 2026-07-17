@@ -22,6 +22,7 @@ from .citation_model import (
 )
 from .external_import import repair_reporter_only_imported_cluster
 from .import_text import clean_imported_opinion_text
+from .opinion_formatting import DisplayStyleSpan, infer_opinion_heading_spans
 from .storage import (
     external_import_matches_lookup as _external_import_matches_lookup,
     filter_lookup_result_for_citation as _filter_lookup_result_for_citation,
@@ -180,6 +181,7 @@ class DisplayText:
     text: str
     source_field: str
     page_markers: list[PageMarker]
+    style_spans: list[DisplayStyleSpan] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -199,6 +201,51 @@ class LibraryPruneResult:
     backup_path: Path | None
     pruned: list[LibraryPruneCandidate]
     kept_count: int
+
+
+@dataclass(frozen=True)
+class InvalidResearchSet:
+    set_id: int
+    name: str
+    uncited_case_titles: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class MissingCitationAudit:
+    cases: list[LibraryPruneCandidate]
+    retained_case_count: int
+    attached_opinion_count: int
+    orphan_opinion_count: int
+    orphan_marker_count: int
+    lookup_result_count: int
+    reparented_opinion_count: int
+    repaired_case_reference_count: int
+    invalid_research_sets: list[InvalidResearchSet]
+
+
+@dataclass(frozen=True)
+class MissingCitationPruneResult:
+    backup_path: Path | None
+    pruned: list[LibraryPruneCandidate]
+    kept_count: int
+    removed_attached_opinion_count: int
+    removed_orphan_opinion_count: int
+    removed_orphan_marker_count: int
+    rewritten_lookup_result_count: int
+    reparented_opinion_count: int
+    repaired_case_reference_count: int
+    removed_research_sets: list[InvalidResearchSet]
+
+
+@dataclass(frozen=True)
+class _MissingCitationCleanupState:
+    audit: MissingCitationAudit
+    uncited_case_ids: set[str]
+    retained_case_ids: set[str]
+    attached_opinion_ids: set[str]
+    orphan_opinion_ids: set[str]
+    retained_opinion_ids: set[str]
+    repaired_opinion_parents: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -230,12 +277,15 @@ class ResearchSet:
 
 class _DisplayTextExtractor(HTMLParser):
     BLOCK_TAGS = {"p", "div", "li", "tr", "h1", "h2", "h3", "h4", "center", "author"}
+    SEMANTIC_HEADING_TAGS = {"h2", "h3", "h4"}
 
     def __init__(self, source_field: str) -> None:
         super().__init__()
         self.source_field = source_field
         self.parts: list[str] = []
         self.page_markers: list[PageMarker] = []
+        self.style_spans: list[DisplayStyleSpan] = []
+        self._semantic_headings: list[tuple[str, int | None]] = []
         self._page_label: str | None = None
         self._page_text_parts: list[str] = []
         self._pending_space = False
@@ -251,11 +301,15 @@ class _DisplayTextExtractor(HTMLParser):
             return
         if tag in self.BLOCK_TAGS:
             self._queue_block_break()
+        if tag in self.SEMANTIC_HEADING_TAGS:
+            self._semantic_headings.append((tag, None))
 
     def handle_endtag(self, tag: str) -> None:
         if tag in {"page-number", "span"} and self._page_label is not None:
             self._finish_page_marker()
             return
+        if tag in self.SEMANTIC_HEADING_TAGS:
+            self._finish_semantic_heading(tag)
         if tag in self.BLOCK_TAGS:
             self._queue_block_break()
 
@@ -266,8 +320,15 @@ class _DisplayTextExtractor(HTMLParser):
         self._append_data(data)
 
     def display_text(self) -> DisplayText:
+        while self._semantic_headings:
+            self._finish_semantic_heading(self._semantic_headings[-1][0])
         text = "".join(self.parts).strip()
-        return DisplayText(text=text, source_field=self.source_field, page_markers=self.page_markers)
+        return DisplayText(
+            text=text,
+            source_field=self.source_field,
+            page_markers=self.page_markers,
+            style_spans=self.style_spans,
+        )
 
     def _append_data(self, data: str) -> None:
         if not data:
@@ -289,6 +350,9 @@ class _DisplayTextExtractor(HTMLParser):
     def _append_text(self, text: str) -> int:
         self._flush_pending(text[:1])
         start = len("".join(self.parts))
+        if self._semantic_headings and self._semantic_headings[-1][1] is None:
+            tag, _heading_start = self._semantic_headings[-1]
+            self._semantic_headings[-1] = (tag, start)
         self.parts.append(text)
         return start
 
@@ -318,6 +382,28 @@ class _DisplayTextExtractor(HTMLParser):
             )
         self._page_label = None
         self._page_text_parts = []
+
+    def _finish_semantic_heading(self, tag: str) -> None:
+        matching_index = next(
+            (
+                index
+                for index in range(len(self._semantic_headings) - 1, -1, -1)
+                if self._semantic_headings[index][0] == tag
+            ),
+            None,
+        )
+        if matching_index is None:
+            return
+        _tag, start = self._semantic_headings.pop(matching_index)
+        end = len("".join(self.parts))
+        if start is not None and end > start:
+            self.style_spans.append(
+                DisplayStyleSpan(
+                    kind="heading",
+                    start_offset=start,
+                    end_offset=end,
+                )
+            )
 
     @staticmethod
     def _is_star_pagination(tag: str, attr_map: dict[str, str | None]) -> bool:
@@ -434,6 +520,9 @@ def _normalize_raw_star_page_markers(display: DisplayText) -> DisplayText:
         for start, end, marker_text, _label in replacements:
             if end <= offset:
                 translated += len(marker_text) - (end - start)
+                continue
+            if start < offset < end:
+                return start + max(0, min(offset - start, len(marker_text)))
         return translated
 
     page_markers = [
@@ -448,7 +537,19 @@ def _normalize_raw_star_page_markers(display: DisplayText) -> DisplayText:
     ]
     page_markers.extend(raw_markers)
     page_markers.sort(key=lambda marker: marker.start_offset)
-    return DisplayText(text=text, source_field=display.source_field, page_markers=page_markers)
+    return DisplayText(
+        text=text,
+        source_field=display.source_field,
+        page_markers=page_markers,
+        style_spans=[
+            DisplayStyleSpan(
+                kind=span.kind,
+                start_offset=translated_offset(span.start_offset),
+                end_offset=translated_offset(span.end_offset),
+            )
+            for span in display.style_spans
+        ],
+    )
 
 
 def normalize_display_quote_stacks(display: DisplayText) -> DisplayText:
@@ -490,11 +591,34 @@ def normalize_display_quote_stacks(display: DisplayText) -> DisplayText:
             )
             for marker in display.page_markers
         ],
+        style_spans=[
+            DisplayStyleSpan(
+                kind=span.kind,
+                start_offset=translated_offset(span.start_offset),
+                end_offset=translated_offset(span.end_offset),
+            )
+            for span in display.style_spans
+        ],
     )
 
 
-def _normalize_opinion_display(display: DisplayText) -> DisplayText:
-    return _normalize_raw_star_page_markers(normalize_display_quote_stacks(display))
+def _normalize_opinion_display(
+    display: DisplayText,
+    *,
+    infer_headings: bool = True,
+) -> DisplayText:
+    normalized = _normalize_raw_star_page_markers(normalize_display_quote_stacks(display))
+    style_spans = (
+        infer_opinion_heading_spans(normalized.text, normalized.style_spans)
+        if infer_headings
+        else []
+    )
+    return DisplayText(
+        text=normalized.text,
+        source_field=normalized.source_field,
+        page_markers=normalized.page_markers,
+        style_spans=style_spans,
+    )
 
 
 def opinion_display_text(opinion: dict[str, Any]) -> DisplayText:
@@ -508,7 +632,10 @@ def opinion_display_text(opinion: dict[str, Any]) -> DisplayText:
             parser = _DisplayTextExtractor(field)
             parser.feed(value)
             parser.close()
-            return _normalize_opinion_display(parser.display_text())
+            return _normalize_opinion_display(
+                parser.display_text(),
+                infer_headings=re.search(r"<\s*pre\b", value, flags=re.IGNORECASE) is None,
+            )
         text = decode_cp1252_control_chars(value).strip()
         return _normalize_opinion_display(DisplayText(text=text, source_field=field, page_markers=[]))
     return DisplayText(text="", source_field="", page_markers=[])
@@ -944,10 +1071,10 @@ class CaseLibrary:
     def upsert_cluster(self, cluster: dict[str, Any]) -> str:
         cluster = canonicalize_cluster_citations(cluster)
         cluster_id = cluster_id_from_cluster(cluster)
-        if not cluster_id:
+        citation_text = _cluster_citation_line(cluster)
+        if not cluster_id or not citation_text:
             return ""
         title = _cluster_title(cluster)
-        citation_text = _cluster_citation_line(cluster)
         now = _utc_now()
         with self.connection() as conn:
             existing = conn.execute(
@@ -970,25 +1097,33 @@ class CaseLibrary:
                     now,
                 ),
             )
-        if citation_text:
-            self.add_citation_alias(citation_text, cluster_id)
+        self.add_citation_alias(citation_text, cluster_id)
         return cluster_id
 
     def add_citation_alias(self, citation: str, cluster_id: str) -> None:
         normalized = normalize_citation(citation).casefold()
-        if not normalized or not cluster_id:
+        if (
+            not normalized
+            or not cluster_id
+            or official_citation_parts_from_text(citation) is None
+        ):
             return
         with self.connection() as conn:
             row = conn.execute(
                 "SELECT citation_text FROM cases WHERE cluster_id = ?",
                 (cluster_id,),
             ).fetchone()
+            if row is None:
+                return
+            stored_citation = str(row["citation_text"])
+            if normalize_citation(stored_citation).casefold() != normalized:
+                return
             conn.execute(
                 """
                 INSERT OR IGNORE INTO citation_aliases(normalized_citation, cluster_id, citation_text)
                 VALUES (?, ?, ?)
                 """,
-                (normalized, cluster_id, str(row["citation_text"]) if row else citation),
+                (normalized, cluster_id, stored_citation),
             )
 
     def read_cluster(self, cluster_id: str) -> dict[str, Any] | None:
@@ -1011,15 +1146,37 @@ class CaseLibrary:
         opinion_id = str(opinion.get("id") or resource_id_from_url(str(opinion.get("resource_uri", "")))).strip()
         if not opinion_id:
             return ""
-        cluster_id = str(opinion.get("cluster_id") or "").strip()
-        if not cluster_id:
+        opinion_cluster_id = str(opinion.get("cluster_id") or "").strip()
+        if not opinion_cluster_id:
             cluster_url = opinion.get("cluster")
             if isinstance(cluster_url, str) and cluster_url.strip():
-                cluster_id = resource_id_from_url(cluster_url)
-        if not cluster_id and cluster is not None:
-            cluster_id = cluster_id_from_cluster(cluster)
+                opinion_cluster_id = resource_id_from_url(cluster_url)
+        supplied_cluster_id = cluster_id_from_cluster(cluster) if cluster is not None else ""
+        if opinion_cluster_id and supplied_cluster_id and opinion_cluster_id != supplied_cluster_id:
+            return ""
+        cluster_id = opinion_cluster_id or supplied_cluster_id
         if not cluster_id:
-            cluster_id = ""
+            return ""
+        if cluster is not None:
+            canonical_cluster = canonicalize_cluster_citations(cluster)
+            if not official_citation_from_cluster(canonical_cluster):
+                return ""
+            if self.upsert_cluster(canonical_cluster) != cluster_id:
+                return ""
+        else:
+            with self.connection() as conn:
+                parent = conn.execute(
+                    "SELECT cluster_json FROM cases WHERE cluster_id = ?",
+                    (cluster_id,),
+                ).fetchone()
+            if parent is None:
+                return ""
+            try:
+                parent_cluster = _json_loads(str(parent["cluster_json"]))
+            except json.JSONDecodeError:
+                return ""
+            if not isinstance(parent_cluster, dict) or not official_citation_from_cluster(parent_cluster):
+                return ""
         display = opinion_display_text(opinion)
         now = _utc_now()
         with self.connection() as conn:
@@ -1063,10 +1220,7 @@ class CaseLibrary:
                     for index, marker in enumerate(display.page_markers)
                 ],
             )
-        if cluster is not None:
-            self.update_case_opinions(cluster, [opinion_id])
-        elif cluster_id:
-            self.update_case_opinion_ids(cluster_id, [opinion_id])
+        self.update_case_opinion_ids(cluster_id, [opinion_id])
         return opinion_id
 
     def read_opinion(self, opinion_id: str) -> dict[str, Any] | None:
@@ -1110,7 +1264,7 @@ class CaseLibrary:
             display = opinion_display_text(opinion)
             if display.text:
                 return display
-        return normalize_display_quote_stacks(
+        return _normalize_opinion_display(
             DisplayText(
                 text=str(row["display_text"]),
                 source_field=str(row["source_field"]),
@@ -1145,7 +1299,17 @@ class CaseLibrary:
                 return
             existing_data = _json_loads(str(row["opinion_ids_json"]))
             existing = [str(value) for value in existing_data] if isinstance(existing_data, list) else []
-            merged = list(dict.fromkeys([*existing, *clean_ids]))
+            candidates = list(dict.fromkeys([*existing, *clean_ids]))
+            placeholders = ",".join("?" for _ in candidates)
+            matching_rows = conn.execute(
+                f"""
+                SELECT opinion_id FROM opinions
+                WHERE cluster_id = ? AND opinion_id IN ({placeholders})
+                """,
+                (cluster_id, *candidates),
+            ).fetchall()
+            matching_ids = {str(value["opinion_id"]) for value in matching_rows}
+            merged = [opinion_id for opinion_id in candidates if opinion_id in matching_ids]
             conn.execute(
                 "UPDATE cases SET opinion_ids_json = ?, last_accessed = ? WHERE cluster_id = ?",
                 (_json_dumps(merged), _utc_now(), cluster_id),
@@ -1214,6 +1378,21 @@ class CaseLibrary:
         normalized_name = _research_set_normalized_name(clean_name)
         if not normalized_name:
             raise ValueError("Research set name is required.")
+        uncited_titles = self._uncited_cache_case_titles(cache)
+        if uncited_titles:
+            case_word = "case" if len(uncited_titles) == 1 else "cases"
+            titles = "; ".join(uncited_titles)
+            raise ValueError(
+                "Research Set cannot be saved because the following cached "
+                f"{case_word} lack an official California reporter citation: {titles}"
+            )
+        with self.connection() as conn:
+            existing = conn.execute(
+                "SELECT 1 FROM research_sets WHERE normalized_name = ?",
+                (normalized_name,),
+            ).fetchone()
+        if existing is not None and not replace:
+            raise ValueError(f"Research set already exists: {clean_name}")
         items = self._research_set_items_from_cache(cache)
         if not items:
             raise ValueError("Research Cache is empty.")
@@ -1273,6 +1452,20 @@ class CaseLibrary:
         cache.set_active_research_set(result.set_id, result.name, dirty=False)
         return result
 
+    @staticmethod
+    def _uncited_cache_case_titles(cache: JsonCache) -> list[str]:
+        titles: list[str] = []
+        for entry in cache.list_case_entries():
+            cluster_id = str(entry.get("cluster_id") or "").strip()
+            cluster = cache.read_cached_cluster(cluster_id) if cluster_id else None
+            if isinstance(cluster, dict) and official_citation_from_cluster(cluster):
+                continue
+            title = str(entry.get("title") or "").strip()
+            if not title and isinstance(cluster, dict):
+                title = _cluster_title(cluster)
+            titles.append(title or (f"Cluster {cluster_id}" if cluster_id else "Untitled case"))
+        return list(dict.fromkeys(titles))
+
     def _research_set_items_from_cache(self, cache: JsonCache) -> list[ResearchSetItem]:
         items: list[ResearchSetItem] = []
         position = 0
@@ -1286,17 +1479,6 @@ class CaseLibrary:
             cluster_payload = dict(cluster)
             cluster_payload.pop(RESEARCH_SET_SLIP_PAYLOAD_KEY, None)
             self.upsert_cluster(cluster_payload)
-            case_number = _case_number_from_cluster_payload(cluster_payload)
-            slip_payload = (
-                cache.read_slip_opinion_payload(case_number)
-                if case_number
-                else None
-            )
-            research_set_payload = (
-                {**cluster_payload, RESEARCH_SET_SLIP_PAYLOAD_KEY: slip_payload}
-                if isinstance(slip_payload, dict)
-                else cluster_payload
-            )
             opinion_ids = [
                 str(value).strip()
                 for value in entry.get("opinion_ids", [])
@@ -1317,7 +1499,7 @@ class CaseLibrary:
                     authority_id=cluster_id,
                     title=str(entry.get("title") or _cluster_title(cluster_payload)),
                     citation=str(entry.get("citation_text") or _cluster_citation_line(cluster_payload)),
-                    payload=research_set_payload,
+                    payload=cluster_payload,
                     position=position,
                     agent_selected=bool(entry.get("agent_selected")),
                 )
@@ -1673,6 +1855,408 @@ class CaseLibrary:
             pruned=pruned,
             kept_count=len(candidates) - len(pruned),
         )
+
+    def missing_official_citation_audit(self) -> MissingCitationAudit:
+        with self.connection() as conn:
+            return self._missing_citation_cleanup_state(conn).audit
+
+    def prune_missing_official_citations(
+        self,
+        *,
+        create_backup: bool = True,
+    ) -> MissingCitationPruneResult:
+        with self.connection() as conn:
+            initial_state = self._missing_citation_cleanup_state(conn)
+        initial_audit = initial_state.audit
+        has_changes = bool(
+            initial_audit.cases
+            or initial_state.attached_opinion_ids
+            or initial_state.orphan_opinion_ids
+            or initial_audit.orphan_marker_count
+            or initial_audit.lookup_result_count
+            or initial_audit.reparented_opinion_count
+            or initial_audit.repaired_case_reference_count
+            or initial_audit.invalid_research_sets
+        )
+        backup_path = self.backup() if create_backup and has_changes else None
+        with self.connection() as conn:
+            state = self._missing_citation_cleanup_state(conn)
+            audit = state.audit
+            rewritten_lookup_result_count = self._rewrite_lookup_results_for_retained_clusters(
+                conn,
+                state.retained_case_ids,
+            )
+            if audit.invalid_research_sets:
+                conn.executemany(
+                    "DELETE FROM research_sets WHERE set_id = ?",
+                    [(research_set.set_id,) for research_set in audit.invalid_research_sets],
+                )
+            for opinion_id, cluster_id in state.repaired_opinion_parents.items():
+                conn.execute(
+                    "UPDATE opinions SET cluster_id = ?, last_accessed = ? WHERE opinion_id = ?",
+                    (cluster_id, _utc_now(), opinion_id),
+                )
+            removed_opinion_ids = state.attached_opinion_ids | state.orphan_opinion_ids
+            if removed_opinion_ids:
+                placeholders = ",".join("?" for _ in removed_opinion_ids)
+                values = tuple(sorted(removed_opinion_ids))
+                conn.execute(
+                    f"DELETE FROM page_markers WHERE opinion_id IN ({placeholders})",
+                    values,
+                )
+                conn.execute(
+                    f"DELETE FROM opinions WHERE opinion_id IN ({placeholders})",
+                    values,
+                )
+            if state.uncited_case_ids:
+                placeholders = ",".join("?" for _ in state.uncited_case_ids)
+                values = tuple(sorted(state.uncited_case_ids))
+                conn.execute(
+                    f"DELETE FROM citation_aliases WHERE cluster_id IN ({placeholders})",
+                    values,
+                )
+                conn.execute(
+                    f"DELETE FROM cases WHERE cluster_id IN ({placeholders})",
+                    values,
+                )
+            conn.execute(
+                """
+                DELETE FROM page_markers
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM opinions
+                    WHERE opinions.opinion_id = page_markers.opinion_id
+                )
+                """
+            )
+            repaired_case_reference_count = self._remove_missing_opinion_references(conn)
+        return MissingCitationPruneResult(
+            backup_path=backup_path,
+            pruned=audit.cases,
+            kept_count=audit.retained_case_count,
+            removed_attached_opinion_count=audit.attached_opinion_count,
+            removed_orphan_opinion_count=audit.orphan_opinion_count,
+            removed_orphan_marker_count=audit.orphan_marker_count,
+            rewritten_lookup_result_count=rewritten_lookup_result_count,
+            reparented_opinion_count=len(state.repaired_opinion_parents),
+            repaired_case_reference_count=repaired_case_reference_count,
+            removed_research_sets=audit.invalid_research_sets,
+        )
+
+    def _missing_citation_cleanup_state(
+        self,
+        conn: sqlite3.Connection,
+    ) -> _MissingCitationCleanupState:
+        case_rows = conn.execute(
+            """
+            SELECT cluster_id, title, citation_text, cluster_json, opinion_ids_json
+            FROM cases
+            ORDER BY title COLLATE NOCASE, cluster_id
+            """
+        ).fetchall()
+        retained_case_ids: set[str] = set()
+        uncited_case_ids: set[str] = set()
+        case_opinion_ids: dict[str, set[str]] = {}
+        case_data: dict[str, tuple[sqlite3.Row, dict[str, Any] | None]] = {}
+        for row in case_rows:
+            cluster_id = str(row["cluster_id"])
+            try:
+                cluster = _json_loads(str(row["cluster_json"]))
+            except json.JSONDecodeError:
+                cluster = None
+            if not isinstance(cluster, dict):
+                cluster = None
+            try:
+                raw_opinion_ids = _json_loads(str(row["opinion_ids_json"]))
+            except json.JSONDecodeError:
+                raw_opinion_ids = []
+            case_opinion_ids[cluster_id] = {
+                str(value).strip()
+                for value in raw_opinion_ids
+                if isinstance(raw_opinion_ids, list) and str(value).strip()
+            }
+            case_data[cluster_id] = (row, cluster)
+            if cluster is not None and official_citation_from_cluster(cluster):
+                retained_case_ids.add(cluster_id)
+            else:
+                uncited_case_ids.add(cluster_id)
+
+        official_references: dict[str, set[str]] = {}
+        for cluster_id in retained_case_ids:
+            for opinion_id in case_opinion_ids.get(cluster_id, set()):
+                official_references.setdefault(opinion_id, set()).add(cluster_id)
+        uncited_references: dict[str, set[str]] = {}
+        for cluster_id in uncited_case_ids:
+            for opinion_id in case_opinion_ids.get(cluster_id, set()):
+                uncited_references.setdefault(opinion_id, set()).add(cluster_id)
+
+        opinion_rows = conn.execute(
+            "SELECT opinion_id, cluster_id FROM opinions"
+        ).fetchall()
+        all_opinion_ids = {str(row["opinion_id"]) for row in opinion_rows}
+        retained_opinion_ids: set[str] = set()
+        repaired_opinion_parents: dict[str, str] = {}
+        opinions_by_uncited_case: dict[str, set[str]] = {
+            cluster_id: set(case_opinion_ids.get(cluster_id, set()))
+            for cluster_id in uncited_case_ids
+        }
+        for row in opinion_rows:
+            opinion_id = str(row["opinion_id"])
+            parent_id = str(row["cluster_id"])
+            cited_references = official_references.get(opinion_id, set())
+            if parent_id in retained_case_ids:
+                retained_opinion_ids.add(opinion_id)
+            elif cited_references:
+                retained_opinion_ids.add(opinion_id)
+                repaired_opinion_parents[opinion_id] = sorted(cited_references)[0]
+            if parent_id in uncited_case_ids:
+                opinions_by_uncited_case.setdefault(parent_id, set()).add(opinion_id)
+
+        uncited_associated_ids = set(uncited_references)
+        for opinion_ids in opinions_by_uncited_case.values():
+            uncited_associated_ids.update(opinion_ids)
+        attached_opinion_ids = (uncited_associated_ids & all_opinion_ids) - retained_opinion_ids
+        orphan_opinion_ids = all_opinion_ids - retained_opinion_ids - attached_opinion_ids
+
+        retained_opinion_parents = {
+            str(row["opinion_id"]): repaired_opinion_parents.get(
+                str(row["opinion_id"]),
+                str(row["cluster_id"]),
+            )
+            for row in opinion_rows
+            if str(row["opinion_id"]) in retained_opinion_ids
+        }
+        repaired_case_reference_count = 0
+        for cluster_id in retained_case_ids:
+            row, _cluster = case_data[cluster_id]
+            try:
+                raw_references = _json_loads(str(row["opinion_ids_json"]))
+            except json.JSONDecodeError:
+                raw_references = []
+            if not isinstance(raw_references, list):
+                raw_references = []
+            valid_references = [
+                str(opinion_id).strip()
+                for opinion_id in raw_references
+                if retained_opinion_parents.get(str(opinion_id).strip()) == cluster_id
+            ]
+            if valid_references != raw_references:
+                repaired_case_reference_count += 1
+
+        marker_counts = {
+            str(row["opinion_id"]): int(row["marker_count"])
+            for row in conn.execute(
+                """
+                SELECT opinion_id, COUNT(*) AS marker_count
+                FROM page_markers
+                GROUP BY opinion_id
+                """
+            ).fetchall()
+        }
+        candidates: list[LibraryPruneCandidate] = []
+        for cluster_id in uncited_case_ids:
+            row, cluster = case_data[cluster_id]
+            associated = opinions_by_uncited_case.get(cluster_id, set()) - retained_opinion_ids
+            title = (
+                _cluster_title(cluster)
+                if cluster is not None
+                else str(row["title"] or f"Cluster {cluster_id}")
+            )
+            candidates.append(
+                LibraryPruneCandidate(
+                    cluster_id=cluster_id,
+                    title=title,
+                    citation_text=str(row["citation_text"] or ""),
+                    opinion_count=len(associated & all_opinion_ids),
+                    marker_count=sum(marker_counts.get(opinion_id, 0) for opinion_id in associated),
+                    eligible=False,
+                    official_citation="",
+                    reason="Missing official California reporter citation.",
+                )
+            )
+        candidates.sort(key=lambda candidate: (candidate.title.casefold(), candidate.cluster_id))
+
+        orphan_marker_count = int(
+            conn.execute(
+                """
+                SELECT COUNT(*) AS marker_count
+                FROM page_markers
+                LEFT JOIN opinions ON opinions.opinion_id = page_markers.opinion_id
+                WHERE opinions.opinion_id IS NULL
+                """
+            ).fetchone()["marker_count"]
+        )
+        invalid_research_sets = self._invalid_research_sets(conn)
+        lookup_result_count = len(
+            self._lookup_result_rewrites(conn, retained_case_ids)
+        )
+        audit = MissingCitationAudit(
+            cases=candidates,
+            retained_case_count=len(retained_case_ids),
+            attached_opinion_count=len(attached_opinion_ids),
+            orphan_opinion_count=len(orphan_opinion_ids),
+            orphan_marker_count=orphan_marker_count,
+            lookup_result_count=lookup_result_count,
+            reparented_opinion_count=len(repaired_opinion_parents),
+            repaired_case_reference_count=repaired_case_reference_count,
+            invalid_research_sets=invalid_research_sets,
+        )
+        return _MissingCitationCleanupState(
+            audit=audit,
+            uncited_case_ids=uncited_case_ids,
+            retained_case_ids=retained_case_ids,
+            attached_opinion_ids=attached_opinion_ids,
+            orphan_opinion_ids=orphan_opinion_ids,
+            retained_opinion_ids=retained_opinion_ids,
+            repaired_opinion_parents=repaired_opinion_parents,
+        )
+
+    @staticmethod
+    def _invalid_research_sets(conn: sqlite3.Connection) -> list[InvalidResearchSet]:
+        set_rows = conn.execute(
+            """
+            SELECT set_id, name
+            FROM research_sets
+            ORDER BY name COLLATE NOCASE, set_id
+            """
+        ).fetchall()
+        invalid: list[InvalidResearchSet] = []
+        for set_row in set_rows:
+            set_id = int(set_row["set_id"])
+            item_rows = conn.execute(
+                """
+                SELECT title, payload_json
+                FROM research_set_items
+                WHERE set_id = ? AND item_type = 'case'
+                ORDER BY position
+                """,
+                (set_id,),
+            ).fetchall()
+            uncited_titles: list[str] = []
+            for item_row in item_rows:
+                try:
+                    payload = _json_loads(str(item_row["payload_json"]))
+                except json.JSONDecodeError:
+                    payload = None
+                if (
+                    isinstance(payload, dict)
+                    and official_citation_from_cluster(payload)
+                    and RESEARCH_SET_SLIP_PAYLOAD_KEY not in payload
+                ):
+                    continue
+                uncited_titles.append(str(item_row["title"] or "Untitled case"))
+            if uncited_titles:
+                invalid.append(
+                    InvalidResearchSet(
+                        set_id=set_id,
+                        name=str(set_row["name"]),
+                        uncited_case_titles=tuple(dict.fromkeys(uncited_titles)),
+                    )
+                )
+        return invalid
+
+    @staticmethod
+    def _remove_missing_opinion_references(conn: sqlite3.Connection) -> int:
+        opinion_parents = {
+            str(row["opinion_id"]): str(row["cluster_id"])
+            for row in conn.execute(
+                "SELECT opinion_id, cluster_id FROM opinions"
+            ).fetchall()
+        }
+        rows = conn.execute("SELECT cluster_id, opinion_ids_json FROM cases").fetchall()
+        repaired_case_count = 0
+        for row in rows:
+            cluster_id = str(row["cluster_id"])
+            try:
+                opinion_ids = _json_loads(str(row["opinion_ids_json"]))
+            except json.JSONDecodeError:
+                opinion_ids = []
+            if not isinstance(opinion_ids, list):
+                opinion_ids = []
+            retained = [
+                str(opinion_id).strip()
+                for opinion_id in opinion_ids
+                if opinion_parents.get(str(opinion_id).strip()) == cluster_id
+            ]
+            if retained != opinion_ids:
+                conn.execute(
+                    "UPDATE cases SET opinion_ids_json = ? WHERE cluster_id = ?",
+                    (_json_dumps(retained), cluster_id),
+                )
+                repaired_case_count += 1
+        return repaired_case_count
+
+    @staticmethod
+    def _rewrite_lookup_results_for_retained_clusters(
+        conn: sqlite3.Connection,
+        retained_case_ids: set[str],
+    ) -> int:
+        rewrites = CaseLibrary._lookup_result_rewrites(conn, retained_case_ids)
+        for normalized, result_json in rewrites:
+            if result_json is None:
+                conn.execute(
+                    "DELETE FROM lookup_results WHERE normalized_citation = ?",
+                    (normalized,),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE lookup_results
+                    SET result_json = ?, last_accessed = ?
+                    WHERE normalized_citation = ?
+                    """,
+                    (result_json, _utc_now(), normalized),
+                )
+        return len(rewrites)
+
+    @staticmethod
+    def _lookup_result_rewrites(
+        conn: sqlite3.Connection,
+        retained_case_ids: set[str],
+    ) -> list[tuple[str, str | None]]:
+        rows = conn.execute(
+            "SELECT normalized_citation, result_json FROM lookup_results"
+        ).fetchall()
+        rewrites: list[tuple[str, str | None]] = []
+        for row in rows:
+            normalized = str(row["normalized_citation"])
+            try:
+                data = _json_loads(str(row["result_json"]))
+            except json.JSONDecodeError:
+                rewrites.append((normalized, None))
+                continue
+            if not isinstance(data, list):
+                rewrites.append((normalized, None))
+                continue
+            changed = False
+            had_clusters = False
+            kept_any_cluster = False
+            rewritten: list[Any] = []
+            for item in data:
+                if not isinstance(item, dict):
+                    rewritten.append(item)
+                    continue
+                clusters = item.get("clusters")
+                if not isinstance(clusters, list):
+                    rewritten.append(item)
+                    continue
+                had_clusters = True
+                kept_clusters = [
+                    canonicalize_cluster_citations(cluster)
+                    for cluster in clusters
+                    if (
+                        isinstance(cluster, dict)
+                        and cluster_id_from_cluster(cluster) in retained_case_ids
+                        and official_citation_from_cluster(cluster)
+                    )
+                ]
+                changed = changed or kept_clusters != clusters
+                kept_any_cluster = kept_any_cluster or bool(kept_clusters)
+                rewritten.append({**item, "clusters": kept_clusters})
+            if had_clusters and not kept_any_cluster:
+                rewrites.append((normalized, None))
+            elif changed:
+                rewrites.append((normalized, _json_dumps(rewritten)))
+        return rewrites
 
     def backup(self) -> Path:
         self.path.parent.mkdir(parents=True, exist_ok=True)

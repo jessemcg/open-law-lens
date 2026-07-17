@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -54,7 +55,13 @@ class LibraryTests(unittest.TestCase):
                 ).fetchall()
             self.assertEqual(rows, [])
 
-            library.upsert_cluster({"id": 42, "case_name": "Example v. State"})
+            library.upsert_cluster(
+                {
+                    "id": 42,
+                    "case_name": "Example v. State",
+                    "citations": [{"volume": 1, "reporter": "Cal.", "page": 2}],
+                }
+            )
             self.assertEqual(library.list_case_entries()[0]["cluster_id"], "42")
 
     def test_upsert_cluster_and_lookup_alias(self) -> None:
@@ -74,6 +81,65 @@ class LibraryTests(unittest.TestCase):
             assert result is not None
             self.assertEqual(result[0]["clusters"][0]["case_name"], "Example v. State")
 
+    def test_upsert_cluster_rejects_case_without_official_reporter_citation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+
+            cluster_id = library.upsert_cluster(
+                {
+                    "id": 42,
+                    "case_name": "Uncited Slip Opinion",
+                    "citations": [{"volume": 99, "reporter": "P.3d", "page": 100}],
+                }
+            )
+
+            self.assertEqual(cluster_id, "")
+            self.assertEqual(library.list_case_entries(), [])
+
+    def test_upsert_opinion_requires_matching_cited_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            cited = {
+                "id": 42,
+                "case_name": "Cited Case",
+                "citations": [{"volume": 1, "reporter": "Cal.", "page": 2}],
+            }
+            other = {
+                "id": 43,
+                "case_name": "Other Cited Case",
+                "citations": [{"volume": 2, "reporter": "Cal.", "page": 3}],
+            }
+            library.upsert_cluster(cited)
+            library.upsert_cluster(other)
+
+            self.assertEqual(
+                library.upsert_opinion(
+                    {"id": 10, "cluster_id": 42, "plain_text": "Lead opinion."}
+                ),
+                "10",
+            )
+            self.assertEqual(
+                library.upsert_opinion(
+                    {"id": 11, "cluster_id": 99, "plain_text": "Uncited opinion."}
+                ),
+                "",
+            )
+            self.assertEqual(
+                library.upsert_opinion(
+                    {"id": 12, "cluster_id": 42, "plain_text": "Mismatched opinion."},
+                    cluster=other,
+                ),
+                "",
+            )
+            library.update_case_opinion_ids("43", ["10"])
+
+            self.assertIsNone(library.read_opinion("11"))
+            self.assertIsNone(library.read_opinion("12"))
+            self.assertEqual(library.read_case_opinion_ids("42"), ["10"])
+            self.assertEqual(library.read_case_opinion_ids("43"), [])
+
     def test_library_case_index_uses_extracted_in_re_initial_title(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
@@ -84,6 +150,7 @@ class LibraryTests(unittest.TestCase):
                     "case_name": "Vlasta Z. v. San Bernardino County Welfare Department",
                     "case_name_full": "In re B. G., Persons Coming Under the Juvenile Court Law.",
                     "case_name_short": "",
+                    "citations": [{"volume": 1, "reporter": "Cal.App.5th", "page": 10}],
                 }
             )
 
@@ -200,7 +267,14 @@ class LibraryTests(unittest.TestCase):
                     "plain_text": "Example opinion text.",
                 },
             )
-            cache.update_case_opinions({"id": 42, "case_name": "Example v. State"}, ["10"])
+            cache.update_case_opinions(
+                {
+                    "id": 42,
+                    "case_name": "Example v. State",
+                    "citations": [{"volume": 1, "reporter": "Cal.", "page": "2"}],
+                },
+                ["10"],
+            )
             cache.set_agent_selected("42", True)
             cache.upsert_statute(
                 {
@@ -278,13 +352,28 @@ class LibraryTests(unittest.TestCase):
             library = CaseLibrary(root / "library.sqlite3")
             library.ensure()
             cache = JsonCache(root / "cache")
-            cache.upsert_cluster({"id": 42, "case_name": "Example v. State"})
+            cache.upsert_cluster(
+                {
+                    "id": 42,
+                    "case_name": "Example v. State",
+                    "citations": [{"volume": 1, "reporter": "Cal.", "page": 2}],
+                }
+            )
 
             first = library.save_research_set("Example_research", cache)
             with self.assertRaises(ValueError):
                 library.save_research_set("Example_research", cache)
 
-            cache.upsert_cluster({"id": 43, "case_name": "Second v. State"})
+            cache.upsert_cluster(
+                {
+                    "id": 43,
+                    "case_name": "Second v. State",
+                    "citations": [{"volume": 2, "reporter": "Cal.", "page": 3}],
+                }
+            )
+            with self.assertRaises(ValueError):
+                library.save_research_set("Example_research", cache)
+            self.assertIsNone(library.read_cluster("43"))
             self.assertTrue(cache.active_research_set_metadata()["dirty"])
             replaced = library.save_research_set("Example_research", cache, replace=True)
 
@@ -298,7 +387,13 @@ class LibraryTests(unittest.TestCase):
             library = CaseLibrary(root / "library.sqlite3")
             library.ensure()
             cache = JsonCache(root / "cache")
-            cache.upsert_cluster({"id": 42, "case_name": "Example v. State"})
+            cache.upsert_cluster(
+                {
+                    "id": 42,
+                    "case_name": "Example v. State",
+                    "citations": [{"volume": 1, "reporter": "Cal.", "page": 2}],
+                }
+            )
 
             saved = library.save_research_set("Example_research", cache)
             cache.clear_active_research_set()
@@ -320,15 +415,27 @@ class LibraryTests(unittest.TestCase):
             library = CaseLibrary(root / "library.sqlite3")
             library.ensure()
             cache = JsonCache(root / "cache")
-            cache.upsert_cluster({"id": 42, "case_name": "Example v. State"})
+            cache.upsert_cluster(
+                {
+                    "id": 42,
+                    "case_name": "Example v. State",
+                    "citations": [{"volume": 1, "reporter": "Cal.", "page": 2}],
+                }
+            )
             library.save_research_set("Example_research", cache)
             cache.clear_active_research_set()
-            cache.upsert_cluster({"id": 43, "case_name": "Second v. State"})
+            cache.upsert_cluster(
+                {
+                    "id": 43,
+                    "case_name": "Second v. State",
+                    "citations": [{"volume": 2, "reporter": "Cal.", "page": 3}],
+                }
+            )
 
             self.assertIsNone(library.matching_research_set_for_cache(cache))
             self.assertIsNone(cache.active_research_set_metadata())
 
-    def test_research_set_round_trips_cached_slip_opinion_payload(self) -> None:
+    def test_research_set_rejects_uncited_cached_slip_opinion_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             library = CaseLibrary(root / "library.sqlite3")
@@ -364,11 +471,69 @@ class LibraryTests(unittest.TestCase):
             }
             cache.write_slip_opinion_payload("A173218", slip_payload)
 
-            saved = library.save_research_set("Example_research", cache)
-            cache.clear()
-            library.load_research_set_into_cache(saved.set_id, cache)
+            with self.assertRaisesRegex(
+                ValueError,
+                "lack an official California reporter citation.*In re L.G",
+            ):
+                library.save_research_set("Example_research", cache)
 
+            self.assertEqual(library.list_research_sets(), [])
+            self.assertEqual(library.list_case_entries(), [])
             self.assertEqual(cache.read_slip_opinion_payload("A173218"), slip_payload)
+
+    def test_research_set_omits_temporary_slip_payload_for_cited_case(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            library = CaseLibrary(root / "library.sqlite3")
+            library.ensure()
+            cache = JsonCache(root / "cache")
+            cache.upsert_cluster(
+                {
+                    "id": 42,
+                    "case_name": "Cited Case",
+                    "citations": [{"volume": 1, "reporter": "Cal.", "page": 2}],
+                    "docket": {"docket_number": "A173218"},
+                }
+            )
+            slip_payload = {
+                "case_number": "A173218",
+                "display": {"text": "Temporary slip text.", "source_field": "slip_pdf"},
+            }
+            cache.write_slip_opinion_payload("A173218", slip_payload)
+
+            saved = library.save_research_set("Example_research", cache)
+
+            case_item = next(item for item in saved.items if item.item_type == "case")
+            self.assertNotIn("_open_law_lens_slip_opinion", case_item.payload)
+            self.assertEqual(cache.read_slip_opinion_payload("A173218"), slip_payload)
+
+    def test_research_set_uncited_case_rejection_is_atomic(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            library = CaseLibrary(root / "library.sqlite3")
+            library.ensure()
+            cache = JsonCache(root / "cache")
+            cache.upsert_cluster(
+                {
+                    "id": 42,
+                    "case_name": "Cited Case",
+                    "citations": [{"volume": 1, "reporter": "Cal.", "page": 2}],
+                }
+            )
+            saved = library.save_research_set("Example_research", cache)
+            cache.upsert_cluster({"id": 43, "case_name": "Uncited Slip Opinion"})
+
+            with self.assertRaisesRegex(ValueError, "Uncited Slip Opinion"):
+                library.save_research_set("Example_research", cache, replace=True)
+
+            unchanged = library.read_research_set(saved.set_id)
+            assert unchanged is not None
+            self.assertEqual(unchanged.case_count, 1)
+            self.assertEqual(
+                [item.authority_id for item in unchanged.items if item.item_type == "case"],
+                ["42"],
+            )
+            self.assertIsNone(library.read_cluster("43"))
 
     def test_research_sets_survive_cache_clear_and_can_be_deleted(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -376,7 +541,13 @@ class LibraryTests(unittest.TestCase):
             library = CaseLibrary(root / "library.sqlite3")
             library.ensure()
             cache = JsonCache(root / "cache")
-            cache.upsert_cluster({"id": 42, "case_name": "Example v. State"})
+            cache.upsert_cluster(
+                {
+                    "id": 42,
+                    "case_name": "Example v. State",
+                    "citations": [{"volume": 1, "reporter": "Cal.", "page": 2}],
+                }
+            )
 
             saved = library.save_research_set("Example_research", cache)
             cache.clear()
@@ -398,6 +569,7 @@ class LibraryTests(unittest.TestCase):
                         "v. RICKIE M., Objector and Respondent."
                     ),
                     "case_name_short": "Kelsey S.",
+                    "citations": [{"volume": 1, "reporter": "Cal.4th", "page": 816}],
                 }
             )
 
@@ -431,6 +603,7 @@ class LibraryTests(unittest.TestCase):
                     "case_name": "In re Jesse Barber On Habeas Corpus",
                     "case_name_full": "IN RE Jesse BARBER on Habeas Corpus.",
                     "case_name_short": "",
+                    "citations": [{"volume": 15, "reporter": "Cal.App.5th", "page": 368}],
                 }
             )
 
@@ -539,6 +712,37 @@ class LibraryTests(unittest.TestCase):
 
             self.assertEqual(library.read_lookup("1   Cal. 2"), expected)
             self.assertIsNone(library.read_lookup("99 P.3d 100"))
+
+    def test_upsert_lookup_filters_uncited_cluster_from_durable_library(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            cited = {
+                "id": 42,
+                "case_name": "Cited Case",
+                "citations": [{"volume": 1, "reporter": "Cal.", "page": 2}],
+            }
+            uncited = {
+                "id": 43,
+                "case_name": "Uncited Slip Opinion",
+                "citations": [],
+            }
+
+            library.upsert_lookup(
+                "1 Cal. 2",
+                [{"status": 200, "clusters": [cited, uncited]}],
+            )
+
+            result = library.read_lookup("1 Cal. 2")
+            assert result is not None
+            self.assertEqual(
+                [cluster["id"] for cluster in result[0]["clusters"]],
+                [42],
+            )
+            self.assertEqual(
+                [entry["cluster_id"] for entry in library.list_case_entries()],
+                ["42"],
+            )
 
     def test_upsert_lookup_does_not_store_nonofficial_lookup_key(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -779,6 +983,269 @@ class LibraryTests(unittest.TestCase):
             self.assertTrue(result.backup_path.exists())
             self.assertEqual(result.backup_path.parent, Path(temp_dir))
 
+    def test_missing_citation_prune_removes_uncited_content_and_preserves_cited_case(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            library = CaseLibrary(db_path)
+            library.ensure()
+            cited = {
+                "id": 101,
+                "case_name": "Cited Without Pagination",
+                "citations": [{"volume": 1, "reporter": "Cal.", "page": 2}],
+            }
+            uncited = {"id": 102, "case_name": "Uncited Slip Opinion", "citations": []}
+            library.upsert_cluster(cited)
+            now = "2026-01-01T00:00:00+00:00"
+            with library.connection() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO cases(
+                        cluster_id, title, citation_text, cluster_json,
+                        opinion_ids_json, added_at, last_accessed
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "102",
+                        "Uncited Slip Opinion",
+                        "",
+                        json.dumps(uncited),
+                        json.dumps(["202"]),
+                        now,
+                        now,
+                    ),
+                )
+                for opinion_id, cluster_id in (("202", "102"), ("999", "missing")):
+                    conn.execute(
+                        """
+                        INSERT INTO opinions(
+                            opinion_id, cluster_id, opinion_json, display_text,
+                            source_field, added_at, last_accessed
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            opinion_id,
+                            cluster_id,
+                            json.dumps({"id": opinion_id, "cluster_id": cluster_id}),
+                            "Opinion text.",
+                            "plain_text",
+                            now,
+                            now,
+                        ),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO page_markers(
+                            opinion_id, marker_index, page_label, marker_text,
+                            start_offset, end_offset, source_field
+                        ) VALUES (?, 0, '1', '[*1]', 0, 4, 'plain_text')
+                        """,
+                        (opinion_id,),
+                    )
+                conn.execute(
+                    """
+                    INSERT INTO lookup_results(
+                        normalized_citation, result_json, added_at, last_accessed
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        "1 cal. 2",
+                        json.dumps([{"status": 200, "clusters": [cited, uncited]}]),
+                        now,
+                        now,
+                    ),
+                )
+                cited_with_slip = {
+                    **cited,
+                    "_open_law_lens_slip_opinion": {
+                        "display": {"text": "Temporary slip text."}
+                    },
+                }
+                for name, payload in (
+                    ("Valid set", cited),
+                    ("Invalid set", uncited),
+                    ("Slip set", cited_with_slip),
+                ):
+                    cursor = conn.execute(
+                        """
+                        INSERT INTO research_sets(
+                            name, normalized_name, created_at, updated_at, last_accessed
+                        ) VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (name, name.casefold(), now, now, now),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO research_set_items(
+                            set_id, item_type, authority_id, title, citation,
+                            payload_json, position, agent_selected, added_at
+                        ) VALUES (?, 'case', ?, ?, ?, ?, 0, 0, ?)
+                        """,
+                        (
+                            int(cursor.lastrowid),
+                            str(payload["id"]),
+                            str(payload["case_name"]),
+                            "1 Cal. 2" if payload is not uncited else "",
+                            json.dumps(payload),
+                            now,
+                        ),
+                    )
+            raw_conn = sqlite3.connect(db_path)
+            try:
+                raw_conn.execute(
+                    """
+                    INSERT INTO page_markers(
+                        opinion_id, marker_index, page_label, marker_text,
+                        start_offset, end_offset, source_field
+                    ) VALUES ('missing-opinion', 0, '1', '[*1]', 0, 4, 'plain_text')
+                    """
+                )
+                raw_conn.commit()
+            finally:
+                raw_conn.close()
+
+            audit = library.missing_official_citation_audit()
+
+            self.assertEqual([candidate.cluster_id for candidate in audit.cases], ["102"])
+            self.assertEqual(audit.retained_case_count, 1)
+            self.assertEqual(audit.attached_opinion_count, 1)
+            self.assertEqual(audit.orphan_opinion_count, 1)
+            self.assertEqual(audit.orphan_marker_count, 1)
+            self.assertEqual(audit.lookup_result_count, 1)
+            self.assertEqual(
+                [research_set.name for research_set in audit.invalid_research_sets],
+                ["Invalid set", "Slip set"],
+            )
+
+            result = library.prune_missing_official_citations()
+
+            self.assertIsNotNone(result.backup_path)
+            assert result.backup_path is not None
+            self.assertTrue(result.backup_path.exists())
+            self.assertEqual([candidate.cluster_id for candidate in result.pruned], ["102"])
+            self.assertEqual(result.kept_count, 1)
+            self.assertEqual(result.removed_attached_opinion_count, 1)
+            self.assertEqual(result.removed_orphan_opinion_count, 1)
+            self.assertEqual(result.removed_orphan_marker_count, 1)
+            self.assertEqual(result.rewritten_lookup_result_count, 1)
+            self.assertIsNotNone(library.read_cluster("101"))
+            self.assertIsNone(library.read_cluster("102"))
+            self.assertIsNone(library.read_opinion("202"))
+            self.assertIsNone(library.read_opinion("999"))
+            self.assertEqual(
+                [research_set.name for research_set in library.list_research_sets()],
+                ["Valid set"],
+            )
+            lookup = library.read_lookup("1 Cal. 2")
+            assert lookup is not None
+            self.assertEqual(
+                [cluster["id"] for cluster in lookup[0]["clusters"]],
+                [101],
+            )
+            with library.connection() as conn:
+                self.assertEqual(
+                    int(conn.execute("SELECT COUNT(*) AS count FROM page_markers").fetchone()["count"]),
+                    0,
+                )
+
+    def test_missing_citation_prune_backs_up_lookup_only_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            library = CaseLibrary(db_path)
+            library.ensure()
+            now = "2026-01-01T00:00:00+00:00"
+            uncited = {"id": 102, "case_name": "Uncited Slip Opinion"}
+            with library.connection() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO lookup_results(
+                        normalized_citation, result_json, added_at, last_accessed
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        "uncited lookup",
+                        json.dumps([{"status": 200, "clusters": [uncited]}]),
+                        now,
+                        now,
+                    ),
+                )
+
+            audit = library.missing_official_citation_audit()
+            self.assertEqual(audit.lookup_result_count, 1)
+
+            result = library.prune_missing_official_citations()
+
+            self.assertIsNotNone(result.backup_path)
+            self.assertEqual(result.rewritten_lookup_result_count, 1)
+            with library.connection() as conn:
+                count = conn.execute(
+                    "SELECT COUNT(*) AS count FROM lookup_results"
+                ).fetchone()["count"]
+            self.assertEqual(int(count), 0)
+
+    def test_missing_citation_prune_backs_up_parent_and_reference_repairs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            library = CaseLibrary(db_path)
+            library.ensure()
+            first = {
+                "id": 101,
+                "case_name": "First Cited Case",
+                "citations": [{"volume": 1, "reporter": "Cal.", "page": 2}],
+            }
+            second = {
+                "id": 102,
+                "case_name": "Second Cited Case",
+                "citations": [{"volume": 2, "reporter": "Cal.", "page": 3}],
+            }
+            library.upsert_cluster(first)
+            library.upsert_opinion(
+                {"id": 202, "cluster_id": 102, "plain_text": "Second opinion."},
+                cluster=second,
+            )
+            now = "2026-01-01T00:00:00+00:00"
+            with library.connection() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO opinions(
+                        opinion_id, cluster_id, opinion_json, display_text,
+                        source_field, added_at, last_accessed
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "201",
+                        "missing-parent",
+                        json.dumps({"id": 201, "plain_text": "First opinion."}),
+                        "First opinion.",
+                        "plain_text",
+                        now,
+                        now,
+                    ),
+                )
+                conn.execute(
+                    "UPDATE cases SET opinion_ids_json = ? WHERE cluster_id = ?",
+                    (json.dumps(["201", "missing-opinion", "202"]), "101"),
+                )
+
+            audit = library.missing_official_citation_audit()
+
+            self.assertEqual(audit.cases, [])
+            self.assertEqual(audit.orphan_opinion_count, 0)
+            self.assertEqual(audit.reparented_opinion_count, 1)
+            self.assertEqual(audit.repaired_case_reference_count, 1)
+
+            result = library.prune_missing_official_citations()
+
+            self.assertIsNotNone(result.backup_path)
+            self.assertEqual(result.reparented_opinion_count, 1)
+            self.assertEqual(result.repaired_case_reference_count, 1)
+            with library.connection() as conn:
+                parent_id = conn.execute(
+                    "SELECT cluster_id FROM opinions WHERE opinion_id = '201'"
+                ).fetchone()["cluster_id"]
+            self.assertEqual(str(parent_id), "101")
+            self.assertEqual(library.read_case_opinion_ids("101"), ["201"])
+            self.assertEqual(library.read_case_opinion_ids("102"), ["202"])
+
     def test_opinion_display_text_preserves_explicit_page_markers(self) -> None:
         opinion = {
             "id": 10,
@@ -795,6 +1262,48 @@ class LibraryTests(unittest.TestCase):
         marker = display.page_markers[0]
         self.assertEqual(marker.page_label, "373")
         self.assertEqual(display.text[marker.start_offset:marker.end_offset], "[*373]")
+
+    def test_opinion_display_text_styles_semantic_heading_without_page_marker(self) -> None:
+        opinion = {
+            "html_with_citations": (
+                "<h2><page-number label='821'>*821</page-number>DISCUSSION</h2>"
+                "<p>The court considered the statutory question presented on appeal.</p>"
+            )
+        }
+
+        display = opinion_display_text(opinion)
+
+        self.assertEqual(len(display.style_spans), 1)
+        span = display.style_spans[0]
+        self.assertEqual(span.kind, "heading")
+        self.assertEqual(display.text[span.start_offset:span.end_offset], "DISCUSSION")
+
+    def test_opinion_display_text_infers_conservative_plain_text_heading(self) -> None:
+        opinion = {
+            "plain_text": (
+                "INTRODUCTION\n\n"
+                "The court considered the statutory question presented on appeal."
+            )
+        }
+
+        display = opinion_display_text(opinion)
+
+        self.assertEqual(
+            [display.text[span.start_offset:span.end_offset] for span in display.style_spans],
+            ["INTRODUCTION"],
+        )
+
+    def test_opinion_display_text_does_not_style_flattened_pre_text(self) -> None:
+        opinion = {
+            "html_with_citations": (
+                "<pre>INTRODUCTION\n\n"
+                "The court considered the statutory question presented on appeal.</pre>"
+            )
+        }
+
+        display = opinion_display_text(opinion)
+
+        self.assertEqual(display.style_spans, [])
 
     def test_opinion_display_text_keeps_pretty_printed_inline_citation_together(self) -> None:
         opinion = {
@@ -1013,7 +1522,11 @@ class LibraryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
             library.ensure()
-            cluster = {"id": 42, "case_name": "Example v. State"}
+            cluster = {
+                "id": 42,
+                "case_name": "Example v. State",
+                "citations": [{"volume": 1, "reporter": "Cal.", "page": 2}],
+            }
             opinion = {
                 "id": 10,
                 "cluster_id": 42,

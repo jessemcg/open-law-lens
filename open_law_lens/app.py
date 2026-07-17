@@ -134,6 +134,7 @@ from .library import (
     normalize_display_quote_stacks,
     opinion_display_text,
 )
+from .opinion_formatting import DisplayStyleSpan
 from .prior_briefs import PriorBrief, PriorBriefError, PriorBriefLibrary
 from .quality import official_pagination_quality
 from .reader_highlights import (
@@ -348,6 +349,7 @@ class CaseReaderPayload:
     opinion_ids: tuple[str, ...]
     text: str
     page_markers: list[PageMarker]
+    style_spans: list[DisplayStyleSpan]
     italic_spans: list[CitationStyleSpan]
     cited_links: list[CitedCaseLink]
     quality_eligible: bool
@@ -406,6 +408,7 @@ def build_case_reader_payload(
 ) -> CaseReaderPayload:
     text_parts: list[str] = []
     page_markers: list[PageMarker] = []
+    style_spans: list[DisplayStyleSpan] = []
     text_length = 0
     for display in displays:
         display = normalize_display_quote_stacks(display)
@@ -427,6 +430,14 @@ def build_case_reader_payload(
             )
             for marker in display.page_markers
         )
+        style_spans.extend(
+            DisplayStyleSpan(
+                kind=span.kind,
+                start_offset=base_offset + span.start_offset,
+                end_offset=base_offset + span.end_offset,
+            )
+            for span in display.style_spans
+        )
     text = smart_quote_display_text("".join(text_parts) or "No opinion text found.")
     quality = official_pagination_quality(cluster, displays)
     resolved_pagination_mode = pagination_mode or (
@@ -440,6 +451,7 @@ def build_case_reader_payload(
         opinion_ids=opinion_ids,
         text=text,
         page_markers=page_markers,
+        style_spans=style_spans,
         italic_spans=citation_italic_spans(text),
         cited_links=cited_case_links(text, excluded_citations=cluster_citation_texts(cluster)),
         quality_eligible=quality.eligible,
@@ -1361,6 +1373,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_busy_box: Gtk.Widget | None = None
         self._reader_busy_spinner: Gtk.Spinner | None = None
         self._reader_busy_label: Gtk.Label | None = None
+        self._reader_heading_tag: Gtk.TextTag | None = None
         self._reader_citation_italic_tag: Gtk.TextTag | None = None
         self._reader_citation_link_tags: list[Gtk.TextTag] = []
         self._reader_citation_link_lookup: dict[Gtk.TextTag, CitedCaseLink] = {}
@@ -2257,6 +2270,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
         self.reader_buffer = Gtk.TextBuffer()
         self.reader_buffer.connect("mark-set", self._on_reader_selection_changed)
+        self._reader_heading_tag = self.reader_buffer.create_tag(
+            "reader-opinion-heading",
+            weight=Pango.Weight.BOLD,
+            scale=1.08,
+            pixels_above_lines=10,
+            pixels_below_lines=4,
+            foreground="#000000",
+        )
         self.page_marker_tag = self.reader_buffer.create_tag(
             "page-marker",
             weight=Pango.Weight.ULTRABOLD,
@@ -2954,15 +2975,22 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self,
         text: str,
         page_markers: list[PageMarker] | None = None,
+        style_spans: list[DisplayStyleSpan] | None = None,
         *,
         apply_markdown: bool = False,
     ) -> bool:
-        if page_markers:
+        if page_markers or style_spans:
             display = normalize_display_quote_stacks(
-                DisplayText(text=text, source_field="", page_markers=list(page_markers))
+                DisplayText(
+                    text=text,
+                    source_field="",
+                    page_markers=list(page_markers or []),
+                    style_spans=list(style_spans or []),
+                )
             )
             text = display.text
             page_markers = display.page_markers
+            style_spans = display.style_spans
         else:
             text = normalize_malformed_quote_stacks(text)
         markdown_spans: list[tuple[int, int, str]] = []
@@ -2990,6 +3018,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                     self.reader_buffer.get_iter_at_offset(start),
                     self.reader_buffer.get_iter_at_offset(end),
                 )
+        for span in style_spans or []:
+            self._apply_reader_style_span(span, len(text))
         self._apply_reader_markdown_spans(markdown_spans)
         self._apply_reader_citation_italics(text)
         self._apply_reader_citation_links(text)
@@ -3005,6 +3035,24 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             if schedule_restore is not None:
                 schedule_restore()
         return False
+
+    def _apply_reader_style_span(
+        self,
+        span: DisplayStyleSpan,
+        text_length: int,
+    ) -> None:
+        heading_tag = getattr(self, "_reader_heading_tag", None)
+        if heading_tag is None or span.kind != "heading":
+            return
+        start = max(0, min(span.start_offset, text_length))
+        end = max(start, min(span.end_offset, text_length))
+        if start == end:
+            return
+        self.reader_buffer.apply_tag(
+            heading_tag,
+            self.reader_buffer.get_iter_at_offset(start),
+            self.reader_buffer.get_iter_at_offset(end),
+        )
 
     def _case_load_is_current(self, generation: int, cluster_id: str) -> bool:
         if generation != self._case_load_generation:
@@ -3034,7 +3082,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 case_number=payload.slip_case_number,
             )
             if formatted is not None:
-                self._set_reader_header(formatted.plain_text, formatted, payload.cluster)
+                self._set_reader_header(
+                    formatted.plain_text,
+                    formatted,
+                    payload.cluster,
+                )
         self._clear_reader_citation_links()
         self.reader_buffer.set_text("")
         self._update_reader_clipboard_button()
@@ -3073,6 +3125,22 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             )
         if end_index < len(payload.page_markers):
             GLib.idle_add(self._apply_reader_payload_page_marker_chunk, payload, end_index)
+            return False
+        GLib.idle_add(self._apply_reader_payload_style_chunk, payload, 0)
+        return False
+
+    def _apply_reader_payload_style_chunk(
+        self,
+        payload: CaseReaderPayload,
+        index: int,
+    ) -> bool:
+        if not self._case_load_is_current(payload.generation, payload.cluster_id):
+            return False
+        end_index = min(index + READER_RENDER_TAG_CHUNK_SIZE, len(payload.style_spans))
+        for span in payload.style_spans[index:end_index]:
+            self._apply_reader_style_span(span, len(payload.text))
+        if end_index < len(payload.style_spans):
+            GLib.idle_add(self._apply_reader_payload_style_chunk, payload, end_index)
             return False
         GLib.idle_add(self._apply_reader_payload_italic_chunk, payload, 0)
         return False
@@ -3179,10 +3247,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _case_header_text(self, cluster: dict[str, Any]) -> str:
         formatted_citation = format_official_california_citation(cluster)
         if formatted_citation is not None:
-            return formatted_citation.plain_text
-        title = cluster_title(cluster)
-        citation = cluster_citation_line(cluster)
-        return title if not citation else f"{title}\n{citation}"
+            return formatted_citation.plain_text.strip()
+        return cluster_title(cluster)
 
     def _case_header_citation(self, cluster: dict[str, Any]) -> FormattedCitation | None:
         return format_official_california_citation(cluster)
@@ -5716,7 +5782,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._case_header_citation(cluster),
             cluster,
         )
-        self._set_reader_text(display.text, display.page_markers)
+        self._set_reader_text(
+            display.text,
+            display.page_markers,
+            display.style_spans,
+        )
         self._set_status(success_status)
         return True
 

@@ -31,6 +31,7 @@ from open_law_lens.config import AppConfig
 from open_law_lens.current_case import CurrentCaseSocf
 from open_law_lens.fact_patterns import FactPatternExport
 from open_law_lens.library import CaseLibrary, DisplayText, PageMarker, ResearchSet
+from open_law_lens.opinion_formatting import DisplayStyleSpan
 from open_law_lens.reader_highlights import ReaderHighlight
 from open_law_lens.slip_opinions import SlipOpinionResult
 from open_law_lens.web_import import ExtractedWebpage
@@ -1677,6 +1678,7 @@ class AppReaderPayloadTests(unittest.TestCase):
                     source_field="plain_text",
                 )
             ],
+            style_spans=[DisplayStyleSpan("heading", 5, 10)],
         )
         second = DisplayText(
             text="[*2] Second opinion cites Other v. Case (2020) 2 Cal.5th 10.",
@@ -1690,6 +1692,7 @@ class AppReaderPayloadTests(unittest.TestCase):
                     source_field="plain_text",
                 )
             ],
+            style_spans=[DisplayStyleSpan("heading", 5, 11)],
         )
 
         payload = build_case_reader_payload(
@@ -1705,6 +1708,13 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(payload.text, f"{first.text}\n\n{second.text}")
         self.assertEqual([marker.page_label for marker in payload.page_markers], ["1", "2"])
         self.assertEqual(payload.page_markers[1].start_offset, len(first.text) + 2)
+        self.assertEqual(
+            payload.style_spans,
+            [
+                DisplayStyleSpan("heading", 5, 10),
+                DisplayStyleSpan("heading", len(first.text) + 7, len(first.text) + 13),
+            ],
+        )
         self.assertTrue(payload.quality_eligible)
         self.assertTrue(payload.italic_spans)
         self.assertEqual(payload.cited_links[0].lookup_text, "2 Cal.5th 10")
@@ -1735,6 +1745,127 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(len(payload.text), len(display.text))
         self.assertEqual(payload.text[payload.page_markers[0].start_offset:payload.page_markers[0].end_offset], "[*2]")
         self.assertEqual(payload.cited_links[0].lookup_text, "2 Cal.5th 10")
+
+    def test_immediate_reader_text_applies_heading_style_spans(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.reader_buffer = Gtk.TextBuffer()
+                self._reader_heading_tag = self.reader_buffer.create_tag("heading-test")
+                self.page_marker_tag = self.reader_buffer.create_tag("page-marker-test")
+                self._reader_pagination_mode = "none"
+                self._pending_quote_target = None
+
+            def _set_reader_busy(self, _busy: bool) -> None:
+                pass
+
+            def _close_reader_find(self, *, clear_entry: bool) -> None:
+                pass
+
+            def _update_reader_clipboard_button(self) -> None:
+                pass
+
+            def _apply_reader_style_span(
+                self,
+                span: DisplayStyleSpan,
+                text_length: int,
+            ) -> None:
+                OpenLawLensWindow._apply_reader_style_span(self, span, text_length)  # type: ignore[arg-type]
+
+            def _apply_reader_markdown_spans(self, _spans: object) -> None:
+                pass
+
+            def _apply_reader_citation_italics(self, _text: str) -> None:
+                pass
+
+            def _apply_reader_citation_links(self, _text: str) -> None:
+                pass
+
+        window = DummyWindow()
+        text = "INTRODUCTION\n\nOpinion text."
+        heading = DisplayStyleSpan("heading", 0, len("INTRODUCTION"))
+
+        OpenLawLensWindow._set_reader_text(  # type: ignore[arg-type]
+            window,
+            text,
+            style_spans=[heading],
+        )
+
+        self.assertIn(
+            window._reader_heading_tag,
+            window.reader_buffer.get_iter_at_offset(2).get_tags(),
+        )
+        self.assertNotIn(
+            window._reader_heading_tag,
+            window.reader_buffer.get_iter_at_offset(len("INTRODUCTION") + 2).get_tags(),
+        )
+
+    def test_chunked_reader_render_applies_styles_before_citation_italics(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.applied: list[DisplayStyleSpan] = []
+                self.next_indexes: list[int] = []
+
+            def _case_load_is_current(self, _generation: int, _cluster_id: str) -> bool:
+                return True
+
+            def _apply_reader_style_span(
+                self,
+                span: DisplayStyleSpan,
+                _text_length: int,
+            ) -> None:
+                self.applied.append(span)
+
+            def _apply_reader_payload_style_chunk(self, payload, index):  # type: ignore[no-untyped-def]
+                return OpenLawLensWindow._apply_reader_payload_style_chunk(self, payload, index)  # type: ignore[arg-type]
+
+            def _apply_reader_payload_italic_chunk(self, _payload, index):  # type: ignore[no-untyped-def]
+                self.next_indexes.append(index)
+                return False
+
+        span = DisplayStyleSpan("heading", 0, len("DISCUSSION"))
+        payload = build_case_reader_payload(
+            {"id": 42, "case_name": "Example"},
+            [
+                DisplayText(
+                    "DISCUSSION\n\nText.",
+                    "plain_text",
+                    [],
+                    style_spans=[span],
+                )
+            ],
+        )
+        window = DummyWindow()
+
+        with patch("open_law_lens.app.GLib.idle_add", side_effect=lambda func, *args: func(*args)):
+            OpenLawLensWindow._apply_reader_payload_style_chunk(  # type: ignore[arg-type]
+                window,
+                payload,
+                0,
+            )
+
+        self.assertEqual(window.applied, [span])
+        self.assertEqual(window.next_indexes, [0])
+
+    def test_case_header_keeps_formatted_citation_on_one_line(self) -> None:
+        class DummyWindow:
+            pass
+
+        cited = {
+            "id": 42,
+            "case_name_short": "Example v. State",
+            "date_filed": "2020-06-01",
+            "citations": [{"volume": "1", "reporter": "Cal.5th", "page": "1"}],
+        }
+        uncited = {"id": 43, "case_name": "Uncited Example"}
+
+        self.assertEqual(
+            OpenLawLensWindow._case_header_text(DummyWindow(), cited),  # type: ignore[arg-type]
+            "Example v. State (2020) 1 Cal.5th 1",
+        )
+        self.assertEqual(
+            OpenLawLensWindow._case_header_text(DummyWindow(), uncited),  # type: ignore[arg-type]
+            "Uncited Example",
+        )
 
     def test_ineligible_loaded_case_starts_scholar_with_transient_notice_mode(self) -> None:
         class DummyWindow:
@@ -2046,8 +2177,8 @@ class AppReaderPayloadTests(unittest.TestCase):
         with patch("open_law_lens.app.GLib.idle_add", return_value=None):
             OpenLawLensWindow._start_reader_payload_render(window, payload)  # type: ignore[arg-type]
 
-        expected = "In re L.G. (Mar. 6, 2026, A173218) ___ Cal.App.5th ___"
-        self.assertEqual(window.headers, [(expected, expected)])
+        citation = "In re L.G. (Mar. 6, 2026, A173218) ___ Cal.App.5th ___"
+        self.assertEqual(window.headers, [(citation, citation)])
 
     def test_reader_opinion_hydration_keeps_loaded_research_set_clean(self) -> None:
         class DummyBuffer:
