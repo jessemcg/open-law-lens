@@ -360,6 +360,17 @@ class CaseReaderPayload:
     slip_case_number: str = ""
 
 
+def _prior_brief_style_spans(brief: PriorBrief) -> list[DisplayStyleSpan]:
+    return [
+        DisplayStyleSpan(
+            "heading" if heading.level == 1 else "brief-subheading",
+            heading.start_offset,
+            heading.end_offset,
+        )
+        for heading in brief.heading_spans
+    ]
+
+
 @dataclass(frozen=True)
 class LibrarySuggestionOpenResult:
     lookup_text: str
@@ -1374,6 +1385,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_busy_spinner: Gtk.Spinner | None = None
         self._reader_busy_label: Gtk.Label | None = None
         self._reader_heading_tag: Gtk.TextTag | None = None
+        self._reader_brief_subheading_tag: Gtk.TextTag | None = None
         self._reader_citation_italic_tag: Gtk.TextTag | None = None
         self._reader_citation_link_tags: list[Gtk.TextTag] = []
         self._reader_citation_link_lookup: dict[Gtk.TextTag, CitedCaseLink] = {}
@@ -2278,6 +2290,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             pixels_below_lines=4,
             foreground="#000000",
         )
+        self._reader_brief_subheading_tag = self.reader_buffer.create_tag(
+            "reader-brief-subheading",
+            weight=Pango.Weight.BOLD,
+            scale=1.0,
+            pixels_above_lines=7,
+            pixels_below_lines=3,
+            foreground="#000000",
+        )
         self.page_marker_tag = self.reader_buffer.create_tag(
             "page-marker",
             weight=Pango.Weight.ULTRABOLD,
@@ -3041,8 +3061,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         span: DisplayStyleSpan,
         text_length: int,
     ) -> None:
-        heading_tag = getattr(self, "_reader_heading_tag", None)
-        if heading_tag is None or span.kind != "heading":
+        if span.kind == "heading":
+            heading_tag = getattr(self, "_reader_heading_tag", None)
+        elif span.kind == "brief-subheading":
+            heading_tag = getattr(self, "_reader_brief_subheading_tag", None)
+        else:
+            heading_tag = None
+        if heading_tag is None:
             return
         start = max(0, min(span.start_offset, text_length))
         end = max(start, min(span.end_offset, text_length))
@@ -7011,14 +7036,17 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 self._open_prior_brief(brief_id)
                 return
             try:
-                brief = PriorBrief(**payload)
-            except TypeError:
+                brief = PriorBrief.from_json(payload)
+            except (TypeError, ValueError):
                 self._set_status("Cached prior brief metadata is invalid.")
                 return
             self._selected_prior_brief = brief
             self._set_reader_position_key("prior_brief", brief.brief_id)
             self._set_reader_header(brief.title)
-            self._set_reader_text(brief.text)
+            self._set_reader_text(
+                brief.text,
+                style_spans=_prior_brief_style_spans(brief),
+            )
             self._set_status(f"Loaded {brief.title} from Research Cache.")
             return
         index = getattr(row, "_open_law_lens_cluster_index", None)
@@ -8960,21 +8988,36 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     ) -> None:
         brief = self.prior_briefs.read(brief_id)
         added_to_cache = False
+        cached_payload = self.client.cache.read_prior_brief(brief_id)
         if brief is None:
-            payload = self.client.cache.read_prior_brief(brief_id)
             try:
-                brief = PriorBrief(**payload) if isinstance(payload, dict) else None
-            except TypeError:
+                brief = (
+                    PriorBrief.from_json(cached_payload)
+                    if isinstance(cached_payload, dict)
+                    else None
+                )
+            except (TypeError, ValueError):
                 brief = None
             if brief is None:
                 self._set_status("Prior brief is no longer available in the Brief Library.")
                 return
-        elif self.client.cache.read_prior_brief(brief_id) is None:
+        elif cached_payload is None:
             added_to_cache = bool(
                 self.client.cache.upsert_prior_brief(brief.to_json())
             )
             if added_to_cache:
                 self._load_cached_cases()
+        else:
+            live_payload = brief.to_json()
+            cached_headings = cached_payload.get("heading_spans")
+            if (
+                str(cached_payload.get("sha256") or "") != brief.sha256
+                or cached_headings != live_payload["heading_spans"]
+            ):
+                self.client.cache.upsert_prior_brief(
+                    live_payload,
+                    mark_dirty=False,
+                )
         capture_position = getattr(self, "_capture_current_reader_position", None)
         if capture_position is not None:
             capture_position()
@@ -8994,7 +9037,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_reader_header(f"{brief.title}\n{metadata}" if metadata else brief.title)
         if target is not None and target.end_offset > target.offset:
             self._pending_quote_target = target
-        self._set_reader_text(brief.text)
+        self._set_reader_text(
+            brief.text,
+            style_spans=_prior_brief_style_spans(brief),
+        )
         self._set_status(
             f"Opened prior brief: {brief.title}."
             + (" Added to Research Cache." if added_to_cache else "")

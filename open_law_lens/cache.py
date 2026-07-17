@@ -917,7 +917,12 @@ class JsonCache:
         self.write_json(self.prior_brief_index_path(), index)
 
     @_synchronized
-    def upsert_prior_brief(self, brief: dict[str, Any]) -> str:
+    def upsert_prior_brief(
+        self,
+        brief: dict[str, Any],
+        *,
+        mark_dirty: bool = True,
+    ) -> str:
         brief_id = str(brief.get("brief_id") or "").strip()
         text = str(brief.get("text") or "").strip()
         if not brief_id or not text:
@@ -939,7 +944,8 @@ class JsonCache:
             "loaded_at": _utc_now(),
         }
         self.write_prior_brief_index(index)
-        self.mark_active_research_set_dirty()
+        if mark_dirty:
+            self.mark_active_research_set_dirty()
         return brief_id
 
     def list_prior_brief_entries(self) -> list[dict[str, Any]]:

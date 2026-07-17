@@ -1751,6 +1751,9 @@ class AppReaderPayloadTests(unittest.TestCase):
             def __init__(self) -> None:
                 self.reader_buffer = Gtk.TextBuffer()
                 self._reader_heading_tag = self.reader_buffer.create_tag("heading-test")
+                self._reader_brief_subheading_tag = self.reader_buffer.create_tag(
+                    "brief-subheading-test"
+                )
                 self.page_marker_tag = self.reader_buffer.create_tag("page-marker-test")
                 self._reader_pagination_mode = "none"
                 self._pending_quote_target = None
@@ -1781,13 +1784,19 @@ class AppReaderPayloadTests(unittest.TestCase):
                 pass
 
         window = DummyWindow()
-        text = "INTRODUCTION\n\nOpinion text."
+        text = "INTRODUCTION\n\nBackground\n\nOpinion text."
         heading = DisplayStyleSpan("heading", 0, len("INTRODUCTION"))
+        subheading_start = text.index("Background")
+        subheading = DisplayStyleSpan(
+            "brief-subheading",
+            subheading_start,
+            subheading_start + len("Background"),
+        )
 
         OpenLawLensWindow._set_reader_text(  # type: ignore[arg-type]
             window,
             text,
-            style_spans=[heading],
+            style_spans=[heading, subheading],
         )
 
         self.assertIn(
@@ -1797,6 +1806,10 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertNotIn(
             window._reader_heading_tag,
             window.reader_buffer.get_iter_at_offset(len("INTRODUCTION") + 2).get_tags(),
+        )
+        self.assertIn(
+            window._reader_brief_subheading_tag,
+            window.reader_buffer.get_iter_at_offset(subheading_start + 2).get_tags(),
         )
 
     def test_chunked_reader_render_applies_styles_before_citation_italics(self) -> None:

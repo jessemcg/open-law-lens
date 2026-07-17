@@ -8,7 +8,7 @@ from unittest.mock import patch
 from open_law_lens.app import OpenLawLensApp, OpenLawLensWindow, build_agent_launch_env
 from open_law_lens.agent import QuoteTarget
 from open_law_lens.config import AppConfig
-from open_law_lens.prior_briefs import PriorBrief
+from open_law_lens.prior_briefs import PriorBrief, PriorBriefHeading
 
 
 class PriorBriefAppTests(unittest.TestCase):
@@ -44,17 +44,28 @@ class PriorBriefAppTests(unittest.TestCase):
             file_size=10,
             file_mtime_ns=20,
             indexed_at="2026-07-11T00:00:00+00:00",
+            heading_spans=(
+                PriorBriefHeading(1, 0, 10),
+                PriorBriefHeading(2, 12, 20),
+            ),
         )
 
         class Cache:
             def __init__(self) -> None:
                 self.payload: dict[str, object] | None = None
+                self.mark_dirty_values: list[bool] = []
 
             def read_prior_brief(self, _brief_id: str) -> dict[str, object] | None:
                 return self.payload
 
-            def upsert_prior_brief(self, payload: dict[str, object]) -> str:
+            def upsert_prior_brief(
+                self,
+                payload: dict[str, object],
+                *,
+                mark_dirty: bool = True,
+            ) -> str:
                 self.payload = payload
+                self.mark_dirty_values.append(mark_dirty)
                 return str(payload["brief_id"])
 
         class CaseList:
@@ -74,6 +85,7 @@ class PriorBriefAppTests(unittest.TestCase):
                 self._pending_quote_target = None
                 self.status = ""
                 self.rendered = ""
+                self.rendered_style_spans = []
                 self.cache_refreshes = 0
                 self.pending_targets_at_render: list[QuoteTarget | None] = []
 
@@ -89,8 +101,9 @@ class PriorBriefAppTests(unittest.TestCase):
             def _set_reader_header(self, *_args: object) -> None:
                 pass
 
-            def _set_reader_text(self, text: str) -> None:
+            def _set_reader_text(self, text: str, *, style_spans=None) -> None:
                 self.rendered = text
+                self.rendered_style_spans = list(style_spans or [])
                 self.pending_targets_at_render.append(self._pending_quote_target)
                 self._pending_quote_target = None
 
@@ -116,11 +129,17 @@ class PriorBriefAppTests(unittest.TestCase):
             brief.brief_id,
             target,
         )
+        window.client.cache.payload["heading_spans"] = []
         OpenLawLensWindow._open_prior_brief(window, brief.brief_id)  # type: ignore[arg-type]
 
         self.assertEqual(window.client.cache.payload["title"], brief.title)
         self.assertEqual(window.cache_refreshes, 1)
+        self.assertEqual(window.client.cache.mark_dirty_values, [True, False])
         self.assertEqual(window.rendered, brief.text)
+        self.assertEqual(
+            [span.kind for span in window.rendered_style_spans],
+            ["heading", "brief-subheading"],
+        )
         self.assertIs(window.pending_targets_at_render[0], target)
         self.assertNotIn("Added to Research Cache", window.status)
 
