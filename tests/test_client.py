@@ -403,6 +403,16 @@ class ClientTests(unittest.TestCase):
 
     def test_case_title_normalizes_all_caps_personal_party_names_narrowly(self) -> None:
         self.assertEqual(normalize_case_title("SHEILA S. v. Superior Court"), "Sheila S. v. Superior Court")
+        self.assertEqual(
+            normalize_case_title("A.H., Petitioners v. Superior Court"),
+            "A.H. v. Superior Court",
+        )
+        self.assertEqual(
+            normalize_case_title(
+                "A.H., Petitioner v. THE SUPERIOR COURT, Respondent"
+            ),
+            "A.H. v. Superior Court",
+        )
         self.assertEqual(normalize_case_title("C.C. v. L.B."), "C.C. v. L.B.")
         self.assertEqual(normalize_case_title("DKN Holdings LLC v. Faerber"), "DKN Holdings LLC v. Faerber")
         self.assertEqual(

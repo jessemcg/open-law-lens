@@ -92,11 +92,25 @@ def _normalize_civil_case_title(title: str) -> str:
         return title
     return "".join(
         (
-            _normalize_personal_party_title(parts[0]),
+            _normalize_personal_party_title(_strip_party_role_tail(parts[0])),
             parts[1],
-            _normalize_personal_party_title(parts[2]),
+            _normalize_personal_party_title(_strip_party_role_tail(parts[2])),
         )
     )
+
+
+def _strip_party_role_tail(party: str) -> str:
+    role = (
+        r"(?:Petitioners?|Respondents?|Plaintiffs?|Defendants?|Appellants?"
+        r"|Real Part(?:y|ies) in Interest)"
+    )
+    normalized = re.sub(
+        rf",?\s+{role}(?:\s+and\s+{role})*[,]?\s*$",
+        "",
+        party,
+        flags=re.IGNORECASE,
+    )
+    return normalized.rstrip(" ,")
 
 
 def _normalize_personal_party_title(party: str) -> str:
@@ -110,6 +124,8 @@ def _normalize_personal_party_title(party: str) -> str:
         lambda match: _titlecase_name_word(match.group("name")),
         normalized,
     )
+    if re.fullmatch(r"(?:the\s+)?superior\s+court", normalized, flags=re.IGNORECASE):
+        return "Superior Court"
     return normalized
 
 

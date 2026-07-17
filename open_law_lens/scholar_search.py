@@ -17,7 +17,11 @@ class ScholarSearchError(RuntimeError):
     """Base error for automated Scholar searches."""
 
 
-class ScholarCaptchaError(ScholarSearchError):
+class ScholarAccessBlockedError(ScholarSearchError):
+    """Scholar blocked an automated request."""
+
+
+class ScholarCaptchaError(ScholarAccessBlockedError):
     """Scholar returned a bot/CAPTCHA challenge instead of results."""
 
 
@@ -129,6 +133,10 @@ def search_first_case_direct(query: str) -> ScholarSearchResult:
     try:
         html = fetch_url_html(url)
     except RuntimeError as exc:
+        if re.search(r"\bHTTP\s+(?:403|429)\b", str(exc), flags=re.IGNORECASE):
+            raise ScholarAccessBlockedError(
+                "Google Scholar blocked the automated search request."
+            ) from exc
         raise ScholarSearchError(f"Could not fetch Scholar search results: {exc}") from exc
     if looks_like_captcha_page(html):
         raise ScholarCaptchaError(

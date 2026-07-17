@@ -141,6 +141,22 @@ class ExternalImportTests(unittest.TestCase):
             "Conservatorship of O.B.",
         )
 
+    def test_imported_case_name_from_civil_citation(self) -> None:
+        self.assertEqual(
+            imported_case_name_from_text(
+                "A.H. v. Superior Court (2023) 89 Cal.App.5th 504"
+            ),
+            "A.H. v. Superior Court",
+        )
+
+    def test_imported_case_name_removes_caption_roles(self) -> None:
+        self.assertEqual(
+            imported_case_name_from_text(
+                "A.H., Petitioners v. Superior Court (2023) 89 Cal.App.5th 504"
+            ),
+            "A.H. v. Superior Court",
+        )
+
     def test_imported_case_name_from_split_superior_court_writ_caption(self) -> None:
         self.assertEqual(imported_case_name_from_text(B_D_TEXT), "B.D. v. Superior Court")
         self.assertEqual(imported_year_from_text(B_D_TEXT), "2025")

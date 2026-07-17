@@ -11,6 +11,7 @@ from open_law_lens.app import (
     AGENT_MODE_BRIEF,
     AGENT_MODE_ICONS,
     READER_CLIPBOARD_ICON,
+    SCHOLAR_FALLBACK_CLIPBOARD_RECOVERY,
     SCHOLAR_FALLBACK_NOTICE_ONLY,
     SCHOLAR_FALLBACK_TRANSIENT_NOTICE,
     Gtk,
@@ -2428,6 +2429,167 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(window.notices, [False])
         self.assertEqual(window.external_windows, [])
 
+    def test_blocked_scholar_lookup_opens_clipboard_recovery(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self._active_lookup_case_name_hint = "A.H. v. Superior Court"
+                self.statuses: list[str] = []
+                self.recoveries: list[dict[str, object]] = []
+
+            def _set_reader_busy(self, _busy: bool, _message: str = "") -> None:
+                pass
+
+            def _set_status(self, status: str) -> None:
+                self.statuses.append(status)
+
+            def _default_import_case_name(self) -> str:
+                return ""
+
+            def _show_external_lookup_window(self, query: str, **kwargs: object) -> None:
+                self.recoveries.append({"query": query, **kwargs})
+
+        window = DummyWindow()
+
+        OpenLawLensWindow._handle_scholar_auto_failure(  # type: ignore[arg-type]
+            window,
+            "89 Cal.App.5th 504",
+            "Google Scholar blocked the automated search request.",
+            SCHOLAR_FALLBACK_CLIPBOARD_RECOVERY,
+            failure_kind="access_blocked",
+        )
+
+        self.assertIn("Citation copied", window.statuses[-1])
+        self.assertEqual(window.recoveries[0]["query"], "89 Cal.App.5th 504")
+        self.assertTrue(window.recoveries[0]["clipboard_recovery"])
+        self.assertEqual(
+            window.recoveries[0]["case_name_hint"],
+            "A.H. v. Superior Court",
+        )
+
+    def test_clipboard_recovery_keeps_explicit_no_result_notice(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.statuses: list[str] = []
+                self.notices: list[bool] = []
+
+            def _set_reader_busy(self, _busy: bool, _message: str = "") -> None:
+                pass
+
+            def _set_status(self, status: str) -> None:
+                self.statuses.append(status)
+
+            def _show_official_pagination_not_found_notice(self, *, can_view_current: bool) -> None:
+                self.notices.append(can_view_current)
+
+        window = DummyWindow()
+
+        OpenLawLensWindow._handle_scholar_auto_failure(  # type: ignore[arg-type]
+            window,
+            "89 Cal.App.5th 504",
+            "No case result was found.",
+            SCHOLAR_FALLBACK_CLIPBOARD_RECOVERY,
+            failure_kind="no_result",
+        )
+
+        self.assertEqual(window.notices, [False])
+        self.assertIn("not found", window.statuses[-1])
+
+    def test_clipboard_recovery_imports_matching_opinion(self) -> None:
+        class DummyFeedback:
+            def __init__(self) -> None:
+                self.text = ""
+
+            def set_text(self, text: str) -> None:
+                self.text = text
+
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.saved: list[dict[str, object]] = []
+                self.closed = False
+
+            def _set_status(self, _status: str) -> None:
+                pass
+
+            def _save_imported_official_text(self, **kwargs: object) -> bool:
+                self.saved.append(kwargs)
+                return True
+
+            def _close_external_lookup_window(self) -> None:
+                self.closed = True
+
+        copied_text = """A.H. v. Superior Court, 89 Cal.App.5th 504 - Cal: Court of Appeal 2023
+89 Cal.App.5th 504 (2023)
+A.H., Petitioner, v. THE SUPERIOR COURT, Respondent.
+
+*510 OPINION
+
+Opinion text.
+
+*511 Additional text.
+"""
+        window = DummyWindow()
+        feedback = DummyFeedback()
+
+        imported = OpenLawLensWindow._import_scholar_clipboard_text(  # type: ignore[arg-type]
+            window,
+            copied_text,
+            expected_citation="89 Cal.App.5th 504",
+            case_name_hint="A.H. v. Superior Court",
+            source_url="https://scholar.google.com/scholar?q=89+Cal.App.5th+504",
+            feedback=feedback,
+        )
+
+        self.assertTrue(imported)
+        self.assertTrue(window.closed)
+        self.assertEqual(window.saved[0]["official_citation"], "89 Cal.App.5th 504")
+        self.assertEqual(window.saved[0]["case_name"], "A.H. v. Superior Court")
+        self.assertIn("*510", str(window.saved[0]["imported_text"]))
+
+    def test_clipboard_recovery_rejects_citation_only_and_wrong_case(self) -> None:
+        class DummyFeedback:
+            def __init__(self) -> None:
+                self.text = ""
+
+            def set_text(self, text: str) -> None:
+                self.text = text
+
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.statuses: list[str] = []
+
+            def _set_status(self, status: str) -> None:
+                self.statuses.append(status)
+
+            def _save_imported_official_text(self, **_kwargs: object) -> bool:
+                raise AssertionError("Invalid clipboard text must not be saved.")
+
+        window = DummyWindow()
+        feedback = DummyFeedback()
+        common = {
+            "expected_citation": "89 Cal.App.5th 504",
+            "case_name_hint": "A.H. v. Superior Court",
+            "source_url": "https://scholar.google.com/",
+            "feedback": feedback,
+        }
+
+        self.assertFalse(
+            OpenLawLensWindow._import_scholar_clipboard_text(  # type: ignore[arg-type]
+                window,
+                "89 Cal.App.5th 504",
+                **common,
+            )
+        )
+        self.assertIn("only the citation", feedback.text)
+
+        self.assertFalse(
+            OpenLawLensWindow._import_scholar_clipboard_text(  # type: ignore[arg-type]
+                window,
+                "Wrong v. Case (2023) 88 Cal.App.5th 100\n*105 OPINION",
+                **common,
+            )
+        )
+        self.assertIn("does not match", feedback.text)
+
     def test_ineligible_scholar_auto_import_uses_transient_notice_mode(self) -> None:
         class DummyWindow:
             def __init__(self) -> None:
@@ -2452,7 +2614,9 @@ class AppReaderPayloadTests(unittest.TestCase):
                 fallback_mode: str,
                 *,
                 initial_source_url: str = "",
+                failure_kind: str = "",
             ) -> None:
+                del failure_kind
                 self.failures.append(
                     {
                         "query": query,
@@ -2505,7 +2669,9 @@ class AppReaderPayloadTests(unittest.TestCase):
                 fallback_mode: str,
                 *,
                 initial_source_url: str = "",
+                failure_kind: str = "",
             ) -> None:
+                del failure_kind
                 self.failures.append(
                     {
                         "query": query,
@@ -2664,6 +2830,31 @@ class AppReaderPayloadTests(unittest.TestCase):
         OpenLawLensWindow._on_lookup_clicked(window, object())  # type: ignore[arg-type]
 
         self.assertEqual(window.case_numbers, ["A173218"])
+
+    def test_lookup_clicked_preserves_case_name_hint_after_citation_resolution(self) -> None:
+        class DummyEntry:
+            def get_text(self) -> str:
+                return "A.H. v. Superior Court (2023) 89 Cal.App.5th 504"
+
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.citation_entry = DummyEntry()
+                self.lookup: tuple[str, str] | None = None
+
+            def _lookup_text_from_entry(self, _text: str) -> str:
+                return "89 Cal.App.5th 504"
+
+            def _start_lookup(self, citation: str, *, case_name_hint: str = "") -> None:
+                self.lookup = (citation, case_name_hint)
+
+        window = DummyWindow()
+
+        OpenLawLensWindow._on_lookup_clicked(window, object())  # type: ignore[arg-type]
+
+        self.assertEqual(
+            window.lookup,
+            ("89 Cal.App.5th 504", "A.H. v. Superior Court"),
+        )
 
     def test_active_research_set_label_and_save_updates_loaded_set(self) -> None:
         class DummyLabel:
@@ -3812,6 +4003,7 @@ class AppReaderPayloadTests(unittest.TestCase):
                 self._case_suggestions_loaded = False
                 self.async_refreshes = 0
                 self.opened_cases: list[str] = []
+                self.case_name_hints: list[str] = []
 
             def _set_status(self, _text: str) -> None:
                 pass
@@ -3828,8 +4020,9 @@ class AppReaderPayloadTests(unittest.TestCase):
             def _lookup_text_from_entry(self, _entry_text: str) -> str:
                 raise AssertionError("external case open should not synchronously load suggestions")
 
-            def _start_lookup(self, citation: str) -> None:
+            def _start_lookup(self, citation: str, *, case_name_hint: str = "") -> None:
                 self.opened_cases.append(citation)
+                self.case_name_hints.append(case_name_hint)
 
             def _start_statute_lookup(self, _citation: str) -> None:
                 raise AssertionError("case citation should not route to statute lookup")
@@ -3846,6 +4039,7 @@ class AppReaderPayloadTests(unittest.TestCase):
 
         self.assertEqual(window.async_refreshes, 1)
         self.assertEqual(window.opened_cases, ["11 Cal.5th 614"])
+        self.assertEqual(window.case_name_hints, ["In re Caden C."])
 
     def test_start_lookup_routes_bare_case_number_to_case_number_lookup(self) -> None:
         class DummyWindow:

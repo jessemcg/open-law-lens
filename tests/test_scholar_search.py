@@ -124,9 +124,21 @@ class SearchFirstCaseDirectTests(unittest.TestCase):
             with self.assertRaises(scholar_search.ScholarNoResultError):
                 scholar_search.search_first_case_direct("11 Cal.5th 614")
 
-    def test_fetch_error_raises_search_error(self) -> None:
+    def test_rate_limit_raises_access_blocked_error(self) -> None:
         with patch.object(scholar_search, "fetch_url_html", side_effect=RuntimeError("HTTP 429")):
-            with self.assertRaisesRegex(scholar_search.ScholarSearchError, "HTTP 429"):
+            with self.assertRaisesRegex(
+                scholar_search.ScholarAccessBlockedError,
+                "blocked",
+            ):
+                scholar_search.search_first_case_direct("11 Cal.5th 614")
+
+    def test_other_fetch_error_raises_search_error(self) -> None:
+        with patch.object(
+            scholar_search,
+            "fetch_url_html",
+            side_effect=RuntimeError("request timed out"),
+        ):
+            with self.assertRaisesRegex(scholar_search.ScholarSearchError, "timed out"):
                 scholar_search.search_first_case_direct("11 Cal.5th 614")
 
 

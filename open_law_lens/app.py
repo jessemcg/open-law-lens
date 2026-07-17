@@ -143,8 +143,11 @@ from .reader_highlights import (
     toggle_reader_highlight,
 )
 from .scholar_search import (
+    ScholarAccessBlockedError,
+    ScholarNoResultError,
     ScholarSearchError,
     ScholarSearchResult,
+    build_scholar_search_url,
     search_first_case_direct,
 )
 from .slip_opinions import (
@@ -206,10 +209,12 @@ PRIOR_BRIEF_MARKDOWN_LINK_RE = re.compile(
     r"\[([^\]\n]+)\]\(open-law-lens://prior-brief/([a-fA-F0-9]{16,64})\)"
 )
 GOOGLE_SCHOLAR_CASE_SEARCH_TEMPLATE = "https://scholar.google.com/scholar?hl=en&as_sdt=6,33&q={query}"
+GOOGLE_SCHOLAR_CASE_LAW_HOME_URL = "https://scholar.google.com/scholar?hl=en&as_sdt=6,33"
 EXTERNAL_URL_RE = re.compile(r"https?://\S+")
 SCHOLAR_FALLBACK_MANUAL_WINDOW = "manual_window"
 SCHOLAR_FALLBACK_TRANSIENT_NOTICE = "transient_notice"
 SCHOLAR_FALLBACK_NOTICE_ONLY = "notice_only"
+SCHOLAR_FALLBACK_CLIPBOARD_RECOVERY = "clipboard_recovery"
 OFFICIAL_PAGINATION_NOT_FOUND_TITLE = "Official Pagination Not Found"
 OFFICIAL_PAGINATION_NOT_FOUND_MESSAGE = (
     "A version of this case with pagination from the official reporter was not found. "
@@ -1421,6 +1426,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._external_lookup_auto_fallback_mode = SCHOLAR_FALLBACK_MANUAL_WINDOW
         self._external_lookup_auto_import = False
         self._external_lookup_auto_cache_generation: int | None = None
+        self._active_lookup_case_name_hint = ""
         self._pending_auto_scholar_cluster_id = ""
         self._pending_auto_scholar_query = ""
         self._pending_quote_target: QuoteTarget | None = None
@@ -4525,7 +4531,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._start_rule_lookup(lookup_text)
             return False
         citation = self._external_lookup_text(lookup_text)
-        self._start_lookup(citation)
+        case_context = entry_text[candidate.start:candidate.end] or lookup_text
+        self._start_lookup(
+            citation,
+            case_name_hint=(
+                imported_case_name_from_text(case_context)
+                or imported_case_name_from_text(lookup_text)
+                or imported_case_name_from_text(entry_text)
+            ),
+        )
         return False
 
     def _external_lookup_text(self, lookup_text: str) -> str:
@@ -5120,16 +5134,25 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return False
         return True
 
-    def _show_external_lookup_window(self, query: str, *, initial_source_url: str = "") -> None:
+    def _show_external_lookup_window(
+        self,
+        query: str,
+        *,
+        initial_source_url: str = "",
+        clipboard_recovery: bool = False,
+        case_name_hint: str = "",
+    ) -> None:
         clean_query = re.sub(r"\s+", " ", query).strip()
         if not clean_query:
             return
         if self._external_lookup_window is not None:
             self._close_external_lookup_window()
-        window = Gtk.Window(title="Find Case Online")
+        window = Gtk.Window(
+            title="Complete in Google Scholar" if clipboard_recovery else "Find Case Online"
+        )
         window.set_transient_for(self)
         window.set_modal(False)
-        window.set_default_size(520, 300)
+        window.set_default_size(520, 360 if clipboard_recovery else 300)
         window.connect("close-request", self._on_external_lookup_closed)
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -5143,44 +5166,104 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         heading.add_css_class("heading")
         box.append(heading)
 
-        for label, url in self._external_search_urls(clean_query):
-            button = Gtk.Button(label=label)
-            button.set_halign(Gtk.Align.FILL)
-            button.set_hexpand(True)
-            button.connect("clicked", self._on_external_lookup_button_clicked, url)
-            box.append(button)
+        if clipboard_recovery:
+            expected_citation = normalize_official_citation(clean_query) or clean_query
+            explanation = Gtk.Label(
+                label=(
+                    "Open Law Lens could not complete the automatic Google Scholar lookup. "
+                    "The citation has been copied so you can finish in your browser."
+                ),
+                xalign=0,
+            )
+            explanation.set_wrap(True)
+            box.append(explanation)
 
-        auto_find_button = Gtk.Button(label="Auto-Find on Scholar")
-        auto_find_button.set_tooltip_text(
-            "Automatically search Google Scholar and import the first case result"
-        )
-        auto_find_button.connect("clicked", self._on_external_lookup_auto_find_clicked)
-        box.append(auto_find_button)
-        self._external_lookup_auto_find_button = auto_find_button
+            copy_button = Gtk.Button(label="Copy Citation")
+            copy_button.connect(
+                "clicked",
+                self._on_scholar_recovery_copy_clicked,
+                expected_citation,
+            )
+            box.append(copy_button)
 
-        source_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        source_entry = Gtk.Entry()
-        source_entry.set_hexpand(True)
-        source_entry.set_placeholder_text("Google Scholar case URL")
-        source_entry.set_text(initial_source_url)
-        source_row.append(source_entry)
-        fetch_button = Gtk.Button(label="Fetch URL")
-        fetch_button.connect("clicked", self._on_external_lookup_fetch_clicked, source_entry)
-        source_row.append(fetch_button)
-        box.append(source_row)
-        self._external_lookup_source_entry = source_entry
+            browser_url = initial_source_url.strip() or GOOGLE_SCHOLAR_CASE_LAW_HOME_URL
+            browser_button = Gtk.Button(label="Open Google Scholar Case Law")
+            browser_button.add_css_class("suggested-action")
+            browser_button.connect(
+                "clicked",
+                self._on_external_lookup_button_clicked,
+                browser_url,
+            )
+            box.append(browser_button)
 
-        import_button = Gtk.Button(label="Import Official Text")
-        import_button.connect(
-            "clicked",
-            self._on_external_lookup_import_clicked,
-        )
-        box.append(import_button)
+            instructions = Gtk.Label(
+                label=(
+                    "1. Paste the citation into Scholar and open the matching case.\n"
+                    "2. Click in the opinion, press Ctrl+A, then Ctrl+C.\n"
+                    "3. Return here and import the copied opinion."
+                ),
+                xalign=0,
+            )
+            instructions.set_wrap(True)
+            instructions.set_selectable(True)
+            box.append(instructions)
+
+            feedback = Gtk.Label(label="", xalign=0)
+            feedback.set_wrap(True)
+            box.append(feedback)
+
+            import_button = Gtk.Button(label="Import Copied Opinion")
+            import_button.connect(
+                "clicked",
+                self._on_scholar_recovery_import_clicked,
+                window,
+                expected_citation,
+                case_name_hint,
+                initial_source_url.strip() or build_scholar_search_url(expected_citation),
+                feedback,
+            )
+            box.append(import_button)
+        else:
+            for label, url in self._external_search_urls(clean_query):
+                button = Gtk.Button(label=label)
+                button.set_halign(Gtk.Align.FILL)
+                button.set_hexpand(True)
+                button.connect("clicked", self._on_external_lookup_button_clicked, url)
+                box.append(button)
+
+            auto_find_button = Gtk.Button(label="Auto-Find on Scholar")
+            auto_find_button.set_tooltip_text(
+                "Automatically search Google Scholar and import the first case result"
+            )
+            auto_find_button.connect("clicked", self._on_external_lookup_auto_find_clicked)
+            box.append(auto_find_button)
+            self._external_lookup_auto_find_button = auto_find_button
+
+            source_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            source_entry = Gtk.Entry()
+            source_entry.set_hexpand(True)
+            source_entry.set_placeholder_text("Google Scholar case URL")
+            source_entry.set_text(initial_source_url)
+            source_row.append(source_entry)
+            fetch_button = Gtk.Button(label="Fetch URL")
+            fetch_button.connect("clicked", self._on_external_lookup_fetch_clicked, source_entry)
+            source_row.append(fetch_button)
+            box.append(source_row)
+            self._external_lookup_source_entry = source_entry
+
+            import_button = Gtk.Button(label="Import Official Text")
+            import_button.connect(
+                "clicked",
+                self._on_external_lookup_import_clicked,
+            )
+            box.append(import_button)
 
         window.set_child(box)
         self._external_lookup_window = window
         self._external_lookup_query = clean_query
         window.present()
+        if clipboard_recovery:
+            self._copy_scholar_recovery_citation(expected_citation)
 
     def _on_external_lookup_closed(self, _window: Gtk.Window) -> bool:
         self._external_lookup_window = None
@@ -5201,6 +5284,133 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _on_external_lookup_button_clicked(self, _button: Gtk.Button, url: str) -> None:
         if self._launch_external_url(url):
             self._set_status("Opened Google Scholar case search in browser.")
+
+    def _copy_scholar_recovery_citation(self, citation: str) -> bool:
+        display = Gdk.Display.get_default()
+        if display is None:
+            self._set_status("Could not access clipboard. Use Copy Citation to try again.")
+            return False
+        display.get_clipboard().set(citation)
+        self._set_status(f"Copied {citation}. Open Google Scholar Case Law to continue.")
+        return True
+
+    def _on_scholar_recovery_copy_clicked(
+        self,
+        _button: Gtk.Button,
+        citation: str,
+    ) -> None:
+        self._copy_scholar_recovery_citation(citation)
+
+    def _on_scholar_recovery_import_clicked(
+        self,
+        button: Gtk.Button,
+        window: Gtk.Window,
+        expected_citation: str,
+        case_name_hint: str,
+        source_url: str,
+        feedback: Gtk.Label,
+    ) -> None:
+        display = Gdk.Display.get_default()
+        if display is None:
+            feedback.set_text("Open Law Lens could not access the clipboard.")
+            self._set_status("Could not access clipboard.")
+            return
+        button.set_sensitive(False)
+        feedback.set_text("Reading copied opinion...")
+        display.get_clipboard().read_text_async(
+            None,
+            self._on_scholar_recovery_clipboard_read,
+            (button, window, expected_citation, case_name_hint, source_url, feedback),
+        )
+
+    def _on_scholar_recovery_clipboard_read(
+        self,
+        clipboard: Gdk.Clipboard,
+        result: Gio.AsyncResult,
+        user_data: tuple[Gtk.Button, Gtk.Window, str, str, str, Gtk.Label],
+    ) -> None:
+        button, window, expected_citation, case_name_hint, source_url, feedback = user_data
+        if window is not self._external_lookup_window:
+            return
+        button.set_sensitive(True)
+        try:
+            clipboard_text = clipboard.read_text_finish(result) or ""
+        except GLib.Error as exc:
+            feedback.set_text(f"Could not read the clipboard: {exc.message}")
+            self._set_status("Could not read copied opinion from clipboard.")
+            return
+        self._import_scholar_clipboard_text(
+            clipboard_text,
+            expected_citation=expected_citation,
+            case_name_hint=case_name_hint,
+            source_url=source_url,
+            feedback=feedback,
+        )
+
+    def _import_scholar_clipboard_text(
+        self,
+        clipboard_text: str,
+        *,
+        expected_citation: str,
+        case_name_hint: str,
+        source_url: str,
+        feedback: Gtk.Label,
+    ) -> bool:
+        pasted_text = clipboard_text.strip()
+        if not pasted_text:
+            feedback.set_text("The clipboard is empty. Copy the full Scholar opinion page.")
+            self._set_status("Clipboard import not saved: the clipboard is empty.")
+            return False
+        if re.fullmatch(r"https?://\S+", pasted_text, flags=re.IGNORECASE):
+            feedback.set_text("The clipboard contains a URL. Copy the full opinion page instead.")
+            self._set_status("Clipboard import not saved: copy the opinion text, not its URL.")
+            return False
+        if re.sub(r"\s+", " ", pasted_text).casefold() == expected_citation.casefold():
+            feedback.set_text(
+                "The clipboard still contains only the citation. Copy the full Scholar opinion page."
+            )
+            self._set_status("Clipboard import not saved: the opinion page was not copied.")
+            return False
+
+        imported_text = clean_imported_opinion_text(pasted_text)
+        if not imported_text:
+            feedback.set_text("The copied page did not contain readable opinion text.")
+            self._set_status("Clipboard import not saved: copied text was empty after cleanup.")
+            return False
+        try:
+            official_citation = validated_import_official_citation(
+                expected_citation,
+                imported_text,
+            )
+        except ValueError:
+            feedback.set_text(
+                f"The copied opinion does not match {expected_citation}. Copy the matching case."
+            )
+            self._set_status("Clipboard import not saved: the copied case did not match.")
+            return False
+
+        case_name = (
+            imported_case_name_from_text(imported_text)
+            or case_name_hint.strip()
+            or expected_citation
+        )
+        if not self._save_imported_official_text(
+            case_name=case_name,
+            official_citation=official_citation,
+            imported_text=imported_text,
+            source_url=source_url,
+            failure_prefix="Clipboard import not saved",
+            success_status=(
+                "Imported copied Scholar opinion, saved to Library, and added to Research Cache."
+            ),
+        ):
+            feedback.set_text(
+                "The copied page could not be imported. Check the status message for details."
+            )
+            return False
+        feedback.set_text("Imported copied Scholar opinion.")
+        self._close_external_lookup_window()
+        return True
 
     def _on_external_lookup_import_clicked(self, _button: Gtk.Button) -> None:
         self._on_import_official_text(None, None)
@@ -5259,15 +5469,40 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _external_lookup_auto_find_worker(self, query: str) -> None:
         try:
             result = search_first_case_direct(query)
-        except ScholarSearchError as exc:
-            GLib.idle_add(self._finish_external_lookup_auto_find, query, None, str(exc))
+        except ScholarNoResultError as exc:
+            GLib.idle_add(
+                self._finish_external_lookup_auto_find,
+                query,
+                None,
+                "no_result",
+                str(exc),
+            )
             return
-        GLib.idle_add(self._finish_external_lookup_auto_find, query, result, "")
+        except ScholarAccessBlockedError as exc:
+            GLib.idle_add(
+                self._finish_external_lookup_auto_find,
+                query,
+                None,
+                "access_blocked",
+                str(exc),
+            )
+            return
+        except ScholarSearchError as exc:
+            GLib.idle_add(
+                self._finish_external_lookup_auto_find,
+                query,
+                None,
+                "search_error",
+                str(exc),
+            )
+            return
+        GLib.idle_add(self._finish_external_lookup_auto_find, query, result, "", "")
 
     def _finish_external_lookup_auto_find(
         self,
         query: str,
         result: ScholarSearchResult | None,
+        failure_kind: str,
         error: str,
     ) -> bool:
         if query != self._external_lookup_auto_query:
@@ -5321,6 +5556,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             query,
             f"Auto-Find could not complete: {error or 'unknown error'}.",
             fallback_mode,
+            failure_kind=failure_kind,
         )
         return False
 
@@ -5382,6 +5618,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             f"Scholar found a case, but automatic import failed: {message}",
             fallback_mode,
             initial_source_url=source_url,
+            failure_kind=(
+                "access_blocked"
+                if re.search(r"\bHTTP\s+(?:403|429)\b", message, flags=re.IGNORECASE)
+                else "fetch_error"
+            ),
         )
         return False
 
@@ -5404,6 +5645,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 "Scholar first result did not match the requested official citation.",
                 fallback_mode,
                 initial_source_url=webpage.url,
+                failure_kind="mismatch",
             )
             return False
         official_citation = official_citation or self._default_import_official_citation()
@@ -5423,6 +5665,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             "Scholar did not provide official reporter pagination.",
             fallback_mode,
             initial_source_url=webpage.url,
+            failure_kind="missing_pagination",
         )
         return False
 
@@ -5433,6 +5676,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         fallback_mode: str,
         *,
         initial_source_url: str = "",
+        failure_kind: str = "",
     ) -> None:
         self._set_reader_busy(False)
         if fallback_mode == SCHOLAR_FALLBACK_MANUAL_WINDOW:
@@ -5443,6 +5687,24 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if fallback_mode == SCHOLAR_FALLBACK_TRANSIENT_NOTICE:
             self._set_status("Transient view only: official reporter pagination was not found.")
             self._show_official_pagination_not_found_notice(can_view_current=True)
+            return
+        if fallback_mode == SCHOLAR_FALLBACK_CLIPBOARD_RECOVERY:
+            if failure_kind == "no_result":
+                self._set_status(OFFICIAL_PAGINATION_NOT_FOUND_ONLY_MESSAGE)
+                self._show_official_pagination_not_found_notice(can_view_current=False)
+                return
+            self._set_status(
+                "Google Scholar could not be accessed automatically. Citation copied for manual lookup."
+            )
+            self._show_external_lookup_window(
+                query,
+                initial_source_url=initial_source_url,
+                clipboard_recovery=True,
+                case_name_hint=(
+                    self._active_lookup_case_name_hint
+                    or self._default_import_case_name()
+                ),
+            )
             return
         self._set_status(OFFICIAL_PAGINATION_NOT_FOUND_ONLY_MESSAGE)
         self._show_official_pagination_not_found_notice(can_view_current=False)
@@ -5831,7 +6093,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if parse_rule_citation(citation) is not None:
             self._start_rule_lookup(citation)
             return
-        self._start_lookup(citation)
+        self._start_lookup(
+            citation,
+            case_name_hint=imported_case_name_from_text(entry_text),
+        )
 
     def _start_case_number_lookup(self, case_number: str) -> None:
         clean_case_number = normalize_case_number(case_number)
@@ -6105,6 +6370,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         *,
         link: CitedCaseLink | None = None,
         populate_research_cache: bool = True,
+        case_name_hint: str = "",
     ) -> None:
         case_number = normalize_case_number(citation)
         if case_number and citation.strip().casefold() == case_number.casefold():
@@ -6118,6 +6384,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             clear_position_key()
         lookup_context = self._lookup_context_text(citation, link)
         self._last_lookup_text = lookup_context
+        self._active_lookup_case_name_hint = (
+            case_name_hint.strip()
+            or (link.case_name.strip() if link is not None else "")
+            or imported_case_name_from_text(citation)
+        )
         self._pending_auto_scholar_cluster_id = ""
         self._pending_auto_scholar_query = ""
         self._hide_case_completion()
@@ -6258,7 +6529,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_status("CourtListener lookup unavailable. Searching Google Scholar...")
         self._start_scholar_auto_find(
             citation,
-            fallback_mode=SCHOLAR_FALLBACK_NOTICE_ONLY,
+            fallback_mode=SCHOLAR_FALLBACK_CLIPBOARD_RECOVERY,
             auto_import=True,
             cache_generation=cache_generation,
         )
@@ -6960,7 +7231,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 self._set_status("No CourtListener match shown. Searching Google Scholar...")
                 self._start_scholar_auto_find(
                     query,
-                    fallback_mode=SCHOLAR_FALLBACK_NOTICE_ONLY,
+                    fallback_mode=SCHOLAR_FALLBACK_CLIPBOARD_RECOVERY,
                     auto_import=True,
                     cache_generation=cache_generation,
                 )

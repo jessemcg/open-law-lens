@@ -242,6 +242,12 @@ def _normalize_initial_spaces(value: str) -> str:
 
 def _scholar_result_case_name(line: str) -> str:
     candidate = re.split(r"\s+-\s+Cal:|\s+-\s+", line, maxsplit=1)[0]
+    candidate = re.sub(
+        r"\s+\(\d{4}\)\s+\d+\s+Cal\..*$",
+        "",
+        candidate,
+        flags=re.IGNORECASE,
+    )
     candidate = re.sub(r",\s*\d+\s+.+$", "", candidate).strip(" ,")
     if not _looks_like_case_name(candidate):
         return ""
@@ -249,7 +255,7 @@ def _scholar_result_case_name(line: str) -> str:
 
 
 def _civil_case_name(line: str) -> str:
-    if not re.search(r"\bv\.\b", line, flags=re.IGNORECASE):
+    if not re.search(r"\bv\.(?:\s|$)", line, flags=re.IGNORECASE):
         return ""
     candidate = re.split(r",|\(\d{4}\)|\d+\s+Cal\.", line, maxsplit=1)[0].strip(" ,")
     if not _looks_like_case_name(candidate):
@@ -267,4 +273,10 @@ def _conservatorship_case_name(line: str) -> str:
 
 
 def _looks_like_case_name(value: str) -> bool:
-    return bool(re.search(r"^(In re|Adoption of|Conservatorship of)\b|\bv\.\b", value, flags=re.IGNORECASE))
+    return bool(
+        re.search(
+            r"^(In re|Adoption of|Conservatorship of)\b|\bv\.(?:\s|$)",
+            value,
+            flags=re.IGNORECASE,
+        )
+    )
