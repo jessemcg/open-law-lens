@@ -23,6 +23,7 @@ from .reader_highlights import ReaderHighlight
 from .storage import (
     cluster_id_from_cluster,
     normalize_citation,
+    payload_source_provider,
     repair_lookup_result_clusters,
     resource_id_from_url,
 )
@@ -532,6 +533,7 @@ class JsonCache:
             "title": _cluster_title(cluster),
             "citation_text": _cluster_citation_line(cluster),
             "citations": citations if isinstance(citations, list) else [],
+            "source_provider": payload_source_provider(cluster),
             "cluster_path": str(self.cluster_path(cluster_id)),
             "opinion_ids": existing_opinion_ids if isinstance(existing_opinion_ids, list) else [],
             "agent_selected": bool(existing.get("agent_selected", False)),

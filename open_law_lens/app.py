@@ -163,6 +163,11 @@ from .slip_opinions import (
     slip_result_to_payload,
 )
 from .speech import DEFAULT_SPEECH_QUESTION_FILE, normalize_speech_question_text
+from .storage import (
+    SOURCE_PROVIDER_CALIFORNIA_COURTS,
+    displayed_case_source_provider,
+    source_provider_label,
+)
 from .rules import (
     CaliforniaRulesError,
     RuleCitation,
@@ -189,6 +194,7 @@ AGENT_WRAPPER = PROJECT_DIR / "scripts" / "open-law-lens-codex-agent-vte.sh"
 DEFAULT_CODEX_BIN = "codex"
 READER_BG = "#ffffff"
 READER_FG = "#000000"
+READER_MUTED_FG = "#4d5866"
 READER_COOL_GRAY_BG = "#e8edf3"
 READER_RENDER_TEXT_CHUNK_SIZE = 8000
 READER_RENDER_TAG_CHUNK_SIZE = 250
@@ -361,6 +367,7 @@ class CaseReaderPayload:
     quality_eligible: bool
     quality_reason: str
     opinion_source: str
+    source_provider: str
     pagination_mode: str = READER_PAGINATION_NONE
     slip_source_url: str = ""
     slip_case_number: str = ""
@@ -419,6 +426,7 @@ def build_case_reader_payload(
     cache_generation: int = 0,
     opinion_ids: tuple[str, ...] = (),
     opinion_source: str = "",
+    source_provider: str = "",
     pagination_mode: str = "",
     slip_source_url: str = "",
     slip_case_number: str = "",
@@ -474,6 +482,10 @@ def build_case_reader_payload(
         quality_eligible=quality.eligible,
         quality_reason=quality.reason,
         opinion_source=opinion_source,
+        source_provider=displayed_case_source_provider(
+            cluster,
+            explicit=source_provider,
+        ),
         pagination_mode=resolved_pagination_mode,
         slip_source_url=slip_source_url,
         slip_case_number=slip_case_number,
@@ -1530,6 +1542,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
               font-size: {config.reader_font_size_pt}pt;
               font-weight: bold;
             }}
+            label.case-reader-source {{
+              color: {READER_MUTED_FG};
+              background-color: {READER_COOL_GRAY_BG};
+              font-family: {reader_font_css(config.reader_font_family)};
+              font-size: {max(8, round(config.reader_font_size_pt * 0.65))}pt;
+              font-weight: normal;
+            }}
             button.case-reader-header-action-button {{
               color: {READER_FG};
               background-color: transparent;
@@ -2341,13 +2360,26 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.reader_header_leading_spacer.set_can_target(False)
         self.reader_header_box.append(self.reader_header_leading_spacer)
 
+        self.reader_header_center_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=1,
+        )
+        self.reader_header_center_box.set_hexpand(True)
+
         self.reader_header_label = Gtk.Label(label="", xalign=0.5)
         self.reader_header_label.add_css_class("case-reader-fixed-header")
         self.reader_header_label.set_wrap(True)
         self.reader_header_label.set_justify(Gtk.Justification.CENTER)
         self.reader_header_label.set_selectable(True)
         self.reader_header_label.set_hexpand(True)
-        self.reader_header_box.append(self.reader_header_label)
+        self.reader_header_center_box.append(self.reader_header_label)
+
+        self.reader_source_label = Gtk.Label(label="", xalign=0.5)
+        self.reader_source_label.add_css_class("case-reader-source")
+        self.reader_source_label.set_justify(Gtk.Justification.CENTER)
+        self.reader_source_label.set_visible(False)
+        self.reader_header_center_box.append(self.reader_source_label)
+        self.reader_header_box.append(self.reader_header_center_box)
 
         self.reader_header_action_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self.reader_header_action_box.set_halign(Gtk.Align.END)
@@ -3119,6 +3151,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                     formatted,
                     payload.cluster,
                 )
+        set_source_provider = getattr(self, "_set_reader_source_provider", None)
+        if set_source_provider is not None:
+            set_source_provider(payload.source_provider)
         self._clear_reader_citation_links()
         self.reader_buffer.set_text("")
         self._update_reader_clipboard_button()
@@ -3247,6 +3282,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_header_citation = citation
         self._reader_display_cluster = cluster
         self.reader_header_label.set_text(header)
+        source_label = getattr(self, "reader_source_label", None)
+        if source_label is not None:
+            source_label.set_text("")
+            source_label.set_visible(False)
         if self.reader_clipboard_button is not None:
             has_selected_authority = (
                 self._reader_display_cluster is not None
@@ -3275,6 +3314,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self.reader_save_prior_brief_button.set_sensitive(source_exists)
         self._update_reader_helper_case_button()
         self.reader_header_box.set_visible(bool(header))
+
+    def _set_reader_source_provider(self, provider: str) -> None:
+        label = source_provider_label(provider)
+        self.reader_source_label.set_text(f"Source: {label}")
+        self.reader_source_label.set_visible(bool(self.reader_header_label.get_text().strip()))
 
     def _case_header_text(self, cluster: dict[str, Any]) -> str:
         formatted_citation = format_official_california_citation(cluster)
@@ -6039,6 +6083,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             text_field: imported_text,
             "source_url": source_url,
             "source_type": "user_imported_official_text",
+            "source_provider": cluster["source_provider"],
         }
         display = opinion_display_text(opinion)
         quality = official_pagination_quality(cluster, [display])
@@ -6070,6 +6115,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._case_header_citation(cluster),
             cluster,
         )
+        self._set_reader_source_provider(str(cluster["source_provider"]))
         self._set_reader_text(
             display.text,
             display.page_markers,
@@ -6187,6 +6233,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             cache_generation=cache_generation,
             opinion_ids=(),
             opinion_source="California Courts",
+            source_provider=SOURCE_PROVIDER_CALIFORNIA_COURTS,
             pagination_mode=READER_PAGINATION_SLIP,
             slip_source_url=source_url,
             slip_case_number=case_number,
@@ -7444,7 +7491,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         case_number = slip.case_number or case_number_from_cluster(cluster)
         if not case_number:
             return
-        payload = slip_result_to_payload(slip)
+        payload = {
+            **slip_result_to_payload(slip),
+            "source_provider": SOURCE_PROVIDER_CALIFORNIA_COURTS,
+        }
         if not payload.get("date_filed") and cluster.get("date_filed"):
             payload["date_filed"] = str(cluster.get("date_filed") or "")
         self.client.cache.write_slip_opinion_payload(
@@ -7471,6 +7521,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                     cache_generation=cache_generation,
                     opinion_ids=(),
                     opinion_source="Research Cache",
+                    source_provider=SOURCE_PROVIDER_CALIFORNIA_COURTS,
                     pagination_mode=READER_PAGINATION_SLIP,
                     slip_source_url=cached_slip.source_url,
                     slip_case_number=cached_slip.case_number,
@@ -7506,6 +7557,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                         cache_generation=cache_generation,
                         opinion_ids=(),
                         opinion_source="California Courts",
+                        source_provider=SOURCE_PROVIDER_CALIFORNIA_COURTS,
                         pagination_mode=READER_PAGINATION_SLIP,
                         slip_source_url=slip.source_url,
                         slip_case_number=slip.case_number,
@@ -7544,6 +7596,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                         cache_generation=cache_generation,
                         opinion_ids=(),
                         opinion_source="California Courts",
+                        source_provider=SOURCE_PROVIDER_CALIFORNIA_COURTS,
                         pagination_mode=READER_PAGINATION_SLIP,
                         slip_source_url=slip.source_url,
                         slip_case_number=slip.case_number,
@@ -7557,6 +7610,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 cache_generation=cache_generation,
                 opinion_ids=opinion_ids,
                 opinion_source=opinion_source,
+                source_provider=displayed_case_source_provider(
+                    cluster,
+                    reader_opinions,
+                ),
             )
             GLib.idle_add(self._start_reader_payload_render, payload)
         except (CourtListenerError, ValueError, OSError) as exc:

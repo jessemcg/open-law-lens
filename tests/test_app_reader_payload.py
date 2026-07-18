@@ -41,6 +41,34 @@ from open_law_lens.web_import import ExtractedWebpage
 
 
 class AppReaderPayloadTests(unittest.TestCase):
+    def test_reader_source_provider_uses_dim_header_label(self) -> None:
+        class DummyLabel:
+            def __init__(self, text: str = "") -> None:
+                self.text = text
+                self.visible = False
+
+            def set_text(self, text: str) -> None:
+                self.text = text
+
+            def get_text(self) -> str:
+                return self.text
+
+            def set_visible(self, visible: bool) -> None:
+                self.visible = visible
+
+        window = SimpleNamespace(
+            reader_header_label=DummyLabel("In re Example (2026) 1 Cal.5th 2"),
+            reader_source_label=DummyLabel(),
+        )
+
+        OpenLawLensWindow._set_reader_source_provider(  # type: ignore[arg-type]
+            window,
+            "google_scholar",
+        )
+
+        self.assertEqual(window.reader_source_label.text, "Source: Google Scholar")
+        self.assertTrue(window.reader_source_label.visible)
+
     def test_prior_brief_agent_uses_bundled_library_icon(self) -> None:
         icon_ref = resources.files("open_law_lens").joinpath(
             "icons",
@@ -1704,6 +1732,7 @@ class AppReaderPayloadTests(unittest.TestCase):
             "id": 42,
             "case_name": "Example v. State",
             "citations": [{"volume": "1", "reporter": "Cal.5th", "page": "1"}],
+            "source_provider": "courtlistener",
         }
         first = DisplayText(
             text="[*1] First opinion.",
@@ -1744,6 +1773,7 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(payload.generation, 7)
         self.assertEqual(payload.cluster_id, "42")
         self.assertEqual(payload.opinion_source, "Library")
+        self.assertEqual(payload.source_provider, "courtlistener")
         self.assertEqual(payload.text, f"{first.text}\n\n{second.text}")
         self.assertEqual([marker.page_label for marker in payload.page_markers], ["1", "2"])
         self.assertEqual(payload.page_markers[1].start_offset, len(first.text) + 2)
@@ -2178,6 +2208,7 @@ class AppReaderPayloadTests(unittest.TestCase):
                 self.client = MagicMock()
                 self.reader_buffer = DummyBuffer()
                 self.headers: list[tuple[str, str]] = []
+                self.source_providers: list[str] = []
                 self._research_cache_generation = 1
 
             def _case_load_is_current(self, _generation: int, _cluster_id: str) -> bool:
@@ -2196,6 +2227,9 @@ class AppReaderPayloadTests(unittest.TestCase):
 
             def _clear_reader_citation_links(self) -> None:
                 pass
+
+            def _set_reader_source_provider(self, provider: str) -> None:
+                self.source_providers.append(provider)
 
             def _update_reader_clipboard_button(self) -> None:
                 pass
@@ -2220,6 +2254,7 @@ class AppReaderPayloadTests(unittest.TestCase):
             ],
             generation=1,
             cache_generation=1,
+            source_provider="california_courts",
             pagination_mode="slip",
             slip_source_url="https://www4.courts.ca.gov/opinions/archive/A173218.PDF",
             slip_case_number="A173218",
@@ -2231,6 +2266,7 @@ class AppReaderPayloadTests(unittest.TestCase):
 
         citation = "In re L.G. (Mar. 6, 2026, A173218) ___ Cal.App.5th ___"
         self.assertEqual(window.headers, [(citation, citation)])
+        self.assertEqual(window.source_providers, ["california_courts"])
 
     def test_reader_opinion_hydration_keeps_loaded_research_set_clean(self) -> None:
         class DummyBuffer:

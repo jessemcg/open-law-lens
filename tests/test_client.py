@@ -1443,6 +1443,34 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(client.cached_clusters()[0]["case_name"], "Example v. State")
             self.assertEqual(library.saved_clusters(), [])
 
+    def test_fresh_lookup_tags_courtlistener_clusters(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir) / "cache")
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            client = CourtListenerClient(cache=cache, library=library)
+            response = [
+                {
+                    "status": 200,
+                    "clusters": [{"id": 42, "case_name": "Example v. State"}],
+                }
+            ]
+
+            with patch.object(client, "_request_json", return_value=response):
+                result = client.lookup_citation(
+                    "1 Cal. 2",
+                    populate_research_cache=False,
+                )
+
+            self.assertEqual(
+                result[0]["clusters"][0]["source_provider"],
+                "courtlistener",
+            )
+            self.assertEqual(
+                cache.read_lookup("1 Cal. 2")[0]["clusters"][0]["source_provider"],
+                "courtlistener",
+            )
+
     def test_lookup_can_read_cache_without_populating_research_cache(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = JsonCache(Path(temp_dir))
@@ -1561,7 +1589,16 @@ class ClientTests(unittest.TestCase):
                 "sub_opinions": ["/api/rest/v4/opinions/10/"],
             }
             opinions = client.fetch_cluster_opinions(cluster)
-            self.assertEqual(opinions, [{"id": 10, "plain_text": "Opinion text"}])
+            self.assertEqual(
+                opinions,
+                [
+                    {
+                        "id": 10,
+                        "plain_text": "Opinion text",
+                        "source_provider": "courtlistener",
+                    }
+                ],
+            )
             self.assertEqual(cache.list_case_entries()[0]["opinion_ids"], ["10"])
             self.assertEqual(client.last_opinion_source, "Research Cache")
 
@@ -1632,7 +1669,17 @@ class ClientTests(unittest.TestCase):
 
             opinions = client.fetch_cluster_opinions(cluster, populate_research_cache=False)
 
-            self.assertEqual(opinions, [{"id": 10, "cluster_id": 42, "plain_text": "Opinion text"}])
+            self.assertEqual(
+                opinions,
+                [
+                    {
+                        "id": 10,
+                        "cluster_id": 42,
+                        "plain_text": "Opinion text",
+                        "source_provider": "courtlistener",
+                    }
+                ],
+            )
             self.assertEqual(cache.list_case_entries(), [])
             self.assertEqual(client.last_opinion_source, "Research Cache")
 

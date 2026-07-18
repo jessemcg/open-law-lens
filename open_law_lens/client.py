@@ -45,8 +45,13 @@ from .statutes import (
     parse_statute_citation,
 )
 from .storage import (
+    SOURCE_PROVIDER_CALIFORNIA_COURTS,
+    SOURCE_PROVIDER_COURTLISTENER,
     filter_lookup_result_for_client,
     lookup_result_had_clusters,
+    source_payload_with_default,
+    tagged_lookup_result,
+    tagged_source_payload,
 )
 
 
@@ -679,6 +684,7 @@ class CourtListenerClient:
         result = self._request_json(request)
         if not isinstance(result, list):
             raise CourtListenerError("CourtListener citation lookup returned unexpected JSON.")
+        result = tagged_lookup_result(result, SOURCE_PROVIDER_COURTLISTENER)
         self.cache.write_lookup(normalized, result)
         if populate_research_cache:
             self._cache_lookup_clusters(result)
@@ -967,20 +973,30 @@ class CourtListenerClient:
                 library_opinion = self.library.read_opinion(resource_id)
                 if isinstance(library_opinion, dict):
                     self.last_resource_source = "Library"
-                    return library_opinion
+                    return tagged_source_payload(
+                        library_opinion,
+                        SOURCE_PROVIDER_COURTLISTENER,
+                    )
             if kind == "clusters":
                 library_cluster = self.library.read_cluster(resource_id)
                 if isinstance(library_cluster, dict):
                     self.last_resource_source = "Library"
-                    return library_cluster
+                    return tagged_source_payload(
+                        library_cluster,
+                        SOURCE_PROVIDER_COURTLISTENER,
+                    )
             cached = self.cache.read_resource(kind, resource_id)
             if isinstance(cached, dict):
                 self.last_resource_source = "Research Cache"
-                return cached
+                return tagged_source_payload(
+                    cached,
+                    SOURCE_PROVIDER_COURTLISTENER,
+                )
         request = Request(full_url, headers=self._headers(), method="GET")
         result = self._request_json(request)
         if not isinstance(result, dict):
             raise CourtListenerError(f"CourtListener {kind} endpoint returned unexpected JSON.")
+        result = tagged_source_payload(result, SOURCE_PROVIDER_COURTLISTENER)
         self.cache.write_resource(kind, resource_id, result)
         self.last_resource_source = "CourtListener API"
         return result
@@ -1045,7 +1061,13 @@ class CourtListenerClient:
             refresh=refresh,
             timeout=self.timeout,
         )
-        self.cache.write_slip_opinion_payload(result.case_number, slip_result_to_payload(result))
+        self.cache.write_slip_opinion_payload(
+            result.case_number,
+            tagged_source_payload(
+                slip_result_to_payload(result),
+                SOURCE_PROVIDER_CALIFORNIA_COURTS,
+            ),
+        )
         return result
 
     def fetch_cluster_slip_opinion(
@@ -1254,13 +1276,18 @@ class CourtListenerClient:
         cluster: dict[str, Any],
         opinions: list[dict[str, Any]] | None = None,
     ) -> OfficialPaginationQuality:
-        displays = [opinion_display_text(opinion) for opinion in (opinions or [])]
+        cluster = source_payload_with_default(cluster, SOURCE_PROVIDER_COURTLISTENER)
+        tagged_opinions = [
+            source_payload_with_default(opinion, SOURCE_PROVIDER_COURTLISTENER)
+            for opinion in (opinions or [])
+        ]
+        displays = [opinion_display_text(opinion) for opinion in tagged_opinions]
         quality = official_pagination_quality(cluster, displays)
         if not quality.eligible:
             return quality
         opinion_ids: list[str] = []
         self.library.upsert_cluster(cluster)
-        for opinion in opinions or []:
+        for opinion in tagged_opinions:
             opinion_id = self.library.upsert_opinion(opinion)
             if opinion_id:
                 opinion_ids.append(opinion_id)

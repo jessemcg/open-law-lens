@@ -11,6 +11,7 @@ from .citation_model import (
     official_citation_dict_from_parts,
     official_citation_parts_from_text,
 )
+from .storage import imported_source_provider
 
 
 def normalize_official_citation(text: str) -> str:
@@ -101,6 +102,7 @@ def build_external_import_cluster(
         "citations": citations,
         "source_type": "user_imported_external_case",
         "source_url": source_url.strip(),
+        "source_provider": imported_source_provider(source_url),
     }
 
 

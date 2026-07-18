@@ -194,6 +194,7 @@ class ExternalImportTests(unittest.TestCase):
         self.assertEqual(cluster["date_filed"], "2021")
         self.assertEqual(cluster["official_citation"], "11 Cal.5th 614")
         self.assertEqual(cluster["citations"], [{"volume": "11", "reporter": "Cal.5th", "page": "614"}])
+        self.assertEqual(cluster["source_provider"], "google_scholar")
 
     def test_build_external_import_cluster_replaces_reporter_only_name_from_caption(self) -> None:
         cluster = build_external_import_cluster(
@@ -205,6 +206,7 @@ class ExternalImportTests(unittest.TestCase):
         self.assertEqual(cluster["case_name"], "B.D. v. Superior Court")
         self.assertEqual(cluster["case_name_short"], "B.D. v. Superior Court")
         self.assertEqual(cluster["date_filed"], "2025")
+        self.assertEqual(cluster["source_provider"], "manual_import")
 
     def test_imported_citations_ignore_body_citations(self) -> None:
         citations = imported_citations_from_text(CLAUDIA_TEXT, "115 Cal.App.5th 76")
@@ -228,6 +230,7 @@ class ExternalImportTests(unittest.TestCase):
                 "cluster_id": cluster["id"],
                 "plain_text": CADEN_TEXT,
                 "source_type": "user_imported_official_text",
+                "source_provider": cluster["source_provider"],
             }
             display = opinion_display_text(opinion)
 
@@ -243,6 +246,19 @@ class ExternalImportTests(unittest.TestCase):
             cache.write_resource("opinions", str(opinion["id"]), opinion)
             cache.update_case_opinions(cluster, [str(opinion["id"])])
             cache.write_lookup(official_citation, [{"status": 200, "clusters": [cluster]}])
+
+            self.assertEqual(
+                library.read_cluster(str(cluster["id"]))["source_provider"],
+                "manual_import",
+            )
+            self.assertEqual(
+                library.read_opinion(str(opinion["id"]))["source_provider"],
+                "manual_import",
+            )
+            self.assertEqual(
+                cache.list_case_entries()[0]["source_provider"],
+                "manual_import",
+            )
 
             self.assertEqual(cache.list_case_entries()[0]["title"], "In re Caden C.")
             self.assertEqual(library.read_lookup("11 Cal.5th 614")[0]["clusters"][0]["case_name"], "In re Caden C.")

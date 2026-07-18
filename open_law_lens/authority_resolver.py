@@ -318,6 +318,7 @@ def _extract_case_from_scholar(query: str, *, client: CourtListenerClient) -> Au
             "plain_text": imported_text,
             "source_url": webpage.url,
             "source_type": "user_imported_official_text",
+            "source_provider": cluster["source_provider"],
         }
         display = opinion_display_text(opinion)
         quality = official_pagination_quality(cluster, [display])
