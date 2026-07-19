@@ -194,7 +194,6 @@ class PriorBriefAppTests(unittest.TestCase):
                 workspace / "prompt.txt",
                 workspace,
                 "brief",
-                AppConfig(),
             )
             (workspace / "prior_briefs.sqlite3").write_bytes(b"db")
             with_snapshot = build_agent_launch_env(
@@ -202,7 +201,6 @@ class PriorBriefAppTests(unittest.TestCase):
                 workspace / "prompt.txt",
                 workspace,
                 "brief",
-                AppConfig(),
             )
 
         self.assertNotIn("OPEN_LAW_LENS_PRIOR_BRIEFS_DB", without)

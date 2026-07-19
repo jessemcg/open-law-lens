@@ -8,12 +8,12 @@ from pathlib import Path
 
 from open_law_lens.agent import (
     CaseTextSource,
-    codex_session_log_matches_cwd,
+    pi_session_log_matches_cwd,
     export_selected_authorities,
     export_selected_cases,
-    extract_latest_codex_final_answer_from_jsonl,
+    extract_latest_pi_final_answer_from_jsonl,
     extract_quoted_phrases,
-    find_latest_codex_session_log_for_cwd,
+    find_latest_pi_session_log_for_cwd,
     quote_match_spans,
     resolve_quote_target,
     resolved_agent_quote_spans,
@@ -50,49 +50,47 @@ class DummyClient:
 
 
 class AgentTests(unittest.TestCase):
-    def test_extract_latest_codex_final_answer(self) -> None:
+    def test_extract_latest_pi_final_answer(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "rollout.jsonl"
             _write_jsonl(
                 path,
                 [
                     {
-                        "type": "response_item",
-                        "payload": {
-                            "type": "message",
+                        "type": "message",
+                        "message": {
                             "role": "assistant",
-                            "phase": "commentary",
-                            "content": [{"type": "output_text", "text": "working"}],
+                            "stopReason": "toolUse",
+                            "content": [{"type": "text", "text": "working"}],
                         },
                     },
                     {
-                        "type": "response_item",
-                        "payload": {
-                            "type": "message",
+                        "type": "message",
+                        "message": {
                             "role": "assistant",
-                            "phase": "final_answer",
-                            "content": [{"type": "output_text", "text": "final answer"}],
+                            "stopReason": "stop",
+                            "content": [{"type": "text", "text": "final answer"}],
                         },
                     },
                 ],
             )
-            self.assertEqual(extract_latest_codex_final_answer_from_jsonl(path), "final answer")
+            self.assertEqual(extract_latest_pi_final_answer_from_jsonl(path), "final answer")
 
-    def test_find_latest_codex_session_log_for_cwd(self) -> None:
+    def test_find_latest_pi_session_log_for_cwd(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir) / "sessions"
             workspace = Path(temp_dir) / "workspace"
-            old_log = root / "2026" / "06" / "27" / "rollout-old.jsonl"
-            new_log = root / "2026" / "06" / "27" / "rollout-new.jsonl"
-            other_log = root / "2026" / "06" / "27" / "rollout-other.jsonl"
-            _write_jsonl(old_log, [{"type": "session_meta", "payload": {"cwd": str(workspace)}}])
-            _write_jsonl(new_log, [{"type": "session_meta", "payload": {"cwd": str(workspace)}}])
-            _write_jsonl(other_log, [{"type": "session_meta", "payload": {"cwd": str(Path(temp_dir) / "other")}}])
+            old_log = root / "old.jsonl"
+            new_log = root / "new.jsonl"
+            other_log = root / "other.jsonl"
+            _write_jsonl(old_log, [{"type": "session", "cwd": str(workspace)}])
+            _write_jsonl(new_log, [{"type": "session", "cwd": str(workspace)}])
+            _write_jsonl(other_log, [{"type": "session", "cwd": str(Path(temp_dir) / "other")}])
             os.utime(old_log, (1, 1))
             os.utime(new_log, (3, 3))
             os.utime(other_log, (2, 2))
-            self.assertTrue(codex_session_log_matches_cwd(new_log, workspace))
-            self.assertEqual(find_latest_codex_session_log_for_cwd(root, workspace), new_log)
+            self.assertTrue(pi_session_log_matches_cwd(new_log, workspace))
+            self.assertEqual(find_latest_pi_session_log_for_cwd(root, workspace), new_log)
 
     def test_extract_quoted_phrases_limits_to_two_to_ten_words(self) -> None:
         spans = extract_quoted_phrases(

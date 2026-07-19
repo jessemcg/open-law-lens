@@ -8,3 +8,6 @@ config.json
 cache/
 library/
 prior_briefs/
+.pi/git/
+.pi/npm/
+.pi/sessions/

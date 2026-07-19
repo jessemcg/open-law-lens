@@ -35,9 +35,9 @@ from .agent import (
     CaseTextSource,
     QuoteTarget,
     export_selected_authorities,
-    extract_latest_codex_final_answer_from_jsonl,
+    extract_latest_pi_final_answer_from_jsonl,
     extract_quoted_phrases,
-    find_latest_codex_session_log_for_cwd,
+    find_latest_pi_session_log_for_cwd,
     quote_match_spans,
     resolved_agent_quote_spans,
 )
@@ -81,9 +81,6 @@ from .citation_links import (
 )
 from .citation_model import official_citation_parts_from_cluster
 from .config import (
-    AGENT_PERMISSION_MODE_FULL_ACCESS,
-    AGENT_PERMISSION_MODE_OPTIONS,
-    AGENT_PERMISSION_MODE_SANDBOXED,
     AppConfig,
     BARE_STATUTE_LAW_CODE_OPTIONS,
     DEFAULT_APPEAL_ISSUE_PRESETS,
@@ -96,7 +93,6 @@ from .config import (
     coerce_reader_font_size,
     courtlistener_token,
     load_config,
-    normalize_agent_permission_mode,
     normalize_appeal_issue_labels,
     normalize_appeal_issue_presets,
     normalize_bare_statute_law_code,
@@ -136,6 +132,16 @@ from .library import (
     opinion_display_text,
 )
 from .opinion_formatting import DisplayStyleSpan
+from .pi_runtime import (
+    PiModel,
+    PiRuntimeError,
+    PiSettingsError,
+    available_pi_models,
+    current_project_pi_model,
+    find_pi_executable,
+    find_pi_node_executable,
+    save_project_pi_model,
+)
 from .prior_briefs import PriorBrief, PriorBriefError, PriorBriefLibrary
 from .quality import official_pagination_quality
 from .reader_highlights import (
@@ -190,8 +196,7 @@ from .web_import import ExtractedWebpage, extract_webpage_text
 
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-AGENT_WRAPPER = PROJECT_DIR / "scripts" / "open-law-lens-codex-agent-vte.sh"
-DEFAULT_CODEX_BIN = "codex"
+AGENT_WRAPPER = PROJECT_DIR / "scripts" / "open-law-lens-agent-vte.sh"
 READER_BG = "#ffffff"
 READER_FG = "#000000"
 READER_MUTED_FG = "#4d5866"
@@ -206,7 +211,6 @@ AGENT_MODE_GENERAL = "general"
 AGENT_MODE_CASE = "case"
 AGENT_MODE_BRIEF = "brief"
 AGENT_MODE_APPEAL = "appeal"
-CODEX_REASONING_EFFORT_XHIGH = "xhigh"
 AGENT_MODE_ICONS = {
     AGENT_MODE_GENERAL: "license-symbolic",
     AGENT_MODE_CASE: "file-cabinet-symbolic",
@@ -249,9 +253,6 @@ AGENT_MARKDOWN_HEADING_SCALES = {
     2: 1.3,
     3: 1.15,
 }
-CODEX_SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
-
-
 def appeal_issue_menu_label(issue: str, label: str = "", max_length: int = 72) -> str:
     source = label.strip() or issue
     for raw_line in source.splitlines():
@@ -264,36 +265,25 @@ def appeal_issue_menu_label(issue: str, label: str = "", max_length: int = 72) -
     return "Untitled argument"
 
 
-def xhigh_reasoning_effort(enabled: bool) -> str:
-    return CODEX_REASONING_EFFORT_XHIGH if enabled else ""
-
-
 def build_agent_launch_env(
     client: CourtListenerClient,
     prompt_path: Path,
     workspace: Path,
     mode: str,
-    config: AppConfig,
-    reasoning_effort: str = "",
 ) -> dict[str, str]:
-    permission_mode = normalize_agent_permission_mode(config.agent_permission_mode)
-    sandbox_mode = "workspace-write"
-    approval_policy = ""
-    if permission_mode == AGENT_PERMISSION_MODE_FULL_ACCESS:
-        sandbox_mode = "danger-full-access"
-        approval_policy = "never"
-
+    pi_executable = find_pi_executable()
     env = {
         "OPEN_LAW_LENS_AGENT_PROMPT_FILE": str(prompt_path),
         "OPEN_LAW_LENS_AGENT_WORKSPACE": str(workspace),
         "OPEN_LAW_LENS_AGENT_MODE": mode,
         "OPEN_LAW_LENS_CACHE_DIR": str(workspace / "research-cache"),
-        "OPEN_LAW_LENS_CODEX_SANDBOX": sandbox_mode,
-        "OPEN_LAW_LENS_CODEX_APPROVAL": approval_policy,
-        "CODEX_BIN": os.environ.get("OPEN_LAW_LENS_CODEX_BIN", DEFAULT_CODEX_BIN),
+        "OPEN_LAW_LENS_PROJECT_DIR": str(PROJECT_DIR),
+        "OPEN_LAW_LENS_PI_BIN": pi_executable,
+        "PI_CODING_AGENT_SESSION_DIR": str(workspace / "pi-sessions"),
     }
-    if reasoning_effort == CODEX_REASONING_EFFORT_XHIGH:
-        env["OPEN_LAW_LENS_CODEX_REASONING_EFFORT"] = reasoning_effort
+    pi_node = find_pi_node_executable(pi_executable)
+    if pi_node:
+        env["OPEN_LAW_LENS_PI_NODE_BIN"] = pi_node
     library = getattr(client, "library", None)
     library_path = getattr(library, "path", None)
     if library_path is not None:
@@ -685,6 +675,18 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.set_modal(False)
         self._settings_page_keys: dict[Gtk.ListBoxRow, str] = {}
         self._settings_stack: Gtk.Stack | None = None
+        self._pi_model_options: list[PiModel | None] = []
+        self._pi_model_generation = 0
+        self._pi_model_applying = False
+        self._pi_model_selection_changed = False
+        self._pi_model_closed = False
+        try:
+            self._original_pi_model_key = current_project_pi_model()
+            self._pi_model_settings_error = ""
+        except PiSettingsError as exc:
+            self._original_pi_model_key = None
+            self._pi_model_settings_error = str(exc)
+        self.connect("close-request", self._on_settings_close_request)
 
         toolbar_view = Adw.ToolbarView()
         header = Adw.HeaderBar()
@@ -710,6 +712,33 @@ class SettingsWindow(Adw.ApplicationWindow):
         config = load_config()
         self.token_row.set_text(config.courtlistener_token)
         self.general_settings_expander.add_row(self.token_row)
+
+        self.pi_model_row = Adw.ComboRow(
+            title="Pi Model",
+            subtitle=(
+                self._pi_model_settings_error
+                or "Loading models authorized in Pi..."
+            ),
+        )
+        self.pi_model_row.set_model(Gtk.StringList.new(["Loading Pi models..."]))
+        self.pi_model_row.set_sensitive(False)
+        self.pi_model_row.connect(
+            "notify::selected",
+            self._on_pi_model_selected,
+        )
+        self.pi_model_refresh_button = Gtk.Button(
+            icon_name="view-refresh-symbolic",
+        )
+        self.pi_model_refresh_button.add_css_class("flat")
+        self.pi_model_refresh_button.set_tooltip_text("Refresh available Pi models")
+        self.pi_model_refresh_button.connect(
+            "clicked",
+            self._on_refresh_pi_models,
+        )
+        add_model_suffix = getattr(self.pi_model_row, "add_suffix", None)
+        if callable(add_model_suffix):
+            add_model_suffix(self.pi_model_refresh_button)
+        self.general_settings_expander.add_row(self.pi_model_row)
 
         reader_font_adjustment = Gtk.Adjustment(
             value=config.reader_font_size_pt,
@@ -758,26 +787,6 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.concordance_row.set_text(config.concordance_file_path)
         self._add_concordance_row_buttons()
         self.general_settings_expander.add_row(self.concordance_row)
-
-        self.agent_permission_mode_values = [
-            mode for mode, _label in AGENT_PERMISSION_MODE_OPTIONS
-        ]
-        agent_permission_mode_labels = [label for _mode, label in AGENT_PERMISSION_MODE_OPTIONS]
-        self.agent_permission_mode_row = Adw.ComboRow(
-            title="Embedded Codex Permissions",
-            subtitle=(
-                "Full access lets Codex use normal user paths without sandbox approval prompts."
-            ),
-        )
-        self.agent_permission_mode_row.set_model(Gtk.StringList.new(agent_permission_mode_labels))
-        try:
-            selected_agent_permission_mode_index = self.agent_permission_mode_values.index(
-                config.agent_permission_mode
-            )
-        except ValueError:
-            selected_agent_permission_mode_index = 0
-        self.agent_permission_mode_row.set_selected(selected_agent_permission_mode_index)
-        self.general_settings_expander.add_row(self.agent_permission_mode_row)
 
         root.append(general_settings_group)
 
@@ -869,52 +878,42 @@ class SettingsWindow(Adw.ApplicationWindow):
         (
             general_prompt_page,
             self.general_agent_prompt_buffer,
-            self.general_agent_xhigh_switch,
         ) = self._build_prompt_settings_page(
             "General California Law Prompt",
             "Prompt",
             config.general_agent_prompt_template,
-            config.general_agent_xhigh_reasoning,
         )
         (
             case_prompt_page,
             self.case_agent_prompt_buffer,
-            self.case_agent_xhigh_switch,
         ) = self._build_prompt_settings_page(
             "Marked Research Cache Authorities Prompt",
             "Prompt",
             config.case_agent_prompt_template,
-            config.case_agent_xhigh_reasoning,
         )
         (
             brief_prompt_page,
             self.brief_agent_prompt_buffer,
-            self.brief_agent_xhigh_switch,
         ) = self._build_prompt_settings_page(
             "Prior Brief Agent Prompt",
             "Prompt",
             config.brief_agent_prompt_template,
-            config.brief_agent_xhigh_reasoning,
         )
         (
             appeal_prompt_page,
             self.appeal_issue_agent_prompt_buffer,
-            self.appeal_issue_xhigh_switch,
         ) = self._build_prompt_settings_page(
             "Appeal Issue Assessment Prompt",
             "Prompt",
             config.appeal_issue_agent_prompt_template,
-            config.appeal_issue_xhigh_reasoning,
         )
         (
             later_treatment_prompt_page,
             self.later_treatment_agent_prompt_buffer,
-            self.later_treatment_xhigh_switch,
         ) = self._build_prompt_settings_page(
             "Subsequent Treatment Prompt",
             "Prompt",
             config.later_treatment_agent_prompt_template,
-            config.later_treatment_xhigh_reasoning,
         )
 
         pages = [
@@ -969,14 +968,14 @@ class SettingsWindow(Adw.ApplicationWindow):
 
         toolbar_view.set_content(root)
         self.set_content(toolbar_view)
+        self._load_pi_models()
 
     def _build_prompt_settings_page(
         self,
         title: str,
         label: str,
         text: str,
-        xhigh_active: bool,
-    ) -> tuple[Gtk.ScrolledWindow, Gtk.TextBuffer, Gtk.Switch]:
+    ) -> tuple[Gtk.ScrolledWindow, Gtk.TextBuffer]:
         page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         page_box.set_margin_top(12)
         page_box.set_margin_bottom(12)
@@ -995,15 +994,6 @@ class SettingsWindow(Adw.ApplicationWindow):
         prompt_box.set_margin_bottom(8)
         prompt_box.set_margin_start(8)
         prompt_box.set_margin_end(8)
-        reasoning_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        reasoning_label = Gtk.Label(label="Use xhigh reasoning", xalign=0)
-        reasoning_label.set_hexpand(True)
-        reasoning_row.append(reasoning_label)
-        reasoning_switch = Gtk.Switch()
-        reasoning_switch.set_valign(Gtk.Align.CENTER)
-        reasoning_switch.set_active(bool(xhigh_active))
-        reasoning_row.append(reasoning_switch)
-        prompt_box.append(reasoning_row)
         prompt_label = Gtk.Label(label=label, xalign=0)
         prompt_label.add_css_class("dim-label")
         prompt_box.append(prompt_label)
@@ -1016,7 +1006,164 @@ class SettingsWindow(Adw.ApplicationWindow):
         scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         scrolled.set_vexpand(True)
         scrolled.set_child(page_box)
-        return scrolled, buffer, reasoning_switch
+        return scrolled, buffer
+
+    def _on_settings_close_request(self, *_args: object) -> bool:
+        self._pi_model_closed = True
+        self._pi_model_generation += 1
+        return False
+
+    def _selected_pi_model(self) -> PiModel | None:
+        selected = int(self.pi_model_row.get_selected())
+        if 0 <= selected < len(self._pi_model_options):
+            return self._pi_model_options[selected]
+        return None
+
+    def _update_pi_model_subtitle(self) -> None:
+        model = self._selected_pi_model()
+        if model is None:
+            return
+        self.pi_model_row.set_subtitle(
+            f"Project-wide setting: {model.provider} / {model.model_id}"
+        )
+
+    def _on_pi_model_selected(
+        self,
+        _row: Adw.ComboRow,
+        _parameter: object,
+    ) -> None:
+        if self._pi_model_applying:
+            return
+        model = self._selected_pi_model()
+        if model is None:
+            return
+        self._pi_model_selection_changed = (
+            model.settings_key != self._original_pi_model_key
+        )
+        self._update_pi_model_subtitle()
+
+    def _on_refresh_pi_models(self, _button: Gtk.Button) -> None:
+        self._load_pi_models()
+
+    def _load_pi_models(self) -> None:
+        if self._pi_model_closed:
+            return
+        if self._pi_model_settings_error:
+            try:
+                self._original_pi_model_key = current_project_pi_model()
+                self._pi_model_settings_error = ""
+            except PiSettingsError as exc:
+                self.pi_model_row.set_subtitle(str(exc))
+                self.pi_model_row.set_sensitive(False)
+                self.pi_model_refresh_button.set_sensitive(True)
+                return
+        selected = self._selected_pi_model()
+        desired_key = (
+            selected.settings_key
+            if self._pi_model_selection_changed and selected is not None
+            else self._original_pi_model_key
+        )
+        self._pi_model_generation += 1
+        generation = self._pi_model_generation
+        self.pi_model_row.set_sensitive(False)
+        self.pi_model_row.set_subtitle("Loading models authorized in Pi...")
+        self.pi_model_refresh_button.set_sensitive(False)
+
+        def worker() -> None:
+            try:
+                models = available_pi_models()
+                error = ""
+            except PiRuntimeError as exc:
+                models = []
+                error = str(exc)
+            GLib.idle_add(
+                self._finish_pi_model_load,
+                generation,
+                models,
+                error,
+                desired_key,
+            )
+
+        threading.Thread(
+            target=worker,
+            name="open-law-lens-pi-models",
+            daemon=True,
+        ).start()
+
+    def _finish_pi_model_load(
+        self,
+        generation: int,
+        models: list[PiModel],
+        error: str,
+        desired_key: tuple[str, str] | None,
+    ) -> bool:
+        if self._pi_model_closed or generation != self._pi_model_generation:
+            return False
+        self.pi_model_refresh_button.set_sensitive(True)
+        if error:
+            current = self._original_pi_model_key
+            if current is None:
+                self._pi_model_options = [None]
+                labels = ["Pi models unavailable"]
+            else:
+                current_model = PiModel(
+                    provider=current[0],
+                    model_id=current[1],
+                    name=current[1],
+                )
+                self._pi_model_options = [current_model]
+                labels = [f"{current_model.label} (currently configured)"]
+            self._pi_model_applying = True
+            self.pi_model_row.set_model(Gtk.StringList.new(labels))
+            self.pi_model_row.set_selected(0)
+            self._pi_model_applying = False
+            self.pi_model_row.set_sensitive(False)
+            self.pi_model_row.set_subtitle(error)
+            return False
+
+        available_keys = {model.settings_key for model in models}
+        options: list[PiModel | None] = []
+        labels: list[str] = []
+        current = self._original_pi_model_key
+        if current is not None and current not in available_keys:
+            unavailable = PiModel(
+                provider=current[0],
+                model_id=current[1],
+                name=current[1],
+            )
+            options.append(unavailable)
+            labels.append(f"{unavailable.label} (currently configured; unavailable)")
+        options.extend(models)
+        labels.extend(model.label for model in models)
+        if not options:
+            options = [None]
+            labels = ["No authenticated Pi models found"]
+
+        selected_index = 0
+        if desired_key is not None:
+            for index, model in enumerate(options):
+                if model is not None and model.settings_key == desired_key:
+                    selected_index = index
+                    break
+        self._pi_model_options = options
+        self._pi_model_applying = True
+        self.pi_model_row.set_model(Gtk.StringList.new(labels))
+        self.pi_model_row.set_selected(selected_index)
+        self._pi_model_applying = False
+        selected_model = self._selected_pi_model()
+        self._pi_model_selection_changed = bool(
+            self._original_pi_model_key is not None
+            and selected_model is not None
+            and selected_model.settings_key != self._original_pi_model_key
+        )
+        self.pi_model_row.set_sensitive(bool(models))
+        if selected_model is None:
+            self.pi_model_row.set_subtitle(
+                "Authorize a provider in Pi, then refresh this list."
+            )
+        else:
+            self._update_pi_model_subtitle()
+        return False
 
     def _on_settings_page_row_selected(
         self,
@@ -1225,57 +1372,68 @@ class SettingsWindow(Adw.ApplicationWindow):
             bare_statute_law_code = self.bare_statute_law_code_values[selected_bare_statute_index]
         else:
             bare_statute_law_code = load_config().default_bare_statute_law_code
-        selected_agent_permission_mode_index = int(self.agent_permission_mode_row.get_selected())
-        if 0 <= selected_agent_permission_mode_index < len(self.agent_permission_mode_values):
-            agent_permission_mode = self.agent_permission_mode_values[
-                selected_agent_permission_mode_index
-            ]
-        else:
-            agent_permission_mode = AGENT_PERMISSION_MODE_SANDBOXED
         appeal_issue_presets, appeal_issue_labels = self._appeal_issue_data()
-        save_config(
-            AppConfig(
-                courtlistener_token=token,
-                concordance_file_path=concordance_path,
-                general_agent_prompt_template=(
-                    self._prompt_text(self.general_agent_prompt_buffer).strip()
-                    or DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE
-                ),
-                case_agent_prompt_template=(
-                    self._prompt_text(self.case_agent_prompt_buffer).strip()
-                    or DEFAULT_CASE_AGENT_PROMPT_TEMPLATE
-                ),
-                brief_agent_prompt_template=(
-                    self._prompt_text(self.brief_agent_prompt_buffer).strip()
-                    or DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE
-                ),
-                appeal_issue_agent_prompt_template=(
-                    self._prompt_text(self.appeal_issue_agent_prompt_buffer).strip()
-                    or DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
-                ),
-                later_treatment_agent_prompt_template=(
-                    self._prompt_text(self.later_treatment_agent_prompt_buffer).strip()
-                    or DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE
-                ),
-                general_agent_xhigh_reasoning=bool(self.general_agent_xhigh_switch.get_active()),
-                case_agent_xhigh_reasoning=bool(self.case_agent_xhigh_switch.get_active()),
-                brief_agent_xhigh_reasoning=bool(self.brief_agent_xhigh_switch.get_active()),
-                appeal_issue_xhigh_reasoning=bool(self.appeal_issue_xhigh_switch.get_active()),
-                later_treatment_xhigh_reasoning=bool(self.later_treatment_xhigh_switch.get_active()),
-                appeal_issue_presets=appeal_issue_presets,
-                appeal_issue_labels=appeal_issue_labels,
-                reader_font_size_pt=coerce_reader_font_size(
-                    int(round(self.reader_font_size_row.get_value()))
-                ),
-                reader_font_family=normalize_reader_font_family(reader_font_family),
-                default_bare_statute_law_code=normalize_bare_statute_law_code(
-                    bare_statute_law_code
-                ),
-                agent_permission_mode=normalize_agent_permission_mode(agent_permission_mode),
-            )
+        config = AppConfig(
+            courtlistener_token=token,
+            concordance_file_path=concordance_path,
+            general_agent_prompt_template=(
+                self._prompt_text(self.general_agent_prompt_buffer).strip()
+                or DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE
+            ),
+            case_agent_prompt_template=(
+                self._prompt_text(self.case_agent_prompt_buffer).strip()
+                or DEFAULT_CASE_AGENT_PROMPT_TEMPLATE
+            ),
+            brief_agent_prompt_template=(
+                self._prompt_text(self.brief_agent_prompt_buffer).strip()
+                or DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE
+            ),
+            appeal_issue_agent_prompt_template=(
+                self._prompt_text(self.appeal_issue_agent_prompt_buffer).strip()
+                or DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
+            ),
+            later_treatment_agent_prompt_template=(
+                self._prompt_text(self.later_treatment_agent_prompt_buffer).strip()
+                or DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE
+            ),
+            appeal_issue_presets=appeal_issue_presets,
+            appeal_issue_labels=appeal_issue_labels,
+            reader_font_size_pt=coerce_reader_font_size(
+                int(round(self.reader_font_size_row.get_value()))
+            ),
+            reader_font_family=normalize_reader_font_family(reader_font_family),
+            default_bare_statute_law_code=normalize_bare_statute_law_code(
+                bare_statute_law_code
+            ),
         )
+        selected_model = self._selected_pi_model()
+        pi_model_saved = False
+        if self._pi_model_selection_changed and selected_model is not None:
+            try:
+                save_project_pi_model(selected_model)
+                pi_model_saved = True
+            except PiSettingsError as exc:
+                self.status_label.set_text(f"Unable to save Pi model: {exc}")
+                return
+        try:
+            save_config(config)
+        except OSError as exc:
+            if pi_model_saved:
+                self.status_label.set_text(
+                    f"Pi model saved, but app settings could not be saved: {exc}"
+                )
+            else:
+                self.status_label.set_text(f"Unable to save settings: {exc}")
+            return
+        if pi_model_saved and selected_model is not None:
+            self._original_pi_model_key = selected_model.settings_key
+            self._pi_model_selection_changed = False
         self.parent_window.reload_settings()
-        self.status_label.set_text("Settings saved.")
+        self.status_label.set_text(
+            "Settings saved. The Pi model applies to new agent sessions."
+            if pi_model_saved
+            else "Settings saved."
+        )
 
     def _add_concordance_row_buttons(self) -> None:
         add_suffix = getattr(self.concordance_row, "add_suffix", None)
@@ -1357,6 +1515,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_mode_buttons: dict[str, Gtk.ToggleButton] = {}
         self._agent_mode_toggle_guard = False
         self._agent_active = False
+        self._agent_failure_visible = False
         self._agent_output_collapsed = False
         self._agent_workspace_path: Path | None = None
         self._agent_session_log_path: Path | None = None
@@ -2596,7 +2755,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
         if Vte is None:
             missing = Gtk.Label(
-                label="Install GTK4 VTE packages to use the embedded Codex terminal.",
+                label="Install GTK4 VTE packages to use the embedded Pi terminal.",
                 xalign=0,
             )
             missing.add_css_class("dim-label")
@@ -3519,7 +3678,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             or getattr(self, "_selected_cluster", None)
         )
         if cluster is None:
-            self._set_status("Select a case before asking Codex for a helper case.")
+            self._set_status("Select a case before asking Pi for a helper case.")
             return
         cluster_id = cluster_id_from_cluster(cluster)
         if not cluster_id:
@@ -3560,12 +3719,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_agent_mode(AGENT_MODE_GENERAL)
         self._case_agent_text_sources = []
         self._agent_mode = AGENT_MODE_GENERAL
-        config = load_config()
         self._launch_agent_with_prompt(
             prompt_path,
             workspace,
             AGENT_MODE_GENERAL,
-            xhigh_reasoning_effort(config.later_treatment_xhigh_reasoning),
         )
 
     def _compose_later_treatment_agent_prompt(
@@ -4292,6 +4449,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._update_agent_panel_height()
         has_agent_output = (
             self._agent_active
+            or self._agent_failure_visible
             or bool(self._agent_last_answer_text)
             or self._agent_search_output_visible
         )
@@ -7908,12 +8066,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _finish_appeal_issue_prepare(self, prompt_path: Path, workspace: Path) -> bool:
         self._case_agent_text_sources = []
         self._agent_mode = AGENT_MODE_APPEAL
-        config = load_config()
         self._launch_agent_with_prompt(
             prompt_path,
             workspace,
             AGENT_MODE_APPEAL,
-            xhigh_reasoning_effort(config.appeal_issue_xhigh_reasoning),
         )
         return False
 
@@ -8077,7 +8233,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     ) -> bool:
         self._case_agent_text_sources = text_sources
         self._agent_mode = AGENT_MODE_BRIEF
-        config = load_config()
         if current_case_included:
             status = "Started Brief Agent with current-case SOCF."
         elif current_case_warning:
@@ -8088,7 +8243,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             prompt_path,
             workspace,
             AGENT_MODE_BRIEF,
-            xhigh_reasoning_effort(config.brief_agent_xhigh_reasoning),
             success_status=status,
         )
         return False
@@ -8139,7 +8293,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     ) -> bool:
         self._case_agent_text_sources = []
         self._agent_mode = AGENT_MODE_GENERAL
-        config = load_config()
         if current_case_included:
             success_status = "Started Law Agent with current-case SOCF."
         elif current_case_warning:
@@ -8152,7 +8305,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             prompt_path,
             workspace,
             AGENT_MODE_GENERAL,
-            xhigh_reasoning_effort(config.general_agent_xhigh_reasoning),
             success_status=success_status,
         )
         return False
@@ -8255,12 +8407,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     ) -> bool:
         self._case_agent_text_sources = text_sources
         self._agent_mode = AGENT_MODE_CASE
-        config = load_config()
         self._launch_agent_with_prompt(
             prompt_path,
             workspace,
             AGENT_MODE_CASE,
-            xhigh_reasoning_effort(config.case_agent_xhigh_reasoning),
             success_status=(
                 "Started Cache Agent with current-case SOCF."
                 if current_case_included
@@ -8278,17 +8428,16 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         prompt_path: Path,
         workspace: Path,
         mode: str,
-        reasoning_effort: str = "",
-        success_status: str = "Started embedded Codex agent.",
+        success_status: str = "Started embedded Pi agent.",
     ) -> None:
         self._stop_agent()
         self._stop_agent_answer_polling()
         self._clear_agent_answer()
+        self._agent_failure_visible = False
         self._agent_output_collapsed = False
         if not AGENT_WRAPPER.is_file():
             self._set_status(f"Agent wrapper not found: {AGENT_WRAPPER}")
             return
-        config = load_config()
         env = os.environ.copy()
         env.update(
             build_agent_launch_env(
@@ -8296,15 +8445,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 prompt_path,
                 workspace,
                 mode,
-                config,
-                reasoning_effort,
             )
         )
-        profile = os.environ.get("OPEN_LAW_LENS_CODEX_PROFILE", "").strip()
-        if profile:
-            env["CODEX_PROFILE"] = profile
-        else:
-            env.pop("CODEX_PROFILE", None)
         argv = ["bash", str(AGENT_WRAPPER)]
         try:
             self._agent_terminal.reset(True, True)
@@ -8342,16 +8484,38 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     ) -> None:
         if error is not None:
             self._agent_pid = None
+            self._agent_active = False
+            self._agent_failure_visible = True
+            self._stop_agent_answer_polling()
+            self._set_agent_subview(AGENT_SUBVIEW_SESSION)
             self._set_status(f"Unable to start embedded agent: {error.message}")
             return
         self._agent_pid = int(pid)
 
-    def _on_agent_exited(self, _terminal: Any, _status: int) -> None:
+    def _on_agent_exited(self, _terminal: Any, status: int) -> None:
         self._agent_pid = None
         self._agent_active = False
         self._poll_agent_answer()
-        self._sync_agent_subviews()
-        self._set_status("Embedded agent session ended.")
+        try:
+            exit_code = os.waitstatus_to_exitcode(status)
+        except ValueError:
+            exit_code = None
+        if exit_code == 0:
+            self._agent_failure_visible = False
+            self._sync_agent_subviews()
+            self._set_status("Embedded agent session ended.")
+            return
+        self._agent_failure_visible = True
+        self._set_agent_subview(AGENT_SUBVIEW_SESSION)
+        if exit_code is None:
+            detail = f"status {status}"
+        elif exit_code < 0:
+            detail = f"signal {-exit_code}"
+        else:
+            detail = f"exit code {exit_code}"
+        self._set_status(
+            f"Embedded agent failed with {detail}. Review the Session output."
+        )
 
     def _clear_agent_answer(self) -> None:
         self._agent_last_answer_text = ""
@@ -8392,13 +8556,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._agent_answer_poll_id = None
             return False
         if self._agent_session_log_path is None:
-            self._agent_session_log_path = find_latest_codex_session_log_for_cwd(
-                CODEX_SESSIONS_ROOT,
+            self._agent_session_log_path = find_latest_pi_session_log_for_cwd(
+                workspace / "pi-sessions",
                 workspace,
             )
         if self._agent_session_log_path is not None:
             answer = strip_agent_legal_authority_backticks(
-                extract_latest_codex_final_answer_from_jsonl(self._agent_session_log_path)
+                extract_latest_pi_final_answer_from_jsonl(self._agent_session_log_path)
             )
             if answer and answer != self._agent_last_answer_text:
                 self._agent_last_answer_text = answer

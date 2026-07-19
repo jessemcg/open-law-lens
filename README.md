@@ -8,7 +8,7 @@ law, with first-class workflows for California cases, California statutes, and
 the California Rules of Court. The scope may expand in the future. It is built
 around CourtListener, local caching, an inspectable SQLite library, a
 GTK/Libadwaita reader, and terminal-friendly CLI commands that can be used
-directly by people or by Codex.
+directly by people or by Pi.
 
 The goal is to make legal authority easier to inspect, reuse, and
 research without depending on large commercial platforms. Court opinions,
@@ -60,7 +60,7 @@ Or save it in the app menu under Settings. The Settings path writes a local
 - Reader links for cited cases, statutes, and rules.
 - Named Research Cache sets.
 - Selected-text launcher through `open-law-lens open-selected`.
-- Optional embedded Codex workflow for legal research questions, selected-cache
+- Embedded Pi-only Agent workflow for legal research questions, selected-cache
   questions, and appellate issue assessment.
 - Appeal issue assessment from a current-case SOCF or another ODT/PDF fact
   pattern, with configurable issue presets and custom claims.
@@ -70,8 +70,7 @@ Or save it in the app menu under Settings. The Settings path writes a local
 - Python 3.13+
 - `uv`
 - GTK 4, Libadwaita, and PyGObject system packages
-- Optional: GTK VTE packages for the embedded Codex terminal
-- Optional: Codex CLI for agent queries and appeal issue assessment
+- Required for Agent features: GTK VTE packages and the Pi coding agent
 - Optional: `pdftotext` for extracting appeal fact patterns and California
   slip-opinion PDFs
 
@@ -87,6 +86,36 @@ Install or sync the Python environment with:
 ```bash
 uv sync
 ```
+
+### Install and Authorize Pi
+
+Open Law Lens uses only the
+[Pi coding agent](https://pi.dev/docs/latest) for its Agent features. Follow
+Pi's official documentation at that link to install it. Open Law Lens does not
+invoke the Codex CLI or provide another coding-agent backend.
+
+Before running an Agent query in Open Law Lens, start Pi in a separate terminal
+session and authorize each model provider you want to use. For subscription
+providers, run `/login` inside Pi and follow its prompts. Pi also supports API
+key providers as described in its documentation. Complete this authorization
+in Pi itself; do not enter model-provider credentials into Open Law Lens.
+
+Pi stores persistent model authorization in its user-level configuration,
+including `~/.pi/agent/auth.json`. The embedded VTE terminal runs Pi as the same
+user, so its Pi session inherits those authorizations. Open Law Lens does not
+copy model credentials into the project or its temporary Agent workspaces.
+
+The embedded Agent defaults to `openai-codex/gpt-5.6-sol`, which is a model
+provider and model selected through Pi; it does not mean that Open Law Lens
+uses the Codex coding agent. The pinned `pi-web-search` 1.3.1 extension is
+bundled in this repository, so users do not need to install it separately. The
+launcher also uses the Node runtime installed alongside Pi instead of the
+desktop session's system Node.
+
+The Settings window lists the models currently authorized in Pi and saves the
+selected project-wide default to `.pi/settings.json`. The selection is shared
+with the project and applies to newly launched agent sessions. Pi credentials
+remain in the user's home Pi configuration.
 
 ## Run the App
 
@@ -155,13 +184,12 @@ uv run open-law-lens prune-library
 
 ## Agent Queries
 
-General legal research questions require the Codex CLI app. Open Law Lens
-launches Codex in an embedded terminal, gives it a focused legal-research
-prompt, and directs it to use Open Law Lens CLI commands for
-CourtListener-backed research. Codex can be configured to use different model
-providers, including open models served through third-party inference providers
-such as Fireworks AI, so the agentic workflow is not limited to a single model
-vendor.
+Open Law Lens uses only the Pi coding agent for Agent queries. It launches Pi in
+an embedded terminal and directs it to use the project-local legal-researcher
+skill and Open Law Lens CLI commands for CourtListener-backed research.
+Project-local `.pi/settings.json` selects `openai-codex/gpt-5.6-sol` by
+default, while authorization comes from the user's existing Pi configuration
+as described above.
 
 This agent workflow does not rely on the CourtListener MCP server. That is an
 intentional design choice. The CLI path keeps the app more responsive, easier to
@@ -171,24 +199,30 @@ authority lookup to CourtListener APIs and the app's local cache/library model.
 There are three main agent workflows:
 
 - Law: ask a California legal research question. The default prompt directs
-  Codex to search and extract authority through Open Law Lens CLI commands. If
+  Pi to search and extract authority through Open Law Lens CLI commands. If
   the pinned current-case SOCF is checked, the app also exports it as factual
   context for that question.
 - Cache: ask about authorities marked in the current Research Cache. The app
   exports the selected authorities into a temporary workspace. The pinned
-  current-case SOCF is added only when its checkmark is active. Codex treats the
+  current-case SOCF is added only when its checkmark is active. Pi treats the
   marked authorities as legal authority and the SOCF as factual context,
   allowing comparisons such as which marked case is most analogous to the
   current case. A checked SOCF can also be used by itself for a factual Cache
   question.
 - Appeal Issue Assessment: assess a proposed appellate claim against an ODT or
   PDF fact pattern. The app extracts the fact pattern into a temporary
-  workspace, launches Codex in Appeal mode, and directs it to research
+  workspace, launches Pi in Appeal mode, and directs it to research
   California law through Open Law Lens CLI commands.
 
-Agent runtime settings, including prompt templates, appeal issue presets, the
-fact-pattern source, prompt-level xhigh reasoning toggles, and Codex permission
-mode, are available in the app Settings window.
+Agent runtime settings, including the project-wide Pi model, prompt templates,
+appeal issue presets, and fact-pattern source, are available in the app
+Settings window.
+
+Law, Helper Case, Subsequent Treatment, and Appeal runs explicitly load the
+legal-researcher skill and the bundled `pi-web-search` extension. The web tool
+is only a fallback for verifying missing or suspect official reporter
+citations or official opinion text. Research Cache and Prior Brief runs disable
+skills and extensions and remain closed-corpus workflows.
 
 The pinned Current Case row is separate from Research Set contents and cannot
 be removed by clearing the Research Cache. Clicking it displays the same
@@ -211,8 +245,8 @@ ODT or PDF. ODT files are read directly; PDF extraction uses the system
 `pdftotext` command.
 
 When an assessment starts, the app copies the source fact pattern into a
-temporary agent workspace, writes an extracted text file, and launches Codex in
-the embedded terminal. The default assessment prompt asks Codex to analyze
+temporary agent workspace, writes an extracted text file, and launches Pi in
+the embedded terminal. The default assessment prompt asks Pi to analyze
 preservation, standard of review, factual support, governing law, prejudice,
 likely respondent arguments, and missing record facts. It also requires a final
 rating line:
@@ -221,13 +255,12 @@ rating line:
 Rating: Strong, Medium, Weak, or Frivolous
 ```
 
-The workflow is intentionally research-oriented. Codex is directed to use
+The workflow is intentionally research-oriented. Pi is directed to use
 Open Law Lens CLI commands such as `case-search`, `extract-case`,
 `extract-statute`, and `extract-rule` before relying on authority.
 
-Each editable agent prompt has a `Use xhigh reasoning` switch in Settings. When
-enabled for that prompt, the embedded Codex launch adds
-`model_reasoning_effort="xhigh"` for that run only.
+Open Law Lens does not override Pi's thinking level per prompt. Pi's normal
+project or global default applies to every agent workflow.
 
 ## Library and Cache
 
@@ -284,7 +317,7 @@ routes you back to manual review, depending on the lookup path.
 ## Project Layout
 
 - `open_law_lens/app.py`: GTK/Libadwaita app, reader, Research Cache, settings,
-  and embedded Codex workflow.
+  and embedded Pi workflow.
 - `open_law_lens/cli.py`: `open-law-lens` command dispatcher.
 - `open_law_lens/client.py`: CourtListener API access and opinion extraction.
 - `open_law_lens/cache.py`: disposable JSON cache layout and citation
@@ -292,11 +325,17 @@ routes you back to manual review, depending on the lookup path.
 - `open_law_lens/library.py`: durable SQLite library, display text, page
   markers, and Research Cache sets.
 - `open_law_lens/config.py`: local settings, including the CourtListener token.
+- `open_law_lens/pi_runtime.py`: Pi runtime discovery, authenticated model
+  listing, and project model settings.
 - `open_law_lens/fact_patterns.py`: ODT/PDF fact-pattern extraction for appeal
   issue assessment.
 - `open_law_lens/quality.py`: official reporter citation and pagination quality
   checks.
-- `scripts/open-law-lens-codex-agent-vte.sh`: embedded Codex terminal launcher.
+- `scripts/open-law-lens-agent-vte.sh`: embedded Pi terminal launcher.
+- `.pi/settings.json`: project-local Pi provider and model.
+- `.pi/extensions/pi-web-search/`: bundled, pinned Pi web-search extension.
+- `.pi/skills/legal-researcher/SKILL.md`: Pi legal-research workflow and
+  web-search fallback rules.
 
 ## Local Files and Credentials
 
@@ -305,6 +344,8 @@ Do not commit local runtime data:
 - `config.json`: local settings and CourtListener token.
 - `cache/`: disposable CourtListener lookup and import cache.
 - `library/`: durable local SQLite authority library.
+- `.pi/npm/`: optional machine-local Pi package cache; the embedded workflow
+  does not use it.
 - `.venv/`, `__pycache__/`, `.pytest_cache/`, and `.mypy_cache/`: generated
   development artifacts.
 

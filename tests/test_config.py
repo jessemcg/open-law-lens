@@ -8,13 +8,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from open_law_lens.config import (
-    AGENT_PERMISSION_MODE_FULL_ACCESS,
     AppConfig,
     DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
     DEFAULT_APPEAL_ISSUE_LABELS,
     DEFAULT_APPEAL_ISSUE_PRESETS,
     DEFAULT_CASE_AGENT_PROMPT_TEMPLATE,
-    DEFAULT_AGENT_PERMISSION_MODE,
     DEFAULT_BARE_STATUTE_LAW_CODE,
     DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE,
     DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
@@ -50,16 +48,11 @@ class ConfigTests(unittest.TestCase):
                 config.general_agent_prompt_template,
             )
             self.assertIn("Cal.App.5th", config.general_agent_prompt_template)
-            self.assertFalse(config.general_agent_xhigh_reasoning)
-            self.assertFalse(config.case_agent_xhigh_reasoning)
-            self.assertFalse(config.appeal_issue_xhigh_reasoning)
-            self.assertFalse(config.later_treatment_xhigh_reasoning)
             self.assertEqual(config.appeal_issue_presets, list(DEFAULT_APPEAL_ISSUE_PRESETS))
             self.assertEqual(config.appeal_issue_labels, list(DEFAULT_APPEAL_ISSUE_LABELS))
             self.assertEqual(config.reader_font_size_pt, DEFAULT_READER_FONT_SIZE_PT)
             self.assertEqual(config.reader_font_family, DEFAULT_READER_FONT_FAMILY)
             self.assertEqual(config.default_bare_statute_law_code, DEFAULT_BARE_STATUTE_LAW_CODE)
-            self.assertEqual(config.agent_permission_mode, DEFAULT_AGENT_PERMISSION_MODE)
 
     def test_save_and_load_settings(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -72,16 +65,11 @@ class ConfigTests(unittest.TestCase):
                     case_agent_prompt_template=" Case {question} ",
                     appeal_issue_agent_prompt_template=" Appeal {issue} ",
                     later_treatment_agent_prompt_template=" Subsequent {cluster_id} ",
-                    general_agent_xhigh_reasoning=True,
-                    case_agent_xhigh_reasoning=True,
-                    appeal_issue_xhigh_reasoning=True,
-                    later_treatment_xhigh_reasoning=True,
                     appeal_issue_presets=[" Issue One ", "Issue Two", "Issue One"],
                     appeal_issue_labels=[" One ", "Two"],
                     reader_font_size_pt=14,
                     reader_font_family="Georgia",
                     default_bare_statute_law_code="FAM",
-                    agent_permission_mode=AGENT_PERMISSION_MODE_FULL_ACCESS,
                 ),
                 path,
             )
@@ -95,16 +83,35 @@ class ConfigTests(unittest.TestCase):
                 config.later_treatment_agent_prompt_template,
                 "Subsequent {cluster_id}",
             )
-            self.assertTrue(config.general_agent_xhigh_reasoning)
-            self.assertTrue(config.case_agent_xhigh_reasoning)
-            self.assertTrue(config.appeal_issue_xhigh_reasoning)
-            self.assertTrue(config.later_treatment_xhigh_reasoning)
             self.assertEqual(config.appeal_issue_presets, ["Issue One", "Issue Two"])
             self.assertEqual(config.appeal_issue_labels, ["One", "Two"])
             self.assertEqual(config.reader_font_size_pt, 14)
             self.assertEqual(config.reader_font_family, "Georgia")
             self.assertEqual(config.default_bare_statute_law_code, "FAM")
-            self.assertEqual(config.agent_permission_mode, AGENT_PERMISSION_MODE_FULL_ACCESS)
+
+    def test_legacy_xhigh_settings_are_ignored_and_removed_on_save(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "general_agent_xhigh_reasoning": True,
+                        "case_agent_xhigh_reasoning": True,
+                        "brief_agent_xhigh_reasoning": True,
+                        "appeal_issue_xhigh_reasoning": True,
+                        "later_treatment_xhigh_reasoning": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(path)
+            save_config(config, path)
+            saved = json.loads(path.read_text(encoding="utf-8"))
+
+            self.assertFalse(
+                any("xhigh_reasoning" in key for key in saved)
+            )
 
     def test_legacy_general_prompt_migrates_to_new_default(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -475,13 +482,6 @@ Rating: Strong, Medium, Weak, or Frivolous"""
             save_config(AppConfig(default_bare_statute_law_code="unsupported"), path)
 
             self.assertEqual(load_config(path).default_bare_statute_law_code, "WIC")
-
-    def test_agent_permission_mode_falls_back_to_sandboxed(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = Path(temp_dir) / "config.json"
-            save_config(AppConfig(agent_permission_mode="unsupported"), path)
-
-            self.assertEqual(load_config(path).agent_permission_mode, DEFAULT_AGENT_PERMISSION_MODE)
 
     def test_appeal_issue_presets_fall_back_when_empty(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

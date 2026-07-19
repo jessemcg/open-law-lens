@@ -41,6 +41,123 @@ from open_law_lens.web_import import ExtractedWebpage
 
 
 class AppReaderPayloadTests(unittest.TestCase):
+    def test_agent_failure_keeps_session_output_visible(self) -> None:
+        class DummyWidget:
+            def __init__(self) -> None:
+                self.visible = False
+                self.sensitive = False
+                self.icon_name = ""
+                self.tooltip = ""
+                self.size_request = (0, 0)
+
+            def set_visible(self, visible: bool) -> None:
+                self.visible = visible
+
+            def set_sensitive(self, sensitive: bool) -> None:
+                self.sensitive = sensitive
+
+            def set_icon_name(self, icon_name: str) -> None:
+                self.icon_name = icon_name
+
+            def set_tooltip_text(self, tooltip: str) -> None:
+                self.tooltip = tooltip
+
+            def set_size_request(self, width: int, height: int) -> None:
+                self.size_request = (width, height)
+
+        session_widget = DummyWidget()
+        subview_strip = DummyWidget()
+        output_toggle = DummyWidget()
+        window = SimpleNamespace(
+            _agent_active=False,
+            _agent_failure_visible=True,
+            _agent_last_answer_text="",
+            _agent_search_output_visible=False,
+            _agent_output_collapsed=False,
+            _agent_output_toggle_button=output_toggle,
+            _agent_subview_strip=subview_strip,
+            _agent_save_answer_button=DummyWidget(),
+            _agent_answer_scroller=DummyWidget(),
+            _agent_session_widget=session_widget,
+            _agent_subview_name="session",
+            _agent_panel_height=240,
+            _update_agent_panel_height=lambda: None,
+        )
+
+        OpenLawLensWindow._sync_agent_subviews(window)  # type: ignore[arg-type]
+
+        self.assertTrue(output_toggle.visible)
+        self.assertTrue(subview_strip.visible)
+        self.assertTrue(session_widget.visible)
+        self.assertEqual(session_widget.size_request, (-1, 240))
+
+    def test_agent_nonzero_exit_reports_failure_and_selects_session(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self._agent_pid = 42
+                self._agent_active = True
+                self._agent_failure_visible = False
+                self.status = ""
+                self.subview = ""
+
+            def _poll_agent_answer(self) -> bool:
+                return False
+
+            def _set_agent_subview(self, subview: str) -> None:
+                self.subview = subview
+
+            def _set_status(self, status: str) -> None:
+                self.status = status
+
+        window = DummyWindow()
+
+        OpenLawLensWindow._on_agent_exited(  # type: ignore[arg-type]
+            window,
+            object(),
+            2 << 8,
+        )
+
+        self.assertIsNone(window._agent_pid)
+        self.assertFalse(window._agent_active)
+        self.assertTrue(window._agent_failure_visible)
+        self.assertEqual(window.subview, "session")
+        self.assertEqual(
+            window.status,
+            "Embedded agent failed with exit code 2. Review the Session output.",
+        )
+
+    def test_agent_successful_exit_uses_normal_ended_status(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self._agent_pid = 42
+                self._agent_active = True
+                self._agent_failure_visible = True
+                self.status = ""
+                self.sync_count = 0
+
+            def _poll_agent_answer(self) -> bool:
+                return False
+
+            def _sync_agent_subviews(self) -> None:
+                self.sync_count += 1
+
+            def _set_status(self, status: str) -> None:
+                self.status = status
+
+        window = DummyWindow()
+
+        OpenLawLensWindow._on_agent_exited(  # type: ignore[arg-type]
+            window,
+            object(),
+            0,
+        )
+
+        self.assertIsNone(window._agent_pid)
+        self.assertFalse(window._agent_active)
+        self.assertFalse(window._agent_failure_visible)
+        self.assertEqual(window.sync_count, 1)
+        self.assertEqual(window.status, "Embedded agent session ended.")
+
     def test_reader_source_provider_uses_dim_header_label(self) -> None:
         class DummyLabel:
             def __init__(self, text: str = "") -> None:
@@ -780,7 +897,7 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(title, "In re L.G.")
         self.assertEqual(citation, "")
 
-    def test_agent_launch_env_defaults_to_workspace_sandbox(self) -> None:
+    def test_agent_launch_env_configures_project_local_pi(self) -> None:
         class DummyCache:
             root = Path("/tmp/open-law-lens-cache")
 
@@ -796,19 +913,22 @@ class AppReaderPayloadTests(unittest.TestCase):
             Path("/tmp/prompt.txt"),
             Path("/tmp/workspace"),
             "general",
-            AppConfig(),
         )
 
-        self.assertEqual(env["OPEN_LAW_LENS_CODEX_SANDBOX"], "workspace-write")
-        self.assertEqual(env["OPEN_LAW_LENS_CODEX_APPROVAL"], "")
         self.assertEqual(env["OPEN_LAW_LENS_CACHE_DIR"], "/tmp/workspace/research-cache")
+        self.assertEqual(
+            env["PI_CODING_AGENT_SESSION_DIR"],
+            "/tmp/workspace/pi-sessions",
+        )
+        self.assertIn("OPEN_LAW_LENS_PI_BIN", env)
+        self.assertIn("OPEN_LAW_LENS_PROJECT_DIR", env)
         self.assertEqual(
             env["OPEN_LAW_LENS_LIBRARY_DB"],
             "/tmp/open-law-lens-library/library.sqlite3",
         )
-        self.assertNotIn("OPEN_LAW_LENS_CODEX_REASONING_EFFORT", env)
+        self.assertNotIn("OPEN_LAW_LENS_PI_THINKING", env)
 
-    def test_agent_launch_env_full_access_disables_approval_prompts(self) -> None:
+    def test_agent_launch_env_closed_mode_uses_same_pi_runtime(self) -> None:
         class DummyCache:
             root = Path("/tmp/open-law-lens-cache")
 
@@ -821,12 +941,10 @@ class AppReaderPayloadTests(unittest.TestCase):
             Path("/tmp/prompt.txt"),
             Path("/tmp/workspace"),
             "case",
-            AppConfig(agent_permission_mode="full_access"),
         )
 
         self.assertEqual(env["OPEN_LAW_LENS_AGENT_MODE"], "case")
-        self.assertEqual(env["OPEN_LAW_LENS_CODEX_SANDBOX"], "danger-full-access")
-        self.assertEqual(env["OPEN_LAW_LENS_CODEX_APPROVAL"], "never")
+        self.assertIn("OPEN_LAW_LENS_PI_BIN", env)
         self.assertNotIn("OPEN_LAW_LENS_LIBRARY_DB", env)
 
     def test_case_agent_prompt_adds_current_case_context_to_custom_prompt(self) -> None:
@@ -1090,7 +1208,6 @@ class AppReaderPayloadTests(unittest.TestCase):
                 prompt_path: Path,
                 workspace: Path,
                 mode: str,
-                reasoning_effort: str = "",
                 success_status: str = "",
             ) -> None:
                 self.launches.append(
@@ -1098,7 +1215,6 @@ class AppReaderPayloadTests(unittest.TestCase):
                         "prompt_path": prompt_path,
                         "workspace": workspace,
                         "mode": mode,
-                        "reasoning_effort": reasoning_effort,
                         "success_status": success_status,
                     }
                 )
@@ -1325,7 +1441,7 @@ class AppReaderPayloadTests(unittest.TestCase):
             "",
         )
 
-    def test_agent_launch_env_passes_xhigh_reasoning_when_enabled(self) -> None:
+    def test_agent_launch_env_passes_pi_node_runtime_when_available(self) -> None:
         class DummyCache:
             root = Path("/tmp/open-law-lens-cache")
 
@@ -1333,16 +1449,29 @@ class AppReaderPayloadTests(unittest.TestCase):
             cache = DummyCache()
             library = None
 
-        env = build_agent_launch_env(
-            DummyClient(),  # type: ignore[arg-type]
-            Path("/tmp/prompt.txt"),
-            Path("/tmp/workspace"),
-            "appeal",
-            AppConfig(),
-            "xhigh",
-        )
+        with (
+            patch(
+                "open_law_lens.app.find_pi_executable",
+                return_value="/runtime/bin/pi",
+            ),
+            patch(
+                "open_law_lens.app.find_pi_node_executable",
+                return_value="/runtime/bin/node",
+            ),
+        ):
+            env = build_agent_launch_env(
+                DummyClient(),  # type: ignore[arg-type]
+                Path("/tmp/prompt.txt"),
+                Path("/tmp/workspace"),
+                "appeal",
+            )
 
-        self.assertEqual(env["OPEN_LAW_LENS_CODEX_REASONING_EFFORT"], "xhigh")
+        self.assertEqual(env["OPEN_LAW_LENS_PI_BIN"], "/runtime/bin/pi")
+        self.assertEqual(
+            env["OPEN_LAW_LENS_PI_NODE_BIN"],
+            "/runtime/bin/node",
+        )
+        self.assertNotIn("OPEN_LAW_LENS_PI_THINKING", env)
 
     def test_appeal_issue_prompt_includes_argument_fact_pattern_and_cli_guidance(self) -> None:
         class DummyWindow:
@@ -1475,16 +1604,15 @@ class AppReaderPayloadTests(unittest.TestCase):
             def __init__(self) -> None:
                 self._case_agent_text_sources = ["old"]
                 self._agent_mode = "general"
-                self.launches: list[tuple[Path, Path, str, str]] = []
+                self.launches: list[tuple[Path, Path, str]] = []
 
             def _launch_agent_with_prompt(
                 self,
                 prompt_path: Path,
                 workspace: Path,
                 mode: str,
-                reasoning_effort: str = "",
             ) -> None:
-                self.launches.append((prompt_path, workspace, mode, reasoning_effort))
+                self.launches.append((prompt_path, workspace, mode))
 
         window = DummyWindow()
 
@@ -1500,7 +1628,7 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(window._agent_mode, "appeal")
         self.assertEqual(
             window.launches,
-            [(Path("/tmp/prompt.txt"), Path("/tmp/workspace"), "appeal", "")],
+            [(Path("/tmp/prompt.txt"), Path("/tmp/workspace"), "appeal")],
         )
 
     def test_appeal_issue_menu_label_uses_label_then_first_nonblank_line_and_truncates(self) -> None:
@@ -4791,7 +4919,7 @@ Opinion text.
 
         self.assertIn("published-citing-cases --cluster-id 42 --limit 10 --json", prompt)
         self.assertIn("extract-case --cluster-id <cluster_id>", prompt)
-        self.assertIn("Google Scholar", prompt)
+        self.assertIn("Pi's web search", prompt)
         self.assertIn("citation remains uncertain", prompt)
         self.assertIn("use normal legal prose for case names and citations", prompt)
         self.assertIn("agreed with it, distinguished it, limited it", prompt)
@@ -4993,9 +5121,8 @@ Opinion text.
                 prompt_path: Path,
                 workspace: Path,
                 mode: str,
-                reasoning_effort: str = "",
             ) -> None:
-                self.launches.append((prompt_path, workspace, mode, reasoning_effort))
+                self.launches.append((prompt_path, workspace, mode))
 
         window = DummyWindow()
 
@@ -5009,7 +5136,7 @@ Opinion text.
         self.assertEqual(window._agent_mode, "general")
         self.assertEqual(
             window.launches,
-            [(Path("/tmp/helper-prompt.txt"), Path("/tmp/helper-workspace"), "general", "")],
+            [(Path("/tmp/helper-prompt.txt"), Path("/tmp/helper-workspace"), "general")],
         )
 
     def test_later_treatment_click_launches_general_agent_prompt(self) -> None:
@@ -5059,9 +5186,8 @@ Opinion text.
                 prompt_path: Path,
                 workspace: Path,
                 mode: str,
-                reasoning_effort: str = "",
             ) -> None:
-                self.launches.append((prompt_path, workspace, mode, reasoning_effort))
+                self.launches.append((prompt_path, workspace, mode))
 
         window = DummyWindow()
 
@@ -5078,7 +5204,7 @@ Opinion text.
         self.assertEqual(window._agent_mode, "general")
         self.assertEqual(
             window.launches,
-            [(Path("/tmp/later-prompt.txt"), Path("/tmp/later-workspace"), "general", "")],
+            [(Path("/tmp/later-prompt.txt"), Path("/tmp/later-workspace"), "general")],
         )
 
     def test_case_clipboard_text_strips_reader_page_markers(self) -> None:

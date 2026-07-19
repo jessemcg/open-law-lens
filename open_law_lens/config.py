@@ -19,27 +19,14 @@ CONFIG_KEY_BRIEF_AGENT_PROMPT_TEMPLATE = "brief_agent_prompt_template"
 CONFIG_KEY_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE = "appeal_issue_agent_prompt_template"
 CONFIG_KEY_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE = "subsequent_treatment_agent_prompt_template"
 CONFIG_KEY_LEGACY_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE = "later_treatment_agent_prompt_template"
-CONFIG_KEY_GENERAL_AGENT_XHIGH_REASONING = "general_agent_xhigh_reasoning"
-CONFIG_KEY_CASE_AGENT_XHIGH_REASONING = "case_agent_xhigh_reasoning"
-CONFIG_KEY_BRIEF_AGENT_XHIGH_REASONING = "brief_agent_xhigh_reasoning"
-CONFIG_KEY_APPEAL_ISSUE_XHIGH_REASONING = "appeal_issue_xhigh_reasoning"
-CONFIG_KEY_LATER_TREATMENT_XHIGH_REASONING = "later_treatment_xhigh_reasoning"
 CONFIG_KEY_APPEAL_ISSUE_PRESETS = "appeal_issue_presets"
 CONFIG_KEY_APPEAL_ISSUE_LABELS = "appeal_issue_labels"
 CONFIG_KEY_READER_FONT_SIZE_PT = "reader_font_size_pt"
 CONFIG_KEY_READER_FONT_FAMILY = "reader_font_family"
 CONFIG_KEY_DEFAULT_BARE_STATUTE_LAW_CODE = "default_bare_statute_law_code"
-CONFIG_KEY_AGENT_PERMISSION_MODE = "agent_permission_mode"
 ENV_CONCORDANCE_FILE = "OPEN_LAW_LENS_CONCORDANCE_FILE"
 DEFAULT_READER_FONT_SIZE_PT = 11
 DEFAULT_BARE_STATUTE_LAW_CODE = "WIC"
-AGENT_PERMISSION_MODE_SANDBOXED = "sandboxed"
-AGENT_PERMISSION_MODE_FULL_ACCESS = "full_access"
-DEFAULT_AGENT_PERMISSION_MODE = AGENT_PERMISSION_MODE_SANDBOXED
-AGENT_PERMISSION_MODE_OPTIONS: tuple[tuple[str, str], ...] = (
-    (AGENT_PERMISSION_MODE_SANDBOXED, "Sandboxed"),
-    (AGENT_PERMISSION_MODE_FULL_ACCESS, "Full access"),
-)
 BARE_STATUTE_LAW_CODE_OPTIONS: tuple[tuple[str, str], ...] = (
     ("WIC", "Welfare and Institutions Code"),
     ("EVID", "Evidence Code"),
@@ -64,6 +51,7 @@ DEFAULT_READER_FONT_FAMILY = READER_FONT_FAMILY_OPTIONS[0][0]
 LEGACY_READER_FONT_FAMILY_ALIASES: dict[str, str] = {}
 
 LEGACY_GENERAL_AGENT_PROMPT_SHA256ES = (
+    "a168fd313f71015a9a730bd2912aba0d1a9e51bfdeb28ecdaed039707e07d92a",
     "50a9928018ec7d3b06b322db9e5a211e56c7a155b09537d1f7057906fb6a14e4",
     "5d787ed00945b45a32f60026679908a718fc7d174080951f5f3bbe5e70921dc6",
     "e8da4e994bce96bd6acc337c1361fa225adf62a6cc5f5044ff42ed17c1d14aec",
@@ -78,12 +66,16 @@ LEGACY_CASE_AGENT_PROMPT_SHA256ES = (
     "e33c90f7bb6f972b9ed934f155420a51c51dd8e64b613ca41cbda250fe37847a",
 )
 LEGACY_APPEAL_ISSUE_AGENT_PROMPT_SHA256ES = (
+    "395b6ae8e9fb01913bc839e5715e0c499c9714708561beba9841ea3487dbb1ce",
     "b57fb338bb6148eaa4937be89de687884b1f42f2ef2d966d9d4a21cb3816d338",
     "89f0c0d29553434588a1060de8d979d91c9a15ca27b214ee16ff3498209b6089",
     "825b58f274b81af60c7fdd0fb2a55e9a6ad43c8bbd31f6d51f0c632d2c7a5599",
     "cc5c2ba125d0ee0ff42d65db1b58f0d9e7fc281ad1a12d3693f82caca551af24",
     "148e132f9bf9440d84437f2116cb2f2bcc7bbc4654d1508d2644ea8a9dbb3614",
     "5efdaaf4380c89a75ed1073d8a6476511cd59d58c54837e6d741f8dfa386e8a2",
+)
+LEGACY_LATER_TREATMENT_AGENT_PROMPT_SHA256ES = (
+    "e73fc8abadd94b2affb966c126dfb0c2416e0fc86c1994baa486b01deb5d1834",
 )
 
 DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens General California Law Agent.
@@ -94,7 +86,7 @@ For California case-law discovery, start with `uv run open-law-lens case-search 
 
 Confine research to California state law unless the user's question explicitly requires federal law. Prefer published California Supreme Court and California Court of Appeal authority when available. Use `case-search --include-unpublished` only when unpublished cases are useful for context, not as controlling authority.
 
-Use Google Scholar or Codex web search only as a fallback to verify or fill in an official reporter citation or official text when CourtListener metadata is missing or suspect. State when a citation remains uncertain.
+Use Pi's web search only as a fallback to verify or fill in an official reporter citation or official text when CourtListener metadata is missing or suspect. State when a citation remains uncertain.
 
 For a recent published California slip opinion with no official reporter citation, a placeholder like `___ Cal.App.5th ___`, or only a docket number, run targeted Google Scholar or web searches using the case name, docket number, filed date, and `Cal.App.5th`. If an official citation is found, retry `uv run open-law-lens extract-case "<official citation>"` and rely on the extracted text, source, warnings, and reporter markers.
 
@@ -207,7 +199,7 @@ If that command fails, returns no useful leads, or the cluster id appears to be 
 Choose only the most significant published subsequent cases, usually 3 to 5 when that many exist. Before relying on any selected case, extract it with:
 uv run --no-sync open-law-lens extract-case --cluster-id <cluster_id>
 
-If CourtListener extraction lacks an official reporter citation or official text for a selected subsequent case, use Google Scholar, California Courts, or Codex web search only as a fallback to verify or fill in that citation/text. State when a citation remains uncertain.
+If CourtListener extraction lacks an official reporter citation or official text for a selected subsequent case, use Pi's web search only as a fallback to verify or fill in that citation/text. State when a citation remains uncertain.
 
 For each selected subsequent case, explain how it used the target case: agreed with it, distinguished it, limited it, extended it to a different fact pattern, criticized it, or used it in another identifiable way. If a citation lead exists but extracted or verified text does not support a treatment characterization, say that plainly.
 
@@ -223,11 +215,6 @@ class AppConfig:
     brief_agent_prompt_template: str = DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE
     appeal_issue_agent_prompt_template: str = DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
     later_treatment_agent_prompt_template: str = DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE
-    general_agent_xhigh_reasoning: bool = False
-    case_agent_xhigh_reasoning: bool = False
-    brief_agent_xhigh_reasoning: bool = False
-    appeal_issue_xhigh_reasoning: bool = False
-    later_treatment_xhigh_reasoning: bool = False
     appeal_issue_presets: list[str] = field(
         default_factory=lambda: list(DEFAULT_APPEAL_ISSUE_PRESETS)
     )
@@ -237,7 +224,6 @@ class AppConfig:
     reader_font_size_pt: int = DEFAULT_READER_FONT_SIZE_PT
     reader_font_family: str = DEFAULT_READER_FONT_FAMILY
     default_bare_statute_law_code: str = DEFAULT_BARE_STATUTE_LAW_CODE
-    agent_permission_mode: str = DEFAULT_AGENT_PERMISSION_MODE
 
 
 def coerce_reader_font_size(value: Any, default: int = DEFAULT_READER_FONT_SIZE_PT) -> int:
@@ -263,31 +249,6 @@ def normalize_bare_statute_law_code(value: Any) -> str:
         if normalized == code:
             return code
     return DEFAULT_BARE_STATUTE_LAW_CODE
-
-
-def normalize_agent_permission_mode(value: Any) -> str:
-    normalized = str(value or "").strip()
-    for mode, _label in AGENT_PERMISSION_MODE_OPTIONS:
-        if normalized == mode:
-            return mode
-    return DEFAULT_AGENT_PERMISSION_MODE
-
-
-def normalize_bool(value: Any, default: bool = False) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    if isinstance(value, str):
-        normalized = value.strip().casefold()
-        if normalized in {"1", "true", "yes", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "off"}:
-            return False
-        return default
-    if isinstance(value, (int, float)):
-        return bool(value)
-    return default
 
 
 def normalize_appeal_issue_presets(value: Any) -> list[str]:
@@ -377,6 +338,11 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
             DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
         ),
     )
+    later_treatment_prompt_hash = hashlib.sha256(
+        str(later_treatment_agent_prompt).strip().encode()
+    ).hexdigest()
+    if later_treatment_prompt_hash in LEGACY_LATER_TREATMENT_AGENT_PROMPT_SHA256ES:
+        later_treatment_agent_prompt = DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE
     appeal_prompt_hash = hashlib.sha256(
         str(appeal_issue_agent_prompt).strip().encode()
     ).hexdigest()
@@ -405,26 +371,6 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
             str(later_treatment_agent_prompt).strip()
             or DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE
         ),
-        general_agent_xhigh_reasoning=normalize_bool(
-            raw.get(CONFIG_KEY_GENERAL_AGENT_XHIGH_REASONING),
-            False,
-        ),
-        case_agent_xhigh_reasoning=normalize_bool(
-            raw.get(CONFIG_KEY_CASE_AGENT_XHIGH_REASONING),
-            False,
-        ),
-        brief_agent_xhigh_reasoning=normalize_bool(
-            raw.get(CONFIG_KEY_BRIEF_AGENT_XHIGH_REASONING),
-            False,
-        ),
-        appeal_issue_xhigh_reasoning=normalize_bool(
-            raw.get(CONFIG_KEY_APPEAL_ISSUE_XHIGH_REASONING),
-            False,
-        ),
-        later_treatment_xhigh_reasoning=normalize_bool(
-            raw.get(CONFIG_KEY_LATER_TREATMENT_XHIGH_REASONING),
-            False,
-        ),
         appeal_issue_presets=appeal_issue_presets,
         appeal_issue_labels=normalize_appeal_issue_labels(
             raw.get(CONFIG_KEY_APPEAL_ISSUE_LABELS),
@@ -434,9 +380,6 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
         reader_font_family=normalize_reader_font_family(raw.get(CONFIG_KEY_READER_FONT_FAMILY)),
         default_bare_statute_law_code=normalize_bare_statute_law_code(
             raw.get(CONFIG_KEY_DEFAULT_BARE_STATUTE_LAW_CODE)
-        ),
-        agent_permission_mode=normalize_agent_permission_mode(
-            raw.get(CONFIG_KEY_AGENT_PERMISSION_MODE)
         ),
     )
 
@@ -469,11 +412,6 @@ def save_config(config: AppConfig, path: Path = CONFIG_PATH) -> None:
             config.later_treatment_agent_prompt_template.strip()
             or DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE
         ),
-        CONFIG_KEY_GENERAL_AGENT_XHIGH_REASONING: bool(config.general_agent_xhigh_reasoning),
-        CONFIG_KEY_CASE_AGENT_XHIGH_REASONING: bool(config.case_agent_xhigh_reasoning),
-        CONFIG_KEY_BRIEF_AGENT_XHIGH_REASONING: bool(config.brief_agent_xhigh_reasoning),
-        CONFIG_KEY_APPEAL_ISSUE_XHIGH_REASONING: bool(config.appeal_issue_xhigh_reasoning),
-        CONFIG_KEY_LATER_TREATMENT_XHIGH_REASONING: bool(config.later_treatment_xhigh_reasoning),
         CONFIG_KEY_APPEAL_ISSUE_PRESETS: appeal_issue_presets,
         CONFIG_KEY_APPEAL_ISSUE_LABELS: normalize_appeal_issue_labels(
             appeal_issue_labels,
@@ -483,9 +421,6 @@ def save_config(config: AppConfig, path: Path = CONFIG_PATH) -> None:
         CONFIG_KEY_READER_FONT_FAMILY: normalize_reader_font_family(config.reader_font_family),
         CONFIG_KEY_DEFAULT_BARE_STATUTE_LAW_CODE: normalize_bare_statute_law_code(
             config.default_bare_statute_law_code
-        ),
-        CONFIG_KEY_AGENT_PERMISSION_MODE: normalize_agent_permission_mode(
-            config.agent_permission_mode
         ),
     }
     path.parent.mkdir(parents=True, exist_ok=True)

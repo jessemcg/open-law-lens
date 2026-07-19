@@ -14,7 +14,7 @@ from .rules import cited_rule_links, parse_rule_citation
 from .statutes import cited_statute_links, parse_statute_citation
 
 
-CODEX_SESSION_LOG_GLOB = "20*/**/rollout-*.jsonl"
+PI_SESSION_LOG_GLOB = "**/*.jsonl"
 QUOTE_RE = re.compile(r'"([^"\n]{1,160})"|“([^”\n]{1,160})”')
 REPORTER_PAGE_MARKER_RE = re.compile(r"\[\*\d+\]")
 
@@ -91,7 +91,7 @@ def _json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
 
 
-def _codex_text_from_content(content: Any) -> str:
+def _pi_text_from_content(content: Any) -> str:
     if isinstance(content, str):
         return content.strip()
     if not isinstance(content, list):
@@ -100,13 +100,15 @@ def _codex_text_from_content(content: Any) -> str:
     for item in content:
         if not isinstance(item, dict):
             continue
+        if item.get("type") not in {"text", "output_text"}:
+            continue
         text = item.get("text")
-        if isinstance(text, str):
+        if isinstance(text, str) and text.strip():
             parts.append(text)
-    return "".join(parts).strip()
+    return "\n".join(parts).strip()
 
 
-def extract_latest_codex_final_answer_from_jsonl(path: Path) -> str:
+def extract_latest_pi_final_answer_from_jsonl(path: Path) -> str:
     latest = ""
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -119,31 +121,20 @@ def extract_latest_codex_final_answer_from_jsonl(path: Path) -> str:
             payload = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if isinstance(payload, dict) and payload.get("type") == "event_msg":
-            event = payload.get("payload")
-            if isinstance(event, dict) and event.get("type") == "task_complete":
-                text = event.get("last_agent_message")
-                if isinstance(text, str) and text.strip():
-                    latest = text.strip()
+        if not isinstance(payload, dict) or payload.get("type") != "message":
             continue
-        if not isinstance(payload, dict) or payload.get("type") != "response_item":
+        message = payload.get("message")
+        if not isinstance(message, dict) or message.get("role") != "assistant":
             continue
-        item = payload.get("payload")
-        if not isinstance(item, dict):
+        if message.get("stopReason") == "toolUse":
             continue
-        if (
-            item.get("type") != "message"
-            or item.get("role") != "assistant"
-            or item.get("phase") != "final_answer"
-        ):
-            continue
-        text = _codex_text_from_content(item.get("content"))
+        text = _pi_text_from_content(message.get("content"))
         if text:
             latest = text
     return latest
 
 
-def codex_session_log_matches_cwd(path: Path, cwd: Path) -> bool:
+def pi_session_log_matches_cwd(path: Path, cwd: Path) -> bool:
     wanted = str(cwd)
     try:
         with path.open("r", encoding="utf-8", errors="replace") as handle:
@@ -154,28 +145,27 @@ def codex_session_log_matches_cwd(path: Path, cwd: Path) -> bool:
                     payload = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if not isinstance(payload, dict) or payload.get("type") != "session_meta":
+                if not isinstance(payload, dict) or payload.get("type") != "session":
                     continue
-                meta = payload.get("payload")
-                return isinstance(meta, dict) and meta.get("cwd") == wanted
+                return payload.get("cwd") == wanted
     except OSError:
         return False
     return False
 
 
-def find_latest_codex_session_log_for_cwd(sessions_root: Path, cwd: Path) -> Path | None:
+def find_latest_pi_session_log_for_cwd(sessions_root: Path, cwd: Path) -> Path | None:
     if not sessions_root.is_dir():
         return None
     try:
         candidates = sorted(
-            sessions_root.glob(CODEX_SESSION_LOG_GLOB),
+            sessions_root.glob(PI_SESSION_LOG_GLOB),
             key=lambda item: item.stat().st_mtime,
             reverse=True,
         )
     except OSError:
         return None
     for candidate in candidates:
-        if candidate.is_file() and codex_session_log_matches_cwd(candidate, cwd):
+        if candidate.is_file() and pi_session_log_matches_cwd(candidate, cwd):
             return candidate
     return None
 
