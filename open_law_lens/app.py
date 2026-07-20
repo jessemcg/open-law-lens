@@ -204,6 +204,8 @@ READER_COOL_GRAY_BG = "#e8edf3"
 READER_RENDER_TEXT_CHUNK_SIZE = 8000
 READER_RENDER_TAG_CHUNK_SIZE = 250
 AGENT_PANEL_MIN_HEIGHT = 260
+AGENT_ANSWER_MIN_HEIGHT = 36
+AGENT_ANSWER_HEIGHT_PADDING = 4
 AGENT_HEIGHT_DIVISOR = 4
 AGENT_SUBVIEW_ANSWER = "answer"
 AGENT_SUBVIEW_SESSION = "session"
@@ -1505,6 +1507,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_answer_scroller: Gtk.ScrolledWindow | None = None
         self._agent_answer_buffer: Gtk.TextBuffer | None = None
         self._agent_answer_view: Gtk.TextView | None = None
+        self._agent_answer_content_height = AGENT_ANSWER_MIN_HEIGHT
+        self._agent_answer_layout_width = -1
+        self._agent_answer_layout_idle_id: int | None = None
         self._agent_answer_button: Gtk.ToggleButton | None = None
         self._agent_session_button: Gtk.ToggleButton | None = None
         self._agent_save_answer_button: Gtk.Button | None = None
@@ -2746,9 +2751,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._install_agent_answer_link_controllers()
         answer_scroller = Gtk.ScrolledWindow()
         answer_scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        answer_scroller.set_min_content_height(self._agent_panel_height)
-        answer_scroller.set_max_content_height(self._agent_panel_height)
-        answer_scroller.set_size_request(-1, self._agent_panel_height)
+        answer_scroller.set_propagate_natural_height(False)
+        answer_scroller.set_min_content_height(AGENT_ANSWER_MIN_HEIGHT)
+        answer_scroller.set_max_content_height(AGENT_ANSWER_MIN_HEIGHT)
+        answer_scroller.set_size_request(-1, AGENT_ANSWER_MIN_HEIGHT)
         answer_scroller.set_child(self._agent_answer_view)
         self._agent_answer_scroller = answer_scroller
         frame.append(answer_scroller)
@@ -2976,6 +2982,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def _on_window_close_request(self, _window: Gtk.Window) -> bool:
         self._capture_current_reader_position()
+        if self._agent_answer_layout_idle_id is not None:
+            GLib.source_remove(self._agent_answer_layout_idle_id)
+            self._agent_answer_layout_idle_id = None
         return False
 
     def _on_window_active_changed(self, _window: Gtk.Window, _param: Any) -> None:
@@ -4446,7 +4455,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         )
 
     def _sync_agent_subviews(self) -> None:
-        self._update_agent_panel_height()
+        self._update_agent_panel_height(force=True)
         has_agent_output = (
             self._agent_active
             or self._agent_failure_visible
@@ -4478,12 +4487,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 self._agent_session_widget.set_size_request(-1, self._agent_panel_height)
             else:
                 self._agent_session_widget.set_size_request(-1, -1)
+        if output_visible and self._agent_subview_name == AGENT_SUBVIEW_ANSWER:
+            self._queue_agent_answer_height_update()
 
     def _on_agent_output_toggle_clicked(self, _button: Gtk.Button) -> None:
         self._agent_output_collapsed = not self._agent_output_collapsed
         self._sync_agent_subviews()
 
-    def _update_agent_panel_height(self) -> None:
+    def _update_agent_panel_height(self, *, force: bool = False) -> None:
         allocated_height = self.get_allocated_height()
         proportional_height = (
             allocated_height // AGENT_HEIGHT_DIVISOR
@@ -4491,18 +4502,66 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             else AGENT_PANEL_MIN_HEIGHT
         )
         height = max(AGENT_PANEL_MIN_HEIGHT, proportional_height)
-        if height == self._agent_panel_height:
+        if height == self._agent_panel_height and not force:
             return
         self._agent_panel_height = height
         if self._agent_answer_scroller is not None:
-            self._agent_answer_scroller.set_min_content_height(height)
-            self._agent_answer_scroller.set_max_content_height(height)
-            self._agent_answer_scroller.set_size_request(-1, height)
+            answer_height = min(
+                height,
+                max(AGENT_ANSWER_MIN_HEIGHT, self._agent_answer_content_height),
+            )
+            self._agent_answer_scroller.set_propagate_natural_height(False)
+            self._agent_answer_scroller.set_size_request(-1, answer_height)
+            self._agent_answer_scroller.set_min_content_height(-1)
+            self._agent_answer_scroller.set_max_content_height(answer_height)
+            self._agent_answer_scroller.set_min_content_height(answer_height)
+        if self._agent_session_widget is not None:
+            session_height = (
+                height if self._agent_subview_name == AGENT_SUBVIEW_SESSION else -1
+            )
+            self._agent_session_widget.set_size_request(-1, session_height)
+
+    def _measure_agent_answer_content_height(self) -> int:
+        view = self._agent_answer_view
+        buffer = self._agent_answer_buffer
+        if view is None or buffer is None or buffer.get_char_count() <= 0:
+            return AGENT_ANSWER_MIN_HEIGHT
+        try:
+            line_y, line_height = view.get_line_yrange(buffer.get_end_iter())
+        except (TypeError, ValueError):
+            return AGENT_ANSWER_MIN_HEIGHT
+        return max(
+            AGENT_ANSWER_MIN_HEIGHT,
+            int(line_y)
+            + int(line_height)
+            + view.get_top_margin()
+            + view.get_bottom_margin()
+            + AGENT_ANSWER_HEIGHT_PADDING,
+        )
+
+    def _queue_agent_answer_height_update(self) -> None:
+        if self._agent_answer_layout_idle_id is not None:
+            return
+        self._agent_answer_layout_idle_id = GLib.idle_add(
+            self._update_agent_answer_height_idle
+        )
+
+    def _update_agent_answer_height_idle(self) -> bool:
+        self._agent_answer_layout_idle_id = None
+        view = self._agent_answer_view
+        scroller = self._agent_answer_scroller
         if (
-            self._agent_session_widget is not None
-            and self._agent_subview_name == AGENT_SUBVIEW_SESSION
+            view is None
+            or scroller is None
+            or not scroller.get_visible()
+            or view.get_width() <= 0
         ):
-            self._agent_session_widget.set_size_request(-1, height)
+            return False
+        self._agent_answer_layout_width = view.get_width()
+        self._agent_answer_content_height = self._measure_agent_answer_content_height()
+        self._update_agent_panel_height(force=True)
+        scroller.queue_resize()
+        return False
 
     def _set_agent_subview(self, subview_name: str) -> None:
         self._agent_subview_name = (
@@ -4776,6 +4835,16 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def _on_window_tick(self, _widget: Gtk.Widget, _clock: Gdk.FrameClock) -> bool:
         self._update_agent_panel_height()
+        view = self._agent_answer_view
+        scroller = self._agent_answer_scroller
+        if (
+            view is not None
+            and scroller is not None
+            and scroller.get_visible()
+            and view.get_width() > 0
+            and view.get_width() != self._agent_answer_layout_width
+        ):
+            self._queue_agent_answer_height_update()
         return True
 
     def reload_settings(self) -> None:
@@ -8334,6 +8403,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_status(message)
         if self._agent_answer_buffer is not None:
             self._agent_answer_buffer.set_text(message)
+            self._queue_agent_answer_height_update()
         return False
 
     def _prepare_case_agent_worker(
@@ -8519,6 +8589,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def _clear_agent_answer(self) -> None:
         self._agent_last_answer_text = ""
+        self._agent_answer_content_height = AGENT_ANSWER_MIN_HEIGHT
+        self._agent_answer_layout_width = -1
         self._agent_search_output_visible = False
         self._agent_search_query = ""
         self._agent_search_results = []
@@ -8776,6 +8848,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._apply_agent_statute_links(buffer, rendered)
             self._apply_agent_rule_links(buffer, rendered)
         self._apply_agent_external_url_links(buffer, rendered)
+        queue_height_update = getattr(self, "_queue_agent_answer_height_update", None)
+        if callable(queue_height_update):
+            queue_height_update()
+        else:
+            answer_scroller = getattr(self, "_agent_answer_scroller", None)
+            if answer_scroller is not None:
+                answer_scroller.queue_resize()
 
     def _apply_agent_prior_brief_title_links(
         self,
@@ -9072,6 +9151,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             )
             self._agent_link_tags.append(tag)
             self._agent_search_next_link_tags.add(tag)
+        queue_height_update = getattr(self, "_queue_agent_answer_height_update", None)
+        if callable(queue_height_update):
+            queue_height_update()
+        else:
+            answer_scroller = getattr(self, "_agent_answer_scroller", None)
+            if answer_scroller is not None:
+                answer_scroller.queue_resize()
 
     def _apply_search_action_tag(
         self,

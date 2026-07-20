@@ -8,6 +8,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from open_law_lens.app import (
+    AGENT_ANSWER_HEIGHT_PADDING,
+    AGENT_ANSWER_MIN_HEIGHT,
     AGENT_MODE_BRIEF,
     AGENT_MODE_CASE,
     AGENT_MODE_GENERAL,
@@ -81,7 +83,7 @@ class AppReaderPayloadTests(unittest.TestCase):
             _agent_session_widget=session_widget,
             _agent_subview_name="session",
             _agent_panel_height=240,
-            _update_agent_panel_height=lambda: None,
+            _update_agent_panel_height=lambda **_kwargs: None,
         )
 
         OpenLawLensWindow._sync_agent_subviews(window)  # type: ignore[arg-type]
@@ -90,6 +92,112 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertTrue(subview_strip.visible)
         self.assertTrue(session_widget.visible)
         self.assertEqual(session_widget.size_request, (-1, 240))
+
+    def test_agent_answer_uses_measured_height_with_session_height_cap(self) -> None:
+        class DummyScroller:
+            def __init__(self) -> None:
+                self.propagate_natural_height = False
+                self.size_request = (0, 0)
+                self.min_content_height = 0
+                self.max_content_height = 0
+                self.height_calls: list[tuple[str, int]] = []
+
+            def set_propagate_natural_height(self, propagate: bool) -> None:
+                self.propagate_natural_height = propagate
+
+            def set_size_request(self, width: int, height: int) -> None:
+                self.size_request = (width, height)
+
+            def set_min_content_height(self, height: int) -> None:
+                self.min_content_height = height
+                self.height_calls.append(("min", height))
+
+            def set_max_content_height(self, height: int) -> None:
+                self.max_content_height = height
+                self.height_calls.append(("max", height))
+
+        class DummySession:
+            def __init__(self) -> None:
+                self.size_request = (0, 0)
+
+            def set_size_request(self, width: int, height: int) -> None:
+                self.size_request = (width, height)
+
+        answer_scroller = DummyScroller()
+        session_widget = DummySession()
+        window = SimpleNamespace(
+            get_allocated_height=lambda: 1200,
+            _agent_panel_height=260,
+            _agent_answer_content_height=108,
+            _agent_answer_scroller=answer_scroller,
+            _agent_session_widget=session_widget,
+            _agent_subview_name="answer",
+        )
+
+        OpenLawLensWindow._update_agent_panel_height(  # type: ignore[arg-type]
+            window,
+            force=True,
+        )
+
+        self.assertEqual(window._agent_panel_height, 300)
+        self.assertFalse(answer_scroller.propagate_natural_height)
+        self.assertEqual(answer_scroller.size_request, (-1, 108))
+        self.assertEqual(answer_scroller.min_content_height, 108)
+        self.assertEqual(answer_scroller.max_content_height, 108)
+        self.assertEqual(
+            answer_scroller.height_calls,
+            [("min", -1), ("max", 108), ("min", 108)],
+        )
+        self.assertEqual(session_widget.size_request, (-1, -1))
+
+        window._agent_answer_content_height = 500
+        OpenLawLensWindow._update_agent_panel_height(  # type: ignore[arg-type]
+            window,
+            force=True,
+        )
+        self.assertEqual(answer_scroller.size_request, (-1, 300))
+
+        window._agent_subview_name = "session"
+        OpenLawLensWindow._update_agent_panel_height(  # type: ignore[arg-type]
+            window,
+            force=True,
+        )
+
+        self.assertEqual(session_widget.size_request, (-1, 300))
+
+    def test_agent_answer_height_measurement_includes_wrapping_and_margins(self) -> None:
+        class DummyBuffer:
+            @staticmethod
+            def get_char_count() -> int:
+                return 25
+
+            @staticmethod
+            def get_end_iter() -> object:
+                return object()
+
+        class DummyView:
+            @staticmethod
+            def get_line_yrange(_text_iter: object) -> tuple[int, int]:
+                return 40, 48
+
+            @staticmethod
+            def get_top_margin() -> int:
+                return 10
+
+            @staticmethod
+            def get_bottom_margin() -> int:
+                return 10
+
+        window = SimpleNamespace(
+            _agent_answer_view=DummyView(),
+            _agent_answer_buffer=DummyBuffer(),
+        )
+
+        height = OpenLawLensWindow._measure_agent_answer_content_height(  # type: ignore[arg-type]
+            window
+        )
+
+        self.assertEqual(height, 40 + 48 + 10 + 10 + AGENT_ANSWER_HEIGHT_PADDING)
 
     def test_agent_nonzero_exit_reports_failure_and_selects_session(self) -> None:
         class DummyWindow:
