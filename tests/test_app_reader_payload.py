@@ -4452,6 +4452,16 @@ Opinion text.
         self.assertTrue(remove_button.has_css_class("cache-row-remove-button"))
         self.assertTrue(check.has_css_class("neutral-agent-check"))
 
+    def test_prior_brief_research_cache_subtitle_uses_us_long_date(self) -> None:
+        subtitle = OpenLawLensWindow._prior_brief_research_cache_subtitle(
+            {
+                "document_type": "Respondent's brief",
+                "document_date": "2026-06-08",
+            }
+        )
+
+        self.assertEqual(subtitle, "June 8, 2026")
+
     def test_research_cache_section_header_is_plain_and_nonselectable(self) -> None:
         row = OpenLawLensWindow._build_research_cache_section_header(
             "Authorities",

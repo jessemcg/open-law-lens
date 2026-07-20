@@ -6925,6 +6925,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return row_box
 
     @staticmethod
+    def _prior_brief_research_cache_subtitle(entry: dict[str, Any]) -> str:
+        return us_long_date(str(entry.get("document_date") or "").strip())
+
+    @staticmethod
     def _build_research_cache_section_header(
         title: str,
         section: str,
@@ -7134,14 +7138,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             remove_button.set_tooltip_text("Remove from Research Cache")
             remove_button.connect("clicked", self._on_remove_prior_brief_clicked, brief_id)
             title_text = str(entry.get("title") or "Untitled prior brief")
-            subtitle_text = " · ".join(
-                value
-                for value in (
-                    str(entry.get("document_type") or ""),
-                    str(entry.get("document_date") or ""),
-                )
-                if value
-            )
+            subtitle_text = self._prior_brief_research_cache_subtitle(entry)
             check = Gtk.CheckButton()
             check.set_tooltip_text("Make prior advocacy available to Cache Agent")
             check.set_active(self.client.cache.is_prior_brief_agent_selected(brief_id))
