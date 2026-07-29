@@ -690,7 +690,21 @@ class AppReaderPayloadTests(unittest.TestCase):
                 self,
                 text: str,
             ) -> tuple[str, list[tuple[int, int, str]], list[int]]:
-                return text, [], list(range(len(text) + 1))
+                return OpenLawLensWindow._render_markdown_text(  # type: ignore[arg-type]
+                    self,
+                    text,
+                )
+
+            def _render_inline_markdown(
+                self,
+                text: str,
+                base_offset: int,
+            ) -> tuple[str, list[tuple[int, int, str]], list[int]]:
+                return OpenLawLensWindow._render_inline_markdown(  # type: ignore[arg-type]
+                    self,
+                    text,
+                    base_offset,
+                )
 
             def _map_offset(self, offset: int, offset_map: list[int]) -> int:
                 return OpenLawLensWindow._map_offset(  # type: ignore[arg-type]
@@ -756,6 +770,48 @@ class AppReaderPayloadTests(unittest.TestCase):
                     window._agent_answer_buffer.text,
                     "The opinion requires active risk today.",
                 )
+
+        brief_id = "a" * 64
+        window = DummyWindow()
+        window._agent_mode = AGENT_MODE_BRIEF
+        window._case_agent_text_sources = [
+            CaseTextSource(
+                "",
+                "",
+                "E085825_AOB_KN",
+                "2025-06-07",
+                "/tmp/brief.odt",
+                (
+                    "The preference is not merely duplicative of the preference arising "
+                    "under section 361.3."
+                ),
+                authority_type="prior_brief",
+                prior_brief_id=brief_id,
+            )
+        ]
+        answer = (
+            f"[E085825_AOB_KN](open-law-lens://prior-brief/{brief_id}) says it is "
+            "“**not merely duplicative of the preference arising under section 361.3**.”"
+        )
+
+        OpenLawLensWindow._render_agent_answer(window, answer)  # type: ignore[arg-type]
+
+        self.assertEqual(
+            window._agent_answer_buffer.text,
+            (
+                "E085825_AOB_KN says it is not merely duplicative of the preference "
+                "arising under section 361.3."
+            ),
+        )
+        self.assertEqual(len(window._agent_link_lookup), 1)
+        target = next(iter(window._agent_link_lookup.values()))
+        self.assertEqual(target.prior_brief_id, brief_id)
+        self.assertGreater(target.end_offset, target.offset)
+        _tag, start, end = window._agent_answer_buffer.tags[0]
+        self.assertEqual(
+            window._agent_answer_buffer.text[start:end],
+            "not merely duplicative of the preference arising under section 361.3.",
+        )
 
     def test_plain_prior_brief_title_is_automatically_linked(self) -> None:
         class DummyBuffer:

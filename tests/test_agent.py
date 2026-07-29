@@ -102,6 +102,33 @@ class AgentTests(unittest.TestCase):
             ["active risk today", "reasonable, credible, and of solid value"],
         )
 
+    def test_extract_quoted_phrases_normalizes_emphasis_and_legal_words(self) -> None:
+        text = (
+            "The briefs describe "
+            "“**not merely duplicative of the preference arising under section 361.3**.” "
+            "and “**places members of the child’s extended family at the top**.” "
+            "They also require “*active risk today*.”"
+        )
+
+        spans = extract_quoted_phrases(text)
+
+        self.assertEqual(
+            [span[2] for span in spans],
+            [
+                "not merely duplicative of the preference arising under section 361.3.",
+                "places members of the child’s extended family at the top.",
+                "active risk today.",
+            ],
+        )
+        self.assertEqual(
+            [text[start:end] for start, end, _phrase in spans],
+            [
+                "**not merely duplicative of the preference arising under section 361.3**.",
+                "**places members of the child’s extended family at the top**.",
+                "*active risk today*.",
+            ],
+        )
+
     def test_resolve_quote_target_uses_first_canonical_source_match(self) -> None:
         sources = [
             CaseTextSource(
@@ -198,6 +225,65 @@ class AgentTests(unittest.TestCase):
         spans = resolved_agent_quote_spans(answer, sources)
 
         self.assertEqual(spans[0].target.prior_brief_id, brief_id)
+
+    def test_resolved_prior_brief_quotes_ignore_inline_emphasis(self) -> None:
+        first_id = "a" * 64
+        second_id = "b" * 64
+        sources = [
+            CaseTextSource(
+                cluster_id="",
+                opinion_id="",
+                title="E085825_AOB_KN",
+                citation="2025-06-07",
+                text_path="/tmp/first.odt",
+                text=(
+                    "The preference is not merely duplicative of the preference arising "
+                    "under section 361.3. Any deviation from the placement preferences "
+                    "requires the statutory findings."
+                ),
+                authority_type="prior_brief",
+                prior_brief_id=first_id,
+            ),
+            CaseTextSource(
+                cluster_id="",
+                opinion_id="",
+                title="E080701_AOB_Antanita_M",
+                citation="2023-04-20",
+                text_path="/tmp/second.odt",
+                text=(
+                    "ICWA places members of the child’s extended family at the top "
+                    "of the placement hierarchy."
+                ),
+                authority_type="prior_brief",
+                prior_brief_id=second_id,
+            ),
+        ]
+        answer = (
+            f"[E085825_AOB_KN](open-law-lens://prior-brief/{first_id}) argues that "
+            "ICWA is “**not merely duplicative of the preference arising under "
+            "section 361.3**.” It also states that “**Any deviation from the "
+            "placement preferences**” requires findings.\n\n"
+            f"[E080701_AOB_Antanita_M](open-law-lens://prior-brief/{second_id}) says "
+            "ICWA “**places members of the child’s extended family at the top**.”"
+        )
+
+        spans = resolved_agent_quote_spans(answer, sources)
+
+        self.assertEqual(len(spans), 3)
+        self.assertEqual(
+            [
+                span.target.prior_brief_id if span.target is not None else ""
+                for span in spans
+            ],
+            [first_id, first_id, second_id],
+        )
+        self.assertTrue(
+            all(
+                span.target is not None
+                and span.target.end_offset > span.target.offset
+                for span in spans
+            )
+        )
 
     def test_resolved_quote_uses_nearby_plain_prior_brief_title_across_paragraphs(self) -> None:
         wanted_id = "a" * 64

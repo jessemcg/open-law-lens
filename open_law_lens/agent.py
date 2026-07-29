@@ -16,6 +16,8 @@ from .statutes import cited_statute_links, parse_statute_citation
 
 PI_SESSION_LOG_GLOB = "**/*.jsonl"
 QUOTE_RE = re.compile(r'"([^"\n]{1,160})"|“([^”\n]{1,160})”')
+INLINE_EMPHASIS_RE = re.compile(r"\*\*([^*\n]+)\*\*|\*([^*\n]+)\*")
+QUOTE_WORD_RE = re.compile(r"\b\w+(?:[.’'-]\w+)*\b", re.UNICODE)
 REPORTER_PAGE_MARKER_RE = re.compile(r"\[\*\d+\]")
 
 
@@ -170,13 +172,27 @@ def find_latest_pi_session_log_for_cwd(sessions_root: Path, cwd: Path) -> Path |
     return None
 
 
+def _normalize_quoted_phrase(phrase: str) -> str:
+    """Remove inline emphasis that is display markup rather than quoted text."""
+    while True:
+        normalized = INLINE_EMPHASIS_RE.sub(
+            lambda match: match.group(1) or match.group(2) or "",
+            phrase,
+        )
+        if normalized == phrase:
+            return normalized.strip()
+        phrase = normalized
+
+
 def extract_quoted_phrases(text: str) -> list[tuple[int, int, str]]:
     spans: list[tuple[int, int, str]] = []
     for match in QUOTE_RE.finditer(text):
-        phrase = (match.group(1) or match.group(2) or "").strip()
+        phrase = _normalize_quoted_phrase(
+            match.group(1) or match.group(2) or ""
+        )
         if not phrase:
             continue
-        word_count = len(re.findall(r"\b[\w'-]+\b", phrase))
+        word_count = len(QUOTE_WORD_RE.findall(phrase))
         if 2 <= word_count <= 10:
             group_index = 1 if match.group(1) is not None else 2
             spans.append((match.start(group_index), match.end(group_index), phrase))
