@@ -59,6 +59,8 @@ Or save it in the app menu under Settings. The Settings path writes a local
   pagination gaps.
 - Reader links for cited cases, statutes, and rules.
 - Named Research Cache sets.
+- Exact-phrase search across the indexed prior-brief archive, with newest-first
+  reader navigation through matches.
 - Selected-text launcher through `open-law-lens open-selected`.
 - Embedded Pi-only Agent workflow for legal research questions, selected-cache
   questions, and appellate issue assessment.
@@ -196,7 +198,7 @@ intentional design choice. The CLI path keeps the app more responsive, easier to
 install, and less dependent on extra runtime services while still tying legal
 authority lookup to CourtListener APIs and the app's local cache/library model.
 
-There are three main agent workflows:
+There are four main agent workflows:
 
 - Law: ask a California legal research question. The default prompt directs
   Pi to search and extract authority through Open Law Lens CLI commands. If
@@ -209,10 +211,18 @@ There are three main agent workflows:
   allowing comparisons such as which marked case is most analogous to the
   current case. A checked SOCF can also be used by itself for a factual Cache
   question.
+- Prior Briefs: ask a closed-corpus question across the indexed ODT prior-brief
+  archive. This remains separate from Research Cache questions and does not use
+  web search.
 - Appeal Issue Assessment: assess a proposed appellate claim against an ODT or
   PDF fact pattern. The app extracts the fact pattern into a temporary
   workspace, launches Pi in Appeal mode, and directs it to research
   California law through Open Law Lens CLI commands.
+
+The separate Search Across Briefs mode performs a local, non-LLM exact-phrase
+search. It opens matching briefs newest-first in the main reader without adding
+them to the Research Cache. Use `Ctrl+G` and `Ctrl+Shift+G` to move forward and
+backward through occurrences across matching briefs.
 
 Agent runtime settings, including the project-wide Pi model, prompt templates,
 appeal issue presets, and fact-pattern source, are available in the app

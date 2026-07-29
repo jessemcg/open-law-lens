@@ -769,6 +769,26 @@ class PriorBriefLibrary:
             row = conn.execute("SELECT * FROM briefs WHERE brief_id = ?", (brief_id,)).fetchone()
         return self._brief_from_row(row) if row is not None else None
 
+    def search_phrase_briefs(self, query: str) -> list[PriorBrief]:
+        """Return every brief whose text contains the query's FTS phrase."""
+        self.ensure()
+        terms = re.findall(r"[\w§'-]+", query, flags=re.UNICODE)
+        if not any(any(char.isalnum() for char in term) for term in terms):
+            return self.list_briefs()
+        expression = 'text : "' + " ".join(terms).replace('"', '""') + '"'
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT briefs.*
+                FROM briefs_fts
+                JOIN briefs ON briefs_fts.rowid = briefs.id
+                WHERE briefs_fts MATCH ?
+                ORDER BY briefs.document_date DESC, briefs.title COLLATE NOCASE
+                """,
+                (expression,),
+            ).fetchall()
+        return [self._brief_from_row(row) for row in rows]
+
     def search(
         self,
         query: str,

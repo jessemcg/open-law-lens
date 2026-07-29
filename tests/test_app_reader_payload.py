@@ -14,10 +14,13 @@ from open_law_lens.app import (
     AGENT_MODE_CASE,
     AGENT_MODE_GENERAL,
     AGENT_MODE_ICONS,
+    QUERY_MODE_BRIEF_SEARCH,
+    QUERY_MODE_LABELS,
     READER_CLIPBOARD_ICON,
     SCHOLAR_FALLBACK_CLIPBOARD_RECOVERY,
     SCHOLAR_FALLBACK_NOTICE_ONLY,
     SCHOLAR_FALLBACK_TRANSIENT_NOTICE,
+    Gdk,
     Gtk,
     Pango,
     LinkPressState,
@@ -307,6 +310,64 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertTrue(icon_ref.is_file())
         self.assertIn("<svg", icon_ref.read_text(encoding="utf-8"))
 
+    def test_query_mode_labels_include_local_brief_search(self) -> None:
+        self.assertEqual(
+            [
+                QUERY_MODE_LABELS[AGENT_MODE_GENERAL],
+                QUERY_MODE_LABELS[AGENT_MODE_CASE],
+                QUERY_MODE_LABELS[AGENT_MODE_BRIEF],
+                QUERY_MODE_LABELS[QUERY_MODE_BRIEF_SEARCH],
+            ],
+            [
+                "Query Law",
+                "Query Research Cache",
+                "Query Prior Briefs",
+                "Search Across Briefs",
+            ],
+        )
+        self.assertEqual(
+            AGENT_MODE_ICONS[QUERY_MODE_BRIEF_SEARCH],
+            "system-search-symbolic",
+        )
+
+    def test_control_g_prefers_visible_local_find_then_cross_brief_search(self) -> None:
+        moves: list[tuple[str, int]] = []
+
+        class FindBar:
+            visible = True
+
+            def get_visible(self) -> bool:
+                return self.visible
+
+        class Window:
+            _reader_find_bar = FindBar()
+            _brief_search_groups = [object()]
+
+            def _move_reader_find_match(self, direction: int) -> None:
+                moves.append(("reader", direction))
+
+            def _move_brief_search_match(self, direction: int) -> None:
+                moves.append(("brief", direction))
+
+        window = Window()
+        OpenLawLensWindow._on_reader_find_key_pressed(  # type: ignore[arg-type]
+            window,
+            object(),
+            Gdk.KEY_g,
+            0,
+            Gdk.ModifierType.CONTROL_MASK,
+        )
+        window._reader_find_bar.visible = False
+        OpenLawLensWindow._on_reader_find_key_pressed(  # type: ignore[arg-type]
+            window,
+            object(),
+            Gdk.KEY_g,
+            0,
+            Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK,
+        )
+
+        self.assertEqual(moves, [("reader", 1), ("brief", -1)])
+
     def test_window_activation_refreshes_current_case_without_reloading_reader(self) -> None:
         class DummyWindow:
             def __init__(self) -> None:
@@ -388,26 +449,10 @@ class AppReaderPayloadTests(unittest.TestCase):
         current_case_list.select_row.assert_called_once_with(current_case_row)
         open_current_case.assert_called_once_with()
 
-    def test_reader_highlight_button_uses_bundled_icon(self) -> None:
-        class DummyWindow:
-            def _on_toggle_reader_highlight_clicked(self, *_args: object) -> None:
-                pass
-
-        window = DummyWindow()
-        button = OpenLawLensWindow._build_reader_highlight_button(  # type: ignore[arg-type]
-            window
+    def test_reader_highlight_button_builder_is_removed(self) -> None:
+        self.assertFalse(
+            hasattr(OpenLawLensWindow, "_build_reader_highlight_button")
         )
-        icon_ref = resources.files("open_law_lens").joinpath(
-            "icons",
-            "hicolor",
-            "scalable",
-            "actions",
-            "highlighter-symbolic.svg",
-        )
-
-        self.assertEqual(button.get_icon_name(), "highlighter-symbolic")
-        self.assertFalse(button.get_sensitive())
-        self.assertTrue(icon_ref.is_file())
 
     def test_reader_clipboard_button_uses_bundled_icon(self) -> None:
         icon_ref = resources.files("open_law_lens").joinpath(
@@ -1815,6 +1860,10 @@ class AppReaderPayloadTests(unittest.TestCase):
             def _refresh_appeal_issue_menu(self) -> None:
                 pass
 
+            _build_labeled_icon = staticmethod(
+                OpenLawLensWindow._build_labeled_icon
+            )
+
         button = OpenLawLensWindow._build_appeal_issue_menu_button(  # type: ignore[arg-type]
             DummyWindow(),
         )
@@ -1826,7 +1875,12 @@ class AppReaderPayloadTests(unittest.TestCase):
             "cafe-symbolic.svg",
         )
 
-        self.assertEqual(button.get_icon_name(), "cafe-symbolic")
+        content = button.get_child()
+        icon = content.get_first_child()
+        label = icon.get_next_sibling()
+        self.assertEqual(icon.get_icon_name(), "cafe-symbolic")
+        self.assertEqual(label.get_text(), "Assess Argument")
+        self.assertTrue(button.has_css_class("no-bold"))
         self.assertTrue(icon_ref.is_file())
 
     def test_appeal_issue_menu_includes_custom_argument_action(self) -> None:

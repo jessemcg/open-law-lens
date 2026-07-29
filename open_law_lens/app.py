@@ -203,6 +203,8 @@ READER_MUTED_FG = "#4d5866"
 READER_COOL_GRAY_BG = "#e8edf3"
 READER_RENDER_TEXT_CHUNK_SIZE = 8000
 READER_RENDER_TAG_CHUNK_SIZE = 250
+BRIEF_SEARCH_SCROLL_MAX_ATTEMPTS = 4
+BRIEF_SEARCH_SCROLL_RETRY_MS = 50
 AGENT_PANEL_MIN_HEIGHT = 260
 AGENT_ANSWER_MIN_HEIGHT = 36
 AGENT_ANSWER_HEIGHT_PADDING = 4
@@ -213,10 +215,18 @@ AGENT_MODE_GENERAL = "general"
 AGENT_MODE_CASE = "case"
 AGENT_MODE_BRIEF = "brief"
 AGENT_MODE_APPEAL = "appeal"
+QUERY_MODE_BRIEF_SEARCH = "brief_search"
 AGENT_MODE_ICONS = {
     AGENT_MODE_GENERAL: "license-symbolic",
     AGENT_MODE_CASE: "file-cabinet-symbolic",
     AGENT_MODE_BRIEF: "library-symbolic",
+    QUERY_MODE_BRIEF_SEARCH: "system-search-symbolic",
+}
+QUERY_MODE_LABELS = {
+    AGENT_MODE_GENERAL: "Query Law",
+    AGENT_MODE_CASE: "Query Research Cache",
+    AGENT_MODE_BRIEF: "Query Prior Briefs",
+    QUERY_MODE_BRIEF_SEARCH: "Search Across Briefs",
 }
 PRIOR_BRIEF_MARKDOWN_LINK_RE = re.compile(
     r"\[([^\]\n]+)\]\(open-law-lens://prior-brief/([a-fA-F0-9]{16,64})\)"
@@ -374,6 +384,12 @@ def _prior_brief_style_spans(brief: PriorBrief) -> list[DisplayStyleSpan]:
         )
         for heading in brief.heading_spans
     ]
+
+
+@dataclass(frozen=True)
+class PriorBriefPhraseGroup:
+    brief: PriorBrief
+    spans: tuple[tuple[int, int], ...]
 
 
 @dataclass(frozen=True)
@@ -1537,6 +1553,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_panel_height = AGENT_PANEL_MIN_HEIGHT
         self._agent_mode = AGENT_MODE_GENERAL
         self._selected_agent_mode = AGENT_MODE_GENERAL
+        self._brief_search_groups: list[PriorBriefPhraseGroup] = []
+        self._brief_search_brief_index = -1
+        self._brief_search_match_index = -1
+        self._brief_search_total_matches = 0
+        self._brief_search_query = ""
+        self._brief_search_warning = ""
+        self._brief_search_generation = 0
+        self._rendering_brief_search_hit = False
         self._case_agent_text_sources: list[CaseTextSource] = []
         self._agent_link_tags: list[Gtk.TextTag] = []
         self._agent_link_lookup: dict[Gtk.TextTag, QuoteTarget] = {}
@@ -1558,6 +1582,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_saved_highlight_tag: Gtk.TextTag | None = None
         self._reader_find_tag: Gtk.TextTag | None = None
         self._reader_find_current_tag: Gtk.TextTag | None = None
+        self._reader_brief_search_tag: Gtk.TextTag | None = None
+        self._reader_brief_search_current_tag: Gtk.TextTag | None = None
         self._reader_find_bar: Gtk.Widget | None = None
         self._reader_find_entry: Gtk.Entry | None = None
         self._reader_find_count_label: Gtk.Label | None = None
@@ -1792,6 +1818,28 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             button.focus-ai-view-active image {{
               color: @window_fg_color;
             }}
+            box.query-action-strip button.query-action-button,
+            box.query-action-strip menubutton.query-action-button > button {{
+              min-height: 28px;
+              padding: 4px 8px;
+              font-weight: normal;
+              border: none;
+              box-shadow: none;
+              background-color: transparent;
+              background-image: none;
+            }}
+            box.query-action-strip button.query-action-button:hover,
+            box.query-action-strip menubutton.query-action-button > button:hover,
+            box.query-action-strip menubutton.query-action-button:checked > button {{
+              background-color: alpha(@window_fg_color, 0.06);
+              background-image: none;
+            }}
+            box.query-action-strip button.query-action-button.focus-ai-view-active,
+            box.query-action-strip button.query-action-button.focus-ai-view-active:hover {{
+              background-color: alpha(@window_fg_color, 0.08);
+              color: @window_fg_color;
+              background-image: none;
+            }}
             .case-list-frame {{
               border-radius: 8px;
               background: transparent;
@@ -1943,12 +1991,17 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._install_case_completion_click_away(root)
         self._install_reader_find_key_controller(root)
 
+        status_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        status_row.set_hexpand(True)
+
         status_label = Gtk.Label(label="", xalign=0)
         status_label.add_css_class("app-status-strip")
         status_label.set_ellipsize(Pango.EllipsizeMode.END)
         status_label.set_single_line_mode(True)
         status_label.set_hexpand(True)
-        root.append(status_label)
+        status_row.append(status_label)
+        status_row.append(self._build_query_action_strip())
+        root.append(status_row)
         self._status_label = status_label
 
         main = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -1972,6 +2025,20 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         button.set_tooltip_text("Menu")
         button.set_menu_model(menu)
         return button
+
+    def _build_query_action_strip(self) -> Gtk.Widget:
+        strip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        strip.add_css_class("query-action-strip")
+        strip.set_halign(Gtk.Align.END)
+        for mode in (
+            AGENT_MODE_GENERAL,
+            AGENT_MODE_CASE,
+            AGENT_MODE_BRIEF,
+            QUERY_MODE_BRIEF_SEARCH,
+        ):
+            strip.append(self._build_agent_mode_button(mode))
+        strip.append(self._build_appeal_issue_menu_button())
+        return strip
 
     def _build_sidebar(self) -> Gtk.Widget:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -2515,6 +2582,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             background="#ffd35a",
             weight=Pango.Weight.BOLD,
         )
+        self._reader_brief_search_tag = self.reader_buffer.create_tag(
+            "reader-brief-search-match",
+            background="#fff3b0",
+        )
+        self._reader_brief_search_current_tag = self.reader_buffer.create_tag(
+            "reader-brief-search-current-match",
+            background="#ffd35a",
+            weight=Pango.Weight.BOLD,
+        )
         self.reader_header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self.reader_header_box.add_css_class("case-reader-fixed-header")
         self.reader_header_box.set_hexpand(True)
@@ -2714,30 +2790,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
         frame.append(self._build_agent_ask_bar())
 
-        subview_strip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-        subview_strip.add_css_class("focus-pill-group")
-        subview_strip.set_halign(Gtk.Align.END)
-        self._agent_answer_button = self._build_agent_subview_button(
-            "Answer",
-            AGENT_SUBVIEW_ANSWER,
-            "Show the latest linked Agent final answer",
-        )
-        subview_strip.append(self._agent_answer_button)
-        self._agent_session_button = self._build_agent_subview_button(
-            "Session",
-            AGENT_SUBVIEW_SESSION,
-            "Show the embedded Agent terminal session",
-        )
-        subview_strip.append(self._agent_session_button)
-        self._agent_save_answer_button = Gtk.Button(icon_name="document-save-symbolic")
-        self._agent_save_answer_button.add_css_class("flat")
-        self._agent_save_answer_button.set_tooltip_text("Save final answer to Research Cache")
-        self._agent_save_answer_button.set_sensitive(False)
-        self._agent_save_answer_button.connect("clicked", self._on_save_agent_answer_clicked)
-        subview_strip.append(self._agent_save_answer_button)
-        self._agent_subview_strip = subview_strip
-        frame.append(subview_strip)
-
         self._agent_answer_buffer = Gtk.TextBuffer()
         self._agent_answer_view = Gtk.TextView(buffer=self._agent_answer_buffer)
         self._agent_answer_view.set_editable(False)
@@ -2803,23 +2855,34 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         row.add_css_class("agent-ask-bar")
         row.set_hexpand(True)
 
-        mode_strip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-        mode_strip.add_css_class("focus-pill-group")
-        mode_strip.append(self._build_agent_mode_button(AGENT_MODE_GENERAL))
-        mode_strip.append(self._build_agent_mode_button(AGENT_MODE_CASE))
-        mode_strip.append(self._build_agent_mode_button(AGENT_MODE_BRIEF))
-        row.append(mode_strip)
-
         self.agent_question_entry = Gtk.Entry()
         self.agent_question_entry.set_hexpand(True)
         self.agent_question_entry.set_placeholder_text("Ask a California law question")
         self.agent_question_entry.connect("activate", self._on_agent_launch)
         row.append(self.agent_question_entry)
 
-        appeal_button = self._build_appeal_issue_menu_button()
-        row.append(appeal_button)
-
-        row.append(self._build_reader_highlight_button())
+        subview_strip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        subview_strip.add_css_class("focus-pill-group")
+        self._agent_answer_button = self._build_agent_subview_button(
+            "A:",
+            AGENT_SUBVIEW_ANSWER,
+            "Show the latest linked Agent final answer",
+        )
+        subview_strip.append(self._agent_answer_button)
+        self._agent_session_button = self._build_agent_subview_button(
+            "S:",
+            AGENT_SUBVIEW_SESSION,
+            "Show the embedded Agent terminal session",
+        )
+        subview_strip.append(self._agent_session_button)
+        self._agent_save_answer_button = Gtk.Button(icon_name="document-save-symbolic")
+        self._agent_save_answer_button.add_css_class("flat")
+        self._agent_save_answer_button.set_tooltip_text("Save final answer to Research Cache")
+        self._agent_save_answer_button.set_sensitive(False)
+        self._agent_save_answer_button.connect("clicked", self._on_save_agent_answer_clicked)
+        subview_strip.append(self._agent_save_answer_button)
+        self._agent_subview_strip = subview_strip
+        row.append(subview_strip)
 
         collapse_button = Gtk.Button(icon_name="go-up-symbolic")
         collapse_button.add_css_class("flat")
@@ -2833,20 +2896,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return row
 
     def _build_appeal_issue_menu_button(self) -> Gtk.MenuButton:
-        button = Gtk.MenuButton(icon_name="cafe-symbolic")
+        button = Gtk.MenuButton()
         button.add_css_class("flat")
+        button.add_css_class("no-bold")
+        button.add_css_class("query-action-button")
+        button.set_child(self._build_labeled_icon("cafe-symbolic", "Assess Argument"))
         button.set_tooltip_text("Assess appeal argument")
         self._appeal_issue_menu_button = button
         self._refresh_appeal_issue_menu()
-        return button
-
-    def _build_reader_highlight_button(self) -> Gtk.Button:
-        button = Gtk.Button(icon_name="highlighter-symbolic")
-        button.add_css_class("flat")
-        button.set_tooltip_text("Highlight selected text")
-        button.set_sensitive(False)
-        button.connect("clicked", self._on_toggle_reader_highlight_clicked)
-        self._reader_highlight_button = button
         return button
 
     def _build_reader_clipboard_button(self) -> Gtk.Button:
@@ -2905,21 +2962,37 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if isinstance(child, Gtk.Label):
             child.set_xalign(0)
 
+    @staticmethod
+    def _build_labeled_icon(icon_name: str, label: str) -> Gtk.Widget:
+        content = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        icon = Gtk.Image(icon_name=icon_name)
+        icon.set_pixel_size(16)
+        content.append(icon)
+        content.append(Gtk.Label(label=label))
+        return content
+
     def _build_agent_mode_button(self, mode: str) -> Gtk.ToggleButton:
         button = Gtk.ToggleButton()
         button.add_css_class("flat")
         button.add_css_class("no-bold")
-        button.add_css_class("focus-pill-segment")
-        icon = Gtk.Image(icon_name=AGENT_MODE_ICONS[mode])
-        icon.set_pixel_size(16)
-        button.set_child(icon)
+        button.add_css_class("query-action-button")
+        button.set_child(
+            self._build_labeled_icon(
+                AGENT_MODE_ICONS[mode],
+                QUERY_MODE_LABELS[mode],
+            )
+        )
         tooltip = (
             "Ask from CourtListener legal authority"
             if mode == AGENT_MODE_GENERAL
             else (
                 "Ask from marked Research Cache authorities"
                 if mode == AGENT_MODE_CASE
-                else "Ask across the indexed prior brief archive"
+                else (
+                    "Ask across the indexed prior brief archive"
+                    if mode == AGENT_MODE_BRIEF
+                    else "Search exact phrases across the indexed prior brief archive"
+                )
             )
         )
         button.set_tooltip_text(tooltip)
@@ -3206,6 +3279,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         *,
         apply_markdown: bool = False,
     ) -> bool:
+        if (
+            getattr(self, "_brief_search_groups", [])
+            and not getattr(self, "_rendering_brief_search_hit", False)
+        ):
+            self._clear_brief_search_session()
         if page_markers or style_spans:
             display = normalize_display_quote_stacks(
                 DisplayText(
@@ -4318,6 +4396,252 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             populate_research_cache=populate_research_cache,
         )
 
+    def _start_brief_phrase_search(self, query: str) -> None:
+        query = query.strip()
+        if not query:
+            self._set_status("Enter an exact phrase to search across prior briefs.")
+            return
+        self._clear_brief_search_session()
+        self._brief_search_query = query
+        generation = self._brief_search_generation
+        self._set_status("Updating Prior Brief Library and searching...")
+        threading.Thread(
+            target=self._brief_phrase_search_worker,
+            args=(query, generation),
+            daemon=True,
+        ).start()
+
+    def _brief_phrase_search_worker(self, query: str, generation: int) -> None:
+        try:
+            sync_result = self.prior_briefs.sync()
+            groups = [
+                PriorBriefPhraseGroup(brief=brief, spans=spans)
+                for brief in self.prior_briefs.search_phrase_briefs(query)
+                if (spans := tuple(quote_match_spans(brief.text, query)))
+            ]
+            GLib.idle_add(
+                self._finish_brief_phrase_search,
+                query,
+                generation,
+                groups,
+                len(sync_result.errors),
+            )
+        except (PriorBriefError, OSError, ValueError, sqlite3.Error) as exc:
+            GLib.idle_add(
+                self._finish_brief_phrase_search_error,
+                generation,
+                exc,
+            )
+
+    def _finish_brief_phrase_search(
+        self,
+        query: str,
+        generation: int,
+        groups: list[PriorBriefPhraseGroup],
+        error_count: int,
+    ) -> bool:
+        if (
+            generation != self._brief_search_generation
+            or self._selected_agent_mode != QUERY_MODE_BRIEF_SEARCH
+        ):
+            return False
+        self._brief_search_groups = groups
+        self._brief_search_query = query
+        self._brief_search_brief_index = 0 if groups else -1
+        self._brief_search_match_index = 0 if groups else -1
+        self._brief_search_total_matches = sum(len(group.spans) for group in groups)
+        self._brief_search_warning = (
+            f" · {error_count} indexing error(s)" if error_count else ""
+        )
+        if not groups:
+            self._set_status(
+                f'No prior briefs contain the exact phrase "{query}".'
+                + self._brief_search_warning
+            )
+            return False
+        self._show_current_brief_search_hit()
+        return False
+
+    def _finish_brief_phrase_search_error(
+        self,
+        generation: int,
+        error: BaseException,
+    ) -> bool:
+        if generation != self._brief_search_generation:
+            return False
+        self._set_status(f"Unable to search Prior Brief Library: {error}")
+        return False
+
+    def _clear_brief_search_session(self) -> None:
+        self._brief_search_generation += 1
+        self._brief_search_groups = []
+        self._brief_search_brief_index = -1
+        self._brief_search_match_index = -1
+        self._brief_search_total_matches = 0
+        self._brief_search_query = ""
+        self._brief_search_warning = ""
+        self._clear_brief_search_tags()
+
+    def _clear_brief_search_tags(self) -> None:
+        reader_buffer = getattr(self, "reader_buffer", None)
+        if reader_buffer is None:
+            return
+        start = reader_buffer.get_start_iter()
+        end = reader_buffer.get_end_iter()
+        for tag in (
+            getattr(self, "_reader_brief_search_tag", None),
+            getattr(self, "_reader_brief_search_current_tag", None),
+        ):
+            if tag is not None:
+                reader_buffer.remove_tag(tag, start, end)
+
+    def _move_brief_search_match(self, direction: int) -> None:
+        groups = self._brief_search_groups
+        if not groups:
+            self._set_status("No cross-brief search results are active.")
+            return
+        if direction < 0:
+            if self._brief_search_match_index > 0:
+                self._brief_search_match_index -= 1
+            else:
+                self._brief_search_brief_index = (
+                    self._brief_search_brief_index - 1
+                ) % len(groups)
+                self._brief_search_match_index = (
+                    len(groups[self._brief_search_brief_index].spans) - 1
+                )
+        elif self._brief_search_match_index + 1 < len(
+            groups[self._brief_search_brief_index].spans
+        ):
+            self._brief_search_match_index += 1
+        else:
+            self._brief_search_brief_index = (
+                self._brief_search_brief_index + 1
+            ) % len(groups)
+            self._brief_search_match_index = 0
+        self._show_current_brief_search_hit()
+
+    def _show_current_brief_search_hit(self) -> None:
+        if not self._brief_search_groups:
+            return
+        group = self._brief_search_groups[self._brief_search_brief_index]
+        selected_brief = getattr(self, "_selected_prior_brief", None)
+        if (
+            selected_brief is None
+            or selected_brief.brief_id != group.brief.brief_id
+        ):
+            self._rendering_brief_search_hit = True
+            try:
+                self._display_prior_brief(
+                    group.brief,
+                    set_status=False,
+                    persist_position=False,
+                )
+            finally:
+                self._rendering_brief_search_hit = False
+        self._apply_brief_search_tags(group)
+        global_index = (
+            sum(
+                len(previous.spans)
+                for previous in self._brief_search_groups[
+                    : self._brief_search_brief_index
+                ]
+            )
+            + self._brief_search_match_index
+            + 1
+        )
+        self._set_status(
+            f"Match {global_index} of {self._brief_search_total_matches}"
+            f" · Brief {self._brief_search_brief_index + 1}"
+            f" of {len(self._brief_search_groups)}"
+            + self._brief_search_warning
+        )
+
+    def _apply_brief_search_tags(self, group: PriorBriefPhraseGroup) -> None:
+        if (
+            self._reader_brief_search_tag is None
+            or self._reader_brief_search_current_tag is None
+        ):
+            return
+        self._clear_brief_search_tags()
+        for start, end in group.spans:
+            self.reader_buffer.apply_tag(
+                self._reader_brief_search_tag,
+                self.reader_buffer.get_iter_at_offset(start),
+                self.reader_buffer.get_iter_at_offset(end),
+            )
+        start, end = group.spans[self._brief_search_match_index]
+        start_iter = self.reader_buffer.get_iter_at_offset(start)
+        end_iter = self.reader_buffer.get_iter_at_offset(end)
+        self.reader_buffer.apply_tag(
+            self._reader_brief_search_current_tag,
+            start_iter,
+            end_iter,
+        )
+        self.reader_buffer.place_cursor(start_iter)
+        # TextView validates line heights at a higher-priority idle after a new
+        # brief replaces the buffer. Defer positioning until that pass, then
+        # confirm the match is onscreen. Captured search coordinates prevent an
+        # older callback from overriding rapid Ctrl+G navigation.
+        GLib.idle_add(
+            self._scroll_brief_search_hit_after_layout,
+            self._brief_search_generation,
+            group.brief.brief_id,
+            self._brief_search_brief_index,
+            self._brief_search_match_index,
+            0,
+        )
+
+    def _scroll_brief_search_hit_after_layout(
+        self,
+        generation: int,
+        brief_id: str,
+        brief_index: int,
+        match_index: int,
+        attempt: int,
+    ) -> bool:
+        if (
+            generation != self._brief_search_generation
+            or self._selected_agent_mode != QUERY_MODE_BRIEF_SEARCH
+            or brief_index != self._brief_search_brief_index
+            or match_index != self._brief_search_match_index
+            or not (0 <= brief_index < len(self._brief_search_groups))
+        ):
+            return False
+        group = self._brief_search_groups[brief_index]
+        selected_brief = getattr(self, "_selected_prior_brief", None)
+        if (
+            group.brief.brief_id != brief_id
+            or selected_brief is None
+            or selected_brief.brief_id != brief_id
+            or not (0 <= match_index < len(group.spans))
+        ):
+            return False
+        start = group.spans[match_index][0]
+        start_iter = self.reader_buffer.get_iter_at_offset(start)
+        target_rect = self.reader_view.get_iter_location(start_iter)
+        visible_rect = self.reader_view.get_visible_rect()
+        target_bottom = target_rect.y + max(1, target_rect.height)
+        visible_bottom = visible_rect.y + visible_rect.height
+        if (
+            visible_rect.height > 0
+            and visible_rect.y <= target_rect.y
+            and target_bottom <= visible_bottom
+        ):
+            return False
+        self.reader_view.scroll_to_iter(start_iter, 0.15, True, 0.0, 0.2)
+        if attempt + 1 < BRIEF_SEARCH_SCROLL_MAX_ATTEMPTS:
+            GLib.timeout_add(
+                BRIEF_SEARCH_SCROLL_RETRY_MS,
+                self._scroll_brief_search_hit_after_layout,
+                generation,
+                brief_id,
+                brief_index,
+                match_index,
+                attempt + 1,
+            )
+        return False
+
     def _install_reader_find_key_controller(self, widget: Gtk.Widget) -> None:
         key_controller = Gtk.EventControllerKey()
         key_controller.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
@@ -4337,7 +4661,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._open_reader_find()
             return True
         if has_ctrl and keyval in {Gdk.KEY_g, Gdk.KEY_G}:
-            self._move_reader_find_match(-1 if has_shift else 1)
+            if (
+                self._reader_find_bar is not None
+                and self._reader_find_bar.get_visible()
+            ):
+                self._move_reader_find_match(-1 if has_shift else 1)
+            elif getattr(self, "_brief_search_groups", []):
+                self._move_brief_search_match(-1 if has_shift else 1)
+            else:
+                self._move_reader_find_match(-1 if has_shift else 1)
             return True
         if keyval == Gdk.KEY_Escape and self._reader_find_bar is not None and self._reader_find_bar.get_visible():
             self._close_reader_find(clear_entry=False)
@@ -4619,18 +4951,32 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_status("Saved agent answer to Research Cache. Library preserved.")
 
     def _set_agent_mode(self, mode: str) -> None:
+        previous_mode = self._selected_agent_mode
         self._selected_agent_mode = (
             mode
-            if mode in {AGENT_MODE_GENERAL, AGENT_MODE_CASE, AGENT_MODE_BRIEF}
+            if mode
+            in {
+                AGENT_MODE_GENERAL,
+                AGENT_MODE_CASE,
+                AGENT_MODE_BRIEF,
+                QUERY_MODE_BRIEF_SEARCH,
+            }
             else AGENT_MODE_GENERAL
         )
+        if (
+            previous_mode == QUERY_MODE_BRIEF_SEARCH
+            and self._selected_agent_mode != QUERY_MODE_BRIEF_SEARCH
+        ):
+            self._clear_brief_search_session()
         if hasattr(self, "agent_question_entry"):
             if self._selected_agent_mode == AGENT_MODE_GENERAL:
                 placeholder = "Ask a California law question"
             elif self._selected_agent_mode == AGENT_MODE_CASE:
                 placeholder = "Ask about marked Research Cache authorities"
-            else:
+            elif self._selected_agent_mode == AGENT_MODE_BRIEF:
                 placeholder = "Ask about prior briefing"
+            else:
+                placeholder = "Search an exact phrase across prior briefs"
             self.agent_question_entry.set_placeholder_text(placeholder)
         self._agent_mode_toggle_guard = True
         try:
@@ -4713,16 +5059,19 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         )
         section.append(navigation_group)
 
-        search_group = Gtk.ShortcutsGroup(title="Case Text Find")
+        search_group = Gtk.ShortcutsGroup(title="Reader Search")
         search_group.append(
             Gtk.ShortcutsShortcut(title="Open find", accelerator="<Primary>F")
         )
         search_group.append(
-            Gtk.ShortcutsShortcut(title="Next find result", accelerator="<Primary>G")
+            Gtk.ShortcutsShortcut(
+                title="Next find or cross-brief result",
+                accelerator="<Primary>G",
+            )
         )
         search_group.append(
             Gtk.ShortcutsShortcut(
-                title="Previous find result",
+                title="Previous find or cross-brief result",
                 accelerator="<Primary><Shift>G",
             )
         )
@@ -8155,7 +8504,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         mode = self._selected_agent_mode
         question = self.agent_question_entry.get_text().strip()
         if not question:
-            self._set_status("Enter an agent question.")
+            self._set_status(
+                "Enter an exact phrase to search across prior briefs."
+                if mode == QUERY_MODE_BRIEF_SEARCH
+                else "Enter an agent question."
+            )
+            return
+        if mode == QUERY_MODE_BRIEF_SEARCH:
+            self._start_brief_phrase_search(question)
             return
         if Vte is None or self._agent_terminal is None:
             self._set_status("Embedded terminal is unavailable.")
@@ -9634,9 +9990,29 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                     live_payload,
                     mark_dirty=False,
                 )
+        OpenLawLensWindow._display_prior_brief(
+            self,
+            brief,
+            target=target,
+            added_to_cache=added_to_cache,
+        )
+
+    def _display_prior_brief(
+        self,
+        brief: PriorBrief,
+        *,
+        target: QuoteTarget | None = None,
+        added_to_cache: bool = False,
+        set_status: bool = True,
+        persist_position: bool = True,
+    ) -> None:
         capture_position = getattr(self, "_capture_current_reader_position", None)
         if capture_position is not None:
             capture_position()
+        if not persist_position:
+            clear_position_key = getattr(self, "_clear_reader_position_key", None)
+            if clear_position_key is not None:
+                clear_position_key()
         if hasattr(self, "case_list"):
             self.case_list.unselect_all()
         self._selected_cluster = None
@@ -9644,7 +10020,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._selected_rule = None
         self._selected_agent_answer = None
         self._selected_prior_brief = brief
-        self._set_reader_position_key("prior_brief", brief.brief_id)
+        if persist_position:
+            self._set_reader_position_key("prior_brief", brief.brief_id)
         document_date = us_long_date(brief.document_date)
         self._set_reader_header(
             f"{brief.title} · {document_date}" if document_date else brief.title
@@ -9655,10 +10032,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             brief.text,
             style_spans=_prior_brief_style_spans(brief),
         )
-        self._set_status(
-            f"Opened prior brief: {brief.title}."
-            + (" Added to Research Cache." if added_to_cache else "")
-        )
+        if set_status:
+            self._set_status(
+                f"Opened prior brief: {brief.title}."
+                + (" Added to Research Cache." if added_to_cache else "")
+            )
 
     def _on_save_prior_brief_clicked(self, _button: Gtk.Button) -> None:
         brief = self._selected_prior_brief

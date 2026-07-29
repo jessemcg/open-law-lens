@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import unittest
-import sqlite3
 import zipfile
+from contextlib import closing
 from datetime import date
 from pathlib import Path
 from unittest.mock import patch
@@ -152,7 +153,7 @@ class PriorBriefLibraryTests(unittest.TestCase):
             source = source_dir / "B353817_AOB_Joseph_A.odt"
             source.write_bytes(b"brief")
             database = root / "library.sqlite3"
-            with sqlite3.connect(database) as conn:
+            with closing(sqlite3.connect(database)) as conn:
                 conn.executescript(
                     """
                     CREATE TABLE briefs (
@@ -274,6 +275,44 @@ class PriorBriefLibraryTests(unittest.TestCase):
 
             self.assertEqual(result.errors, ("broken",))
             self.assertEqual(library.count(), 1)
+
+    def test_phrase_search_returns_every_matching_brief_newest_first(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_dir = root / "briefs"
+            source_dir.mkdir()
+            files = [
+                source_dir / f"B{index:06d}_AOB_Test.odt"
+                for index in range(105)
+            ]
+            for path in files:
+                path.write_bytes(path.name.encode("utf-8"))
+            newest = files[-1]
+
+            def extraction(path: Path) -> PriorBriefExtraction:
+                date_text = "07/29/2026" if path == newest else "07/28/2026"
+                return _extraction(
+                    "The beneficial relationship exception applies.\n"
+                    f"Dated: {date_text} By: /s/ Jesse"
+                )
+
+            library = PriorBriefLibrary(source_dir, root / "library.sqlite3")
+            with patch(
+                "open_law_lens.prior_briefs.extract_prior_brief_document",
+                side_effect=extraction,
+            ):
+                library.sync()
+
+            matches = library.search_phrase_briefs("beneficial relationship")
+
+            self.assertEqual(len(matches), 105)
+            self.assertEqual(matches[0].title, newest.stem)
+            self.assertTrue(
+                all(
+                    "beneficial relationship" in brief.text
+                    for brief in matches
+                )
+            )
 
 
 if __name__ == "__main__":
