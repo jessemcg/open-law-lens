@@ -245,6 +245,12 @@ checkmark starts off for each case and remembers that case's choice across app
 launches. Appeal Issue Assessment always includes its selected fact pattern,
 regardless of this ordinary-question checkmark.
 
+When the Current Case SOCF is open, a collapsible Outline appears beneath its
+sidebar row. The outline preserves the ODT heading hierarchy and each entry
+jumps directly to that section of the reader. It is independently scrollable
+so the Research Cache remains available below it. Headings and subheadings are
+rendered in bold in the SOCF reader.
+
 ## Appeal Issue Assessment
 
 The Appeal Issue Assessment workflow is for quickly testing possible appellate

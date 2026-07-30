@@ -31,6 +31,8 @@ from open_law_lens.app import (
     appeal_issue_menu_label,
     build_agent_launch_env,
     build_case_reader_payload,
+    _normalize_current_case_document,
+    _current_case_style_spans,
     strip_agent_legal_authority_backticks,
 )
 from open_law_lens.agent import CaseTextSource, QuoteTarget
@@ -46,7 +48,11 @@ from open_law_lens.config import (
     PiAgentProfile,
 )
 from open_law_lens.current_case import CurrentCaseSocf
-from open_law_lens.fact_patterns import FactPatternExport
+from open_law_lens.fact_patterns import (
+    FactPatternDocument,
+    FactPatternExport,
+    FactPatternHeading,
+)
 from open_law_lens.library import CaseLibrary, DisplayText, PageMarker, ResearchSet
 from open_law_lens.opinion_formatting import DisplayStyleSpan
 from open_law_lens.reader_highlights import ReaderHighlight
@@ -1461,32 +1467,332 @@ class AppReaderPayloadTests(unittest.TestCase):
 
             def __init__(self) -> None:
                 self.texts: list[str] = []
+                self.style_spans: list[list[DisplayStyleSpan]] = []
+                self.outlines: list[tuple[str, FactPatternDocument]] = []
                 self.statuses: list[str] = []
 
-            def _set_reader_text(self, text: str) -> None:
+            def _set_reader_text(
+                self,
+                text: str,
+                *,
+                style_spans: list[DisplayStyleSpan],
+            ) -> None:
                 self.texts.append(text)
+                self.style_spans.append(style_spans)
+
+            def _show_current_case_outline(
+                self,
+                case_name: str,
+                document: FactPatternDocument,
+            ) -> None:
+                self.outlines.append((case_name, document))
 
             def _set_status(self, status: str) -> None:
                 self.statuses.append(status)
 
         window = DummyWindow()
+        old_document = FactPatternDocument(text="Old text")
+        current_document = FactPatternDocument(text="Current text")
         stale = OpenLawLensWindow._finish_current_case_socf_load(  # type: ignore[arg-type]
             window,
             resolved,
-            "Old text",
+            old_document,
             2,
         )
         current = OpenLawLensWindow._finish_current_case_socf_load(  # type: ignore[arg-type]
             window,
             resolved,
-            "Current text",
+            current_document,
             3,
         )
 
         self.assertFalse(stale)
         self.assertFalse(current)
         self.assertEqual(window.texts, ["Current text"])
+        self.assertEqual(window.style_spans, [[]])
+        self.assertEqual(
+            window.outlines,
+            [("B123456_Test", current_document)],
+        )
         self.assertEqual(window.statuses, ["Loaded the current-case SOCF for B123456_Test."])
+
+    def test_current_case_document_normalization_keeps_heading_offsets_aligned(self) -> None:
+        text = 'The court said "\'disappears\'" on appeal.\n\nDiscussion'
+        start = text.index("Discussion")
+        document = FactPatternDocument(
+            text=text,
+            headings=(
+                FactPatternHeading(2, "Discussion", start, len(text)),
+            ),
+        )
+
+        normalized = _normalize_current_case_document(document)
+
+        self.assertLess(len(normalized.text), len(text))
+        self.assertEqual(len(normalized.headings), 1)
+        heading = normalized.headings[0]
+        self.assertEqual(
+            normalized.text[heading.start_offset:heading.end_offset],
+            "Discussion",
+        )
+
+    def test_current_case_style_spans_bold_headings_and_subheadings(self) -> None:
+        document = FactPatternDocument(
+            text="Overview\n\nHistory\n\nDetails",
+            headings=(
+                FactPatternHeading(1, "Overview", 0, 8),
+                FactPatternHeading(2, "History", 10, 17),
+                FactPatternHeading(3, "Details", 19, 26),
+            ),
+        )
+
+        spans = _current_case_style_spans(document)
+
+        self.assertEqual(
+            [(span.kind, span.start_offset, span.end_offset) for span in spans],
+            [
+                ("heading", 0, 8),
+                ("brief-subheading", 10, 17),
+                ("brief-subheading", 19, 26),
+            ],
+        )
+
+    def test_current_case_outline_row_schedules_heading_navigation(self) -> None:
+        document = FactPatternDocument(
+            text="Overview\n\nHistory",
+            headings=(
+                FactPatternHeading(1, "Overview", 0, 8),
+                FactPatternHeading(2, "History", 10, 17),
+            ),
+        )
+        row = SimpleNamespace(
+            _open_law_lens_current_case_heading_index=1,
+        )
+        window = SimpleNamespace(
+            _current_case_outline_document=document,
+            _current_case_outline_case_name="B123456_Test",
+            _current_case_outline_navigation_generation=4,
+            _reader_position_key=("socf", "B123456_Test"),
+            _case_load_generation=7,
+            _scroll_current_case_heading_after_layout=MagicMock(),
+        )
+
+        with patch("open_law_lens.app.GLib.idle_add") as idle_add:
+            OpenLawLensWindow._on_current_case_outline_row_activated(  # type: ignore[arg-type]
+                window,
+                MagicMock(),
+                row,
+            )
+
+        self.assertEqual(window._current_case_outline_navigation_generation, 5)
+        idle_add.assert_called_once_with(
+            window._scroll_current_case_heading_after_layout,
+            7,
+            "B123456_Test",
+            10,
+            5,
+            0,
+        )
+
+    def test_current_case_outline_populates_hierarchy_and_hides_when_empty(self) -> None:
+        class FakeLabel:
+            def __init__(self, *, label: str, xalign: int) -> None:
+                self.text = label
+                self.xalign = xalign
+                self.classes: list[str] = []
+                self.margin_start = -1
+                self.tooltip = ""
+
+            def add_css_class(self, name: str) -> None:
+                self.classes.append(name)
+
+            def set_ellipsize(self, _mode: object) -> None:
+                pass
+
+            def set_single_line_mode(self, _enabled: bool) -> None:
+                pass
+
+            def set_tooltip_text(self, text: str) -> None:
+                self.tooltip = text
+
+            def set_margin_start(self, margin: int) -> None:
+                self.margin_start = margin
+
+        class FakeRow:
+            def __init__(self) -> None:
+                self.child: FakeLabel | None = None
+
+            def set_selectable(self, _selectable: bool) -> None:
+                pass
+
+            def set_activatable(self, _activatable: bool) -> None:
+                pass
+
+            def set_child(self, child: FakeLabel) -> None:
+                self.child = child
+
+        class FakeList:
+            def __init__(self) -> None:
+                self.rows: list[FakeRow] = [FakeRow()]
+
+            def get_first_child(self) -> FakeRow | None:
+                return self.rows[0] if self.rows else None
+
+            def remove(self, row: FakeRow) -> None:
+                self.rows.remove(row)
+
+            def append(self, row: FakeRow) -> None:
+                self.rows.append(row)
+
+        class Window:
+            def __init__(self) -> None:
+                self._current_case_outline_navigation_generation = 0
+                self._current_case_outline_document = None
+                self._current_case_outline_case_name = ""
+                self._current_case_outline_list = FakeList()
+                self._current_case_outline_label = MagicMock()
+                self._current_case_outline_toggle = MagicMock()
+                self._current_case_outline_box = MagicMock()
+
+            def _remove_current_case_outline_rows(self) -> None:
+                OpenLawLensWindow._remove_current_case_outline_rows(  # type: ignore[arg-type]
+                    self
+                )
+
+        document = FactPatternDocument(
+            text="Overview\n\nDetails",
+            headings=(
+                FactPatternHeading(1, "Overview", 0, 8),
+                FactPatternHeading(3, "Details", 10, 17),
+            ),
+        )
+        window = Window()
+
+        with (
+            patch("open_law_lens.app.Gtk.ListBoxRow", FakeRow),
+            patch("open_law_lens.app.Gtk.Label", FakeLabel),
+        ):
+            OpenLawLensWindow._show_current_case_outline(  # type: ignore[arg-type]
+                window,
+                "B123456_Test",
+                document,
+            )
+
+        labels = [row.child for row in window._current_case_outline_list.rows]
+        self.assertEqual([label.text for label in labels if label], ["Overview", "Details"])
+        self.assertEqual([label.margin_start for label in labels if label], [0, 28])
+        self.assertIn("current-case-outline-level-one", labels[0].classes)
+        window._current_case_outline_label.set_text.assert_called_once_with(
+            "Outline (2)"
+        )
+        window._current_case_outline_box.set_visible.assert_called_once_with(True)
+        window._current_case_outline_toggle.set_active.assert_called_once_with(True)
+
+        window._current_case_outline_box.reset_mock()
+        OpenLawLensWindow._show_current_case_outline(  # type: ignore[arg-type]
+            window,
+            "B123456_Test",
+            FactPatternDocument(text="No headings"),
+        )
+
+        self.assertEqual(window._current_case_outline_list.rows, [])
+        window._current_case_outline_box.set_visible.assert_called_once_with(False)
+
+    def test_current_case_outline_navigation_retries_until_heading_is_visible(self) -> None:
+        document = FactPatternDocument(
+            text=("x" * 100) + "History",
+            headings=(
+                FactPatternHeading(2, "History", 100, 107),
+            ),
+        )
+
+        class View:
+            def __init__(self) -> None:
+                self.visible_y = 0
+                self.scrolls: list[int] = []
+
+            def get_iter_location(self, iter_: int) -> object:
+                return SimpleNamespace(y=iter_, height=1)
+
+            def get_visible_rect(self) -> object:
+                return SimpleNamespace(y=self.visible_y, height=20)
+
+            def scroll_to_iter(self, iter_: int, *_args: object) -> None:
+                self.scrolls.append(iter_)
+                self.visible_y = iter_ - 2
+
+        class Window:
+            _case_load_generation = 7
+            _current_case_outline_navigation_generation = 5
+            _current_case_outline_case_name = "B123456_Test"
+            _reader_position_key = ("socf", "B123456_Test")
+            _current_case_outline_document = document
+
+            def __init__(self) -> None:
+                self.reader_buffer = SimpleNamespace(
+                    get_iter_at_offset=lambda offset: offset,
+                )
+                self.reader_view = View()
+
+            def _scroll_current_case_heading_after_layout(
+                self,
+                *args: object,
+            ) -> bool:
+                return OpenLawLensWindow._scroll_current_case_heading_after_layout(
+                    self,  # type: ignore[arg-type]
+                    *args,
+                )
+
+        window = Window()
+        queued: list[tuple[object, tuple[object, ...]]] = []
+
+        with patch(
+            "open_law_lens.app.GLib.timeout_add",
+            side_effect=lambda _delay, callback, *args: queued.append(
+                (callback, args)
+            ),
+        ):
+            result = window._scroll_current_case_heading_after_layout(
+                7,
+                "B123456_Test",
+                100,
+                5,
+                0,
+            )
+            callback, args = queued.pop(0)
+            callback(*args)  # type: ignore[operator]
+
+        self.assertFalse(result)
+        self.assertEqual(window.reader_view.scrolls, [100])
+        self.assertEqual(queued, [])
+
+    def test_stale_current_case_outline_navigation_does_not_scroll(self) -> None:
+        document = FactPatternDocument(
+            text="Overview",
+            headings=(FactPatternHeading(1, "Overview", 0, 8),),
+        )
+        view = MagicMock()
+        window = SimpleNamespace(
+            _case_load_generation=8,
+            _current_case_outline_navigation_generation=5,
+            _current_case_outline_case_name="B123456_Test",
+            _reader_position_key=("socf", "B123456_Test"),
+            _current_case_outline_document=document,
+            reader_buffer=MagicMock(),
+            reader_view=view,
+        )
+
+        result = OpenLawLensWindow._scroll_current_case_heading_after_layout(  # type: ignore[arg-type]
+            window,
+            7,
+            "B123456_Test",
+            0,
+            5,
+            0,
+        )
+
+        self.assertFalse(result)
+        view.scroll_to_iter.assert_not_called()
 
     def test_case_agent_prompt_reports_missing_current_case_context(self) -> None:
         class DummyWindow:

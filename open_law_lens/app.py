@@ -124,10 +124,12 @@ from .external_import import (
     validated_import_official_citation,
 )
 from .fact_patterns import (
+    FactPatternDocument,
     FactPatternError,
     FactPatternExport,
+    FactPatternHeading,
     export_fact_pattern,
-    extract_fact_pattern_text,
+    extract_fact_pattern_document,
 )
 from .launch_request import pop_open_authority_request
 from .library import (
@@ -210,6 +212,10 @@ READER_RENDER_TEXT_CHUNK_SIZE = 8000
 READER_RENDER_TAG_CHUNK_SIZE = 250
 BRIEF_SEARCH_SCROLL_MAX_ATTEMPTS = 4
 BRIEF_SEARCH_SCROLL_RETRY_MS = 50
+CURRENT_CASE_OUTLINE_MAX_HEIGHT = 260
+CURRENT_CASE_OUTLINE_INDENT = 14
+CURRENT_CASE_OUTLINE_SCROLL_MAX_ATTEMPTS = 4
+CURRENT_CASE_OUTLINE_SCROLL_RETRY_MS = 50
 AGENT_PANEL_MIN_HEIGHT = 260
 AGENT_ANSWER_MIN_HEIGHT = 36
 AGENT_ANSWER_HEIGHT_PADDING = 4
@@ -416,6 +422,53 @@ def _prior_brief_style_spans(brief: PriorBrief) -> list[DisplayStyleSpan]:
         )
         for heading in brief.heading_spans
     ]
+
+
+def _current_case_style_spans(
+    document: FactPatternDocument,
+) -> list[DisplayStyleSpan]:
+    return [
+        DisplayStyleSpan(
+            "heading" if heading.level == 1 else "brief-subheading",
+            heading.start_offset,
+            heading.end_offset,
+        )
+        for heading in document.headings
+    ]
+
+
+def _normalize_current_case_document(
+    document: FactPatternDocument,
+) -> FactPatternDocument:
+    display = normalize_display_quote_stacks(
+        DisplayText(
+            text=document.text,
+            source_field="",
+            page_markers=[],
+            style_spans=[
+                DisplayStyleSpan(
+                    "current-case-outline-anchor",
+                    heading.start_offset,
+                    heading.end_offset,
+                )
+                for heading in document.headings
+            ],
+        )
+    )
+    headings = tuple(
+        FactPatternHeading(
+            level=heading.level,
+            text=display.text[span.start_offset:span.end_offset],
+            start_offset=span.start_offset,
+            end_offset=span.end_offset,
+        )
+        for heading, span in zip(
+            document.headings,
+            display.style_spans,
+            strict=True,
+        )
+    )
+    return FactPatternDocument(text=display.text, headings=headings)
 
 
 @dataclass(frozen=True)
@@ -1722,6 +1775,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._current_case_context_subtitle: Gtk.Label | None = None
         self._current_case_context_check: Gtk.CheckButton | None = None
         self._current_case_context_toggle_guard = False
+        self._current_case_outline_box: Gtk.Widget | None = None
+        self._current_case_outline_toggle: Gtk.ToggleButton | None = None
+        self._current_case_outline_icon: Gtk.Image | None = None
+        self._current_case_outline_label: Gtk.Label | None = None
+        self._current_case_outline_revealer: Gtk.Revealer | None = None
+        self._current_case_outline_list: Gtk.ListBox | None = None
+        self._current_case_outline_document: FactPatternDocument | None = None
+        self._current_case_outline_case_name = ""
+        self._current_case_outline_navigation_generation = 0
         self._agent_terminal: Any | None = None
         self._agent_pid: int | None = None
         self._agent_session_widget: Gtk.Widget | None = None
@@ -2074,6 +2136,38 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             list.case-list row:selected label {{
               color: @window_fg_color;
             }}
+            button.current-case-outline-toggle {{
+              min-height: 24px;
+              padding: 2px 6px;
+              color: alpha(@window_fg_color, 0.68);
+            }}
+            button.current-case-outline-toggle:hover {{
+              background-color: alpha(@window_fg_color, 0.06);
+              color: @window_fg_color;
+            }}
+            .current-case-outline-frame,
+            .current-case-outline-frame > viewport {{
+              background: transparent;
+            }}
+            list.current-case-outline-list {{
+              background-color: transparent;
+            }}
+            list.current-case-outline-list row {{
+              border-radius: 5px;
+              margin: 1px 2px;
+              padding: 3px 4px;
+            }}
+            list.current-case-outline-list row:hover {{
+              background-color: alpha(@window_fg_color, 0.06);
+            }}
+            label.current-case-outline-label {{
+              font-size: 0.9rem;
+              color: alpha(@window_fg_color, 0.76);
+            }}
+            label.current-case-outline-level-one {{
+              font-weight: 600;
+              color: alpha(@window_fg_color, 0.9);
+            }}
             list.research-set-menu {{
               background-color: transparent;
             }}
@@ -2356,6 +2450,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         row.set_child(row_box)
         list_box.append(row)
         box.append(list_box)
+        box.append(self._build_current_case_outline())
 
         self._current_case_context_list = list_box
         self._current_case_context_row = row
@@ -2363,6 +2458,54 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._current_case_context_subtitle = subtitle
         self._current_case_context_check = check
         self._refresh_current_case_context()
+        return box
+
+    def _build_current_case_outline(self) -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        box.set_hexpand(True)
+        box.set_visible(False)
+
+        toggle = Gtk.ToggleButton()
+        toggle.add_css_class("flat")
+        toggle.add_css_class("current-case-outline-toggle")
+        toggle.set_hexpand(True)
+        toggle.connect("toggled", self._on_current_case_outline_toggled)
+
+        toggle_content = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        icon = Gtk.Image(icon_name="go-next-symbolic")
+        toggle_content.append(icon)
+        label = Gtk.Label(label="Outline", xalign=0)
+        label.set_hexpand(True)
+        toggle_content.append(label)
+        toggle.set_child(toggle_content)
+        box.append(toggle)
+
+        outline_list = Gtk.ListBox()
+        outline_list.add_css_class("current-case-outline-list")
+        outline_list.set_selection_mode(Gtk.SelectionMode.NONE)
+        outline_list.connect(
+            "row-activated",
+            self._on_current_case_outline_row_activated,
+        )
+
+        scroller = Gtk.ScrolledWindow()
+        scroller.add_css_class("current-case-outline-frame")
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_max_content_height(CURRENT_CASE_OUTLINE_MAX_HEIGHT)
+        scroller.set_propagate_natural_height(True)
+        scroller.set_child(outline_list)
+
+        revealer = Gtk.Revealer()
+        revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        revealer.set_child(scroller)
+        box.append(revealer)
+
+        self._current_case_outline_box = box
+        self._current_case_outline_toggle = toggle
+        self._current_case_outline_icon = icon
+        self._current_case_outline_label = label
+        self._current_case_outline_revealer = revealer
+        self._current_case_outline_list = outline_list
         return box
 
     def _build_research_cache_header(self) -> Gtk.Widget:
@@ -3258,6 +3401,175 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if on_success is not None:
             GLib.idle_add(on_success, result)
 
+    def _on_current_case_outline_toggled(
+        self,
+        button: Gtk.ToggleButton,
+    ) -> None:
+        expanded = button.get_active()
+        if self._current_case_outline_icon is not None:
+            self._current_case_outline_icon.set_from_icon_name(
+                "go-down-symbolic" if expanded else "go-next-symbolic"
+            )
+        if self._current_case_outline_revealer is not None:
+            self._current_case_outline_revealer.set_reveal_child(expanded)
+
+    def _remove_current_case_outline_rows(self) -> None:
+        outline_list = self._current_case_outline_list
+        if outline_list is None:
+            return
+        while (row := outline_list.get_first_child()) is not None:
+            outline_list.remove(row)
+
+    def _clear_current_case_outline(self) -> None:
+        self._current_case_outline_navigation_generation += 1
+        self._current_case_outline_document = None
+        self._current_case_outline_case_name = ""
+        self._remove_current_case_outline_rows()
+        if self._current_case_outline_label is not None:
+            self._current_case_outline_label.set_text("Outline")
+        if self._current_case_outline_toggle is not None:
+            self._current_case_outline_toggle.set_active(False)
+        if self._current_case_outline_box is not None:
+            self._current_case_outline_box.set_visible(False)
+
+    def _hide_current_case_outline(self) -> None:
+        self._current_case_outline_navigation_generation += 1
+        if self._current_case_outline_toggle is not None:
+            self._current_case_outline_toggle.set_active(False)
+        if self._current_case_outline_box is not None:
+            self._current_case_outline_box.set_visible(False)
+
+    def _show_current_case_outline(
+        self,
+        case_name: str,
+        document: FactPatternDocument,
+    ) -> None:
+        self._current_case_outline_navigation_generation += 1
+        self._current_case_outline_document = document
+        self._current_case_outline_case_name = case_name
+        self._remove_current_case_outline_rows()
+        if not document.headings:
+            if self._current_case_outline_box is not None:
+                self._current_case_outline_box.set_visible(False)
+            return
+
+        outline_list = self._current_case_outline_list
+        if outline_list is not None:
+            for index, heading in enumerate(document.headings):
+                row = Gtk.ListBoxRow()
+                row.set_selectable(False)
+                row.set_activatable(True)
+                setattr(
+                    row,
+                    "_open_law_lens_current_case_heading_index",
+                    index,
+                )
+
+                label = Gtk.Label(label=heading.text, xalign=0)
+                label.add_css_class("current-case-outline-label")
+                if heading.level == 1:
+                    label.add_css_class("current-case-outline-level-one")
+                label.set_ellipsize(Pango.EllipsizeMode.END)
+                label.set_single_line_mode(True)
+                label.set_tooltip_text(heading.text)
+                label.set_margin_start(
+                    min(max(heading.level - 1, 0), 6)
+                    * CURRENT_CASE_OUTLINE_INDENT
+                )
+                row.set_child(label)
+                outline_list.append(row)
+
+        if self._current_case_outline_label is not None:
+            self._current_case_outline_label.set_text(
+                f"Outline ({len(document.headings)})"
+            )
+        if self._current_case_outline_box is not None:
+            self._current_case_outline_box.set_visible(True)
+        if self._current_case_outline_toggle is not None:
+            self._current_case_outline_toggle.set_active(True)
+
+    def _on_current_case_outline_row_activated(
+        self,
+        _list_box: Gtk.ListBox,
+        row: Gtk.ListBoxRow,
+    ) -> None:
+        index = getattr(
+            row,
+            "_open_law_lens_current_case_heading_index",
+            None,
+        )
+        document = self._current_case_outline_document
+        case_name = self._current_case_outline_case_name
+        if (
+            not isinstance(index, int)
+            or document is None
+            or not case_name
+            or not (0 <= index < len(document.headings))
+            or self._reader_position_key != ("socf", case_name)
+        ):
+            return
+        heading = document.headings[index]
+        self._current_case_outline_navigation_generation += 1
+        navigation_generation = self._current_case_outline_navigation_generation
+        GLib.idle_add(
+            self._scroll_current_case_heading_after_layout,
+            self._case_load_generation,
+            case_name,
+            heading.start_offset,
+            navigation_generation,
+            0,
+        )
+
+    def _scroll_current_case_heading_after_layout(
+        self,
+        load_generation: int,
+        case_name: str,
+        offset: int,
+        navigation_generation: int,
+        attempt: int,
+    ) -> bool:
+        document = self._current_case_outline_document
+        if (
+            load_generation != self._case_load_generation
+            or navigation_generation
+            != self._current_case_outline_navigation_generation
+            or case_name != self._current_case_outline_case_name
+            or self._reader_position_key != ("socf", case_name)
+            or document is None
+            or not (0 <= offset < len(document.text))
+        ):
+            return False
+        target_iter = self.reader_buffer.get_iter_at_offset(offset)
+        if attempt > 0:
+            target_rect = self.reader_view.get_iter_location(target_iter)
+            visible_rect = self.reader_view.get_visible_rect()
+            target_bottom = target_rect.y + max(1, target_rect.height)
+            visible_bottom = visible_rect.y + visible_rect.height
+            if (
+                visible_rect.height > 0
+                and visible_rect.y <= target_rect.y
+                and target_bottom <= visible_bottom
+            ):
+                return False
+        self.reader_view.scroll_to_iter(
+            target_iter,
+            0.15,
+            True,
+            0.0,
+            0.12,
+        )
+        if attempt + 1 < CURRENT_CASE_OUTLINE_SCROLL_MAX_ATTEMPTS:
+            GLib.timeout_add(
+                CURRENT_CASE_OUTLINE_SCROLL_RETRY_MS,
+                self._scroll_current_case_heading_after_layout,
+                load_generation,
+                case_name,
+                offset,
+                navigation_generation,
+                attempt + 1,
+            )
+        return False
+
     def _on_window_close_request(self, _window: Gtk.Window) -> bool:
         self._capture_current_reader_position()
         if self._agent_answer_layout_idle_id is not None:
@@ -3281,6 +3593,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._current_case_name = case_name
             self._current_case_socf_path = None
             self._current_case_error = str(exc)
+            self._clear_current_case_outline()
             if self._current_case_context_title is not None:
                 self._current_case_context_title.set_text(case_name or "Current Case")
             if self._current_case_context_subtitle is not None:
@@ -3300,6 +3613,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 self._current_case_context_toggle_guard = False
             return None
 
+        if (
+            self._current_case_outline_case_name
+            and (
+                self._current_case_outline_case_name != resolved.case_name
+                or self._current_case_socf_path != resolved.path
+            )
+        ):
+            self._clear_current_case_outline()
         self._current_case_name = resolved.case_name
         self._current_case_socf_path = resolved.path
         self._current_case_error = ""
@@ -3364,6 +3685,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return
         self._capture_current_reader_position()
         self._set_reader_position_key("socf", resolved.case_name)
+        self._clear_current_case_outline()
         self._case_load_generation += 1
         generation = self._case_load_generation
         self._selected_cluster = None
@@ -3390,27 +3712,38 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def _current_case_socf_worker(self, resolved: CurrentCaseSocf, generation: int) -> None:
         try:
-            text = extract_fact_pattern_text(resolved.path)
+            document = extract_fact_pattern_document(resolved.path)
         except (FactPatternError, OSError) as exc:
             GLib.idle_add(self._apply_current_case_socf_error, str(exc), generation)
             return
-        GLib.idle_add(self._finish_current_case_socf_load, resolved, text, generation)
+        GLib.idle_add(
+            self._finish_current_case_socf_load,
+            resolved,
+            document,
+            generation,
+        )
 
     def _finish_current_case_socf_load(
         self,
         resolved: CurrentCaseSocf,
-        text: str,
+        document: FactPatternDocument,
         generation: int,
     ) -> bool:
         if generation != self._case_load_generation:
             return False
-        self._set_reader_text(text)
+        document = _normalize_current_case_document(document)
+        self._set_reader_text(
+            document.text,
+            style_spans=_current_case_style_spans(document),
+        )
+        self._show_current_case_outline(resolved.case_name, document)
         self._set_status(f"Loaded the current-case SOCF for {resolved.case_name}.")
         return False
 
     def _apply_current_case_socf_error(self, message: str, generation: int) -> bool:
         if generation != self._case_load_generation:
             return False
+        self._clear_current_case_outline()
         self._set_reader_busy(False)
         self._reader_text = ""
         self.reader_buffer.set_text(message)
@@ -3438,12 +3771,19 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _set_reader_position_key(self, item_type: str, authority_id: str) -> None:
         clean_id = str(authority_id or "").strip()
         self._reader_position_key = (item_type, clean_id) if clean_id else None
+        if item_type != "socf":
+            hide_outline = getattr(self, "_hide_current_case_outline", None)
+            if hide_outline is not None:
+                hide_outline()
         update_button = getattr(self, "_update_reader_highlight_button", None)
         if update_button is not None:
             update_button()
 
     def _clear_reader_position_key(self) -> None:
         self._reader_position_key = None
+        hide_outline = getattr(self, "_hide_current_case_outline", None)
+        if hide_outline is not None:
+            hide_outline()
         update_button = getattr(self, "_update_reader_highlight_button", None)
         if update_button is not None:
             update_button()
