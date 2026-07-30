@@ -8,6 +8,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from open_law_lens.config import (
+    AGENT_PROFILE_LAW,
+    AGENT_PROFILE_PRIOR_BRIEFS,
     AppConfig,
     DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
     DEFAULT_APPEAL_ISSUE_LABELS,
@@ -18,6 +20,7 @@ from open_law_lens.config import (
     DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
     DEFAULT_READER_FONT_FAMILY,
     DEFAULT_READER_FONT_SIZE_PT,
+    PiAgentProfile,
     load_config,
     save_config,
 )
@@ -67,6 +70,18 @@ class ConfigTests(unittest.TestCase):
                     later_treatment_agent_prompt_template=" Subsequent {cluster_id} ",
                     appeal_issue_presets=[" Issue One ", "Issue Two", "Issue One"],
                     appeal_issue_labels=[" One ", "Two"],
+                    agent_runtime_profiles={
+                        AGENT_PROFILE_LAW: PiAgentProfile(
+                            provider="openai-codex",
+                            model="gpt-5.6-sol",
+                            thinking="max",
+                        ),
+                        AGENT_PROFILE_PRIOR_BRIEFS: PiAgentProfile(
+                            provider="fireworks",
+                            model="accounts/fireworks/routers/glm-fast",
+                            thinking="low",
+                        ),
+                    },
                     reader_font_size_pt=14,
                     reader_font_family="Georgia",
                     default_bare_statute_law_code="FAM",
@@ -85,6 +100,18 @@ class ConfigTests(unittest.TestCase):
             )
             self.assertEqual(config.appeal_issue_presets, ["Issue One", "Issue Two"])
             self.assertEqual(config.appeal_issue_labels, ["One", "Two"])
+            self.assertEqual(
+                config.agent_runtime_profiles[AGENT_PROFILE_LAW],
+                PiAgentProfile(
+                    provider="openai-codex",
+                    model="gpt-5.6-sol",
+                    thinking="max",
+                ),
+            )
+            self.assertEqual(
+                config.agent_runtime_profiles[AGENT_PROFILE_PRIOR_BRIEFS].thinking,
+                "low",
+            )
             self.assertEqual(config.reader_font_size_pt, 14)
             self.assertEqual(config.reader_font_family, "Georgia")
             self.assertEqual(config.default_bare_statute_law_code, "FAM")
@@ -112,6 +139,35 @@ class ConfigTests(unittest.TestCase):
             self.assertFalse(
                 any("xhigh_reasoning" in key for key in saved)
             )
+
+    def test_invalid_or_incomplete_agent_profiles_are_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "agent_runtime_profiles": {
+                            AGENT_PROFILE_LAW: {
+                                "provider": "openai-codex",
+                                "model": "gpt-5.6-sol",
+                                "thinking": "turbo",
+                            },
+                            AGENT_PROFILE_PRIOR_BRIEFS: {
+                                "provider": "fireworks",
+                                "thinking": "low",
+                            },
+                            "unknown": {
+                                "provider": "test",
+                                "model": "test",
+                                "thinking": "medium",
+                            },
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(load_config(path).agent_runtime_profiles, {})
 
     def test_legacy_general_prompt_migrates_to_new_default(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

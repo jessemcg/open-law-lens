@@ -75,6 +75,7 @@ class AgentVteWrapperTests(unittest.TestCase):
         mode: str,
         *,
         with_sibling_node: bool = False,
+        profile: tuple[str, str, str] | None = None,
     ) -> list[str]:
         project, workspace, prompt = self._fixture(
             root,
@@ -95,6 +96,14 @@ class AgentVteWrapperTests(unittest.TestCase):
                 "CAPTURE_ARGS": str(output),
             }
         )
+        if profile is not None:
+            env.update(
+                {
+                    "OPEN_LAW_LENS_PI_PROVIDER": profile[0],
+                    "OPEN_LAW_LENS_PI_MODEL": profile[1],
+                    "OPEN_LAW_LENS_PI_THINKING": profile[2],
+                }
+            )
         subprocess.run(["bash", str(WRAPPER)], env=env, check=True)
         return output.read_text(encoding="utf-8").splitlines()
 
@@ -121,6 +130,56 @@ class AgentVteWrapperTests(unittest.TestCase):
             self.assertNotIn("--thinking", args)
             self.assertTrue(any(item.startswith("/skill:legal-researcher") for item in args))
             self.assertEqual(args[-1], str(root / "workspace" / "pi-sessions"))
+
+    def test_explicit_runtime_profile_is_passed_to_pi(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            args = self._run(
+                Path(temp_dir),
+                "brief",
+                profile=(
+                    "fireworks",
+                    "accounts/fireworks/routers/glm-fast",
+                    "low",
+                ),
+            )
+
+        self.assertEqual(args[args.index("--provider") + 1], "fireworks")
+        self.assertEqual(
+            args[args.index("--model") + 1],
+            "accounts/fireworks/routers/glm-fast",
+        )
+        self.assertEqual(args[args.index("--thinking") + 1], "low")
+
+    def test_incomplete_runtime_profile_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            project, workspace, prompt = self._fixture(
+                root,
+                bundle_web_search=False,
+            )
+            pi, _output = self._fake_pi(root)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "OPEN_LAW_LENS_AGENT_PROMPT_FILE": str(prompt),
+                    "OPEN_LAW_LENS_AGENT_WORKSPACE": str(workspace),
+                    "OPEN_LAW_LENS_AGENT_MODE": "brief",
+                    "OPEN_LAW_LENS_PROJECT_DIR": str(project),
+                    "OPEN_LAW_LENS_PI_BIN": str(pi),
+                    "OPEN_LAW_LENS_PI_PROVIDER": "fireworks",
+                }
+            )
+
+            result = subprocess.run(
+                ["bash", str(WRAPPER)],
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("requires provider, model, and thinking", result.stderr)
 
     def test_research_mode_uses_node_shipped_beside_pi(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

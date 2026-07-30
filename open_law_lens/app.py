@@ -81,6 +81,11 @@ from .citation_links import (
 )
 from .citation_model import official_citation_parts_from_cluster
 from .config import (
+    AGENT_PROFILE_ASSESS_ARGUMENT,
+    AGENT_PROFILE_KEYS,
+    AGENT_PROFILE_LAW,
+    AGENT_PROFILE_PRIOR_BRIEFS,
+    AGENT_PROFILE_RESEARCH_CACHE,
     AppConfig,
     BARE_STATUTE_LAW_CODE_OPTIONS,
     DEFAULT_APPEAL_ISSUE_PRESETS,
@@ -89,6 +94,7 @@ from .config import (
     DEFAULT_CASE_AGENT_PROMPT_TEMPLATE,
     DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE,
     DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
+    PiAgentProfile,
     concordance_file_path,
     coerce_reader_font_size,
     courtlistener_token,
@@ -134,13 +140,12 @@ from .library import (
 from .opinion_formatting import DisplayStyleSpan
 from .pi_runtime import (
     PiModel,
+    PiRuntimeCatalog,
     PiRuntimeError,
-    PiSettingsError,
-    available_pi_models,
-    current_project_pi_model,
+    available_pi_runtime_catalog,
+    clamp_pi_thinking_level,
     find_pi_executable,
     find_pi_node_executable,
-    save_project_pi_model,
 )
 from .prior_briefs import PriorBrief, PriorBriefError, PriorBriefLibrary
 from .quality import official_pagination_quality
@@ -228,6 +233,18 @@ QUERY_MODE_LABELS = {
     AGENT_MODE_BRIEF: "Query Prior Briefs",
     QUERY_MODE_BRIEF_SEARCH: "Search Across Briefs",
 }
+AGENT_PROFILE_TITLES = {
+    AGENT_PROFILE_LAW: "Query Law",
+    AGENT_PROFILE_RESEARCH_CACHE: "Query Research Cache",
+    AGENT_PROFILE_PRIOR_BRIEFS: "Query Prior Briefs",
+    AGENT_PROFILE_ASSESS_ARGUMENT: "Assess Argument",
+}
+AGENT_PROFILE_BY_MODE = {
+    AGENT_MODE_GENERAL: AGENT_PROFILE_LAW,
+    AGENT_MODE_CASE: AGENT_PROFILE_RESEARCH_CACHE,
+    AGENT_MODE_BRIEF: AGENT_PROFILE_PRIOR_BRIEFS,
+    AGENT_MODE_APPEAL: AGENT_PROFILE_ASSESS_ARGUMENT,
+}
 PRIOR_BRIEF_MARKDOWN_LINK_RE = re.compile(
     r"\[([^\]\n]+)\]\(open-law-lens://prior-brief/([a-fA-F0-9]{16,64})\)"
 )
@@ -277,11 +294,22 @@ def appeal_issue_menu_label(issue: str, label: str = "", max_length: int = 72) -
     return "Untitled argument"
 
 
+def agent_profile_for_mode(
+    config: AppConfig,
+    mode: str,
+) -> PiAgentProfile | None:
+    profile_key = AGENT_PROFILE_BY_MODE.get(mode)
+    if profile_key is None:
+        return None
+    return config.agent_runtime_profiles.get(profile_key)
+
+
 def build_agent_launch_env(
     client: CourtListenerClient,
     prompt_path: Path,
     workspace: Path,
     mode: str,
+    profile: PiAgentProfile | None = None,
 ) -> dict[str, str]:
     pi_executable = find_pi_executable()
     env = {
@@ -296,6 +324,10 @@ def build_agent_launch_env(
     pi_node = find_pi_node_executable(pi_executable)
     if pi_node:
         env["OPEN_LAW_LENS_PI_NODE_BIN"] = pi_node
+    if profile is not None:
+        env["OPEN_LAW_LENS_PI_PROVIDER"] = profile.provider
+        env["OPEN_LAW_LENS_PI_MODEL"] = profile.model
+        env["OPEN_LAW_LENS_PI_THINKING"] = profile.thinking
     library = getattr(client, "library", None)
     library_path = getattr(library, "path", None)
     if library_path is not None:
@@ -693,17 +725,18 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.set_modal(False)
         self._settings_page_keys: dict[Gtk.ListBoxRow, str] = {}
         self._settings_stack: Gtk.Stack | None = None
-        self._pi_model_options: list[PiModel | None] = []
+        config = load_config()
+        self._original_pi_profiles = dict(config.agent_runtime_profiles)
+        self._pi_profile_model_rows: dict[str, Adw.ComboRow] = {}
+        self._pi_profile_thinking_rows: dict[str, Adw.ComboRow] = {}
+        self._pi_profile_model_options: dict[str, list[PiModel | None]] = {}
+        self._pi_profile_thinking_options: dict[str, list[str]] = {}
+        self._pi_profile_adjustment_notes: dict[str, str] = {}
+        self._pi_runtime_catalog: PiRuntimeCatalog | None = None
+        self._pi_profiles_ready = False
         self._pi_model_generation = 0
         self._pi_model_applying = False
-        self._pi_model_selection_changed = False
         self._pi_model_closed = False
-        try:
-            self._original_pi_model_key = current_project_pi_model()
-            self._pi_model_settings_error = ""
-        except PiSettingsError as exc:
-            self._original_pi_model_key = None
-            self._pi_model_settings_error = str(exc)
         self.connect("close-request", self._on_settings_close_request)
 
         toolbar_view = Adw.ToolbarView()
@@ -727,36 +760,8 @@ class SettingsWindow(Adw.ApplicationWindow):
         general_settings_group.add(self.general_settings_expander)
 
         self.token_row = self._build_token_row()
-        config = load_config()
         self.token_row.set_text(config.courtlistener_token)
         self.general_settings_expander.add_row(self.token_row)
-
-        self.pi_model_row = Adw.ComboRow(
-            title="Pi Model",
-            subtitle=(
-                self._pi_model_settings_error
-                or "Loading models authorized in Pi..."
-            ),
-        )
-        self.pi_model_row.set_model(Gtk.StringList.new(["Loading Pi models..."]))
-        self.pi_model_row.set_sensitive(False)
-        self.pi_model_row.connect(
-            "notify::selected",
-            self._on_pi_model_selected,
-        )
-        self.pi_model_refresh_button = Gtk.Button(
-            icon_name="view-refresh-symbolic",
-        )
-        self.pi_model_refresh_button.add_css_class("flat")
-        self.pi_model_refresh_button.set_tooltip_text("Refresh available Pi models")
-        self.pi_model_refresh_button.connect(
-            "clicked",
-            self._on_refresh_pi_models,
-        )
-        add_model_suffix = getattr(self.pi_model_row, "add_suffix", None)
-        if callable(add_model_suffix):
-            add_model_suffix(self.pi_model_refresh_button)
-        self.general_settings_expander.add_row(self.pi_model_row)
 
         reader_font_adjustment = Gtk.Adjustment(
             value=config.reader_font_size_pt,
@@ -892,6 +897,7 @@ class SettingsWindow(Adw.ApplicationWindow):
             config.appeal_issue_labels,
         )
         self._refresh_appeal_fact_pattern_entry()
+        agent_models_page = self._build_agent_models_settings_page()
 
         (
             general_prompt_page,
@@ -935,6 +941,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         )
 
         pages = [
+            ("agent_models", "Agent Models", agent_models_page),
             ("appeal", "Appeal Arguments", appeal_scroller),
             ("general_prompt", "General Prompt", general_prompt_page),
             ("cache_prompt", "Research Cache Prompt", case_prompt_page),
@@ -988,6 +995,73 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.set_content(toolbar_view)
         self._load_pi_models()
 
+    def _build_agent_models_settings_page(self) -> Gtk.ScrolledWindow:
+        page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        page_box.set_margin_top(12)
+        page_box.set_margin_bottom(12)
+        page_box.set_margin_start(12)
+        page_box.set_margin_end(12)
+
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        title = Gtk.Label(label="Agent Models", xalign=0)
+        title.add_css_class("title-3")
+        title.set_hexpand(True)
+        header.append(title)
+        self.pi_model_refresh_button = Gtk.Button(icon_name="view-refresh-symbolic")
+        self.pi_model_refresh_button.add_css_class("flat")
+        self.pi_model_refresh_button.set_tooltip_text("Refresh available Pi models")
+        self.pi_model_refresh_button.connect("clicked", self._on_refresh_pi_models)
+        header.append(self.pi_model_refresh_button)
+        page_box.append(header)
+
+        description = Gtk.Label(
+            label=(
+                "Choose the Pi model and reasoning effort used when each workflow "
+                "starts a new session."
+            ),
+            xalign=0,
+            wrap=True,
+        )
+        description.add_css_class("dim-label")
+        page_box.append(description)
+
+        for key in AGENT_PROFILE_KEYS:
+            group = Adw.PreferencesGroup(title=AGENT_PROFILE_TITLES[key])
+            model_row = Adw.ComboRow(
+                title="Model",
+                subtitle="Loading models authorized in Pi...",
+            )
+            model_row.set_model(Gtk.StringList.new(["Loading Pi models..."]))
+            model_row.set_sensitive(False)
+            model_row.connect(
+                "notify::selected",
+                self._on_pi_profile_model_selected,
+                key,
+            )
+            group.add(model_row)
+
+            thinking_row = Adw.ComboRow(
+                title="Reasoning Effort",
+                subtitle="Loading the effective Pi default...",
+            )
+            thinking_row.set_model(Gtk.StringList.new(["Loading..."]))
+            thinking_row.set_sensitive(False)
+            thinking_row.connect(
+                "notify::selected",
+                self._on_pi_profile_thinking_selected,
+                key,
+            )
+            group.add(thinking_row)
+            self._pi_profile_model_rows[key] = model_row
+            self._pi_profile_thinking_rows[key] = thinking_row
+            page_box.append(group)
+
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scrolled.set_vexpand(True)
+        scrolled.set_child(page_box)
+        return scrolled
+
     def _build_prompt_settings_page(
         self,
         title: str,
@@ -1031,34 +1105,153 @@ class SettingsWindow(Adw.ApplicationWindow):
         self._pi_model_generation += 1
         return False
 
-    def _selected_pi_model(self) -> PiModel | None:
-        selected = int(self.pi_model_row.get_selected())
-        if 0 <= selected < len(self._pi_model_options):
-            return self._pi_model_options[selected]
+    def _selected_pi_model(self, key: str) -> PiModel | None:
+        row = self._pi_profile_model_rows[key]
+        selected = int(row.get_selected())
+        options = self._pi_profile_model_options.get(key, [])
+        if 0 <= selected < len(options):
+            return options[selected]
         return None
 
-    def _update_pi_model_subtitle(self) -> None:
-        model = self._selected_pi_model()
-        if model is None:
-            return
-        self.pi_model_row.set_subtitle(
-            f"Project-wide setting: {model.provider} / {model.model_id}"
+    def _selected_pi_thinking(self, key: str) -> str:
+        row = self._pi_profile_thinking_rows[key]
+        selected = int(row.get_selected())
+        options = self._pi_profile_thinking_options.get(key, [])
+        if 0 <= selected < len(options):
+            return options[selected]
+        return ""
+
+    def _selected_pi_profile(self, key: str) -> PiAgentProfile | None:
+        model = self._selected_pi_model(key)
+        thinking = self._selected_pi_thinking(key)
+        if model is None or not thinking:
+            return None
+        return PiAgentProfile(
+            provider=model.provider,
+            model=model.model_id,
+            thinking=thinking,
         )
 
-    def _on_pi_model_selected(
+    def _selected_pi_profiles(self) -> dict[str, PiAgentProfile]:
+        profiles: dict[str, PiAgentProfile] = {}
+        for key in AGENT_PROFILE_KEYS:
+            profile = self._selected_pi_profile(key)
+            if profile is not None:
+                profiles[key] = profile
+        return profiles
+
+    def _pi_model_is_available(self, model: PiModel) -> bool:
+        catalog = self._pi_runtime_catalog
+        if catalog is None:
+            return False
+        return any(
+            candidate.settings_key == model.settings_key
+            for candidate in catalog.models
+        )
+
+    def _populate_pi_thinking_row(
+        self,
+        key: str,
+        preferred: str,
+    ) -> None:
+        model = self._selected_pi_model(key)
+        row = self._pi_profile_thinking_rows[key]
+        catalog = self._pi_runtime_catalog
+        self._pi_model_applying = True
+        try:
+            if model is None:
+                default = (
+                    catalog.default_thinking_level
+                    if catalog is not None
+                    else "medium"
+                )
+                self._pi_profile_thinking_options[key] = [default]
+                row.set_model(
+                    Gtk.StringList.new(
+                        [f"Use Pi default ({default.title()})"]
+                    )
+                )
+                row.set_selected(0)
+                row.set_sensitive(False)
+                row.set_subtitle("Inherited together with the Pi default model.")
+                self._pi_profile_adjustment_notes.pop(key, None)
+                return
+
+            if not self._pi_model_is_available(model):
+                configured = preferred or "medium"
+                self._pi_profile_thinking_options[key] = [configured]
+                row.set_model(Gtk.StringList.new([configured.title()]))
+                row.set_selected(0)
+                row.set_sensitive(False)
+                row.set_subtitle(
+                    "This configured model is unavailable; the value is preserved."
+                )
+                self._pi_profile_adjustment_notes.pop(key, None)
+                return
+
+            requested = preferred or (
+                catalog.default_thinking_level
+                if catalog is not None
+                else "medium"
+            )
+            effective = clamp_pi_thinking_level(model, requested)
+            levels = list(model.supported_thinking_levels or ("off",))
+            selected_index = levels.index(effective)
+            self._pi_profile_thinking_options[key] = levels
+            row.set_model(Gtk.StringList.new([level.title() for level in levels]))
+            row.set_selected(selected_index)
+            row.set_sensitive(True)
+            if effective != requested:
+                note = (
+                    f"{requested.title()} is unsupported by this model; "
+                    f"Pi will use {effective.title()}."
+                )
+                self._pi_profile_adjustment_notes[key] = note
+                row.set_subtitle(note)
+            else:
+                self._pi_profile_adjustment_notes.pop(key, None)
+                row.set_subtitle(f"Passed to Pi as --thinking {effective}.")
+        finally:
+            self._pi_model_applying = False
+
+    def _update_pi_profile_model_subtitle(self, key: str) -> None:
+        row = self._pi_profile_model_rows[key]
+        model = self._selected_pi_model(key)
+        if model is None:
+            row.set_subtitle("Uses the current Pi project and user defaults.")
+        elif self._pi_model_is_available(model):
+            row.set_subtitle(f"{model.provider} / {model.model_id}")
+        else:
+            row.set_subtitle(
+                f"{model.provider} / {model.model_id} is currently unavailable."
+            )
+
+    def _on_pi_profile_model_selected(
         self,
         _row: Adw.ComboRow,
         _parameter: object,
+        key: str,
     ) -> None:
         if self._pi_model_applying:
             return
-        model = self._selected_pi_model()
-        if model is None:
+        preferred = self._selected_pi_thinking(key)
+        self._update_pi_profile_model_subtitle(key)
+        self._populate_pi_thinking_row(key, preferred)
+
+    def _on_pi_profile_thinking_selected(
+        self,
+        _row: Adw.ComboRow,
+        _parameter: object,
+        key: str,
+    ) -> None:
+        if self._pi_model_applying:
             return
-        self._pi_model_selection_changed = (
-            model.settings_key != self._original_pi_model_key
-        )
-        self._update_pi_model_subtitle()
+        thinking = self._selected_pi_thinking(key)
+        if thinking:
+            self._pi_profile_thinking_rows[key].set_subtitle(
+                f"Passed to Pi as --thinking {thinking}."
+            )
+            self._pi_profile_adjustment_notes.pop(key, None)
 
     def _on_refresh_pi_models(self, _button: Gtk.Button) -> None:
         self._load_pi_models()
@@ -1066,40 +1259,34 @@ class SettingsWindow(Adw.ApplicationWindow):
     def _load_pi_models(self) -> None:
         if self._pi_model_closed:
             return
-        if self._pi_model_settings_error:
-            try:
-                self._original_pi_model_key = current_project_pi_model()
-                self._pi_model_settings_error = ""
-            except PiSettingsError as exc:
-                self.pi_model_row.set_subtitle(str(exc))
-                self.pi_model_row.set_sensitive(False)
-                self.pi_model_refresh_button.set_sensitive(True)
-                return
-        selected = self._selected_pi_model()
-        desired_key = (
-            selected.settings_key
-            if self._pi_model_selection_changed and selected is not None
-            else self._original_pi_model_key
+        desired_profiles = (
+            self._selected_pi_profiles()
+            if self._pi_profiles_ready
+            else dict(self._original_pi_profiles)
         )
         self._pi_model_generation += 1
         generation = self._pi_model_generation
-        self.pi_model_row.set_sensitive(False)
-        self.pi_model_row.set_subtitle("Loading models authorized in Pi...")
+        for row in self._pi_profile_model_rows.values():
+            row.set_sensitive(False)
+            row.set_subtitle("Loading models authorized in Pi...")
+        for row in self._pi_profile_thinking_rows.values():
+            row.set_sensitive(False)
+            row.set_subtitle("Loading reasoning capabilities...")
         self.pi_model_refresh_button.set_sensitive(False)
 
         def worker() -> None:
             try:
-                models = available_pi_models()
+                catalog = available_pi_runtime_catalog()
                 error = ""
             except PiRuntimeError as exc:
-                models = []
+                catalog = None
                 error = str(exc)
             GLib.idle_add(
                 self._finish_pi_model_load,
                 generation,
-                models,
+                catalog,
                 error,
-                desired_key,
+                desired_profiles,
             )
 
         threading.Thread(
@@ -1111,76 +1298,103 @@ class SettingsWindow(Adw.ApplicationWindow):
     def _finish_pi_model_load(
         self,
         generation: int,
-        models: list[PiModel],
+        catalog: PiRuntimeCatalog | None,
         error: str,
-        desired_key: tuple[str, str] | None,
+        desired_profiles: dict[str, PiAgentProfile],
     ) -> bool:
         if self._pi_model_closed or generation != self._pi_model_generation:
             return False
         self.pi_model_refresh_button.set_sensitive(True)
-        if error:
-            current = self._original_pi_model_key
-            if current is None:
-                self._pi_model_options = [None]
-                labels = ["Pi models unavailable"]
-            else:
-                current_model = PiModel(
-                    provider=current[0],
-                    model_id=current[1],
-                    name=current[1],
-                )
-                self._pi_model_options = [current_model]
-                labels = [f"{current_model.label} (currently configured)"]
+        self._pi_runtime_catalog = catalog
+        self._pi_profiles_ready = catalog is not None and not error
+        if catalog is None or error:
             self._pi_model_applying = True
-            self.pi_model_row.set_model(Gtk.StringList.new(labels))
-            self.pi_model_row.set_selected(0)
-            self._pi_model_applying = False
-            self.pi_model_row.set_sensitive(False)
-            self.pi_model_row.set_subtitle(error)
+            try:
+                for key in AGENT_PROFILE_KEYS:
+                    profile = desired_profiles.get(key)
+                    model = (
+                        PiModel(
+                            provider=profile.provider,
+                            model_id=profile.model,
+                            name=profile.model,
+                        )
+                        if profile is not None
+                        else None
+                    )
+                    self._pi_profile_model_options[key] = [model]
+                    model_label = (
+                        f"{model.label} (configured; unavailable)"
+                        if model is not None
+                        else "Use Pi defaults"
+                    )
+                    model_row = self._pi_profile_model_rows[key]
+                    model_row.set_model(Gtk.StringList.new([model_label]))
+                    model_row.set_selected(0)
+                    model_row.set_sensitive(False)
+                    model_row.set_subtitle(error or "Pi models unavailable.")
+
+                    thinking = profile.thinking if profile is not None else "medium"
+                    self._pi_profile_thinking_options[key] = [thinking]
+                    thinking_row = self._pi_profile_thinking_rows[key]
+                    thinking_row.set_model(
+                        Gtk.StringList.new([thinking.title()])
+                    )
+                    thinking_row.set_selected(0)
+                    thinking_row.set_sensitive(False)
+                    thinking_row.set_subtitle(
+                        "The configured value is preserved."
+                        if profile is not None
+                        else "Pi defaults will be used."
+                    )
+            finally:
+                self._pi_model_applying = False
             return False
 
-        available_keys = {model.settings_key for model in models}
-        options: list[PiModel | None] = []
-        labels: list[str] = []
-        current = self._original_pi_model_key
-        if current is not None and current not in available_keys:
-            unavailable = PiModel(
-                provider=current[0],
-                model_id=current[1],
-                name=current[1],
+        available_keys = {model.settings_key for model in catalog.models}
+        for key in AGENT_PROFILE_KEYS:
+            desired = desired_profiles.get(key)
+            options: list[PiModel | None] = [None]
+            default_label = (
+                f"Use Pi defaults ({catalog.default_model.label})"
+                if catalog.default_model is not None
+                else "Use Pi defaults"
             )
-            options.append(unavailable)
-            labels.append(f"{unavailable.label} (currently configured; unavailable)")
-        options.extend(models)
-        labels.extend(model.label for model in models)
-        if not options:
-            options = [None]
-            labels = ["No authenticated Pi models found"]
+            labels = [default_label]
+            if (
+                desired is not None
+                and (desired.provider, desired.model) not in available_keys
+            ):
+                unavailable = PiModel(
+                    provider=desired.provider,
+                    model_id=desired.model,
+                    name=desired.model,
+                )
+                options.append(unavailable)
+                labels.append(f"{unavailable.label} (configured; unavailable)")
+            options.extend(catalog.models)
+            labels.extend(model.label for model in catalog.models)
 
-        selected_index = 0
-        if desired_key is not None:
-            for index, model in enumerate(options):
-                if model is not None and model.settings_key == desired_key:
-                    selected_index = index
-                    break
-        self._pi_model_options = options
-        self._pi_model_applying = True
-        self.pi_model_row.set_model(Gtk.StringList.new(labels))
-        self.pi_model_row.set_selected(selected_index)
-        self._pi_model_applying = False
-        selected_model = self._selected_pi_model()
-        self._pi_model_selection_changed = bool(
-            self._original_pi_model_key is not None
-            and selected_model is not None
-            and selected_model.settings_key != self._original_pi_model_key
-        )
-        self.pi_model_row.set_sensitive(bool(models))
-        if selected_model is None:
-            self.pi_model_row.set_subtitle(
-                "Authorize a provider in Pi, then refresh this list."
+            selected_index = 0
+            if desired is not None:
+                desired_key = (desired.provider, desired.model)
+                for index, model in enumerate(options):
+                    if model is not None and model.settings_key == desired_key:
+                        selected_index = index
+                        break
+            self._pi_profile_model_options[key] = options
+            self._pi_model_applying = True
+            try:
+                model_row = self._pi_profile_model_rows[key]
+                model_row.set_model(Gtk.StringList.new(labels))
+                model_row.set_selected(selected_index)
+                model_row.set_sensitive(bool(catalog.models))
+            finally:
+                self._pi_model_applying = False
+            self._update_pi_profile_model_subtitle(key)
+            self._populate_pi_thinking_row(
+                key,
+                desired.thinking if desired is not None else "",
             )
-        else:
-            self._update_pi_model_subtitle()
         return False
 
     def _on_settings_page_row_selected(
@@ -1391,6 +1605,12 @@ class SettingsWindow(Adw.ApplicationWindow):
         else:
             bare_statute_law_code = load_config().default_bare_statute_law_code
         appeal_issue_presets, appeal_issue_labels = self._appeal_issue_data()
+        agent_runtime_profiles = (
+            self._selected_pi_profiles()
+            if self._pi_profiles_ready
+            else dict(self._original_pi_profiles)
+        )
+        profiles_changed = agent_runtime_profiles != self._original_pi_profiles
         config = AppConfig(
             courtlistener_token=token,
             concordance_file_path=concordance_path,
@@ -1416,6 +1636,7 @@ class SettingsWindow(Adw.ApplicationWindow):
             ),
             appeal_issue_presets=appeal_issue_presets,
             appeal_issue_labels=appeal_issue_labels,
+            agent_runtime_profiles=agent_runtime_profiles,
             reader_font_size_pt=coerce_reader_font_size(
                 int(round(self.reader_font_size_row.get_value()))
             ),
@@ -1424,32 +1645,16 @@ class SettingsWindow(Adw.ApplicationWindow):
                 bare_statute_law_code
             ),
         )
-        selected_model = self._selected_pi_model()
-        pi_model_saved = False
-        if self._pi_model_selection_changed and selected_model is not None:
-            try:
-                save_project_pi_model(selected_model)
-                pi_model_saved = True
-            except PiSettingsError as exc:
-                self.status_label.set_text(f"Unable to save Pi model: {exc}")
-                return
         try:
             save_config(config)
         except OSError as exc:
-            if pi_model_saved:
-                self.status_label.set_text(
-                    f"Pi model saved, but app settings could not be saved: {exc}"
-                )
-            else:
-                self.status_label.set_text(f"Unable to save settings: {exc}")
+            self.status_label.set_text(f"Unable to save settings: {exc}")
             return
-        if pi_model_saved and selected_model is not None:
-            self._original_pi_model_key = selected_model.settings_key
-            self._pi_model_selection_changed = False
+        self._original_pi_profiles = dict(agent_runtime_profiles)
         self.parent_window.reload_settings()
         self.status_label.set_text(
-            "Settings saved. The Pi model applies to new agent sessions."
-            if pi_model_saved
+            "Settings saved. Agent model profiles apply to new sessions."
+            if profiles_changed
             else "Settings saved."
         )
 
@@ -8862,12 +9067,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._set_status(f"Agent wrapper not found: {AGENT_WRAPPER}")
             return
         env = os.environ.copy()
+        profile = agent_profile_for_mode(load_config(), mode)
         env.update(
             build_agent_launch_env(
                 self.client,
                 prompt_path,
                 workspace,
                 mode,
+                profile,
             )
         )
         argv = ["bash", str(AGENT_WRAPPER)]

@@ -13,6 +13,9 @@ from open_law_lens.pi_runtime import (
     PiSettingsError,
     _pi_rpc_response,
     available_pi_models,
+    available_pi_runtime_catalog,
+    clamp_pi_thinking_level,
+    current_pi_runtime_defaults,
     current_project_pi_model,
     find_pi_node_executable,
     save_project_pi_model,
@@ -31,16 +34,23 @@ class PiRuntimeTests(unittest.TestCase):
                         "provider": "openai-codex",
                         "id": "gpt-5.6-sol",
                         "name": "GPT-5.6 Sol",
+                        "reasoning": True,
+                        "thinkingLevelMap": {
+                            "xhigh": "xhigh",
+                            "max": "max",
+                        },
                     },
                     {
                         "provider": "fireworks",
                         "id": "accounts/fireworks/models/glm-5p2",
                         "name": "GLM 5.2",
+                        "reasoning": False,
                     },
                     {
                         "provider": "fireworks",
                         "id": "accounts/fireworks/models/glm-5p2",
                         "name": "GLM 5.2",
+                        "reasoning": False,
                     },
                     {"provider": "", "id": "invalid"},
                 ]
@@ -66,6 +76,11 @@ class PiRuntimeTests(unittest.TestCase):
             ],
         )
         self.assertEqual(models[1].label, "GPT-5.6 Sol — openai-codex")
+        self.assertEqual(models[0].supported_thinking_levels, ("off",))
+        self.assertEqual(
+            models[1].supported_thinking_levels[-2:],
+            ("xhigh", "max"),
+        )
         command = rpc.call_args.args[0]
         self.assertEqual(command[:2], ["/runtime/node", "/runtime/pi"])
         self.assertIn("--mode", command)
@@ -75,6 +90,67 @@ class PiRuntimeTests(unittest.TestCase):
             rpc.call_args.args[1],
             {"type": "get_available_models"},
         )
+
+    def test_current_runtime_defaults_use_rpc_state_and_clamp_thinking(self) -> None:
+        response = {
+            "type": "response",
+            "command": "get_state",
+            "success": True,
+            "data": {
+                "model": {
+                    "provider": "fireworks",
+                    "id": "fast-model",
+                    "name": "Fast Model",
+                    "reasoning": False,
+                },
+                "thinkingLevel": "max",
+            },
+        }
+        with (
+            patch("open_law_lens.pi_runtime._pi_rpc_command", return_value=["pi"]),
+            patch(
+                "open_law_lens.pi_runtime._pi_rpc_response",
+                return_value=response,
+            ) as rpc,
+        ):
+            model, thinking = current_pi_runtime_defaults()
+
+        self.assertEqual(model.settings_key, ("fireworks", "fast-model"))
+        self.assertEqual(thinking, "off")
+        self.assertEqual(rpc.call_args.args[1], {"type": "get_state"})
+
+    def test_runtime_catalog_combines_models_and_effective_defaults(self) -> None:
+        model = PiModel(
+            provider="openai-codex",
+            model_id="gpt-5.6-sol",
+            name="GPT-5.6 Sol",
+        )
+        with (
+            patch(
+                "open_law_lens.pi_runtime.available_pi_models",
+                return_value=[model],
+            ),
+            patch(
+                "open_law_lens.pi_runtime.current_pi_runtime_defaults",
+                return_value=(model, "high"),
+            ),
+        ):
+            catalog = available_pi_runtime_catalog()
+
+        self.assertEqual(catalog.models, (model,))
+        self.assertEqual(catalog.default_model, model)
+        self.assertEqual(catalog.default_thinking_level, "high")
+
+    def test_clamp_thinking_uses_nearest_supported_pi_level(self) -> None:
+        model = PiModel(
+            provider="fireworks",
+            model_id="fast-model",
+            name="Fast Model",
+            supported_thinking_levels=("off", "low", "high"),
+        )
+
+        self.assertEqual(clamp_pi_thinking_level(model, "medium"), "high")
+        self.assertEqual(clamp_pi_thinking_level(model, "max"), "high")
 
     def test_available_models_reports_process_failure(self) -> None:
         with (

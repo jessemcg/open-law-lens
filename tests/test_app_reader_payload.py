@@ -14,6 +14,7 @@ from open_law_lens.app import (
     AGENT_MODE_CASE,
     AGENT_MODE_GENERAL,
     AGENT_MODE_ICONS,
+    AGENT_PROFILE_BY_MODE,
     QUERY_MODE_BRIEF_SEARCH,
     QUERY_MODE_LABELS,
     READER_CLIPBOARD_ICON,
@@ -26,6 +27,7 @@ from open_law_lens.app import (
     LinkPressState,
     OpenLawLensApp,
     OpenLawLensWindow,
+    agent_profile_for_mode,
     appeal_issue_menu_label,
     build_agent_launch_env,
     build_case_reader_payload,
@@ -35,7 +37,14 @@ from open_law_lens.agent import CaseTextSource, QuoteTarget
 from open_law_lens.cache import JsonCache
 from open_law_lens.citation_links import CitedCaseLink
 from open_law_lens.client import CourtListenerClient, FormattedCitation
-from open_law_lens.config import AppConfig
+from open_law_lens.config import (
+    AGENT_PROFILE_ASSESS_ARGUMENT,
+    AGENT_PROFILE_LAW,
+    AGENT_PROFILE_PRIOR_BRIEFS,
+    AGENT_PROFILE_RESEARCH_CACHE,
+    AppConfig,
+    PiAgentProfile,
+)
 from open_law_lens.current_case import CurrentCaseSocf
 from open_law_lens.fact_patterns import FactPatternExport
 from open_law_lens.library import CaseLibrary, DisplayText, PageMarker, ResearchSet
@@ -46,6 +55,34 @@ from open_law_lens.web_import import ExtractedWebpage
 
 
 class AppReaderPayloadTests(unittest.TestCase):
+    def test_agent_modes_map_to_the_four_runtime_profiles(self) -> None:
+        self.assertEqual(AGENT_PROFILE_BY_MODE["general"], AGENT_PROFILE_LAW)
+        self.assertEqual(
+            AGENT_PROFILE_BY_MODE["case"],
+            AGENT_PROFILE_RESEARCH_CACHE,
+        )
+        self.assertEqual(
+            AGENT_PROFILE_BY_MODE["brief"],
+            AGENT_PROFILE_PRIOR_BRIEFS,
+        )
+        self.assertEqual(
+            AGENT_PROFILE_BY_MODE["appeal"],
+            AGENT_PROFILE_ASSESS_ARGUMENT,
+        )
+
+        profiles = {
+            key: PiAgentProfile(
+                provider="test",
+                model=f"{key}-model",
+                thinking="medium",
+            )
+            for key in AGENT_PROFILE_BY_MODE.values()
+        }
+        config = AppConfig(agent_runtime_profiles=profiles)
+        for mode, key in AGENT_PROFILE_BY_MODE.items():
+            self.assertEqual(agent_profile_for_mode(config, mode), profiles[key])
+        self.assertIsNone(agent_profile_for_mode(config, "brief_search"))
+
     def test_agent_failure_keeps_session_output_visible(self) -> None:
         class DummyWidget:
             def __init__(self) -> None:
@@ -1213,6 +1250,29 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(env["OPEN_LAW_LENS_AGENT_MODE"], "case")
         self.assertIn("OPEN_LAW_LENS_PI_BIN", env)
         self.assertNotIn("OPEN_LAW_LENS_LIBRARY_DB", env)
+
+    def test_agent_launch_env_includes_explicit_pi_profile(self) -> None:
+        class DummyClient:
+            library = None
+
+        env = build_agent_launch_env(
+            DummyClient(),  # type: ignore[arg-type]
+            Path("/tmp/prompt.txt"),
+            Path("/tmp/workspace"),
+            "brief",
+            PiAgentProfile(
+                provider="fireworks",
+                model="accounts/fireworks/routers/glm-fast",
+                thinking="low",
+            ),
+        )
+
+        self.assertEqual(env["OPEN_LAW_LENS_PI_PROVIDER"], "fireworks")
+        self.assertEqual(
+            env["OPEN_LAW_LENS_PI_MODEL"],
+            "accounts/fireworks/routers/glm-fast",
+        )
+        self.assertEqual(env["OPEN_LAW_LENS_PI_THINKING"], "low")
 
     def test_case_agent_prompt_adds_current_case_context_to_custom_prompt(self) -> None:
         class DummyWindow:

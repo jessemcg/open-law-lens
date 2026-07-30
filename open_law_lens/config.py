@@ -21,10 +21,30 @@ CONFIG_KEY_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE = "subsequent_treatment_agent_p
 CONFIG_KEY_LEGACY_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE = "later_treatment_agent_prompt_template"
 CONFIG_KEY_APPEAL_ISSUE_PRESETS = "appeal_issue_presets"
 CONFIG_KEY_APPEAL_ISSUE_LABELS = "appeal_issue_labels"
+CONFIG_KEY_AGENT_RUNTIME_PROFILES = "agent_runtime_profiles"
 CONFIG_KEY_READER_FONT_SIZE_PT = "reader_font_size_pt"
 CONFIG_KEY_READER_FONT_FAMILY = "reader_font_family"
 CONFIG_KEY_DEFAULT_BARE_STATUTE_LAW_CODE = "default_bare_statute_law_code"
 ENV_CONCORDANCE_FILE = "OPEN_LAW_LENS_CONCORDANCE_FILE"
+AGENT_PROFILE_LAW = "law"
+AGENT_PROFILE_RESEARCH_CACHE = "research_cache"
+AGENT_PROFILE_PRIOR_BRIEFS = "prior_briefs"
+AGENT_PROFILE_ASSESS_ARGUMENT = "assess_argument"
+AGENT_PROFILE_KEYS: tuple[str, ...] = (
+    AGENT_PROFILE_LAW,
+    AGENT_PROFILE_RESEARCH_CACHE,
+    AGENT_PROFILE_PRIOR_BRIEFS,
+    AGENT_PROFILE_ASSESS_ARGUMENT,
+)
+PI_THINKING_LEVELS: tuple[str, ...] = (
+    "off",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+)
 DEFAULT_READER_FONT_SIZE_PT = 11
 DEFAULT_BARE_STATUTE_LAW_CODE = "WIC"
 BARE_STATUTE_LAW_CODE_OPTIONS: tuple[tuple[str, str], ...] = (
@@ -206,6 +226,13 @@ For each selected subsequent case, explain how it used the target case: agreed w
 Prefer California Supreme Court and published California Court of Appeal decisions. Do not use unpublished cases as controlling treatment. Keep the answer concise and include the official citation for each later case. In the final answer, use normal legal prose for case names and citations; reserve backticks for CLI commands, file paths, and other literal technical text."""
 
 
+@dataclass(frozen=True, slots=True)
+class PiAgentProfile:
+    provider: str
+    model: str
+    thinking: str
+
+
 @dataclass(frozen=True)
 class AppConfig:
     courtlistener_token: str = ""
@@ -221,6 +248,7 @@ class AppConfig:
     appeal_issue_labels: list[str] = field(
         default_factory=lambda: list(DEFAULT_APPEAL_ISSUE_LABELS)
     )
+    agent_runtime_profiles: dict[str, PiAgentProfile] = field(default_factory=dict)
     reader_font_size_pt: int = DEFAULT_READER_FONT_SIZE_PT
     reader_font_family: str = DEFAULT_READER_FONT_FAMILY
     default_bare_statute_law_code: str = DEFAULT_BARE_STATUTE_LAW_CODE
@@ -279,6 +307,26 @@ def normalize_appeal_issue_labels(value: Any, presets: list[str]) -> list[str]:
     labels = [str(item or "").strip() for item in raw_labels[: len(presets)]]
     labels.extend([""] * (len(presets) - len(labels)))
     return labels
+
+
+def normalize_agent_runtime_profiles(value: Any) -> dict[str, PiAgentProfile]:
+    if not isinstance(value, dict):
+        return {}
+    profiles: dict[str, PiAgentProfile] = {}
+    for key in AGENT_PROFILE_KEYS:
+        raw_profile = value.get(key)
+        if not isinstance(raw_profile, dict):
+            continue
+        provider = str(raw_profile.get("provider") or "").strip()
+        model = str(raw_profile.get("model") or "").strip()
+        thinking = str(raw_profile.get("thinking") or "").strip().lower()
+        if provider and model and thinking in PI_THINKING_LEVELS:
+            profiles[key] = PiAgentProfile(
+                provider=provider,
+                model=model,
+                thinking=thinking,
+            )
+    return profiles
 
 
 def reader_font_css(font_family: str) -> str:
@@ -376,6 +424,9 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
             raw.get(CONFIG_KEY_APPEAL_ISSUE_LABELS),
             appeal_issue_presets,
         ),
+        agent_runtime_profiles=normalize_agent_runtime_profiles(
+            raw.get(CONFIG_KEY_AGENT_RUNTIME_PROFILES)
+        ),
         reader_font_size_pt=coerce_reader_font_size(raw.get(CONFIG_KEY_READER_FONT_SIZE_PT)),
         reader_font_family=normalize_reader_font_family(raw.get(CONFIG_KEY_READER_FONT_FAMILY)),
         default_bare_statute_law_code=normalize_bare_statute_law_code(
@@ -417,6 +468,18 @@ def save_config(config: AppConfig, path: Path = CONFIG_PATH) -> None:
             appeal_issue_labels,
             appeal_issue_presets,
         ),
+        CONFIG_KEY_AGENT_RUNTIME_PROFILES: {
+            key: {
+                "provider": profile.provider,
+                "model": profile.model,
+                "thinking": profile.thinking,
+            }
+            for key, profile in config.agent_runtime_profiles.items()
+            if key in AGENT_PROFILE_KEYS
+            and profile.provider.strip()
+            and profile.model.strip()
+            and profile.thinking in PI_THINKING_LEVELS
+        },
         CONFIG_KEY_READER_FONT_SIZE_PT: coerce_reader_font_size(config.reader_font_size_pt),
         CONFIG_KEY_READER_FONT_FAMILY: normalize_reader_font_family(config.reader_font_family),
         CONFIG_KEY_DEFAULT_BARE_STATUTE_LAW_CODE: normalize_bare_statute_law_code(

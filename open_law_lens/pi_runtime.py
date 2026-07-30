@@ -15,6 +15,15 @@ from typing import Any
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 PROJECT_PI_SETTINGS_PATH = PROJECT_DIR / ".pi" / "settings.json"
 PI_MODEL_DISCOVERY_TIMEOUT_SECONDS = 10
+PI_THINKING_LEVELS: tuple[str, ...] = (
+    "off",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+)
 
 
 class PiRuntimeError(RuntimeError):
@@ -30,6 +39,7 @@ class PiModel:
     provider: str
     model_id: str
     name: str
+    supported_thinking_levels: tuple[str, ...] = PI_THINKING_LEVELS[:5]
 
     @property
     def label(self) -> str:
@@ -38,6 +48,61 @@ class PiModel:
     @property
     def settings_key(self) -> tuple[str, str]:
         return self.provider, self.model_id
+
+
+@dataclass(frozen=True, slots=True)
+class PiRuntimeCatalog:
+    models: tuple[PiModel, ...]
+    default_model: PiModel | None
+    default_thinking_level: str
+
+
+def clamp_pi_thinking_level(model: PiModel, level: str) -> str:
+    supported = model.supported_thinking_levels or ("off",)
+    if level in supported:
+        return level
+    try:
+        requested_index = PI_THINKING_LEVELS.index(level)
+    except ValueError:
+        return supported[0]
+    for candidate in PI_THINKING_LEVELS[requested_index:]:
+        if candidate in supported:
+            return candidate
+    for candidate in reversed(PI_THINKING_LEVELS[:requested_index]):
+        if candidate in supported:
+            return candidate
+    return supported[0]
+
+
+def _supported_thinking_levels(raw_model: dict[str, Any]) -> tuple[str, ...]:
+    if raw_model.get("reasoning") is False:
+        return ("off",)
+    raw_map = raw_model.get("thinkingLevelMap")
+    thinking_map = raw_map if isinstance(raw_map, dict) else {}
+    levels: list[str] = []
+    for level in PI_THINKING_LEVELS:
+        if level in thinking_map and thinking_map[level] is None:
+            continue
+        if level in {"xhigh", "max"} and level not in thinking_map:
+            continue
+        levels.append(level)
+    return tuple(levels) or ("off",)
+
+
+def _pi_model_from_json(raw_model: Any) -> PiModel | None:
+    if not isinstance(raw_model, dict):
+        return None
+    provider = str(raw_model.get("provider") or "").strip()
+    model_id = str(raw_model.get("id") or "").strip()
+    if not provider or not model_id:
+        return None
+    name = str(raw_model.get("name") or model_id).strip() or model_id
+    return PiModel(
+        provider=provider,
+        model_id=model_id,
+        name=name,
+        supported_thinking_levels=_supported_thinking_levels(raw_model),
+    )
 
 
 def _executable_path(value: str) -> Path | None:
@@ -93,6 +158,23 @@ def pi_command() -> list[str]:
     if pi_node:
         return [pi_node, pi_executable]
     return [pi_executable]
+
+
+def _pi_rpc_command() -> list[str]:
+    return [
+        *pi_command(),
+        "--mode",
+        "rpc",
+        "--offline",
+        "--no-session",
+        "--approve",
+        "--no-tools",
+        "--no-skills",
+        "--no-extensions",
+        "--no-prompt-templates",
+        "--no-themes",
+        "--no-context-files",
+    ]
 
 
 def _pi_rpc_response(
@@ -194,27 +276,15 @@ def _pi_rpc_response(
             f"Pi model query failed with exit code {process.returncode}"
             + (f": {detail}" if detail else ".")
         )
-    raise PiRuntimeError("Pi did not return an available-model response.")
+    request_type = str(request.get("type") or "requested").replace("_", " ")
+    raise PiRuntimeError(f"Pi did not return a {request_type} response.")
 
 
 def available_pi_models(
     *,
     timeout: float = PI_MODEL_DISCOVERY_TIMEOUT_SECONDS,
 ) -> list[PiModel]:
-    command = [
-        *pi_command(),
-        "--mode",
-        "rpc",
-        "--offline",
-        "--no-session",
-        "--approve",
-        "--no-tools",
-        "--no-skills",
-        "--no-extensions",
-        "--no-prompt-templates",
-        "--no-themes",
-        "--no-context-files",
-    ]
+    command = _pi_rpc_command()
     response = _pi_rpc_response(
         command,
         {"type": "get_available_models"},
@@ -230,14 +300,9 @@ def available_pi_models(
 
     models: dict[tuple[str, str], PiModel] = {}
     for raw_model in raw_models:
-        if not isinstance(raw_model, dict):
+        model = _pi_model_from_json(raw_model)
+        if model is None:
             continue
-        provider = str(raw_model.get("provider") or "").strip()
-        model_id = str(raw_model.get("id") or "").strip()
-        if not provider or not model_id:
-            continue
-        name = str(raw_model.get("name") or model_id).strip() or model_id
-        model = PiModel(provider=provider, model_id=model_id, name=name)
         models[model.settings_key] = model
     return sorted(
         models.values(),
@@ -246,6 +311,45 @@ def available_pi_models(
             model.name.casefold(),
             model.model_id.casefold(),
         ),
+    )
+
+
+def current_pi_runtime_defaults(
+    *,
+    timeout: float = PI_MODEL_DISCOVERY_TIMEOUT_SECONDS,
+) -> tuple[PiModel | None, str]:
+    response = _pi_rpc_response(
+        _pi_rpc_command(),
+        {"type": "get_state"},
+        timeout=timeout,
+    )
+    if response.get("success") is not True:
+        error = str(response.get("error") or "unknown RPC error").strip()
+        raise PiRuntimeError(f"Pi could not report its current model: {error}")
+    data = response.get("data")
+    if not isinstance(data, dict):
+        raise PiRuntimeError("Pi returned an invalid current-state response.")
+    model = _pi_model_from_json(data.get("model"))
+    thinking = str(data.get("thinkingLevel") or "medium").strip().lower()
+    if thinking not in PI_THINKING_LEVELS:
+        thinking = "medium"
+    if model is not None:
+        thinking = clamp_pi_thinking_level(model, thinking)
+    return model, thinking
+
+
+def available_pi_runtime_catalog(
+    *,
+    timeout: float = PI_MODEL_DISCOVERY_TIMEOUT_SECONDS,
+) -> PiRuntimeCatalog:
+    models = available_pi_models(timeout=timeout)
+    default_model, default_thinking_level = current_pi_runtime_defaults(
+        timeout=timeout
+    )
+    return PiRuntimeCatalog(
+        models=tuple(models),
+        default_model=default_model,
+        default_thinking_level=default_thinking_level,
     )
 
 

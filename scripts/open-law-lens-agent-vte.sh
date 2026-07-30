@@ -6,6 +6,9 @@ workspace="${OPEN_LAW_LENS_AGENT_WORKSPACE:-}"
 agent_mode="${OPEN_LAW_LENS_AGENT_MODE:-general}"
 project_dir="${OPEN_LAW_LENS_PROJECT_DIR:-}"
 pi_bin="${OPEN_LAW_LENS_PI_BIN:-pi}"
+pi_provider="${OPEN_LAW_LENS_PI_PROVIDER:-}"
+pi_model="${OPEN_LAW_LENS_PI_MODEL:-}"
+pi_thinking="${OPEN_LAW_LENS_PI_THINKING:-}"
 cache_root="${OPEN_LAW_LENS_CACHE_DIR:-${XDG_CACHE_HOME:-${HOME:-}/.cache}/open-law-lens}"
 library_db="${OPEN_LAW_LENS_LIBRARY_DB:-}"
 prior_briefs_db="${OPEN_LAW_LENS_PRIOR_BRIEFS_DB:-}"
@@ -26,6 +29,19 @@ fi
 if [[ ! -x "$pi_bin" ]] && ! command -v "$pi_bin" >/dev/null 2>&1; then
   printf 'Pi executable not found: %s\n' "$pi_bin" >&2
   exit 127
+fi
+if [[ -n "$pi_provider" || -n "$pi_model" || -n "$pi_thinking" ]]; then
+  if [[ -z "$pi_provider" || -z "$pi_model" || -z "$pi_thinking" ]]; then
+    printf 'Pi runtime profile requires provider, model, and thinking level.\n' >&2
+    exit 2
+  fi
+  case "$pi_thinking" in
+    off|minimal|low|medium|high|xhigh|max) ;;
+    *)
+      printf 'Unsupported Pi thinking level: %s\n' "$pi_thinking" >&2
+      exit 2
+      ;;
+  esac
 fi
 
 pi_path="$pi_bin"
@@ -95,6 +111,9 @@ export OPEN_LAW_LENS_CACHE_DIR="$cache_root"
 prompt="$(<"$prompt_file")"
 tools="read,bash,grep,find,ls"
 args=(--approve --no-skills --no-extensions)
+if [[ -n "$pi_provider" ]]; then
+  args+=(--provider "$pi_provider" --model "$pi_model" --thinking "$pi_thinking")
+fi
 if [[ "$agent_mode" == "general" || "$agent_mode" == "appeal" ]]; then
   args+=(--skill "$workspace/.pi/skills/legal-researcher/SKILL.md")
   args+=(--extension "$workspace/.pi/extensions/pi-web-search/src/index.ts")

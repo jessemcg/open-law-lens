@@ -114,10 +114,13 @@ bundled in this repository, so users do not need to install it separately. The
 launcher also uses the Node runtime installed alongside Pi instead of the
 desktop session's system Node.
 
-The Settings window lists the models currently authorized in Pi and saves the
-selected project-wide default to `.pi/settings.json`. The selection is shared
-with the project and applies to newly launched agent sessions. Pi credentials
-remain in the user's home Pi configuration.
+The Settings window lists the models currently authorized in Pi and lets each
+user choose a separate model and reasoning effort for Query Law, Query Research
+Cache, Query Prior Briefs, and Assess Argument. These personal overrides are
+stored in the ignored local `config.json` and apply to newly launched sessions.
+Choosing **Use Pi defaults** leaves that workflow on Pi's merged user and
+project defaults. Pi credentials remain in the user's home Pi configuration,
+and the tracked `.pi/settings.json` remains the project fallback.
 
 ## Run the App
 
@@ -224,9 +227,10 @@ search. It opens matching briefs newest-first in the main reader without adding
 them to the Research Cache. Use `Ctrl+G` and `Ctrl+Shift+G` to move forward and
 backward through occurrences across matching briefs.
 
-Agent runtime settings, including the project-wide Pi model, prompt templates,
-appeal issue presets, and fact-pattern source, are available in the app
-Settings window.
+Agent runtime settings, including the four per-query Pi model/reasoning
+profiles, prompt templates, appeal issue presets, and fact-pattern source, are
+available in the app Settings window. Helper Case and Subsequent Treatment use
+the Query Law profile. Search Across Briefs is local and does not launch Pi.
 
 Law, Helper Case, Subsequent Treatment, and Appeal runs explicitly load the
 legal-researcher skill and the bundled `pi-web-search` extension. The web tool
@@ -336,13 +340,13 @@ routes you back to manual review, depending on the lookup path.
   markers, and Research Cache sets.
 - `open_law_lens/config.py`: local settings, including the CourtListener token.
 - `open_law_lens/pi_runtime.py`: Pi runtime discovery, authenticated model
-  listing, and project model settings.
+  listing, effective default detection, and reasoning capability handling.
 - `open_law_lens/fact_patterns.py`: ODT/PDF fact-pattern extraction for appeal
   issue assessment.
 - `open_law_lens/quality.py`: official reporter citation and pagination quality
   checks.
 - `scripts/open-law-lens-agent-vte.sh`: embedded Pi terminal launcher.
-- `.pi/settings.json`: project-local Pi provider and model.
+- `.pi/settings.json`: project-local fallback Pi provider and model.
 - `.pi/extensions/pi-web-search/`: bundled, pinned Pi web-search extension.
 - `.pi/skills/legal-researcher/SKILL.md`: Pi legal-research workflow and
   web-search fallback rules.
