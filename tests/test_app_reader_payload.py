@@ -2148,6 +2148,22 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertIn("Record citation format for final answers:", prompt)
         self.assertIn("Do not cite local paths", prompt)
         self.assertIn("(RT 6, 34; CT 140, 190.)", prompt)
+        self.assertIn(
+            "Treat the supplied fact pattern as the complete factual record",
+            prompt,
+        )
+        self.assertIn(
+            "do not add a generic record-completeness caveat",
+            prompt,
+        )
+        self.assertIn(
+            "identify that specific issue only where it affects the analysis",
+            prompt,
+        )
+        self.assertNotIn(
+            "missing record facts that could change the assessment",
+            prompt,
+        )
         self.assertIn("use normal legal prose for case names", prompt)
         self.assertIn("Reserve backticks for CLI commands", prompt)
         self.assertIn("Rating: Strong, Medium, Weak, or Frivolous", prompt)

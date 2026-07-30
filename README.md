@@ -268,8 +268,11 @@ When an assessment starts, the app copies the source fact pattern into a
 temporary agent workspace, writes an extracted text file, and launches Pi in
 the embedded terminal. The default assessment prompt asks Pi to analyze
 preservation, standard of review, factual support, governing law, prejudice,
-likely respondent arguments, and missing record facts. It also requires a final
-rating line:
+and likely respondent arguments. It treats every selected fact pattern as the
+complete factual record and prohibits speculation about a more complete record
+or a generic record-completeness caveat. A concrete ambiguity, contradiction,
+or missing record citation in the supplied text may still be addressed where
+it affects the analysis. The prompt also requires a final rating line:
 
 ```text
 Rating: Strong, Medium, Weak, or Frivolous

@@ -264,9 +264,15 @@ class AgentVteWrapperTests(unittest.TestCase):
         self.assertTrue((package.parent / "src" / "index.ts").is_file())
         self.assertTrue((package.parent / "LICENSE").is_file())
 
-    def test_appeal_skill_requires_issue_specific_heading(self) -> None:
+    def test_appeal_skill_requires_issue_specific_heading_and_complete_record(
+        self,
+    ) -> None:
         text = LEGAL_RESEARCHER_SKILL.read_text(encoding="utf-8")
 
         self.assertIn("For Appeal Issue research", text)
         self.assertIn("names the specific appellate", text)
         self.assertIn("`## Assessment`", text)
+        self.assertIn("treat the supplied fact pattern as the complete", text)
+        self.assertIn("do not add a generic record-completeness caveat", text)
+        self.assertIn("missing record citation only where it affects", text)
+        self.assertIn("material gaps in\n  the available legal sources", text)

@@ -187,6 +187,8 @@ Record citation format for final answers:
 - Combine multiple record citations into one parenthetical only when they support the same point.
 - If the fact-pattern text does not include a usable record citation for an important fact, say that the citation is missing or uncertain instead of inventing one.
 
+Treat the supplied fact pattern as the complete factual record for this assessment. Base the factual analysis only on facts it contains. Do not speculate that unprovided facts or a more complete record could alter the assessment, and do not add a generic record-completeness caveat. If the supplied text is internally ambiguous, contradictory, or lacks a usable record citation, identify that specific issue only where it affects the analysis.
+
 Argument to assess:
 {issue}
 
@@ -196,7 +198,7 @@ For a recent published California slip opinion with no official reporter citatio
 
 Confine research to California state law unless the argument explicitly requires federal law. Prefer published California Supreme Court and California Court of Appeal authority. Use unpublished cases only for context, not as controlling authority.
 
-Analyze preservation, standard of review, factual support, governing law, prejudice, likely respondent arguments, and missing record facts that could change the assessment.
+Analyze preservation, standard of review, factual support, governing law, prejudice, and likely respondent arguments based on the supplied complete fact pattern.
 
 In the final answer, use normal legal prose for case names, statutes, rules, and citations. Reserve backticks for CLI commands, file paths, and other literal technical text.
 

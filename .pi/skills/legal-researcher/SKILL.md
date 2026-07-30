@@ -77,11 +77,18 @@ snippet alone.
   Markdown heading of no more than 10 words that names the specific appellate
   issue, such as `## Cal-ICWA Inquiry`. Do not use generic headings such as
   `## Assessment` or `## Issue Assessment`.
+- For Appeal Issue research, treat the supplied fact pattern as the complete
+  factual record. Base the factual analysis only on that text. Do not speculate
+  that unprovided facts or a more complete record could alter the assessment,
+  and do not add a generic record-completeness caveat. Identify a concrete
+  ambiguity, contradiction, or missing record citation only where it affects
+  the analysis.
 - Confine research to California state law unless the question requires federal
   law.
 - Distinguish controlling authority, persuasive authority, and prior advocacy.
 - Include normalized citations for authorities relied upon.
-- Use concise legal prose and address contrary authority or material gaps.
+- Use concise legal prose and address contrary authority or material gaps in
+  the available legal sources.
 - Use quotation marks only for exact, continuous text verified in the source.
 - Do not invent citations, pinpoints, holdings, or publication status.
 - If the available sources do not answer the question, say so directly.

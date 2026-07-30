@@ -485,6 +485,66 @@ Rating: Strong, Medium, Weak, or Frivolous"""
             )
             self.assertIn("Cal.App.5th", config.appeal_issue_agent_prompt_template)
 
+    def test_previous_appeal_prompt_migrates_to_complete_record_guidance(self) -> None:
+        complete_record_guidance = (
+            "Treat the supplied fact pattern as the complete factual record for this "
+            "assessment. Base the factual analysis only on facts it contains. Do not "
+            "speculate that unprovided facts or a more complete record could alter the "
+            "assessment, and do not add a generic record-completeness caveat. If the "
+            "supplied text is internally ambiguous, contradictory, or lacks a usable "
+            "record citation, identify that specific issue only where it affects the "
+            "analysis."
+        )
+        previous_default = DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE.replace(
+            f"\n\n{complete_record_guidance}",
+            "",
+        ).replace(
+            (
+                "Analyze preservation, standard of review, factual support, governing "
+                "law, prejudice, and likely respondent arguments based on the supplied "
+                "complete fact pattern."
+            ),
+            (
+                "Analyze preservation, standard of review, factual support, governing "
+                "law, prejudice, likely respondent arguments, and missing record facts "
+                "that could change the assessment."
+            ),
+        )
+        self.assertNotEqual(
+            previous_default,
+            DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
+        )
+        self.assertIn(
+            "missing record facts that could change the assessment",
+            previous_default,
+        )
+        self.assertNotIn("complete factual record", previous_default)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text(
+                json.dumps({"appeal_issue_agent_prompt_template": previous_default}),
+                encoding="utf-8",
+            )
+
+            config = load_config(path)
+
+        self.assertEqual(
+            config.appeal_issue_agent_prompt_template,
+            DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
+        )
+        self.assertIn(
+            "complete factual record",
+            config.appeal_issue_agent_prompt_template,
+        )
+        self.assertIn(
+            "do not add a generic record-completeness caveat",
+            config.appeal_issue_agent_prompt_template,
+        )
+        self.assertNotIn(
+            "missing record facts that could change the assessment",
+            config.appeal_issue_agent_prompt_template,
+        )
+
     def test_custom_appeal_prompt_is_preserved(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "config.json"
