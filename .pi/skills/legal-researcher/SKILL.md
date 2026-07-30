@@ -73,6 +73,10 @@ snippet alone.
 
 ## Answer requirements
 
+- For Appeal Issue research, begin the final answer with a concise level-two
+  Markdown heading of no more than 10 words that names the specific appellate
+  issue, such as `## Cal-ICWA Inquiry`. Do not use generic headings such as
+  `## Assessment` or `## Issue Assessment`.
 - Confine research to California state law unless the question requires federal
   law.
 - Distinguish controlling authority, persuasive authority, and prior advocacy.

@@ -10,6 +10,9 @@ from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 WRAPPER = PROJECT_DIR / "scripts" / "open-law-lens-agent-vte.sh"
+LEGAL_RESEARCHER_SKILL = (
+    PROJECT_DIR / ".pi" / "skills" / "legal-researcher" / "SKILL.md"
+)
 
 
 class AgentVteWrapperTests(unittest.TestCase):
@@ -132,6 +135,13 @@ class AgentVteWrapperTests(unittest.TestCase):
             self.assertIn("--extension", args)
             self.assertIn("read,bash,grep,find,ls,web_search", args)
 
+    def test_appeal_mode_loads_legal_researcher_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            args = self._run(Path(temp_dir), "appeal")
+
+        self.assertIn("--skill", args)
+        self.assertTrue(any(item.startswith("/skill:legal-researcher") for item in args))
+
     def test_closed_corpus_mode_disables_skill_and_web_search(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             args = self._run(Path(temp_dir), "case")
@@ -194,3 +204,10 @@ class AgentVteWrapperTests(unittest.TestCase):
         self.assertEqual(metadata["version"], "1.3.1")
         self.assertTrue((package.parent / "src" / "index.ts").is_file())
         self.assertTrue((package.parent / "LICENSE").is_file())
+
+    def test_appeal_skill_requires_issue_specific_heading(self) -> None:
+        text = LEGAL_RESEARCHER_SKILL.read_text(encoding="utf-8")
+
+        self.assertIn("For Appeal Issue research", text)
+        self.assertIn("names the specific appellate", text)
+        self.assertIn("`## Assessment`", text)

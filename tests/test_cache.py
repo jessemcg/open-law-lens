@@ -372,6 +372,19 @@ class CacheTests(unittest.TestCase):
         self.assertEqual(entry["answer_id"], answer_id)
         self.assertEqual(entry["title"], "Assessment")
 
+    def test_agent_answer_title_uses_issue_specific_heading(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            answer_id = cache.save_agent_answer(
+                "## Cal-ICWA Inquiry\n\nThe inquiry issue is strong.",
+                mode="appeal",
+            )
+
+            entry = cache.list_agent_answer_entries()[0]
+
+        self.assertEqual(entry["answer_id"], answer_id)
+        self.assertEqual(entry["title"], "Cal-ICWA Inquiry")
+
     def test_repair_reporter_only_imported_case_name_updates_cache_and_lookup(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = JsonCache(Path(temp_dir))
