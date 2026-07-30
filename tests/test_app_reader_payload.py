@@ -1045,6 +1045,64 @@ class AppReaderPayloadTests(unittest.TestCase):
             )
         )
 
+    def test_agent_link_press_claims_sequence_before_textview(self) -> None:
+        states: list[Gtk.EventSequenceState] = []
+        target = object()
+
+        class DummyGesture:
+            @staticmethod
+            def get_current_button() -> int:
+                return Gdk.BUTTON_PRIMARY
+
+            @staticmethod
+            def set_state(state: Gtk.EventSequenceState) -> None:
+                states.append(state)
+
+        window = SimpleNamespace(
+            _agent_link_press=None,
+            _agent_link_at_coords=lambda _x, _y: target,
+        )
+
+        OpenLawLensWindow._on_agent_answer_pressed(  # type: ignore[arg-type]
+            window,
+            DummyGesture(),  # type: ignore[arg-type]
+            1,
+            10.0,
+            12.0,
+        )
+
+        self.assertEqual(states, [Gtk.EventSequenceState.CLAIMED])
+        self.assertIsNotNone(window._agent_link_press)
+        self.assertIs(window._agent_link_press.target, target)
+
+    def test_agent_link_gesture_runs_in_capture_phase(self) -> None:
+        controllers: list[Gtk.EventController] = []
+
+        class DummyView:
+            @staticmethod
+            def add_controller(controller: Gtk.EventController) -> None:
+                controllers.append(controller)
+
+        window = SimpleNamespace(
+            _agent_answer_view=DummyView(),
+            _agent_motion_controller=object(),
+            _agent_click_gesture=None,
+            _on_agent_answer_pressed=lambda *_args: None,
+            _on_agent_answer_click=lambda *_args: None,
+            _clear_agent_link_press=lambda *_args: None,
+        )
+
+        OpenLawLensWindow._install_agent_answer_link_controllers(  # type: ignore[arg-type]
+            window
+        )
+
+        self.assertEqual(len(controllers), 1)
+        self.assertIs(controllers[0], window._agent_click_gesture)
+        self.assertEqual(
+            window._agent_click_gesture.get_propagation_phase(),
+            Gtk.PropagationPhase.CAPTURE,
+        )
+
     def test_strip_agent_legal_authority_backticks_preserves_commands(self) -> None:
         text = (
             "See `DKN Holdings LLC v. Faerber (2015) 61 Cal.4th 813`, "

@@ -9761,6 +9761,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if self._agent_click_gesture is None:
             click = Gtk.GestureClick.new()
             click.set_button(Gdk.BUTTON_PRIMARY)
+            click.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
             click.connect("pressed", self._on_agent_answer_pressed)
             click.connect("released", self._on_agent_answer_click)
             click.connect("stopped", self._clear_agent_link_press)
@@ -9838,11 +9839,17 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     ) -> None:
         button = gesture.get_current_button()
         target = self._agent_link_at_coords(x, y)
-        self._agent_link_press = (
-            LinkPressState(target, x, y)
-            if n_press == 1 and target is not None and (not button or button == Gdk.BUTTON_PRIMARY)
-            else None
-        )
+        if (
+            n_press == 1
+            and target is not None
+            and (not button or button == Gdk.BUTTON_PRIMARY)
+        ):
+            self._agent_link_press = LinkPressState(target, x, y)
+            # Claim link presses before TextView's caret-placement gesture can
+            # consume the sequence. Release still rejects drags and moved links.
+            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+            return
+        self._agent_link_press = None
 
     def _clear_agent_link_press(self, *_args: object) -> None:
         self._agent_link_press = None
