@@ -364,13 +364,18 @@ def normalize_search_api_result(row: dict[str, Any]) -> CourtListenerSearchResul
             cluster_id = cluster_id_from_cluster(cluster)
     if not cluster_id:
         return None
-    case_name = html_to_text(str(
-        row.get("caseName")
-        or row.get("case_name")
-        or row.get("caseNameShort")
-        or row.get("case_name_short")
-        or ""
-    )).strip()
+    title_cluster = {
+        "case_name": html_to_text(
+            str(row.get("caseName") or row.get("case_name") or "")
+        ).strip(),
+        "case_name_short": html_to_text(
+            str(row.get("caseNameShort") or row.get("case_name_short") or "")
+        ).strip(),
+        "case_name_full": html_to_text(
+            str(row.get("caseNameFull") or row.get("case_name_full") or "")
+        ).strip(),
+    }
+    case_name = cluster_short_title_value(title_cluster)
     return CourtListenerSearchResult(
         cluster_id=cluster_id,
         case_name=case_name or f"Cluster {cluster_id}",

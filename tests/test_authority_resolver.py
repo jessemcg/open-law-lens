@@ -96,10 +96,17 @@ class AuthorityResolverTests(unittest.TestCase):
                 self.fetch_urls.append(url)
                 self.last_resource_source = "Library"
                 return {
-                    "id": 42,
-                    "case_name": "In re Example",
-                    "case_name_short": "In re Example",
-                    "citations": [{"volume": "1", "reporter": "Cal.App.5th", "page": "2"}],
+                    "id": 5810948,
+                    "case_name": "Moss v. Moss",
+                    "case_name_short": "Moss",
+                    "case_name_full": (
+                        "Estate of ROBERT CLINTON MOSS, SR., BARRY D. MOSS, "
+                        "Contestant and v. LORRAINE BERGERON MOSS, as etc., and"
+                    ),
+                    "date_filed": "2012-03-20",
+                    "citations": [
+                        {"volume": "204", "reporter": "Cal.App.4th", "page": "521"}
+                    ],
                     "sub_opinions": ["/api/rest/v4/opinions/10/"],
                 }
 
@@ -118,11 +125,15 @@ class AuthorityResolverTests(unittest.TestCase):
 
         client = DummyClient()
 
-        result = extract_case_by_cluster_id("42", client=client)  # type: ignore[arg-type]
+        result = extract_case_by_cluster_id(
+            "5810948",
+            client=client,  # type: ignore[arg-type]
+        )
 
-        self.assertEqual(client.fetch_urls, ["/api/rest/v4/clusters/42/"])
+        self.assertEqual(client.fetch_urls, ["/api/rest/v4/clusters/5810948/"])
         self.assertEqual(result.source, "Library")
-        self.assertEqual(result.title, "In re Example")
+        self.assertEqual(result.title, "Estate of Moss")
+        self.assertEqual(result.citation, "Estate of Moss (2012) 204 Cal.App.4th 521")
 
 
 if __name__ == "__main__":

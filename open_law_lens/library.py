@@ -37,7 +37,7 @@ PROJECT_LIBRARY_DIR = PROJECT_ROOT / "library"
 DEFAULT_LIBRARY_DB = PROJECT_LIBRARY_DIR / "open_law_lens.sqlite3"
 SCHEMA_VERSION = "2"
 OFFICIAL_CITATION_ONLY_NORMALIZED_KEY = "official_citation_only_normalized_v2"
-CASE_TITLES_NORMALIZED_KEY = "case_titles_normalized_v1"
+CASE_TITLES_NORMALIZED_KEY = "case_titles_normalized_v2"
 REPORTER_ONLY_IMPORTED_NAMES_NORMALIZED_KEY = "reporter_only_imported_names_normalized_v1"
 RESEARCH_SET_SLIP_PAYLOAD_KEY = "_open_law_lens_slip_opinion"
 TEXT_FIELDS = (
@@ -869,6 +869,30 @@ class CaseLibrary:
                 conn.execute(
                     "UPDATE cases SET title = ? WHERE cluster_id = ?",
                     (title, str(row["cluster_id"])),
+                )
+        item_rows = conn.execute(
+            """
+            SELECT set_id, authority_id, title, payload_json
+            FROM research_set_items
+            WHERE item_type = 'case'
+            """
+        ).fetchall()
+        for row in item_rows:
+            try:
+                cluster = _json_loads(str(row["payload_json"]))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(cluster, dict):
+                continue
+            title = _cluster_title(cluster)
+            if title and title != str(row["title"]):
+                conn.execute(
+                    """
+                    UPDATE research_set_items
+                    SET title = ?
+                    WHERE set_id = ? AND item_type = 'case' AND authority_id = ?
+                    """,
+                    (title, int(row["set_id"]), str(row["authority_id"])),
                 )
         conn.execute(
             "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",

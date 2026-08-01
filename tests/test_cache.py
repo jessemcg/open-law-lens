@@ -141,6 +141,34 @@ class CacheTests(unittest.TestCase):
             self.assertEqual(entries[0]["title"], "Example v. State")
             self.assertEqual(entries[0]["citation_text"], "1 Cal. 2")
 
+    def test_ensure_repairs_derived_estate_title_without_rewriting_cluster(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cluster = {
+                "id": 5810948,
+                "case_name": "Moss v. Moss",
+                "case_name_full": (
+                    "Estate of ROBERT CLINTON MOSS, SR., BARRY D. MOSS, "
+                    "Contestant and v. LORRAINE BERGERON MOSS, as etc., and"
+                ),
+                "case_name_short": "Moss",
+                "citations": [
+                    {"volume": "204", "reporter": "Cal.App.4th", "page": "521"}
+                ],
+            }
+            cache.upsert_cluster(cluster)
+            index = cache.read_case_index()
+            index["5810948"]["title"] = "Moss v. Moss"
+            cache.write_case_index(index)
+
+            cache.ensure()
+
+            self.assertEqual(cache.read_case_index()["5810948"]["title"], "Estate of Moss")
+            stored = cache.read_cached_cluster("5810948")
+            self.assertIsNotNone(stored)
+            assert stored is not None
+            self.assertEqual(stored["case_name"], "Moss v. Moss")
+
     def test_upsert_preferred_cluster_replaces_active_official_citation_duplicate(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = JsonCache(Path(temp_dir))

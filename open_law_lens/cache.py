@@ -124,6 +124,7 @@ class JsonCache:
         ):
             (self.root / name).mkdir(parents=True, exist_ok=True)
         self.repair_reporter_only_imported_case_names()
+        self._refresh_case_index_titles()
 
     def case_index_path(self) -> Path:
         return self.root / "cases_index.json"
@@ -647,6 +648,25 @@ class JsonCache:
         )
         normalized_entries.sort(key=_cache_sort_timestamp, reverse=True)
         return normalized_entries
+
+    @_synchronized
+    def _refresh_case_index_titles(self) -> int:
+        index = self.read_case_index()
+        changed = 0
+        for cluster_id, entry in index.items():
+            if not isinstance(entry, dict):
+                continue
+            cluster = self.read_cached_cluster(cluster_id)
+            if cluster is None:
+                continue
+            title = _cluster_title(cluster)
+            if not title or title == str(entry.get("title") or ""):
+                continue
+            index[cluster_id] = {**entry, "title": title}
+            changed += 1
+        if changed:
+            self.write_case_index(index)
+        return changed
 
     def read_cached_cluster(self, cluster_id: str) -> dict[str, Any] | None:
         data = self.read_resource("clusters", cluster_id)

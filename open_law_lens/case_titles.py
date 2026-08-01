@@ -4,6 +4,22 @@ import re
 from typing import Any
 
 
+ESTATE_NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v", "deceased"}
+ESTATE_SURNAME_PARTICLES = {
+    "da",
+    "de",
+    "del",
+    "della",
+    "di",
+    "du",
+    "la",
+    "le",
+    "st",
+    "van",
+    "von",
+}
+
+
 def normalize_case_title(title: str) -> str:
     normalized = re.sub(r"\s+", " ", title.strip())
     normalized = re.sub(
@@ -27,6 +43,13 @@ def normalize_case_title(title: str) -> str:
         count=1,
         flags=re.IGNORECASE,
     )
+    normalized = re.sub(
+        r"^estate\s+of\b",
+        "Estate of",
+        normalized,
+        count=1,
+        flags=re.IGNORECASE,
+    )
     if normalized.startswith("In re "):
         normalized = _trim_dependency_caption_tail(normalized)
         normalized = _normalize_leading_name_words(normalized, "In re ")
@@ -34,11 +57,13 @@ def normalize_case_title(title: str) -> str:
         normalized = _normalize_leading_name_words(normalized, "Adoption of ")
     elif normalized.startswith("Conservatorship of "):
         normalized = _normalize_conservatorship_title(normalized)
+    elif normalized.startswith("Estate of "):
+        normalized = _normalize_estate_title(normalized)
     else:
         return _normalize_civil_case_title(normalized)
     normalized = _normalize_initial_spacing(normalized)
     normalized = re.sub(
-        r"^((?:In re|Adoption of|Conservatorship of) )([A-Z]{2})\.?(?=$|[\s,(])",
+        r"^((?:In re|Adoption of|Conservatorship of|Estate of) )([A-Z]{2})\.?(?=$|[\s,(])",
         lambda match: f"{match.group(1)}{'.'.join(match.group(2))}.",
         normalized,
     )
@@ -84,6 +109,21 @@ def _normalize_conservatorship_title(title: str) -> str:
         flags=re.IGNORECASE,
     )
     return _normalize_leading_name_words(f"Conservatorship of {body}", "Conservatorship of ")
+
+
+def _normalize_estate_title(title: str) -> str:
+    body = title.removeprefix("Estate of ")
+
+    def replace(match: re.Match[str]) -> str:
+        word = match.group(0)
+        if re.fullmatch(r"(?:[A-Z]\.){1,3}", word):
+            return word
+        return "-".join(
+            "'".join(piece[:1] + piece[1:].lower() for piece in part.split("'"))
+            for part in word.split("-")
+        )
+
+    return "Estate of " + re.sub(r"\b[A-Z][A-Z'-]*\b", replace, body)
 
 
 def _normalize_civil_case_title(title: str) -> str:
@@ -191,6 +231,55 @@ def leading_adoption_title(title: str) -> str:
     return normalize_case_title(leading)
 
 
+def leading_estate_title(title: str, short_title: str = "") -> str:
+    normalized = re.sub(r"\s+", " ", title.strip())
+    match = re.match(r"^estate\s+of\s+(?P<subject>.+)$", normalized, flags=re.IGNORECASE)
+    if match is None:
+        return ""
+    subject = match.group("subject").split(",", 1)[0].strip(" .")
+    if not subject:
+        return ""
+    short_name = _estate_short_name(short_title, subject)
+    if not short_name:
+        short_name = _estate_surname(subject)
+    return normalize_case_title(f"Estate of {short_name}") if short_name else ""
+
+
+def _estate_short_name(short_title: str, subject: str) -> str:
+    normalized = normalize_case_title(short_title) if short_title.strip() else ""
+    if normalized.startswith("Estate of "):
+        normalized = normalized.removeprefix("Estate of ")
+    if not normalized or " v. " in f" {normalized.casefold()} ":
+        return ""
+    short_words = _estate_name_words(normalized)
+    subject_words = _estate_name_words(subject)
+    if not short_words or len(short_words) > len(subject_words):
+        return ""
+    if subject_words[-len(short_words):] != short_words:
+        return ""
+    return normalized
+
+
+def _estate_surname(subject: str) -> str:
+    tokens = re.findall(r"[A-Za-z][A-Za-z.'-]*", subject)
+    while tokens and tokens[-1].rstrip(".").casefold() in ESTATE_NAME_SUFFIXES:
+        tokens.pop()
+    if not tokens or len(tokens[-1].rstrip(".")) < 2:
+        return ""
+    start = len(tokens) - 1
+    while start > 0 and tokens[start - 1].rstrip(".").casefold() in ESTATE_SURNAME_PARTICLES:
+        start -= 1
+    return " ".join(tokens[start:])
+
+
+def _estate_name_words(value: str) -> list[str]:
+    return [
+        word.rstrip(".").casefold()
+        for word in re.findall(r"[A-Za-z][A-Za-z.'-]*", value)
+        if word.rstrip(".")
+    ]
+
+
 def parenthetical_in_re_title(title: str) -> str:
     normalized = re.sub(r"\s+", " ", title.strip())
     matches = re.findall(r"\((In re [^)]+)\)", normalized, flags=re.IGNORECASE)
@@ -218,6 +307,11 @@ def cluster_display_title_value(cluster: dict[str, Any]) -> str:
     full_adoption = leading_adoption_title(full_value) if isinstance(full_value, str) else ""
     short_value = cluster.get("case_name_short")
     short_title = normalize_case_title(short_value) if isinstance(short_value, str) else ""
+    full_estate = (
+        leading_estate_title(full_value, short_title)
+        if isinstance(full_value, str)
+        else ""
+    )
     case_value = cluster.get("case_name")
     case_title = normalize_case_title(case_value) if isinstance(case_value, str) else ""
 
@@ -225,6 +319,8 @@ def cluster_display_title_value(cluster: dict[str, Any]) -> str:
         return full_adoption
     if full_in_re:
         return full_in_re
+    if full_estate:
+        return full_estate
     if short_title.startswith(("In re ", "Adoption of ")):
         return short_title
     if case_title:

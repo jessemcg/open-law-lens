@@ -78,6 +78,24 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(result.snippet, "A beneficial relationship.")
         self.assertEqual(result.cite_count, 12)
 
+    def test_normalize_search_api_result_extracts_estate_title_without_short_name(self) -> None:
+        result = normalize_search_api_result(
+            {
+                "cluster_id": 5810948,
+                "caseName": "Moss v. Moss",
+                "caseNameFull": (
+                    "Estate of ROBERT CLINTON MOSS, SR., BARRY D. MOSS, "
+                    "Contestant and v. LORRAINE BERGERON MOSS, as etc., and"
+                ),
+                "citation": ["204 Cal. App. 4th 521", "139 Cal. Rptr. 3d 94"],
+            }
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.case_name, "Estate of Moss")
+        self.assertEqual(result.citation, "204 Cal.App.4th 521")
+
     def test_search_cases_calls_courtlistener_search_endpoint(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -559,6 +577,28 @@ class ClientTests(unittest.TestCase):
 
         self.assertEqual(cluster_short_title(cluster), "Adoption of Kelsey S.")
 
+    def test_cluster_short_title_extracts_estate_title(self) -> None:
+        cluster = {
+            "case_name": "Moss v. Moss",
+            "case_name_full": (
+                "Estate of ROBERT CLINTON MOSS, SR., BARRY D. MOSS, "
+                "Contestant and v. LORRAINE BERGERON MOSS, as etc., and"
+            ),
+            "case_name_short": "Moss",
+        }
+
+        self.assertEqual(cluster_title(cluster), "Estate of Moss")
+        self.assertEqual(cluster_short_title(cluster), "Estate of Moss")
+
+    def test_cluster_short_title_preserves_estate_surname_particles(self) -> None:
+        cluster = {
+            "case_name": "Petitioner v. Respondent",
+            "case_name_full": "Estate of MARIA DE LA CRUZ, Deceased, Petitioner and Respondent",
+            "case_name_short": "",
+        }
+
+        self.assertEqual(cluster_short_title(cluster), "Estate of De La Cruz")
+
     def test_cluster_short_title_normalizes_habeas_title(self) -> None:
         cluster = {
             "case_name": "In re Jesse Barber On Habeas Corpus",
@@ -642,6 +682,24 @@ class ClientTests(unittest.TestCase):
             citation.plain_text,
             "DKN Holdings LLC v. Faerber (2015) 61 Cal.4th 813",
         )
+
+    def test_format_official_california_citation_uses_estate_title(self) -> None:
+        cluster = {
+            "case_name": "Moss v. Moss",
+            "case_name_full": (
+                "Estate of ROBERT CLINTON MOSS, SR., BARRY D. MOSS, "
+                "Contestant and v. LORRAINE BERGERON MOSS, as etc., and"
+            ),
+            "case_name_short": "Moss",
+            "date_filed": "2012-03-20",
+            "citations": [{"volume": "204", "reporter": "Cal.App.4th", "page": "521"}],
+        }
+
+        citation = format_official_california_citation(cluster)
+
+        self.assertIsNotNone(citation)
+        assert citation is not None
+        self.assertEqual(citation.plain_text, "Estate of Moss (2012) 204 Cal.App.4th 521")
 
     def test_format_official_california_citation_keeps_superior_court_writ_case_name(self) -> None:
         cluster = {

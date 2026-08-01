@@ -18,6 +18,7 @@ from .case_suggestions import (
 from .citation_links import REPORTER_CITATION_PATTERN, cited_case_links, cited_rule_links, cited_statute_links
 from .client import (
     CourtListenerClient,
+    cluster_short_title,
     dedupe_case_clusters,
     format_official_california_citation,
     official_california_reporter_citation,
@@ -248,7 +249,7 @@ def extract_case_by_cluster_id(
         refresh=refresh,
     )
     source = client.last_resource_source or "CourtListener API"
-    title = str(cluster.get("case_name_short") or cluster.get("case_name") or clean_cluster_id)
+    title = cluster_short_title(cluster)
     return _extract_case_from_cluster(
         cluster,
         resolved=clean_cluster_id,
@@ -289,7 +290,7 @@ def _extract_case_from_cluster(
         input=original_input,
         resolved_input=resolved,
         source=source,
-        title=str(cluster.get("case_name_short") or cluster.get("case_name") or ""),
+        title=cluster_short_title(cluster),
         citation=formatted.plain_text if formatted else official_california_reporter_citation(cluster),
         identifier=cluster_id_from_cluster(cluster),
         source_url=str(cluster.get("absolute_url") or cluster.get("resource_uri") or ""),
@@ -349,7 +350,7 @@ def _extract_case_from_scholar(query: str, *, client: CourtListenerClient) -> Au
             input=query,
             resolved_input=quality.official_citation or query,
             source="Google Scholar",
-            title=str(cluster.get("case_name_short") or cluster.get("case_name") or ""),
+            title=cluster_short_title(cluster),
             citation=formatted.plain_text if formatted else quality.official_citation,
             identifier=cluster_id_from_cluster(cluster),
             source_url=webpage.url,
