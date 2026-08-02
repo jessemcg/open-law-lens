@@ -224,8 +224,9 @@ There are four main agent workflows:
 
 The separate Search Across Briefs mode performs a local, non-LLM exact-phrase
 search. It opens matching briefs newest-first in the main reader without adding
-them to the Research Cache. Use `Ctrl+G` and `Ctrl+Shift+G` to move forward and
-backward through occurrences across matching briefs.
+them to the Research Cache. Use `Ctrl+S` to activate this mode, then `Ctrl+G`
+and `Ctrl+Shift+G` to move forward and backward through occurrences across
+matching briefs.
 
 Agent runtime settings, including the four per-query Pi model/reasoning
 profiles, prompt templates, appeal issue presets, and fact-pattern source, are

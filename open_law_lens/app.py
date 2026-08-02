@@ -1963,6 +1963,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         focus_cache_question = Gio.SimpleAction.new("focus_cache_question", None)
         focus_cache_question.connect("activate", self._on_focus_cache_question)
         self.add_action(focus_cache_question)
+        focus_brief_search = Gio.SimpleAction.new("focus_brief_search", None)
+        focus_brief_search.connect("activate", self._on_focus_brief_search)
+        self.add_action(focus_brief_search)
         show_shortcuts = Gio.SimpleAction.new("show_shortcuts", None)
         show_shortcuts.connect("activate", self._on_show_shortcuts)
         self.add_action(show_shortcuts)
@@ -2336,6 +2339,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             QUERY_MODE_BRIEF_SEARCH,
         ):
             strip.append(self._build_agent_mode_button(mode))
+        divider = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
+        divider.add_css_class("query-action-divider")
+        divider.set_margin_top(5)
+        divider.set_margin_bottom(5)
+        divider.set_margin_start(2)
+        divider.set_margin_end(2)
+        strip.append(divider)
         strip.append(self._build_appeal_issue_menu_button())
         return strip
 
@@ -3244,12 +3254,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return row
 
     def _build_appeal_issue_menu_button(self) -> Gtk.MenuButton:
-        button = Gtk.MenuButton()
+        button = Gtk.MenuButton(icon_name="cafe-symbolic")
         button.add_css_class("flat")
-        button.add_css_class("no-bold")
         button.add_css_class("query-action-button")
-        button.set_child(self._build_labeled_icon("cafe-symbolic", "Assess Argument"))
-        button.set_tooltip_text("Assess appeal argument")
+        button.set_tooltip_text("Assess Argument")
         self._appeal_issue_menu_button = button
         self._refresh_appeal_issue_menu()
         return button
@@ -3609,6 +3617,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                         )
                     )
                     self._current_case_context_check.set_sensitive(False)
+                    self._current_case_context_check.set_visible(False)
             finally:
                 self._current_case_context_toggle_guard = False
             return None
@@ -3632,6 +3641,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._current_case_context_toggle_guard = True
         try:
             if self._current_case_context_check is not None:
+                self._current_case_context_check.set_visible(True)
                 self._current_case_context_check.set_sensitive(True)
                 self._current_case_context_check.set_active(
                     self.client.cache.is_current_case_context_selected(resolved.case_name)
@@ -5575,6 +5585,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_agent_mode(AGENT_MODE_CASE)
         self._focus_entry_and_select_text(self.agent_question_entry)
 
+    def _on_focus_brief_search(
+        self,
+        _action: Gio.SimpleAction,
+        _parameter: GLib.Variant | None,
+    ) -> None:
+        self._set_agent_mode(QUERY_MODE_BRIEF_SEARCH)
+        self._focus_entry_and_select_text(self.agent_question_entry)
+
     def _build_shortcuts_window(self) -> Gtk.ShortcutsWindow:
         if self._shortcuts_window is not None:
             return self._shortcuts_window
@@ -5600,6 +5618,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             Gtk.ShortcutsShortcut(
                 title="Focus marked-cache question",
                 accelerator="<Primary><Shift>Q",
+            )
+        )
+        navigation_group.append(
+            Gtk.ShortcutsShortcut(
+                title="Search across prior briefs",
+                accelerator="<Primary>S",
             )
         )
         section.append(navigation_group)
@@ -10743,6 +10767,7 @@ class OpenLawLensApp(Adw.Application):
         self.set_accels_for_action("win.focus_citation", ["<Primary>l"])
         self.set_accels_for_action("win.focus_law_question", ["<Primary>q"])
         self.set_accels_for_action("win.focus_cache_question", ["<Primary><Shift>q"])
+        self.set_accels_for_action("win.focus_brief_search", ["<Primary>s"])
         self.set_accels_for_action("win.show_shortcuts", ["F1"])
 
     def _install_bundled_icon_path(self) -> None:

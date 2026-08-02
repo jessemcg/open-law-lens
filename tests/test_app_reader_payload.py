@@ -47,7 +47,7 @@ from open_law_lens.config import (
     AppConfig,
     PiAgentProfile,
 )
-from open_law_lens.current_case import CurrentCaseSocf
+from open_law_lens.current_case import CurrentCaseError, CurrentCaseSocf
 from open_law_lens.fact_patterns import (
     FactPatternDocument,
     FactPatternExport,
@@ -61,6 +61,14 @@ from open_law_lens.web_import import ExtractedWebpage
 
 
 class AppReaderPayloadTests(unittest.TestCase):
+    def test_application_registers_brief_search_shortcut(self) -> None:
+        app = OpenLawLensApp()
+
+        self.assertEqual(
+            app.get_accels_for_action("win.focus_brief_search"),
+            ["<Control>s"],
+        )
+
     def test_agent_modes_map_to_the_four_runtime_profiles(self) -> None:
         self.assertEqual(AGENT_PROFILE_BY_MODE["general"], AGENT_PROFILE_LAW)
         self.assertEqual(
@@ -373,6 +381,56 @@ class AppReaderPayloadTests(unittest.TestCase):
             "system-search-symbolic",
         )
 
+    def test_query_action_strip_separates_assess_argument(self) -> None:
+        class DummyWindow:
+            def _build_agent_mode_button(self, mode: str) -> Gtk.ToggleButton:
+                return Gtk.ToggleButton(label=mode)
+
+            def _build_appeal_issue_menu_button(self) -> Gtk.MenuButton:
+                return Gtk.MenuButton(icon_name="cafe-symbolic")
+
+        strip = OpenLawLensWindow._build_query_action_strip(  # type: ignore[arg-type]
+            DummyWindow()
+        )
+        children: list[Gtk.Widget] = []
+        child = strip.get_first_child()
+        while child is not None:
+            children.append(child)
+            child = child.get_next_sibling()
+
+        self.assertEqual(
+            [button.get_label() for button in children[:4]],
+            [
+                AGENT_MODE_GENERAL,
+                AGENT_MODE_CASE,
+                AGENT_MODE_BRIEF,
+                QUERY_MODE_BRIEF_SEARCH,
+            ],
+        )
+        self.assertEqual(len(children), 6)
+        self.assertIsInstance(children[4], Gtk.Separator)
+        self.assertEqual(children[4].get_orientation(), Gtk.Orientation.VERTICAL)
+        self.assertIsInstance(children[5], Gtk.MenuButton)
+
+    def test_focus_brief_search_selects_mode_and_focuses_entry(self) -> None:
+        entry = object()
+        set_mode = MagicMock()
+        focus_entry = MagicMock()
+        window = SimpleNamespace(
+            agent_question_entry=entry,
+            _set_agent_mode=set_mode,
+            _focus_entry_and_select_text=focus_entry,
+        )
+
+        OpenLawLensWindow._on_focus_brief_search(  # type: ignore[arg-type]
+            window,
+            MagicMock(),
+            None,
+        )
+
+        set_mode.assert_called_once_with(QUERY_MODE_BRIEF_SEARCH)
+        focus_entry.assert_called_once_with(entry)
+
     def test_control_g_prefers_visible_local_find_then_cross_brief_search(self) -> None:
         moves: list[tuple[str, int]] = []
 
@@ -453,6 +511,81 @@ class AppReaderPayloadTests(unittest.TestCase):
             MagicMock(),
             MagicMock(),
         )
+
+    def test_current_case_context_hides_check_when_socf_is_unavailable(self) -> None:
+        check = Gtk.CheckButton()
+        title = Gtk.Label()
+        subtitle = Gtk.Label()
+        cache = MagicMock()
+        cache.is_current_case_context_selected.return_value = True
+        window = SimpleNamespace(
+            client=SimpleNamespace(cache=cache),
+            _current_case_name="",
+            _current_case_socf_path=None,
+            _current_case_error="",
+            _current_case_outline_case_name="",
+            _current_case_context_title=title,
+            _current_case_context_subtitle=subtitle,
+            _current_case_context_check=check,
+            _current_case_context_toggle_guard=False,
+            _clear_current_case_outline=MagicMock(),
+        )
+
+        with (
+            patch(
+                "open_law_lens.app.current_case_socf",
+                side_effect=CurrentCaseError("SOCF ODT not found"),
+            ),
+            patch("open_law_lens.app.read_current_case", return_value="B123456_Test"),
+        ):
+            resolved = OpenLawLensWindow._refresh_current_case_context(  # type: ignore[arg-type]
+                window
+            )
+
+        self.assertIsNone(resolved)
+        self.assertEqual(title.get_text(), "B123456_Test")
+        self.assertEqual(subtitle.get_text(), "SOCF unavailable")
+        self.assertTrue(check.get_active())
+        self.assertFalse(check.get_sensitive())
+        self.assertFalse(check.get_visible())
+
+    def test_current_case_context_restores_check_when_socf_becomes_available(self) -> None:
+        check = Gtk.CheckButton()
+        check.set_visible(False)
+        check.set_sensitive(False)
+        title = Gtk.Label()
+        subtitle = Gtk.Label()
+        cache = MagicMock()
+        cache.is_current_case_context_selected.return_value = False
+        window = SimpleNamespace(
+            client=SimpleNamespace(cache=cache),
+            _current_case_name="B123456_Test",
+            _current_case_socf_path=None,
+            _current_case_error="SOCF ODT not found",
+            _current_case_outline_case_name="",
+            _current_case_context_title=title,
+            _current_case_context_subtitle=subtitle,
+            _current_case_context_check=check,
+            _current_case_context_toggle_guard=False,
+            _clear_current_case_outline=MagicMock(),
+        )
+        current_case = CurrentCaseSocf(
+            case_name="B123456_Test",
+            case_dir=Path("/case/B123456_Test"),
+            path=Path("/case/B123456_Test/SOCF/B123456_SOCF_JM.odt"),
+        )
+
+        with patch("open_law_lens.app.current_case_socf", return_value=current_case):
+            resolved = OpenLawLensWindow._refresh_current_case_context(  # type: ignore[arg-type]
+                window
+            )
+
+        self.assertEqual(resolved, current_case)
+        self.assertEqual(title.get_text(), "B123456_Test")
+        self.assertEqual(subtitle.get_text(), "Statement of Case and Facts")
+        self.assertTrue(check.get_visible())
+        self.assertTrue(check.get_sensitive())
+        self.assertFalse(check.get_active())
 
     def test_current_case_row_activation_explicitly_reloads_reader(self) -> None:
         case_list = MagicMock()
@@ -2300,10 +2433,6 @@ class AppReaderPayloadTests(unittest.TestCase):
             def _refresh_appeal_issue_menu(self) -> None:
                 pass
 
-            _build_labeled_icon = staticmethod(
-                OpenLawLensWindow._build_labeled_icon
-            )
-
         button = OpenLawLensWindow._build_appeal_issue_menu_button(  # type: ignore[arg-type]
             DummyWindow(),
         )
@@ -2315,12 +2444,9 @@ class AppReaderPayloadTests(unittest.TestCase):
             "cafe-symbolic.svg",
         )
 
-        content = button.get_child()
-        icon = content.get_first_child()
-        label = icon.get_next_sibling()
-        self.assertEqual(icon.get_icon_name(), "cafe-symbolic")
-        self.assertEqual(label.get_text(), "Assess Argument")
-        self.assertTrue(button.has_css_class("no-bold"))
+        self.assertIsNone(button.get_child())
+        self.assertEqual(button.get_icon_name(), "cafe-symbolic")
+        self.assertEqual(button.get_tooltip_text(), "Assess Argument")
         self.assertTrue(icon_ref.is_file())
 
     def test_appeal_issue_menu_includes_custom_argument_action(self) -> None:
