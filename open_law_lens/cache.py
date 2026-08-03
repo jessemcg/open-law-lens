@@ -214,7 +214,15 @@ class JsonCache:
         if not isinstance(raw_positions, dict):
             return {}
         positions: dict[str, dict[str, int]] = {}
-        for item_type in ("case", "statute", "rule", "prior_brief", "agent_answer", "socf"):
+        for item_type in (
+            "case",
+            "statute",
+            "rule",
+            "prior_brief",
+            "agent_answer",
+            "socf",
+            "current_case_document",
+        ):
             raw_items = raw_positions.get(item_type)
             if not isinstance(raw_items, dict):
                 continue
@@ -241,7 +249,15 @@ class JsonCache:
     def set_reader_position(self, item_type: str, authority_id: str, offset: int) -> None:
         clean_type = str(item_type or "").strip()
         clean_id = str(authority_id or "").strip()
-        if clean_type not in {"case", "statute", "rule", "prior_brief", "agent_answer", "socf"} or not clean_id:
+        if clean_type not in {
+            "case",
+            "statute",
+            "rule",
+            "prior_brief",
+            "agent_answer",
+            "socf",
+            "current_case_document",
+        } or not clean_id:
             return
         try:
             clean_offset = max(0, int(offset))

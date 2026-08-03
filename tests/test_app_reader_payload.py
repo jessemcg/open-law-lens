@@ -47,7 +47,11 @@ from open_law_lens.config import (
     AppConfig,
     PiAgentProfile,
 )
-from open_law_lens.current_case import CurrentCaseError, CurrentCaseSocf
+from open_law_lens.current_case import (
+    CurrentCaseDocument,
+    CurrentCaseError,
+    CurrentCaseSocf,
+)
 from open_law_lens.fact_patterns import (
     FactPatternDocument,
     FactPatternExport,
@@ -517,6 +521,7 @@ class AppReaderPayloadTests(unittest.TestCase):
         title = Gtk.Label()
         subtitle = Gtk.Label()
         cache = MagicMock()
+        sync_documents = MagicMock()
         cache.is_current_case_context_selected.return_value = True
         window = SimpleNamespace(
             client=SimpleNamespace(cache=cache),
@@ -529,6 +534,7 @@ class AppReaderPayloadTests(unittest.TestCase):
             _current_case_context_check=check,
             _current_case_context_toggle_guard=False,
             _clear_current_case_outline=MagicMock(),
+            _sync_current_case_document_rows=sync_documents,
         )
 
         with (
@@ -548,6 +554,7 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertTrue(check.get_active())
         self.assertFalse(check.get_sensitive())
         self.assertFalse(check.get_visible())
+        sync_documents.assert_called_once_with("B123456_Test")
 
     def test_current_case_context_restores_check_when_socf_becomes_available(self) -> None:
         check = Gtk.CheckButton()
@@ -556,6 +563,7 @@ class AppReaderPayloadTests(unittest.TestCase):
         title = Gtk.Label()
         subtitle = Gtk.Label()
         cache = MagicMock()
+        sync_documents = MagicMock()
         cache.is_current_case_context_selected.return_value = False
         window = SimpleNamespace(
             client=SimpleNamespace(cache=cache),
@@ -568,6 +576,7 @@ class AppReaderPayloadTests(unittest.TestCase):
             _current_case_context_check=check,
             _current_case_context_toggle_guard=False,
             _clear_current_case_outline=MagicMock(),
+            _sync_current_case_document_rows=sync_documents,
         )
         current_case = CurrentCaseSocf(
             case_name="B123456_Test",
@@ -586,6 +595,7 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertTrue(check.get_visible())
         self.assertTrue(check.get_sensitive())
         self.assertFalse(check.get_active())
+        sync_documents.assert_called_once_with(current_case.case_name, current_case.case_dir)
 
     def test_current_case_row_activation_explicitly_reloads_reader(self) -> None:
         case_list = MagicMock()
@@ -624,6 +634,86 @@ class AppReaderPayloadTests(unittest.TestCase):
         case_list.unselect_all.assert_called_once_with()
         current_case_list.select_row.assert_called_once_with(current_case_row)
         open_current_case.assert_called_once_with()
+
+    def test_current_case_document_activation_opens_markdown_report(self) -> None:
+        case_list = MagicMock()
+        current_case_list = MagicMock()
+        open_document = MagicMock()
+        document = CurrentCaseDocument(
+            kind="reply",
+            title="Suggested Reply Arguments",
+            path=Path("/case/ReplyPrep/suggested_reply_arguments.md"),
+            relative_path=Path("ReplyPrep/suggested_reply_arguments.md"),
+        )
+        row = MagicMock()
+        setattr(row, "_open_law_lens_current_case_document", document)
+        window = SimpleNamespace(
+            case_list=case_list,
+            _current_case_context_list=current_case_list,
+            _open_current_case_document=open_document,
+        )
+
+        OpenLawLensWindow._on_current_case_document_activated(  # type: ignore[arg-type]
+            window,
+            MagicMock(),
+            row,
+        )
+
+        case_list.unselect_all.assert_called_once_with()
+        current_case_list.unselect_all.assert_called_once_with()
+        open_document.assert_called_once_with(document)
+
+    def test_current_case_document_rows_show_every_relative_path(self) -> None:
+        documents = (
+            CurrentCaseDocument(
+                kind="reply",
+                title="Suggested Reply Arguments",
+                path=Path("/case/A/suggested_reply_arguments.md"),
+                relative_path=Path("A/suggested_reply_arguments.md"),
+            ),
+            CurrentCaseDocument(
+                kind="reply",
+                title="Suggested Reply Arguments",
+                path=Path("/case/B/suggested_reply_arguments.md"),
+                relative_path=Path("B/suggested_reply_arguments.md"),
+            ),
+        )
+
+        class DummyWindow:
+            def __init__(self) -> None:
+                self._current_case_document_list = Gtk.ListBox()
+                self._current_case_documents: tuple[CurrentCaseDocument, ...] = ()
+
+            _build_current_case_document_row = (
+                OpenLawLensWindow._build_current_case_document_row
+            )
+
+        window = DummyWindow()
+        with patch(
+            "open_law_lens.app.find_current_case_documents",
+            return_value=documents,
+        ):
+            OpenLawLensWindow._sync_current_case_document_rows(  # type: ignore[arg-type]
+                window,
+                "B123456_Test",
+                Path("/case"),
+            )
+
+        first = window._current_case_document_list.get_first_child()
+        self.assertIsNotNone(first)
+        assert first is not None
+        second = first.get_next_sibling()
+        self.assertIsNotNone(second)
+        assert second is not None
+        self.assertEqual(
+            getattr(first, "_open_law_lens_current_case_document").relative_path,
+            Path("A/suggested_reply_arguments.md"),
+        )
+        self.assertEqual(
+            getattr(second, "_open_law_lens_current_case_document").relative_path,
+            Path("B/suggested_reply_arguments.md"),
+        )
+        self.assertTrue(window._current_case_document_list.get_visible())
 
     def test_reader_highlight_button_builder_is_removed(self) -> None:
         self.assertFalse(
@@ -1648,6 +1738,54 @@ class AppReaderPayloadTests(unittest.TestCase):
             [("B123456_Test", current_document)],
         )
         self.assertEqual(window.statuses, ["Loaded the current-case SOCF for B123456_Test."])
+
+    def test_current_case_markdown_load_ignores_stale_results(self) -> None:
+        document = CurrentCaseDocument(
+            kind="reply",
+            title="Suggested Reply Arguments",
+            path=Path("/case/ReplyPrep/suggested_reply_arguments.md"),
+            relative_path=Path("ReplyPrep/suggested_reply_arguments.md"),
+        )
+
+        class DummyWindow:
+            _case_load_generation = 3
+
+            def __init__(self) -> None:
+                self.texts: list[str] = []
+                self.markdown_flags: list[bool] = []
+                self.statuses: list[str] = []
+
+            def _set_reader_text(
+                self,
+                text: str,
+                *,
+                apply_markdown: bool = False,
+            ) -> None:
+                self.texts.append(text)
+                self.markdown_flags.append(apply_markdown)
+
+            def _set_status(self, status: str) -> None:
+                self.statuses.append(status)
+
+        window = DummyWindow()
+        stale = OpenLawLensWindow._finish_current_case_document_load(  # type: ignore[arg-type]
+            window,
+            document,
+            "# Old report",
+            2,
+        )
+        current = OpenLawLensWindow._finish_current_case_document_load(  # type: ignore[arg-type]
+            window,
+            document,
+            "# Current report",
+            3,
+        )
+
+        self.assertFalse(stale)
+        self.assertFalse(current)
+        self.assertEqual(window.texts, ["# Current report"])
+        self.assertEqual(window.markdown_flags, [True])
+        self.assertEqual(window.statuses, ["Loaded Suggested Reply Arguments."])
 
     def test_current_case_document_normalization_keeps_heading_offsets_aligned(self) -> None:
         text = 'The court said "\'disappears\'" on appeal.\n\nDiscussion'
@@ -4330,6 +4468,116 @@ Opinion text.
         iter_ = window.reader_buffer.get_iter_at_offset(rendered.index("Claim"))
         tag_names = {tag.props.name for tag in iter_.get_tags()}
         self.assertIn("reader-md-bold", tag_names)
+
+    def test_reader_markdown_spans_style_headings_and_blockquotes(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.reader_buffer = Gtk.TextBuffer()
+
+            def _render_inline_markdown(
+                self,
+                text: str,
+                base_offset: int,
+            ) -> tuple[str, list[tuple[int, int, str]], list[int]]:
+                return OpenLawLensWindow._render_inline_markdown(  # type: ignore[arg-type]
+                    self,
+                    text,
+                    base_offset,
+                )
+
+        window = DummyWindow()
+        rendered, spans, _offset_map = OpenLawLensWindow._render_markdown_text(  # type: ignore[arg-type]
+            window,
+            "# Suggested Arguments\n\n> Important limit.\n\n## Record Notes\n",
+        )
+        window.reader_buffer.set_text(rendered)
+
+        OpenLawLensWindow._apply_reader_markdown_spans(window, spans)  # type: ignore[arg-type]
+
+        heading_tags = {
+            tag.props.name
+            for tag in window.reader_buffer.get_iter_at_offset(1).get_tags()
+        }
+        quote_offset = rendered.index("Important")
+        quote_tags = {
+            tag.props.name
+            for tag in window.reader_buffer.get_iter_at_offset(quote_offset).get_tags()
+        }
+        second_heading_offset = rendered.index("Record Notes")
+        second_heading_tags = {
+            tag.props.name
+            for tag in window.reader_buffer.get_iter_at_offset(
+                second_heading_offset
+            ).get_tags()
+        }
+        self.assertIn("reader-md-h1", heading_tags)
+        self.assertIn("reader-md-blockquote", quote_tags)
+        self.assertIn("reader-md-h2", second_heading_tags)
+
+    def test_markdown_reader_links_use_rendered_authority_text(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.reader_buffer = Gtk.TextBuffer()
+                self.page_marker_tag = self.reader_buffer.create_tag("page-marker-test")
+                self._reader_pagination_mode = "none"
+                self._pending_quote_target = None
+                self.link_text = ""
+
+            def _render_markdown_text(
+                self,
+                text: str,
+            ) -> tuple[str, list[tuple[int, int, str]], list[int]]:
+                return OpenLawLensWindow._render_markdown_text(  # type: ignore[arg-type]
+                    self,
+                    text,
+                )
+
+            def _render_inline_markdown(
+                self,
+                text: str,
+                base_offset: int,
+            ) -> tuple[str, list[tuple[int, int, str]], list[int]]:
+                return OpenLawLensWindow._render_inline_markdown(  # type: ignore[arg-type]
+                    self,
+                    text,
+                    base_offset,
+                )
+
+            def _set_reader_busy(self, _busy: bool) -> None:
+                pass
+
+            def _close_reader_find(self, *, clear_entry: bool) -> None:
+                pass
+
+            def _update_reader_clipboard_button(self) -> None:
+                pass
+
+            def _apply_reader_markdown_spans(self, _spans: object) -> None:
+                pass
+
+            def _apply_reader_citation_italics(self, _text: str) -> None:
+                pass
+
+            def _apply_reader_citation_links(self, text: str) -> None:
+                self.link_text = text
+
+        window = DummyWindow()
+        markdown = (
+            "# Authorities\n\n**In re Caden C. (2021) 11 Cal.5th 614**, "
+            "**Welf. & Inst. Code, section 300**, and "
+            "**Cal. Rules of Court, rule 8.104**."
+        )
+
+        OpenLawLensWindow._set_reader_text(  # type: ignore[arg-type]
+            window,
+            markdown,
+            apply_markdown=True,
+        )
+
+        self.assertNotIn("**", window.link_text)
+        self.assertIn("In re Caden C. (2021) 11 Cal.5th 614", window.link_text)
+        self.assertIn("Welf. & Inst. Code, section 300", window.link_text)
+        self.assertIn("Cal. Rules of Court, rule 8.104", window.link_text)
 
     def test_apply_statute_lookup_opens_fetched_result_without_sidebar_relookup(self) -> None:
         class DummyCache:

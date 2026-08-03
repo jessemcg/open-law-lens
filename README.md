@@ -49,7 +49,7 @@ Or save it in the app menu under Settings. The Settings path writes a local
 - GTK4/Libadwaita desktop app with a quiet reader-focused interface.
 - Citation lookup for California cases through CourtListener.
 - California statute and California Rules of Court lookup.
-- Pinned current-case SOCF reader above the Research Cache, with per-case agent-context selection.
+- Pinned Current Case SOCF and brief-prep Markdown reports above the Research Cache, with per-case SOCF agent-context selection.
 - Research Cache sidebar for the authorities currently in view.
 - Durable SQLite library at `library/open_law_lens.sqlite3` for saved authority
   data, display text, and reporter page-marker metadata.
@@ -239,12 +239,27 @@ is only a fallback for verifying missing or suspect official reporter
 citations or official opinion text. Research Cache and Prior Brief runs disable
 skills and extensions and remain closed-corpus workflows.
 
-The pinned Current Case row is separate from Research Set contents and cannot
-be removed by clearing the Research Cache. Clicking it displays the same
-normalized SOCF text supplied to the agent in the main reader. Its context
-checkmark starts off for each case and remembers that case's choice across app
-launches. Appeal Issue Assessment always includes its selected fact pattern,
-regardless of this ordinary-question checkmark.
+The pinned Current Case section is separate from Research Set contents and
+cannot be removed by clearing the Research Cache. Its first row displays the
+same normalized SOCF text supplied to the agent in the main reader. The SOCF
+context checkmark starts off for each case and remembers that case's choice
+across app launches. Appeal Issue Assessment always includes its selected fact
+pattern, regardless of this ordinary-question checkmark.
+
+Open Law Lens also searches the selected case directory recursively for
+`suggested_reply_arguments.md`,
+`suggested_respondents_brief_arguments.md`, and
+`suggested_opposition_arguments.md`. Every matching file appears below the
+SOCF section, with its case-relative path shown so duplicate copies remain
+distinguishable. The list refreshes when the app opens, regains focus, or the
+Current Case refresh button is clicked. Legacy HTML reports and the separate
+OmniVoice `.txt` companions are not listed.
+
+Clicking a suggested-arguments row renders its Markdown in the main reader.
+Recognized case citations, California statutes, and California Rules of Court
+use the same automatic authority links as other reader content. These reports
+are display-only and are not added to Law, Cache, Prior Brief, or Appeal agent
+context.
 
 When the Current Case SOCF is open, a collapsible Outline appears beneath its
 sidebar row. The outline preserves the ODT heading hierarchy and each entry

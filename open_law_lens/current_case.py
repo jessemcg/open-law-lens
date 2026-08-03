@@ -12,6 +12,19 @@ CURRENT_CASE_FILE = Path(
 OPEN_CASES_ROOT = Path("/home/jesse/Dropbox/MCGLAW/OPEN_CASES")
 CLOSED_CASES_ROOT = Path("/home/jesse/Dropbox/MCGLAW/CLOSED_CASES")
 CASE_NUMBER_RE = re.compile(r"[BDGE]\d{6}")
+CURRENT_CASE_DOCUMENT_SPECS = (
+    ("reply", "Suggested Reply Arguments", "suggested_reply_arguments.md"),
+    (
+        "respondent",
+        "Suggested Respondent's Brief Arguments",
+        "suggested_respondents_brief_arguments.md",
+    ),
+    (
+        "opposition",
+        "Suggested Opposition Arguments",
+        "suggested_opposition_arguments.md",
+    ),
+)
 
 
 class CurrentCaseError(RuntimeError):
@@ -23,6 +36,14 @@ class CurrentCaseSocf:
     case_name: str
     case_dir: Path
     path: Path
+
+
+@dataclass(frozen=True)
+class CurrentCaseDocument:
+    kind: str
+    title: str
+    path: Path
+    relative_path: Path
 
 
 def clean_case_name(case_name: str) -> str:
@@ -80,6 +101,35 @@ def find_socf_odt(case_dir: Path) -> Path:
     if not matches:
         raise CurrentCaseError(f"SOCF ODT not found in {socf_dir}")
     return matches[0].resolve(strict=False)
+
+
+def find_current_case_documents(case_dir: Path) -> tuple[CurrentCaseDocument, ...]:
+    root = normalize_root(case_dir).resolve(strict=False)
+    documents: list[tuple[int, CurrentCaseDocument]] = []
+    for order, (kind, title, file_name) in enumerate(CURRENT_CASE_DOCUMENT_SPECS):
+        for candidate in root.rglob(file_name):
+            if not candidate.is_file():
+                continue
+            path = candidate.resolve(strict=False)
+            try:
+                relative_path = path.relative_to(root)
+            except ValueError:
+                continue
+            documents.append(
+                (
+                    order,
+                    CurrentCaseDocument(
+                        kind=kind,
+                        title=title,
+                        path=path,
+                        relative_path=relative_path,
+                    ),
+                )
+            )
+    documents.sort(
+        key=lambda item: (item[0], item[1].relative_path.as_posix().casefold())
+    )
+    return tuple(document for _order, document in documents)
 
 
 def current_case_socf_odt(

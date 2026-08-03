@@ -108,11 +108,14 @@ from .config import (
     save_config,
 )
 from .current_case import (
+    CurrentCaseDocument,
     CurrentCaseError,
     CurrentCaseSocf,
     current_case_socf,
     current_case_socf_odt,
+    find_current_case_documents,
     read_current_case,
+    resolve_case_dir,
 )
 from .dbus_commands import DBUS_COMMAND_GROUPS, DbusCommand, dbus_action_command
 from .external_import import (
@@ -1775,6 +1778,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._current_case_context_subtitle: Gtk.Label | None = None
         self._current_case_context_check: Gtk.CheckButton | None = None
         self._current_case_context_toggle_guard = False
+        self._current_case_documents: tuple[CurrentCaseDocument, ...] = ()
+        self._current_case_document_list: Gtk.ListBox | None = None
         self._current_case_outline_box: Gtk.Widget | None = None
         self._current_case_outline_toggle: Gtk.ToggleButton | None = None
         self._current_case_outline_icon: Gtk.Image | None = None
@@ -2410,7 +2415,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         refresh_button = Gtk.Button(icon_name="view-refresh-symbolic")
         refresh_button.add_css_class("flat")
         refresh_button.add_css_class("case-row-icon-button")
-        refresh_button.set_tooltip_text("Refresh current-case facts")
+        refresh_button.set_tooltip_text("Refresh Current Case documents")
         refresh_button.set_valign(Gtk.Align.CENTER)
         refresh_button.connect("clicked", self._on_refresh_current_case_clicked)
         header.append(refresh_button)
@@ -2462,13 +2467,103 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         box.append(list_box)
         box.append(self._build_current_case_outline())
 
+        document_list = Gtk.ListBox()
+        document_list.add_css_class("case-list")
+        document_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        document_list.set_visible(False)
+        document_list.connect(
+            "row-activated",
+            self._on_current_case_document_activated,
+        )
+        box.append(document_list)
+
         self._current_case_context_list = list_box
         self._current_case_context_row = row
         self._current_case_context_title = title
         self._current_case_context_subtitle = subtitle
         self._current_case_context_check = check
+        self._current_case_document_list = document_list
         self._refresh_current_case_context()
         return box
+
+    def _build_current_case_document_row(
+        self,
+        document: CurrentCaseDocument,
+    ) -> Gtk.ListBoxRow:
+        row = Gtk.ListBoxRow()
+        row.set_selectable(True)
+        row.set_activatable(True)
+        row.add_css_class("case-cache-row")
+        setattr(row, "_open_law_lens_current_case_document", document)
+
+        row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        row_box.set_margin_top(8)
+        row_box.set_margin_bottom(8)
+        row_box.set_margin_start(8)
+        row_box.set_margin_end(8)
+
+        icon = Gtk.Image(icon_name="text-x-generic-symbolic")
+        icon.set_valign(Gtk.Align.START)
+        row_box.append(icon)
+
+        text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        text_box.set_hexpand(True)
+        title = Gtk.Label(label=document.title, xalign=0)
+        title.set_wrap(True)
+        text_box.append(title)
+        subtitle = Gtk.Label(label=document.relative_path.as_posix(), xalign=0)
+        subtitle.add_css_class("dim-label")
+        subtitle.set_wrap(True)
+        subtitle.set_tooltip_text(str(document.path))
+        text_box.append(subtitle)
+        row_box.append(text_box)
+
+        row.set_child(row_box)
+        return row
+
+    def _sync_current_case_document_rows(
+        self,
+        case_name: str,
+        case_dir: Path | None = None,
+    ) -> None:
+        list_box = self._current_case_document_list
+        if list_box is None:
+            return
+        documents: tuple[CurrentCaseDocument, ...] = ()
+        if case_name:
+            try:
+                resolved_dir = case_dir or resolve_case_dir(case_name)
+                documents = find_current_case_documents(resolved_dir)
+            except (CurrentCaseError, OSError):
+                documents = ()
+        if documents == self._current_case_documents:
+            list_box.set_visible(bool(documents))
+            return
+
+        selected_row = list_box.get_selected_row()
+        selected = (
+            getattr(selected_row, "_open_law_lens_current_case_document", None)
+            if selected_row is not None
+            else None
+        )
+        selected_path = selected.path if isinstance(selected, CurrentCaseDocument) else None
+
+        child = list_box.get_first_child()
+        while child is not None:
+            next_child = child.get_next_sibling()
+            list_box.remove(child)
+            child = next_child
+
+        selected_replacement: Gtk.ListBoxRow | None = None
+        for document in documents:
+            row = self._build_current_case_document_row(document)
+            list_box.append(row)
+            if document.path == selected_path:
+                selected_replacement = row
+        self._current_case_documents = documents
+        list_box.set_visible(bool(documents))
+        if selected_replacement is not None:
+            list_box.select_row(selected_replacement)
 
     def _build_current_case_outline(self) -> Gtk.Widget:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
@@ -3602,6 +3697,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._current_case_socf_path = None
             self._current_case_error = str(exc)
             self._clear_current_case_outline()
+            sync_documents = getattr(self, "_sync_current_case_document_rows", None)
+            if sync_documents is not None:
+                sync_documents(case_name)
             if self._current_case_context_title is not None:
                 self._current_case_context_title.set_text(case_name or "Current Case")
             if self._current_case_context_subtitle is not None:
@@ -3633,6 +3731,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._current_case_name = resolved.case_name
         self._current_case_socf_path = resolved.path
         self._current_case_error = ""
+        sync_documents = getattr(self, "_sync_current_case_document_rows", None)
+        if sync_documents is not None:
+            sync_documents(resolved.case_name, resolved.case_dir)
         if self._current_case_context_title is not None:
             self._current_case_context_title.set_text(resolved.case_name)
         if self._current_case_context_subtitle is not None:
@@ -3677,10 +3778,32 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if row is None:
             return
         self.case_list.unselect_all()
+        document_list = getattr(self, "_current_case_document_list", None)
+        if document_list is not None:
+            document_list.unselect_all()
         self._open_current_case_socf()
+
+    def _on_current_case_document_activated(
+        self,
+        _list_box: Gtk.ListBox,
+        row: Gtk.ListBoxRow | None,
+    ) -> None:
+        if row is None:
+            return
+        document = getattr(row, "_open_law_lens_current_case_document", None)
+        if not isinstance(document, CurrentCaseDocument):
+            return
+        self.case_list.unselect_all()
+        context_list = getattr(self, "_current_case_context_list", None)
+        if context_list is not None:
+            context_list.unselect_all()
+        self._open_current_case_document(document)
 
     def _on_refresh_current_case_clicked(self, _button: Gtk.Button) -> None:
         self.case_list.unselect_all()
+        document_list = getattr(self, "_current_case_document_list", None)
+        if document_list is not None:
+            document_list.unselect_all()
         if (
             self._current_case_context_list is not None
             and self._current_case_context_row is not None
@@ -3719,6 +3842,83 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             args=(resolved, generation),
             daemon=True,
         ).start()
+
+    def _open_current_case_document(self, document: CurrentCaseDocument) -> None:
+        self._capture_current_reader_position()
+        case_name = self._current_case_name or "Current Case"
+        position_id = f"{case_name}:{document.relative_path.as_posix()}"
+        self._set_reader_position_key("current_case_document", position_id)
+        self._case_load_generation += 1
+        generation = self._case_load_generation
+        self._selected_cluster = None
+        self._selected_statute = None
+        self._selected_rule = None
+        self._selected_agent_answer = None
+        self._selected_prior_brief = None
+        self._reader_has_official_pagination = False
+        self._reader_pagination_mode = READER_PAGINATION_NONE
+        self._reader_slip_source_url = ""
+        self._reader_slip_case_number = ""
+        self._reader_page_markers = []
+        self._clear_reader_citation_links()
+        self._set_reader_header(f"{case_name}\n{document.title}")
+        self._reader_text = ""
+        self.reader_buffer.set_text("")
+        self._set_reader_busy(True, f"Loading {document.title}...")
+        self._set_status(f"Loading {document.title}...")
+        threading.Thread(
+            target=self._current_case_document_worker,
+            args=(document, generation),
+            daemon=True,
+        ).start()
+
+    def _current_case_document_worker(
+        self,
+        document: CurrentCaseDocument,
+        generation: int,
+    ) -> None:
+        try:
+            text = document.path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            GLib.idle_add(
+                self._apply_current_case_document_error,
+                document,
+                str(exc),
+                generation,
+            )
+            return
+        GLib.idle_add(
+            self._finish_current_case_document_load,
+            document,
+            text,
+            generation,
+        )
+
+    def _finish_current_case_document_load(
+        self,
+        document: CurrentCaseDocument,
+        text: str,
+        generation: int,
+    ) -> bool:
+        if generation != self._case_load_generation:
+            return False
+        self._set_reader_text(text, apply_markdown=True)
+        self._set_status(f"Loaded {document.title}.")
+        return False
+
+    def _apply_current_case_document_error(
+        self,
+        document: CurrentCaseDocument,
+        message: str,
+        generation: int,
+    ) -> bool:
+        if generation != self._case_load_generation:
+            return False
+        self._set_reader_busy(False)
+        self._reader_text = ""
+        self.reader_buffer.set_text(message)
+        self._set_status(f"Unable to load {document.title}: {message}")
+        return False
 
     def _current_case_socf_worker(self, resolved: CurrentCaseSocf, generation: int) -> None:
         try:
@@ -4725,6 +4925,23 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
         bold_tag = ensure_tag("reader-md-bold", weight=Pango.Weight.BOLD)
         italic_tag = ensure_tag("reader-md-italic", style=Pango.Style.ITALIC)
+        blockquote_tag = ensure_tag(
+            "reader-md-blockquote",
+            style=Pango.Style.ITALIC,
+            left_margin=AGENT_BLOCKQUOTE_LEFT_MARGIN,
+            right_margin=AGENT_BLOCKQUOTE_RIGHT_MARGIN,
+            indent=AGENT_BLOCKQUOTE_INDENT,
+            pixels_above_lines=AGENT_BLOCKQUOTE_SPACING_PX,
+            pixels_below_lines=AGENT_BLOCKQUOTE_SPACING_PX,
+        )
+        heading_tags = {
+            f"heading{level}": ensure_tag(
+                f"reader-md-h{level}",
+                weight=Pango.Weight.BOLD,
+                scale=scale,
+            )
+            for level, scale in AGENT_MARKDOWN_HEADING_SCALES.items()
+        }
         for start, end, kind in spans:
             if end <= start:
                 continue
@@ -4734,6 +4951,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 self.reader_buffer.apply_tag(bold_tag, start_iter, end_iter)
             elif kind == "italic":
                 self.reader_buffer.apply_tag(italic_tag, start_iter, end_iter)
+            elif kind == "blockquote":
+                self.reader_buffer.apply_tag(blockquote_tag, start_iter, end_iter)
+            elif kind.startswith("heading"):
+                tag = heading_tags.get(kind)
+                if tag is not None:
+                    self.reader_buffer.apply_tag(tag, start_iter, end_iter)
 
     def _clear_reader_citation_links(self) -> None:
         table = self.reader_buffer.get_tag_table()
@@ -8463,6 +8686,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return
         if self._current_case_context_list is not None:
             self._current_case_context_list.unselect_all()
+        document_list = getattr(self, "_current_case_document_list", None)
+        if document_list is not None:
+            document_list.unselect_all()
         authority_type = getattr(row, "_open_law_lens_authority_type", "case")
         if authority_type == "statute":
             index = getattr(row, "_open_law_lens_statute_index", None)

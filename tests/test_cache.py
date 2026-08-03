@@ -626,10 +626,22 @@ class CacheTests(unittest.TestCase):
             cache.set_reader_position("case", "42", 1234)
             cache.set_reader_position("rule", "CRC:8.11", 88)
             cache.set_reader_position("socf", "B123456_Test", 321)
+            cache.set_reader_position(
+                "current_case_document",
+                "B123456_Test:ReplyPrep/suggested_reply_arguments.md",
+                144,
+            )
 
             self.assertEqual(cache.reader_position("case", "42"), 1234)
             self.assertEqual(cache.reader_position("rule", "CRC:8.11"), 88)
             self.assertEqual(cache.reader_position("socf", "B123456_Test"), 321)
+            self.assertEqual(
+                cache.reader_position(
+                    "current_case_document",
+                    "B123456_Test:ReplyPrep/suggested_reply_arguments.md",
+                ),
+                144,
+            )
             metadata = cache.active_research_set_metadata()
             self.assertIsNotNone(metadata)
             assert metadata is not None
