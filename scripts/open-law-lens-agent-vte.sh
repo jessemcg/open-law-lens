@@ -110,7 +110,14 @@ export OPEN_LAW_LENS_CACHE_DIR="$cache_root"
 
 prompt="$(<"$prompt_file")"
 tools="read,bash,grep,find,ls"
-args=(--approve --no-skills --no-extensions)
+args=(
+  --approve
+  --no-extensions
+  --no-skills
+  --no-prompt-templates
+  --no-themes
+  --no-context-files
+)
 if [[ -n "$pi_provider" ]]; then
   args+=(--provider "$pi_provider" --model "$pi_model" --thinking "$pi_thinking")
 fi

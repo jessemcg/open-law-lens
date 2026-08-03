@@ -111,6 +111,14 @@ class AgentVteWrapperTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             args = self._run(root, "general")
+            for flag in (
+                "--no-extensions",
+                "--no-skills",
+                "--no-prompt-templates",
+                "--no-themes",
+                "--no-context-files",
+            ):
+                self.assertIn(flag, args)
             self.assertIn("--skill", args)
             self.assertIn("--extension", args)
             extension_index = args.index("--extension")
@@ -204,8 +212,14 @@ class AgentVteWrapperTests(unittest.TestCase):
     def test_closed_corpus_mode_disables_skill_and_web_search(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             args = self._run(Path(temp_dir), "case")
-            self.assertIn("--no-skills", args)
-            self.assertIn("--no-extensions", args)
+            for flag in (
+                "--no-extensions",
+                "--no-skills",
+                "--no-prompt-templates",
+                "--no-themes",
+                "--no-context-files",
+            ):
+                self.assertIn(flag, args)
             self.assertNotIn("--skill", args)
             self.assertNotIn("--extension", args)
             self.assertIn("read,bash,grep,find,ls", args)
