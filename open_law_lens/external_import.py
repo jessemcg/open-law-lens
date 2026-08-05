@@ -45,6 +45,9 @@ def imported_case_name_from_text(text: str) -> str:
     split_writ_title = _split_superior_court_writ_title(text)
     if split_writ_title:
         return split_writ_title
+    split_civil_title = _split_civil_caption_title(text)
+    if split_civil_title:
+        return split_civil_title
     for line in _meaningful_lines(text):
         conservatorship_title = _conservatorship_case_name(line)
         if conservatorship_title:
@@ -79,7 +82,9 @@ def build_external_import_cluster(
     if not normalized_citation:
         raise ValueError("Official California citation is required.")
     clean_name = normalize_case_title(case_name.strip()) if case_name.strip() else ""
-    if reporter_only_case_name(clean_name, normalized_citation):
+    if reporter_only_case_name(clean_name, normalized_citation) or re.fullmatch(
+        r"v\.?", clean_name, flags=re.IGNORECASE
+    ):
         clean_name = ""
     if not clean_name:
         clean_name = imported_case_name_from_text(imported_text)
@@ -135,7 +140,14 @@ def repair_reporter_only_imported_cluster(
         str(cluster.get(key) or "").strip()
         for key in ("case_name", "case_name_short", "case_name_full")
     ]
-    if not any(reporter_only_case_name(name, official_citation) for name in current_names):
+    invalid_names = [
+        reporter_only_case_name(name, official_citation)
+        or bool(re.fullmatch(r"v\.?", name, flags=re.IGNORECASE))
+        for name in current_names
+    ]
+    if not any(invalid_names) or any(
+        name and not invalid for name, invalid in zip(current_names, invalid_names)
+    ):
         return None
     repaired_name = imported_case_name_from_text(imported_text)
     if not repaired_name or reporter_only_case_name(repaired_name, official_citation):
@@ -215,6 +227,42 @@ def _split_superior_court_writ_title(text: str) -> str:
     return ""
 
 
+def _split_civil_caption_title(text: str) -> str:
+    lines = _meaningful_lines(text)
+    caption_lines: list[str] = []
+    for line in lines[:30]:
+        if re.match(
+            r"^(OPINION|FACTUAL|BACKGROUND|PROCEDURAL|DISCUSSION)\b",
+            line,
+            flags=re.IGNORECASE,
+        ):
+            break
+        if re.match(
+            r"^Court of Appeals? of California\b", line, flags=re.IGNORECASE
+        ):
+            break
+        if re.match(r"^(No\.|Nos\.)\s+", line, flags=re.IGNORECASE):
+            break
+        caption_lines.append(line)
+    for index, line in enumerate(caption_lines):
+        if not re.fullmatch(r"v\.?", line, flags=re.IGNORECASE):
+            continue
+        if index == 0 or index + 1 >= len(caption_lines):
+            continue
+        if any(
+            leading_in_re_title(earlier)
+            or leading_adoption_title(earlier)
+            or _conservatorship_case_name(earlier)
+            for earlier in caption_lines[:index]
+        ):
+            continue
+        petitioner = _short_caption_party_name(caption_lines[index - 1])
+        respondent = _short_caption_party_name(caption_lines[index + 1])
+        if petitioner and respondent:
+            return normalize_case_title(f"{petitioner} v. {respondent}")
+    return ""
+
+
 def _caption_party_name(line: str) -> str:
     party = re.split(
         r",\s*(?:Petitioner|Plaintiff|Appellant|Respondent|Defendant|Real Party)\b",
@@ -224,6 +272,23 @@ def _caption_party_name(line: str) -> str:
     )[0]
     party = party.strip(" ,;")
     return _normalize_initial_spaces(party)
+
+
+def _short_caption_party_name(line: str) -> str:
+    party = _caption_party_name(line)
+    organization_terms = (
+        r"\b(?:ASSOCIATION|BUREAU|COMPANY|CORPORATION|COUNTY|DEPARTMENT|INC|LLC|LP)\b"
+    )
+    if (
+        re.fullmatch(r"(?:[A-Z][A-Z'.-]*\s+){1,3}[A-Z][A-Z'.-]*", party)
+        and not re.search(organization_terms, party)
+    ):
+        surname = party.rsplit(" ", 1)[-1]
+        return "-".join(
+            "'".join(piece[:1] + piece[1:].lower() for piece in part.split("'"))
+            for part in surname.split("-")
+        )
+    return party
 
 
 def _superior_court_caption_party(line: str) -> str:
@@ -275,10 +340,13 @@ def _conservatorship_case_name(line: str) -> str:
 
 
 def _looks_like_case_name(value: str) -> bool:
+    normalized = re.sub(r"\s+", " ", value).strip()
+    if re.fullmatch(r"v\.?", normalized, flags=re.IGNORECASE):
+        return False
     return bool(
         re.search(
             r"^(In re|Adoption of|Conservatorship of)\b|\bv\.(?:\s|$)",
-            value,
+            normalized,
             flags=re.IGNORECASE,
         )
     )

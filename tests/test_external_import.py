@@ -15,6 +15,7 @@ from open_law_lens.external_import import (
     imported_year_from_text,
     normalize_official_citation,
     repair_reporter_only_cluster_name,
+    repair_reporter_only_imported_cluster,
     validated_import_official_citation,
 )
 from open_law_lens.library import CaseLibrary, opinion_display_text
@@ -83,6 +84,23 @@ April 30, 2025.
 OPINION
 """
 
+YU_TEXT = """112 Cal.App.5th 1135 (2025)
+
+JONATHAN YU, Plaintiff and Respondent,
+
+v.
+
+LORAIN POZNIAK-RICE, Defendant and Appellant.
+
+No. B337415.
+
+Court of Appeals of California, Second District, Division Seven.
+
+July 21, 2025.
+
+*1137 APPEAL from orders of the Superior Court of Los Angeles County.
+"""
+
 
 class ExternalImportTests(unittest.TestCase):
     def test_validated_import_citation_accepts_exact_match(self) -> None:
@@ -131,6 +149,23 @@ class ExternalImportTests(unittest.TestCase):
             repair_reporter_only_cluster_name(cluster, "Conservatorship of O.B.")
         )
 
+    def test_repair_imported_cluster_replaces_standalone_versus_name(self) -> None:
+        cluster = {
+            "id": "external-yu",
+            "case_name": "v.",
+            "case_name_short": "v.",
+            "case_name_full": "v.",
+            "official_citation": "112 Cal.App.5th 1135",
+        }
+
+        repaired = repair_reporter_only_imported_cluster(cluster, YU_TEXT)
+
+        self.assertIsNotNone(repaired)
+        assert repaired is not None
+        self.assertEqual(repaired["case_name"], "Yu v. Pozniak-Rice")
+        self.assertEqual(repaired["case_name_short"], "Yu v. Pozniak-Rice")
+        self.assertEqual(repaired["case_name_full"], "Yu v. Pozniak-Rice")
+
     def test_imported_case_name_from_google_scholar_text(self) -> None:
         self.assertEqual(imported_case_name_from_text(CADEN_TEXT), "In re Caden C.")
         self.assertEqual(imported_year_from_text(CADEN_TEXT), "2021")
@@ -160,6 +195,12 @@ class ExternalImportTests(unittest.TestCase):
     def test_imported_case_name_from_split_superior_court_writ_caption(self) -> None:
         self.assertEqual(imported_case_name_from_text(B_D_TEXT), "B.D. v. Superior Court")
         self.assertEqual(imported_year_from_text(B_D_TEXT), "2025")
+
+    def test_imported_case_name_from_split_civil_caption(self) -> None:
+        self.assertEqual(imported_case_name_from_text(YU_TEXT), "Yu v. Pozniak-Rice")
+
+    def test_standalone_versus_is_not_a_case_name(self) -> None:
+        self.assertEqual(imported_case_name_from_text("112 Cal.App.5th 1135 (2025)\nv."), "")
 
     def test_clean_imported_opinion_text_removes_google_scholar_account_chrome(self) -> None:
         cleaned = clean_imported_opinion_text(CADEN_TEXT)
@@ -207,6 +248,15 @@ class ExternalImportTests(unittest.TestCase):
         self.assertEqual(cluster["case_name_short"], "B.D. v. Superior Court")
         self.assertEqual(cluster["date_filed"], "2025")
         self.assertEqual(cluster["source_provider"], "manual_import")
+
+    def test_build_external_import_cluster_rejects_standalone_versus_title(self) -> None:
+        cluster = build_external_import_cluster(
+            case_name="v.",
+            official_citation="112 Cal.App.5th 1135",
+            imported_text=YU_TEXT,
+        )
+
+        self.assertEqual(cluster["case_name"], "Yu v. Pozniak-Rice")
 
     def test_imported_citations_ignore_body_citations(self) -> None:
         citations = imported_citations_from_text(CLAUDIA_TEXT, "115 Cal.App.5th 76")
