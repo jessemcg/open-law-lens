@@ -1812,6 +1812,8 @@ class CaseLibrary:
                         text,
                         mode=str(item.payload.get("mode") or item.citation),
                         title=item.title,
+                        subtitle=str(item.payload.get("subtitle") or ""),
+                        question=str(item.payload.get("question") or ""),
                     )
                     if item.agent_selected:
                         cache.set_agent_answer_selected(answer_id or item.authority_id, True)

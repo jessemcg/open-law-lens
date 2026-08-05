@@ -239,6 +239,14 @@ is only a fallback for verifying missing or suspect official reporter
 citations or official opinion text. Research Cache and Prior Brief runs disable
 skills and extensions and remain closed-corpus workflows.
 
+Saved agent answers begin with an issue-specific title and compact disposition
+subtitle. Open Law Lens uses those fields in the Research Cache sidebar and
+enforces short sidebar-friendly limits: at most eight title words and five
+subtitle words, with a 40-character subtitle cap. If an older or nonconforming
+answer omits this metadata, a newly saved answer uses the original question as
+its title when available rather than treating prefatory model language as the
+title.
+
 The pinned Current Case section is separate from Research Set contents and
 cannot be removed by clearing the Research Cache. Its first row displays the
 same normalized SOCF text supplied to the agent in the main reader. The SOCF

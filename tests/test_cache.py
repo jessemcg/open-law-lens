@@ -413,6 +413,65 @@ class CacheTests(unittest.TestCase):
         self.assertEqual(entry["answer_id"], answer_id)
         self.assertEqual(entry["title"], "Cal-ICWA Inquiry")
 
+    def test_agent_answer_metadata_uses_compact_explicit_subtitle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            answer_id = cache.save_agent_answer(
+                "# Beneficial-Relationship Exception\n"
+                "*Likely insufficient evidence*\n\n"
+                "The exception probably does not apply.",
+                mode="general",
+            )
+
+            entry = cache.list_agent_answer_entries()[0]
+            answer = cache.read_agent_answer(answer_id)
+
+        self.assertEqual(entry["title"], "Beneficial-Relationship Exception")
+        self.assertEqual(entry["subtitle"], "Likely insufficient evidence")
+        self.assertIsNotNone(answer)
+        assert answer is not None
+        self.assertEqual(answer["subtitle"], "Likely insufficient evidence")
+
+    def test_agent_answer_question_fallback_ignores_throat_clearing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            answer_id = cache.save_agent_answer(
+                "Now I have the full picture. The governing rule is clear.",
+                mode="general",
+                question="Does the beneficial-relationship exception apply?",
+            )
+
+            entry = cache.list_agent_answer_entries()[0]
+            answer = cache.read_agent_answer(answer_id)
+
+        self.assertEqual(
+            entry["title"],
+            "Does the beneficial-relationship exception apply?",
+        )
+        self.assertEqual(entry["subtitle"], "Saved answer")
+        self.assertIsNotNone(answer)
+        assert answer is not None
+        self.assertEqual(
+            answer["question"],
+            "Does the beneficial-relationship exception apply?",
+        )
+
+    def test_agent_answer_metadata_enforces_sidebar_limits(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cache.save_agent_answer(
+                "# This is an excessively long legal issue title with many extra words\n"
+                "*This disposition is much too long for one compact sidebar row*\n\n"
+                "Analysis.",
+            )
+
+            entry = cache.list_agent_answer_entries()[0]
+
+        self.assertLessEqual(len(entry["title"].split()), 8)
+        self.assertLessEqual(len(entry["title"]), 64)
+        self.assertLessEqual(len(entry["subtitle"].split()), 5)
+        self.assertLessEqual(len(entry["subtitle"]), 40)
+
     def test_repair_reporter_only_imported_case_name_updates_cache_and_lookup(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = JsonCache(Path(temp_dir))

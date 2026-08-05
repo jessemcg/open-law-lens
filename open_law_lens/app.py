@@ -1814,6 +1814,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_session_log_path: Path | None = None
         self._agent_answer_poll_id: int | None = None
         self._agent_last_answer_text = ""
+        self._agent_last_question = ""
         self._agent_search_output_visible = False
         self._agent_search_query = ""
         self._agent_search_results: list[CourtListenerSearchResult] = []
@@ -4561,6 +4562,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_agent_mode(AGENT_MODE_GENERAL)
         self._case_agent_text_sources = []
         self._agent_mode = AGENT_MODE_GENERAL
+        self._agent_last_question = (
+            f"Subsequent treatment of {cluster_short_title(cluster)}"
+        )
         self._launch_agent_with_prompt(
             prompt_path,
             workspace,
@@ -4613,6 +4617,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_agent_mode(AGENT_MODE_GENERAL)
         self._case_agent_text_sources = []
         self._agent_mode = AGENT_MODE_GENERAL
+        self._agent_last_question = f"Helper case for {cluster_short_title(cluster)}"
         self._launch_agent_with_prompt(prompt_path, workspace, AGENT_MODE_GENERAL)
 
     def _compose_helper_case_agent_prompt(
@@ -5716,7 +5721,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._set_status("No agent final answer to save.")
             return
         self._agent_last_answer_text = text
-        answer_id = self.client.cache.save_agent_answer(text, mode=self._agent_mode)
+        answer_id = self.client.cache.save_agent_answer(
+            text,
+            mode=self._agent_mode,
+            question=getattr(self, "_agent_last_question", ""),
+        )
         if not answer_id:
             self._set_status("No agent final answer to save.")
             return
@@ -8323,7 +8332,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             remove_button.set_sensitive(bool(answer_id))
             remove_button.connect("clicked", self._on_remove_agent_answer_clicked, answer_id, answer_entry)
             title_text = str(answer_entry.get("title") or "Saved agent answer")
-            mode_text = self._agent_answer_mode_label(str(answer_entry.get("mode") or ""))
+            mode_text = (
+                str(answer_entry.get("subtitle") or "").strip()
+                or self._agent_answer_mode_label(str(answer_entry.get("mode") or ""))
+            )
             check = Gtk.CheckButton()
             check.set_tooltip_text("Make saved answer available to Cache Agent")
             check.set_active(self.client.cache.is_agent_answer_selected(answer_id))
@@ -9244,6 +9256,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if Vte is None or self._agent_terminal is None:
             self._set_status("Embedded terminal is unavailable.")
             return False
+        self._agent_last_question = issue
         try:
             workspace = self._create_agent_workspace()
         except OSError as exc:
@@ -9311,6 +9324,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if Vte is None or self._agent_terminal is None:
             self._set_status("Embedded terminal is unavailable.")
             return
+        self._agent_last_question = question
         current_case, current_case_selected, current_case_warning = (
             self._current_case_context_for_launch()
         )

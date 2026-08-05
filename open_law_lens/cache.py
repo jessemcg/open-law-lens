@@ -61,28 +61,54 @@ def _cache_sort_timestamp(entry: dict[str, Any]) -> str:
     return str(entry.get("loaded_at") or entry.get("added_at") or "")
 
 
-def _agent_answer_title(text: str, mode: str) -> str:
-    explicit_markers = ("# ", "## ", "### ")
-    for line in text.splitlines():
-        raw_title = line.strip()
-        if not raw_title:
-            continue
-        is_explicit = raw_title.startswith(explicit_markers)
-        title = re.sub(r"^[#>*`\s-]+", "", raw_title).strip()
-        title = re.sub(r"^([*_]{1,3})(.+)\1$", r"\2", title).strip()
-        title = re.sub(r"[*_`]+$", "", title).strip()
-        title = re.sub(r"\s+", " ", title)
-        if not title:
-            continue
-        sentence = re.split(r"(?<=[.!?])\s+", title, maxsplit=1)[0]
-        sentence = sentence.rstrip(".:;")
-        words = sentence.split()
-        max_words = 10 if is_explicit else 6
-        short = " ".join(words[:max_words]).strip()
-        if short:
-            return short[:64].rstrip(" ,;:.")
-    label = "Assessment" if mode == "appeal" else "Legal answer"
-    return f"Saved {label}"
+def _short_agent_label(text: str, *, max_words: int, max_chars: int) -> str:
+    label = re.sub(r"\s+", " ", text).strip(" `*_#>\t\r\n-:;.")
+    label = " ".join(label.split()[:max_words]).strip(" ,;:.")
+    if len(label) <= max_chars:
+        return label
+    shortened = label[: max_chars - 1].rsplit(" ", 1)[0].rstrip(" ,;:.")
+    return f"{shortened or label[: max_chars - 1].rstrip()}…"
+
+
+def _agent_answer_metadata(text: str, mode: str, question: str = "") -> tuple[str, str]:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    title = ""
+    subtitle = ""
+    if lines:
+        heading = re.fullmatch(r"#{1,3}\s+(.+)", lines[0])
+        if heading:
+            title = _short_agent_label(heading.group(1), max_words=8, max_chars=64)
+            if len(lines) > 1:
+                italic = re.fullmatch(r"(?:\*|_)([^*_]+)(?:\*|_)", lines[1])
+                if italic:
+                    subtitle = _short_agent_label(
+                        italic.group(1),
+                        max_words=5,
+                        max_chars=40,
+                    )
+        else:
+            emphasized = re.fullmatch(r"([*_]{1,3})(.+)\1", lines[0])
+            if emphasized:
+                title = _short_agent_label(
+                    emphasized.group(2),
+                    max_words=8,
+                    max_chars=64,
+                )
+    if not title and question.strip():
+        title = _short_agent_label(question, max_words=8, max_chars=64)
+    if not title and lines:
+        sentence = re.split(r"(?<=[.!?])\s+", lines[0], maxsplit=1)[0]
+        title = _short_agent_label(sentence, max_words=6, max_chars=64)
+    if not title:
+        label = "Assessment" if mode == "appeal" else "Legal answer"
+        title = f"Saved {label}"
+    if not subtitle:
+        subtitle = "Issue assessment" if mode == "appeal" else "Saved answer"
+    return title, subtitle
+
+
+def _agent_answer_title(text: str, mode: str, question: str = "") -> str:
+    return _agent_answer_metadata(text, mode, question)[0]
 
 
 def _opinion_import_text(opinion: dict[str, Any]) -> str:
@@ -1037,7 +1063,15 @@ class JsonCache:
         return True
 
     @_synchronized
-    def save_agent_answer(self, text: str, *, mode: str = "", title: str = "") -> str:
+    def save_agent_answer(
+        self,
+        text: str,
+        *,
+        mode: str = "",
+        title: str = "",
+        subtitle: str = "",
+        question: str = "",
+    ) -> str:
         clean_text = text.strip()
         if not clean_text:
             return ""
@@ -1045,11 +1079,19 @@ class JsonCache:
         now = _utc_now()
         index = self.read_agent_answer_index()
         existing = index.get(answer_id, {})
-        resolved_title = title.strip() or _agent_answer_title(clean_text, mode)
+        generated_title, generated_subtitle = _agent_answer_metadata(
+            clean_text,
+            mode,
+            question,
+        )
+        resolved_title = title.strip() or generated_title
+        resolved_subtitle = subtitle.strip() or generated_subtitle
         answer = {
             "answer_id": answer_id,
             "title": resolved_title,
+            "subtitle": resolved_subtitle,
             "mode": mode.strip(),
+            "question": question.strip(),
             "text": clean_text,
             "saved_at": existing.get("saved_at", now),
             "last_accessed": now,
@@ -1059,7 +1101,9 @@ class JsonCache:
             **existing,
             "answer_id": answer_id,
             "title": resolved_title,
+            "subtitle": resolved_subtitle,
             "mode": mode.strip(),
+            "question": question.strip(),
             "answer_path": str(self.agent_answer_path(answer_id)),
             "agent_selected": bool(existing.get("agent_selected", False)),
             "added_at": existing.get("added_at", now),
