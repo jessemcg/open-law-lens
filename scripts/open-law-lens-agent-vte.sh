@@ -26,6 +26,11 @@ if [[ -z "$project_dir" || ! -f "$project_dir/.pi/settings.json" ]]; then
   printf 'Open Law Lens project Pi settings not found: %s\n' "$project_dir/.pi/settings.json" >&2
   exit 2
 fi
+if [[ ! -s "$project_dir/.pi/SYSTEM.md" ]]; then
+  printf 'Open Law Lens project Pi system prompt not found or empty: %s\n' \
+    "$project_dir/.pi/SYSTEM.md" >&2
+  exit 2
+fi
 if [[ ! -x "$pi_bin" ]] && ! command -v "$pi_bin" >/dev/null 2>&1; then
   printf 'Pi executable not found: %s\n' "$pi_bin" >&2
   exit 127
@@ -95,6 +100,7 @@ fi
 mkdir -p "$workspace/tmp" "$workspace/uv-cache" "$workspace/pi-sessions"
 mkdir -p "$workspace/.pi"
 cp -a "$project_dir/.pi/settings.json" "$workspace/.pi/"
+cp -a "$project_dir/.pi/SYSTEM.md" "$workspace/.pi/"
 [[ ! -d "$project_dir/.pi/skills" ]] \
   || cp -a "$project_dir/.pi/skills" "$workspace/.pi/"
 [[ ! -d "$project_dir/.pi/extensions" ]] \
@@ -117,6 +123,7 @@ args=(
   --no-prompt-templates
   --no-themes
   --no-context-files
+  --system-prompt "$workspace/.pi/SYSTEM.md"
 )
 if [[ -n "$pi_provider" ]]; then
   args+=(--provider "$pi_provider" --model "$pi_model" --thinking "$pi_thinking")

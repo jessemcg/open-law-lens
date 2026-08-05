@@ -11,6 +11,7 @@
 - `open_law_lens/pi_runtime.py` owns Pi runtime discovery, authenticated model enumeration, and atomic updates to the project Pi model setting.
 - `scripts/open-law-lens-agent-vte.sh` launches Pi from the embedded terminal. It must use the Node runtime shipped beside the selected Pi executable so desktop PATH differences cannot fall back to an incompatible system Node. Preserve its temporary-workspace and cache-directory behavior unless the task explicitly changes agent launch semantics.
 - `.pi/extensions/pi-web-search/` contains the pinned web-search extension bundled for the embedded Pi workflow. Do not replace it with a machine-local `.pi/npm/` dependency.
+- `.pi/SYSTEM.md` is the replacement legal-knowledge-work prompt copied into every private embedded Pi workspace and passed explicitly at launch.
 - `open-law-lens-icon.png` is the project icon used by the desktop launcher.
 - `pyproject.toml` and `uv.lock` define the Python 3.13 uv environment. Keep them synchronized when changing dependencies.
 

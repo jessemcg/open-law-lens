@@ -32,6 +32,9 @@ class AgentVteWrapperTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        (project / ".pi" / "SYSTEM.md").write_text(
+            "Open Law Lens legal knowledge work", encoding="utf-8"
+        )
         if bundle_web_search:
             package = project / ".pi" / "extensions" / "pi-web-search"
             (package / "src").mkdir(parents=True)
@@ -121,6 +124,10 @@ class AgentVteWrapperTests(unittest.TestCase):
                 self.assertIn(flag, args)
             self.assertIn("--skill", args)
             self.assertIn("--extension", args)
+            self.assertEqual(
+                args[args.index("--system-prompt") + 1],
+                str(root / "workspace" / ".pi" / "SYSTEM.md"),
+            )
             extension_index = args.index("--extension")
             self.assertEqual(
                 args[extension_index + 1],
@@ -222,6 +229,10 @@ class AgentVteWrapperTests(unittest.TestCase):
                 self.assertIn(flag, args)
             self.assertNotIn("--skill", args)
             self.assertNotIn("--extension", args)
+            self.assertEqual(
+                args[args.index("--system-prompt") + 1],
+                str(Path(temp_dir) / "workspace" / ".pi" / "SYSTEM.md"),
+            )
             self.assertIn("read,bash,grep,find,ls", args)
             self.assertNotIn("read,bash,grep,find,ls,web_search", args)
 
@@ -259,6 +270,36 @@ class AgentVteWrapperTests(unittest.TestCase):
             )
             self.assertNotIn("pi install", result.stderr)
 
+    def test_wrapper_rejects_missing_system_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            project, workspace, prompt = self._fixture(
+                root, bundle_web_search=False
+            )
+            (project / ".pi" / "SYSTEM.md").unlink()
+            pi, _output = self._fake_pi(root)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "OPEN_LAW_LENS_AGENT_PROMPT_FILE": str(prompt),
+                    "OPEN_LAW_LENS_AGENT_WORKSPACE": str(workspace),
+                    "OPEN_LAW_LENS_AGENT_MODE": "case",
+                    "OPEN_LAW_LENS_PROJECT_DIR": str(project),
+                    "OPEN_LAW_LENS_PI_BIN": str(pi),
+                }
+            )
+
+            result = subprocess.run(
+                ["bash", str(WRAPPER)],
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("Pi system prompt not found or empty", result.stderr)
+
     def test_repository_bundles_pinned_web_search_source(self) -> None:
         settings = json.loads(
             (PROJECT_DIR / ".pi" / "settings.json").read_text(encoding="utf-8")
@@ -277,6 +318,12 @@ class AgentVteWrapperTests(unittest.TestCase):
         self.assertEqual(metadata["version"], "1.3.1")
         self.assertTrue((package.parent / "src" / "index.ts").is_file())
         self.assertTrue((package.parent / "LICENSE").is_file())
+        system_prompt = (PROJECT_DIR / ".pi" / "SYSTEM.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("California legal researcher", system_prompt)
+        self.assertIn("not a coding assistant", system_prompt)
+        self.assertIn("private, disposable runtime workspace", system_prompt)
 
     def test_appeal_skill_requires_issue_specific_heading_and_complete_record(
         self,
