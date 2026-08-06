@@ -101,6 +101,25 @@ July 21, 2025.
 *1137 APPEAL from orders of the Superior Court of Los Angeles County.
 """
 
+RIOS_TEXT = """65 Cal.App.5th 871 (2021)
+
+280 Cal.Rptr.3d 404
+
+JOHN RIOS, JR., Plaintiff and Respondent,
+
+v.
+
+RAGHVENDRA SINGH, Defendant and Appellant.
+
+No. C086959.
+
+Court of Appeals of California, Third District.
+
+May 25, 2021.
+
+*875 OPINION
+"""
+
 
 class ExternalImportTests(unittest.TestCase):
     def test_validated_import_citation_accepts_exact_match(self) -> None:
@@ -166,6 +185,23 @@ class ExternalImportTests(unittest.TestCase):
         self.assertEqual(repaired["case_name_short"], "Yu v. Pozniak-Rice")
         self.assertEqual(repaired["case_name_full"], "Yu v. Pozniak-Rice")
 
+    def test_repair_imported_cluster_shortens_person_with_suffix(self) -> None:
+        cluster = {
+            "id": "external-rios",
+            "case_name": "JOHN RIOS, JR. v. Singh",
+            "case_name_short": "JOHN RIOS, JR. v. Singh",
+            "case_name_full": "JOHN RIOS, JR. v. Singh",
+            "official_citation": "65 Cal.App.5th 871",
+        }
+
+        repaired = repair_reporter_only_imported_cluster(cluster, RIOS_TEXT)
+
+        self.assertIsNotNone(repaired)
+        assert repaired is not None
+        self.assertEqual(repaired["case_name"], "Rios v. Singh")
+        self.assertEqual(repaired["case_name_short"], "Rios v. Singh")
+        self.assertEqual(repaired["case_name_full"], "Rios v. Singh")
+
     def test_imported_case_name_from_google_scholar_text(self) -> None:
         self.assertEqual(imported_case_name_from_text(CADEN_TEXT), "In re Caden C.")
         self.assertEqual(imported_year_from_text(CADEN_TEXT), "2021")
@@ -198,6 +234,9 @@ class ExternalImportTests(unittest.TestCase):
 
     def test_imported_case_name_from_split_civil_caption(self) -> None:
         self.assertEqual(imported_case_name_from_text(YU_TEXT), "Yu v. Pozniak-Rice")
+
+    def test_imported_case_name_shortens_person_with_suffix(self) -> None:
+        self.assertEqual(imported_case_name_from_text(RIOS_TEXT), "Rios v. Singh")
 
     def test_standalone_versus_is_not_a_case_name(self) -> None:
         self.assertEqual(imported_case_name_from_text("112 Cal.App.5th 1135 (2025)\nv."), "")

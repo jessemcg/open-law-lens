@@ -301,7 +301,7 @@ class LibraryTests(unittest.TestCase):
             with library.connection() as conn:
                 conn.execute(
                     "DELETE FROM meta WHERE key = ?",
-                    ("reporter_only_imported_names_normalized_v1",),
+                    ("imported_case_names_normalized_v2",),
                 )
 
             library.ensure()

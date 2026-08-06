@@ -38,7 +38,7 @@ DEFAULT_LIBRARY_DB = PROJECT_LIBRARY_DIR / "open_law_lens.sqlite3"
 SCHEMA_VERSION = "2"
 OFFICIAL_CITATION_ONLY_NORMALIZED_KEY = "official_citation_only_normalized_v2"
 CASE_TITLES_NORMALIZED_KEY = "case_titles_normalized_v2"
-REPORTER_ONLY_IMPORTED_NAMES_NORMALIZED_KEY = "reporter_only_imported_names_normalized_v1"
+REPORTER_ONLY_IMPORTED_NAMES_NORMALIZED_KEY = "imported_case_names_normalized_v2"
 RESEARCH_SET_SLIP_PAYLOAD_KEY = "_open_law_lens_slip_opinion"
 TEXT_FIELDS = (
     "html_with_citations",

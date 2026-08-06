@@ -140,13 +140,15 @@ def repair_reporter_only_imported_cluster(
         str(cluster.get(key) or "").strip()
         for key in ("case_name", "case_name_short", "case_name_full")
     ]
-    invalid_names = [
+    malformed_names = [
         reporter_only_case_name(name, official_citation)
         or bool(re.fullmatch(r"v\.?", name, flags=re.IGNORECASE))
+        or _has_unshortened_uppercase_person_party(name)
         for name in current_names
     ]
-    if not any(invalid_names) or any(
-        name and not invalid for name, invalid in zip(current_names, invalid_names)
+    if not any(malformed_names) or any(
+        name and not malformed
+        for name, malformed in zip(current_names, malformed_names)
     ):
         return None
     repaired_name = imported_case_name_from_text(imported_text)
@@ -276,19 +278,38 @@ def _caption_party_name(line: str) -> str:
 
 def _short_caption_party_name(line: str) -> str:
     party = _caption_party_name(line)
+    name_without_suffix = re.sub(
+        r",?\s+(?:JR\.?|SR\.?|II|III|IV|V)\.?$",
+        "",
+        party,
+        flags=re.IGNORECASE,
+    )
     organization_terms = (
         r"\b(?:ASSOCIATION|BUREAU|COMPANY|CORPORATION|COUNTY|DEPARTMENT|INC|LLC|LP)\b"
     )
     if (
-        re.fullmatch(r"(?:[A-Z][A-Z'.-]*\s+){1,3}[A-Z][A-Z'.-]*", party)
-        and not re.search(organization_terms, party)
+        re.fullmatch(
+            r"(?:[A-Z][A-Z'.-]*\s+){1,3}[A-Z][A-Z'.-]*",
+            name_without_suffix,
+        )
+        and not re.search(organization_terms, name_without_suffix)
     ):
-        surname = party.rsplit(" ", 1)[-1]
+        surname = name_without_suffix.rsplit(" ", 1)[-1]
         return "-".join(
             "'".join(piece[:1] + piece[1:].lower() for piece in part.split("'"))
             for part in surname.split("-")
         )
     return party
+
+
+def _has_unshortened_uppercase_person_party(case_name: str) -> bool:
+    parts = re.split(r"\s+v\.?\s+", case_name.strip(), maxsplit=1, flags=re.IGNORECASE)
+    if len(parts) != 2:
+        return False
+    return any(
+        _short_caption_party_name(part) != _caption_party_name(part)
+        for part in parts
+    )
 
 
 def _superior_court_caption_party(line: str) -> str:
