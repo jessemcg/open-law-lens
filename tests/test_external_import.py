@@ -120,6 +120,12 @@ May 25, 2021.
 *875 OPINION
 """
 
+JH_TEXT = """JH v. GH, 63 Cal.App.5th 633 - Cal: Court of Appeals 2021
+63 Cal.App.5th 633 (2021)
+
+*637 OPINION
+"""
+
 
 class ExternalImportTests(unittest.TestCase):
     def test_validated_import_citation_accepts_exact_match(self) -> None:
@@ -228,6 +234,9 @@ class ExternalImportTests(unittest.TestCase):
             "A.H. v. Superior Court",
         )
 
+    def test_imported_case_name_normalizes_initial_only_parties(self) -> None:
+        self.assertEqual(imported_case_name_from_text(JH_TEXT), "J.H. v. G.H.")
+
     def test_imported_case_name_from_split_superior_court_writ_caption(self) -> None:
         self.assertEqual(imported_case_name_from_text(B_D_TEXT), "B.D. v. Superior Court")
         self.assertEqual(imported_year_from_text(B_D_TEXT), "2025")
@@ -274,6 +283,19 @@ class ExternalImportTests(unittest.TestCase):
         self.assertEqual(cluster["date_filed"], "2021")
         self.assertEqual(cluster["official_citation"], "11 Cal.5th 614")
         self.assertEqual(cluster["citations"], [{"volume": "11", "reporter": "Cal.5th", "page": "614"}])
+        self.assertEqual(cluster["source_provider"], "google_scholar")
+
+    def test_build_external_import_cluster_normalizes_initial_only_parties(self) -> None:
+        cluster = build_external_import_cluster(
+            case_name="JH v. GH",
+            official_citation="63 Cal.App.5th 633",
+            imported_text=JH_TEXT,
+            source_url="https://scholar.google.com/scholar_case?case=1",
+        )
+
+        self.assertEqual(cluster["case_name"], "J.H. v. G.H.")
+        self.assertEqual(cluster["case_name_short"], "J.H. v. G.H.")
+        self.assertEqual(cluster["case_name_full"], "J.H. v. G.H.")
         self.assertEqual(cluster["source_provider"], "google_scholar")
 
     def test_build_external_import_cluster_replaces_reporter_only_name_from_caption(self) -> None:

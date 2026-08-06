@@ -2988,11 +2988,23 @@ class AppReaderPayloadTests(unittest.TestCase):
             "date_filed": "2020-06-01",
             "citations": [{"volume": "1", "reporter": "Cal.5th", "page": "1"}],
         }
+        initials = {
+            "id": "external-jh",
+            "case_name": "JH v. GH",
+            "date_filed": "2021-04-28",
+            "citations": [
+                {"volume": "63", "reporter": "Cal.App.5th", "page": "633"}
+            ],
+        }
         uncited = {"id": 43, "case_name": "Uncited Example"}
 
         self.assertEqual(
             OpenLawLensWindow._case_header_text(DummyWindow(), cited),  # type: ignore[arg-type]
             "Example v. State (2020) 1 Cal.5th 1",
+        )
+        self.assertEqual(
+            OpenLawLensWindow._case_header_text(DummyWindow(), initials),  # type: ignore[arg-type]
+            "J.H. v. G.H. (2021) 63 Cal.App.5th 633",
         )
         self.assertEqual(
             OpenLawLensWindow._case_header_text(DummyWindow(), uncited),  # type: ignore[arg-type]

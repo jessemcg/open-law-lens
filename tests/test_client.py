@@ -432,7 +432,14 @@ class ClientTests(unittest.TestCase):
             "A.H. v. Superior Court",
         )
         self.assertEqual(normalize_case_title("C.C. v. L.B."), "C.C. v. L.B.")
+        self.assertEqual(normalize_case_title("JH v. GH"), "J.H. v. G.H.")
+        self.assertEqual(normalize_case_title("J.H. v. GH"), "J.H. v. G.H.")
+        self.assertEqual(normalize_case_title("JH v. G.H."), "J.H. v. G.H.")
+        self.assertEqual(normalize_case_title("J. H. v. G. H."), "J.H. v. G.H.")
+        self.assertEqual(normalize_case_title("J.H. v. G.H."), "J.H. v. G.H.")
+        self.assertEqual(normalize_case_title("ABC v. WXYZ"), "A.B.C. v. W.X.Y.Z.")
         self.assertEqual(normalize_case_title("DKN Holdings LLC v. Faerber"), "DKN Holdings LLC v. Faerber")
+        self.assertEqual(normalize_case_title("People v. KC Holdings"), "People v. KC Holdings")
         self.assertEqual(
             normalize_case_title("LOS ANGELES COUNTY DEPARTMENT OF CHILDREN AND FAMILY SERVICES v. JESUS H."),
             "LOS ANGELES COUNTY DEPARTMENT OF CHILDREN AND FAMILY SERVICES v. Jesus H.",
@@ -649,6 +656,24 @@ class ClientTests(unittest.TestCase):
         assert citation is not None
         self.assertEqual(citation.plain_text, "Smith & Jones v. State (2024) 1 Cal.5th 2")
         self.assertEqual(citation.html_text, "<i>Smith &amp; Jones v. State</i> (2024) 1 Cal.5th 2")
+
+    def test_format_official_california_citation_normalizes_initial_only_parties(self) -> None:
+        cluster = {
+            "case_name": "JH v. GH",
+            "date_filed": "2021-04-28",
+            "citations": [
+                {"volume": "63", "reporter": "Cal.App.5th", "page": "633"}
+            ],
+        }
+
+        citation = format_official_california_citation(cluster)
+
+        self.assertIsNotNone(citation)
+        assert citation is not None
+        self.assertEqual(
+            citation.plain_text,
+            "J.H. v. G.H. (2021) 63 Cal.App.5th 633",
+        )
 
     def test_format_official_california_citation_uses_short_name(self) -> None:
         cluster = {

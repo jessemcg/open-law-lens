@@ -168,7 +168,7 @@ class LibraryTests(unittest.TestCase):
                 ),
             }
             with library.connection() as conn:
-                conn.execute("DELETE FROM meta WHERE key = ?", ("case_titles_normalized_v2",))
+                conn.execute("DELETE FROM meta WHERE key = ?", ("case_titles_normalized_v3",))
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO cases(
@@ -208,7 +208,7 @@ class LibraryTests(unittest.TestCase):
             }
             now = "2026-01-01T00:00:00+00:00"
             with library.connection() as conn:
-                conn.execute("DELETE FROM meta WHERE key = ?", ("case_titles_normalized_v2",))
+                conn.execute("DELETE FROM meta WHERE key = ?", ("case_titles_normalized_v3",))
                 conn.execute(
                     """
                     INSERT INTO cases(
@@ -274,6 +274,99 @@ class LibraryTests(unittest.TestCase):
             self.assertEqual(item_row["title"], "Estate of Moss")
             self.assertEqual(json.loads(case_row["cluster_json"])["case_name"], "Moss v. Moss")
             self.assertEqual(json.loads(item_row["payload_json"])["case_name"], "Moss v. Moss")
+
+    def test_ensure_v3_normalizes_initial_parties_in_derived_titles(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            cluster = {
+                "id": "external-jh",
+                "case_name": "JH v. GH",
+                "case_name_short": "JH v. GH",
+                "case_name_full": "JH v. GH",
+                "citations": [
+                    {"volume": "63", "reporter": "Cal.App.5th", "page": "633"}
+                ],
+            }
+            now = "2026-01-01T00:00:00+00:00"
+            with library.connection() as conn:
+                conn.execute(
+                    "DELETE FROM meta WHERE key = ?",
+                    ("case_titles_normalized_v3",),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+                    ("case_titles_normalized_v2", now),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO cases(
+                        cluster_id, title, citation_text, cluster_json,
+                        opinion_ids_json, added_at, last_accessed
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "external-jh",
+                        "JH v. GH",
+                        "63 Cal.App.5th 633",
+                        json.dumps(cluster),
+                        "[]",
+                        now,
+                        now,
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO research_sets(
+                        set_id, name, normalized_name, created_at, updated_at, last_accessed
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (1, "Initials research", "initials research", now, now, now),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO research_set_items(
+                        set_id, item_type, authority_id, title, citation, payload_json,
+                        position, agent_selected, added_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        1,
+                        "case",
+                        "external-jh",
+                        "JH v. GH",
+                        "63 Cal.App.5th 633",
+                        json.dumps(cluster),
+                        0,
+                        0,
+                        now,
+                    ),
+                )
+
+            library.ensure()
+
+            with library.connection() as conn:
+                case_row = conn.execute(
+                    "SELECT title, cluster_json FROM cases WHERE cluster_id = 'external-jh'"
+                ).fetchone()
+                item_row = conn.execute(
+                    """
+                    SELECT title, payload_json FROM research_set_items
+                    WHERE set_id = 1 AND item_type = 'case' AND authority_id = 'external-jh'
+                    """
+                ).fetchone()
+                migration_row = conn.execute(
+                    "SELECT value FROM meta WHERE key = 'case_titles_normalized_v3'"
+                ).fetchone()
+            self.assertIsNotNone(case_row)
+            self.assertIsNotNone(item_row)
+            self.assertIsNotNone(migration_row)
+            assert case_row is not None
+            assert item_row is not None
+            self.assertEqual(case_row["title"], "J.H. v. G.H.")
+            self.assertEqual(item_row["title"], "J.H. v. G.H.")
+            self.assertEqual(json.loads(case_row["cluster_json"])["case_name"], "JH v. GH")
+            self.assertEqual(json.loads(item_row["payload_json"])["case_name"], "JH v. GH")
 
     def test_ensure_repairs_reporter_only_imported_superior_court_writ_title(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

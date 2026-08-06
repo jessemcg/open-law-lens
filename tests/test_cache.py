@@ -169,6 +169,34 @@ class CacheTests(unittest.TestCase):
             assert stored is not None
             self.assertEqual(stored["case_name"], "Moss v. Moss")
 
+    def test_ensure_repairs_derived_initial_party_title_without_rewriting_cluster(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cluster = {
+                "id": "external-jh",
+                "case_name": "JH v. GH",
+                "case_name_short": "JH v. GH",
+                "case_name_full": "JH v. GH",
+                "citations": [
+                    {"volume": "63", "reporter": "Cal.App.5th", "page": "633"}
+                ],
+            }
+            cache.upsert_cluster(cluster)
+            index = cache.read_case_index()
+            index["external-jh"]["title"] = "JH v. GH"
+            cache.write_case_index(index)
+
+            cache.ensure()
+
+            self.assertEqual(
+                cache.read_case_index()["external-jh"]["title"],
+                "J.H. v. G.H.",
+            )
+            stored = cache.read_cached_cluster("external-jh")
+            self.assertIsNotNone(stored)
+            assert stored is not None
+            self.assertEqual(stored["case_name"], "JH v. GH")
+
     def test_upsert_preferred_cluster_replaces_active_official_citation_duplicate(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = JsonCache(Path(temp_dir))

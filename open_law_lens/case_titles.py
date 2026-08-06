@@ -154,6 +154,8 @@ def _strip_party_role_tail(party: str) -> str:
 
 
 def _normalize_personal_party_title(party: str) -> str:
+    if is_bare_initial_title(party):
+        return "".join(f"{letter}." for letter in re.findall(r"[A-Z]", party))
     normalized = re.sub(
         r"\b(?P<name>[A-Z][A-Z'-]{2,})(?=\s+(?:[A-Z]\.){1,3}(?:$|[\s,]))",
         lambda match: _titlecase_name_word(match.group("name")),
