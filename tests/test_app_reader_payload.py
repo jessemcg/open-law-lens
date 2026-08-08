@@ -32,6 +32,12 @@ from open_law_lens.app import (
     appeal_issue_menu_label,
     build_agent_launch_env,
     build_case_reader_payload,
+    case_reader_masthead,
+    current_case_reader_masthead,
+    reader_masthead,
+    rule_reader_masthead,
+    saved_answer_reader_masthead,
+    statute_reader_masthead,
     _normalize_current_case_document,
     _current_case_style_spans,
     strip_agent_legal_authority_backticks,
@@ -361,6 +367,69 @@ class AppReaderPayloadTests(unittest.TestCase):
 
         self.assertEqual(window.reader_source_label.text, "Source: Google Scholar")
         self.assertTrue(window.reader_source_label.visible)
+
+    def test_reader_masthead_clears_metadata_source_and_formatted_citation(self) -> None:
+        class DummyLabel:
+            def __init__(self) -> None:
+                self.text = ""
+                self.visible = False
+
+            def set_text(self, text: str) -> None:
+                self.text = text
+
+            def get_text(self) -> str:
+                return self.text
+
+            def set_visible(self, visible: bool) -> None:
+                self.visible = visible
+
+        class DummyBox:
+            def __init__(self) -> None:
+                self.visible = False
+
+            def set_visible(self, visible: bool) -> None:
+                self.visible = visible
+
+        formatted = FormattedCitation(
+            plain_text="Example v. State (2020) 1 Cal.5th 1",
+            html_text="<i>Example v. State</i> (2020) 1 Cal.5th 1",
+        )
+        window = SimpleNamespace(
+            reader_header_label=DummyLabel(),
+            reader_header_metadata_label=DummyLabel(),
+            reader_source_label=DummyLabel(),
+            reader_header_box=DummyBox(),
+            reader_clipboard_button=None,
+            reader_subsequent_treatment_button=None,
+        )
+
+        OpenLawLensWindow._set_reader_header(  # type: ignore[arg-type]
+            window,
+            "Example v. State",
+            formatted,
+            {"id": 42},
+            "(2020) 1 Cal.5th 1",
+        )
+        OpenLawLensWindow._set_reader_source_provider(  # type: ignore[arg-type]
+            window,
+            "google_scholar",
+        )
+
+        self.assertIs(window._reader_header_citation, formatted)
+        self.assertEqual(window.reader_header_metadata_label.text, "(2020) 1 Cal.5th 1")
+        self.assertTrue(window.reader_header_metadata_label.visible)
+        self.assertTrue(window.reader_source_label.visible)
+        self.assertTrue(window.reader_header_box.visible)
+
+        OpenLawLensWindow._set_reader_header(window, "")  # type: ignore[arg-type]
+
+        self.assertIsNone(window._reader_header_citation)
+        self.assertEqual(window.reader_header_label.text, "")
+        self.assertEqual(window.reader_header_metadata_label.text, "")
+        self.assertFalse(window.reader_header_metadata_label.visible)
+        self.assertEqual(window.reader_source_label.text, "")
+        self.assertFalse(window.reader_source_label.visible)
+        self.assertFalse(window.reader_header_box.visible)
 
     def test_prior_brief_agent_uses_bundled_library_icon(self) -> None:
         icon_ref = resources.files("open_law_lens").joinpath(
@@ -3068,7 +3137,7 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(window.applied, [span])
         self.assertEqual(window.next_indexes, [0])
 
-    def test_case_header_keeps_formatted_citation_on_one_line(self) -> None:
+    def test_case_header_text_keeps_complete_formatted_citation(self) -> None:
         class DummyWindow:
             pass
 
@@ -3100,6 +3169,139 @@ class AppReaderPayloadTests(unittest.TestCase):
             OpenLawLensWindow._case_header_text(DummyWindow(), uncited),  # type: ignore[arg-type]
             "Uncited Example",
         )
+
+    def test_case_reader_masthead_splits_reporter_and_slip_metadata(self) -> None:
+        official = {
+            "id": 42,
+            "case_name_short": "Example v. State",
+            "date_filed": "2020-06-01",
+            "citations": [{"volume": "1", "reporter": "Cal.5th", "page": "1"}],
+        }
+        parenthetical = {
+            "id": 43,
+            "case_name_short": "People v. Superior Court (Romero)",
+            "date_filed": "1996-06-20",
+            "citations": [{"volume": "13", "reporter": "Cal.4th", "page": "497"}],
+        }
+        slip = {
+            "id": 44,
+            "case_name_short": "In re L.G.",
+            "date_filed": "2026-03-06",
+        }
+        slip_citation = FormattedCitation(
+            plain_text="In re L.G. (Mar. 6, 2026, A173218) ___ Cal.App.5th ___",
+            html_text="<i>In re L.G.</i> (Mar. 6, 2026, A173218) ___ Cal.App.5th ___",
+        )
+
+        official_masthead = case_reader_masthead(official)
+        parenthetical_masthead = case_reader_masthead(parenthetical)
+        slip_masthead = case_reader_masthead(slip, slip_citation)
+        uncited_masthead = case_reader_masthead(
+            {"id": 45, "case_name": "Uncited Example"}
+        )
+
+        self.assertEqual(
+            (official_masthead.title, official_masthead.metadata),
+            ("Example v. State", "(2020) 1 Cal.5th 1"),
+        )
+        self.assertEqual(
+            (parenthetical_masthead.title, parenthetical_masthead.metadata),
+            (
+                "People v. Superior Court (Romero)",
+                "(1996) 13 Cal.4th 497",
+            ),
+        )
+        self.assertEqual(
+            (slip_masthead.title, slip_masthead.metadata),
+            (
+                "In re L.G.",
+                "(Mar. 6, 2026, A173218) ___ Cal.App.5th ___",
+            ),
+        )
+        self.assertEqual(
+            (uncited_masthead.title, uncited_masthead.metadata),
+            ("Uncited Example", ""),
+        )
+
+    def test_saved_answer_masthead_uses_optional_disposition_subtitle(self) -> None:
+        with_subtitle = saved_answer_reader_masthead(
+            {
+                "title": "Successive Representation Conflict",
+                "subtitle": "Likely disqualification",
+            },
+            {},
+        )
+        without_subtitle = saved_answer_reader_masthead(
+            {},
+            {"title": "Legacy saved answer"},
+        )
+
+        self.assertEqual(
+            (with_subtitle.title, with_subtitle.metadata),
+            ("Successive Representation Conflict", "Likely disqualification"),
+        )
+        self.assertEqual(
+            (without_subtitle.title, without_subtitle.metadata),
+            ("Legacy saved answer", ""),
+        )
+
+    def test_authority_mastheads_support_structured_and_legacy_payloads(self) -> None:
+        structured_statute = statute_reader_masthead(
+            {
+                "code_label": "Welfare and Institutions Code",
+                "section": "300",
+                "title": "Welfare and Institutions Code section 300",
+                "citation": "Welf. & Inst. Code, § 300",
+            }
+        )
+        legacy_statute = statute_reader_masthead(
+            {
+                "title": "Welfare and Institutions Code section 300",
+                "citation": "Welf. & Inst. Code, § 300",
+            }
+        )
+        structured_rule = rule_reader_masthead(
+            {
+                "rule_number": "8.11",
+                "title": "California Rules of Court, rule 8.11",
+                "citation": "Cal. Rules of Court, rule 8.11",
+            }
+        )
+        minimal_rule = rule_reader_masthead({"title": "Legacy local rule"})
+
+        self.assertEqual(
+            (structured_statute.title, structured_statute.metadata),
+            ("Welfare and Institutions Code", "§ 300"),
+        )
+        self.assertEqual(structured_statute, legacy_statute)
+        self.assertEqual(
+            (structured_rule.title, structured_rule.metadata),
+            ("California Rules of Court", "Rule 8.11"),
+        )
+        self.assertEqual(
+            (minimal_rule.title, minimal_rule.metadata),
+            ("Legacy local rule", ""),
+        )
+
+    def test_current_case_mastheads_and_duplicate_metadata_are_normalized(self) -> None:
+        socf = current_case_reader_masthead(
+            "In re Example",
+            "Statement of Case and Facts",
+        )
+        report = current_case_reader_masthead(
+            "In re Example",
+            "Suggested Reply Arguments",
+        )
+
+        self.assertEqual(
+            (socf.title, socf.metadata),
+            ("In re Example", "Statement of Case and Facts"),
+        )
+        self.assertEqual(
+            (report.title, report.metadata),
+            ("In re Example", "Suggested Reply Arguments"),
+        )
+        self.assertEqual(reader_masthead("Same title", " same   title ").metadata, "")
 
     def test_ineligible_loaded_case_starts_scholar_with_transient_notice_mode(self) -> None:
         class DummyWindow:
@@ -3359,7 +3561,7 @@ class AppReaderPayloadTests(unittest.TestCase):
             def __init__(self) -> None:
                 self.client = MagicMock()
                 self.reader_buffer = DummyBuffer()
-                self.headers: list[tuple[str, str]] = []
+                self.headers: list[tuple[str, str, str]] = []
                 self.source_providers: list[str] = []
                 self._research_cache_generation = 1
 
@@ -3374,8 +3576,12 @@ class AppReaderPayloadTests(unittest.TestCase):
                 text: str,
                 citation: FormattedCitation | None = None,
                 cluster: dict[str, object] | None = None,
+                subtitle: str = "",
             ) -> None:
-                self.headers.append((text, citation.plain_text if citation else ""))
+                del cluster
+                self.headers.append(
+                    (text, subtitle, citation.plain_text if citation else "")
+                )
 
             def _clear_reader_citation_links(self) -> None:
                 pass
@@ -3417,7 +3623,16 @@ class AppReaderPayloadTests(unittest.TestCase):
             OpenLawLensWindow._start_reader_payload_render(window, payload)  # type: ignore[arg-type]
 
         citation = "In re L.G. (Mar. 6, 2026, A173218) ___ Cal.App.5th ___"
-        self.assertEqual(window.headers, [(citation, citation)])
+        self.assertEqual(
+            window.headers,
+            [
+                (
+                    "In re L.G.",
+                    "(Mar. 6, 2026, A173218) ___ Cal.App.5th ___",
+                    citation,
+                )
+            ],
+        )
         self.assertEqual(window.source_providers, ["california_courts"])
 
     def test_reader_opinion_hydration_keeps_loaded_research_set_clean(self) -> None:
@@ -4491,7 +4706,7 @@ Opinion text.
                 self._selected_agent_answer: dict[str, object] | None = None
                 self._reader_has_official_pagination = True
                 self._reader_page_markers = [object()]
-                self.headers: list[str] = []
+                self.headers: list[tuple[str, str]] = []
                 self.reader_texts: list[str] = []
                 self.reader_markdown_flags: list[bool] = []
                 self.statuses: list[str] = []
@@ -4500,8 +4715,14 @@ Opinion text.
             def _set_reader_busy(self, busy: bool, _message: str = "") -> None:
                 self.busy = busy
 
-            def _set_reader_header(self, text: str, *_args: object) -> None:
-                self.headers.append(text)
+            def _set_reader_header(
+                self,
+                text: str,
+                _citation: object = None,
+                _cluster: object = None,
+                subtitle: str = "",
+            ) -> None:
+                self.headers.append((text, subtitle))
 
             def _set_reader_text(
                 self,
@@ -4522,6 +4743,7 @@ Opinion text.
                 "See In re Caden C. (2021) 11 Cal.5th 614 and Welf. & Inst. Code, § 300.",
                 mode="appeal",
                 title="Saved issue",
+                subtitle="Likely reversible error",
             )
             window = DummyWindow(cache)
 
@@ -4533,7 +4755,7 @@ Opinion text.
         self.assertIsNone(window._selected_cluster)
         self.assertIsNone(window._selected_statute)
         self.assertIsNone(window._selected_rule)
-        self.assertEqual(window.headers, ["Saved issue"])
+        self.assertEqual(window.headers, [("Saved issue", "Likely reversible error")])
         self.assertEqual(
             window.reader_texts,
             ["See In re Caden C. (2021) 11 Cal.5th 614 and Welf. & Inst. Code, § 300."],

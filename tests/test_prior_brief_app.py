@@ -12,6 +12,7 @@ from open_law_lens.app import (
     OpenLawLensWindow,
     PriorBriefPhraseGroup,
     build_agent_launch_env,
+    prior_brief_reader_masthead,
 )
 from open_law_lens.agent import QuoteTarget
 from open_law_lens.config import AppConfig
@@ -115,7 +116,7 @@ class PriorBriefAppTests(unittest.TestCase):
                 self._pending_quote_target = None
                 self.status = ""
                 self.rendered = ""
-                self.headers: list[str] = []
+                self.headers: list[tuple[str, str]] = []
                 self.rendered_style_spans = []
                 self.cache_refreshes = 0
                 self.pending_targets_at_render: list[QuoteTarget | None] = []
@@ -129,8 +130,14 @@ class PriorBriefAppTests(unittest.TestCase):
             def _set_reader_position_key(self, *_args: object) -> None:
                 pass
 
-            def _set_reader_header(self, text: str, *_args: object) -> None:
-                self.headers.append(text)
+            def _set_reader_header(
+                self,
+                text: str,
+                _citation: object = None,
+                _cluster: object = None,
+                subtitle: str = "",
+            ) -> None:
+                self.headers.append((text, subtitle))
 
             def _set_reader_text(self, text: str, *, style_spans=None) -> None:
                 self.rendered = text
@@ -170,8 +177,8 @@ class PriorBriefAppTests(unittest.TestCase):
         self.assertEqual(
             window.headers,
             [
-                "B348009_RB_Breana_R · June 8, 2026",
-                "B348009_RB_Breana_R · June 8, 2026",
+                ("B348009_RB_Breana_R", "June 8, 2026"),
+                ("B348009_RB_Breana_R", "June 8, 2026"),
             ],
         )
         self.assertEqual(
@@ -180,6 +187,19 @@ class PriorBriefAppTests(unittest.TestCase):
         )
         self.assertIs(window.pending_targets_at_render[0], target)
         self.assertNotIn("Added to Research Cache", window.status)
+
+    def test_prior_brief_masthead_uses_title_and_formatted_date(self) -> None:
+        brief = self._brief(
+            "a" * 64,
+            "B348009_RB_Breana_R",
+            "Brief text.",
+            "2026-06-08",
+        )
+
+        masthead = prior_brief_reader_masthead(brief)
+
+        self.assertEqual(masthead.title, "B348009_RB_Breana_R")
+        self.assertEqual(masthead.metadata, "June 8, 2026")
 
     def test_inline_markdown_renders_internal_brief_link_as_title(self) -> None:
         brief_id = "a" * 64

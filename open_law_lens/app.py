@@ -202,6 +202,7 @@ from .statutes import (
     statute_display_citation,
     statute_pinpoint_citation,
     statute_subdivisions_for_range,
+    statute_title,
 )
 from .text_search import literal_match_ranges
 from .text_formatting import normalize_malformed_quote_stacks, smart_quote_display_text
@@ -212,7 +213,10 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 AGENT_WRAPPER = PROJECT_DIR / "scripts" / "open-law-lens-agent-vte.sh"
 READER_BG = "#ffffff"
 READER_FG = "#000000"
-READER_MUTED_FG = "#4d5866"
+READER_MASTHEAD_BG = "#f5f6f7"
+READER_MASTHEAD_DIVIDER = "#dfe2e5"
+READER_MASTHEAD_METADATA_FG = "#4d5866"
+READER_MASTHEAD_SOURCE_FG = "#69737e"
 READER_COOL_GRAY_BG = "#e8edf3"
 READER_RENDER_TEXT_CHUNK_SIZE = 8000
 READER_RENDER_TAG_CHUNK_SIZE = 250
@@ -418,6 +422,128 @@ def _apply_terminal_theme(terminal: Any) -> None:
     terminal.set_color_background(background)
     terminal.set_color_foreground(foreground)
     terminal.set_clear_background(True)
+
+
+@dataclass(frozen=True)
+class ReaderMasthead:
+    title: str
+    metadata: str = ""
+
+
+def _masthead_text(value: object) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _masthead_identity(value: str) -> str:
+    return re.sub(r"[\W_]+", "", value.casefold())
+
+
+def reader_masthead(title: object, metadata: object = "") -> ReaderMasthead:
+    clean_title = _masthead_text(title)
+    clean_metadata = _masthead_text(metadata)
+    if not clean_title and clean_metadata:
+        clean_title, clean_metadata = clean_metadata, ""
+    if (
+        clean_title
+        and clean_metadata
+        and _masthead_identity(clean_title) == _masthead_identity(clean_metadata)
+    ):
+        clean_metadata = ""
+    return ReaderMasthead(clean_title, clean_metadata)
+
+
+def case_reader_masthead(
+    cluster: dict[str, Any],
+    citation: FormattedCitation | None = None,
+) -> ReaderMasthead:
+    formatted = citation or format_official_california_citation(cluster)
+    if formatted is not None:
+        plain = _masthead_text(formatted.plain_text)
+        short_title = _masthead_text(cluster_short_title(cluster))
+        if plain.startswith(short_title) and (
+            len(plain) == len(short_title)
+            or plain[len(short_title)].isspace()
+        ):
+            remainder = plain[len(short_title) :].strip()
+            reporter_citation = _masthead_text(cluster_citation_line(cluster))
+            if (
+                not remainder
+                or remainder.startswith("(")
+                or (reporter_citation and reporter_citation in remainder)
+            ):
+                return reader_masthead(short_title, remainder)
+        metadata_start = plain.rfind(" (")
+        if metadata_start > 0:
+            return reader_masthead(
+                plain[:metadata_start],
+                plain[metadata_start + 1 :],
+            )
+        if plain:
+            return reader_masthead(plain)
+    return reader_masthead(cluster_title(cluster))
+
+
+def statute_reader_masthead(statute: dict[str, Any]) -> ReaderMasthead:
+    title = _masthead_text(statute.get("title"))
+    citation = _masthead_text(statute.get("citation"))
+    code_name = _masthead_text(statute.get("code_label"))
+    section = _masthead_text(statute.get("section"))
+    parsed = parse_statute_citation(citation) if citation else None
+    if parsed is not None:
+        section = section or parsed.section
+        if not code_name:
+            generated_title = statute_title(parsed)
+            code_name = generated_title.rsplit(" section ", 1)[0]
+    if not code_name and title:
+        title_match = re.fullmatch(r"(.+?)\s+section\s+(.+)", title, flags=re.IGNORECASE)
+        if title_match is not None:
+            code_name = title_match.group(1)
+            section = section or title_match.group(2)
+    if code_name:
+        return reader_masthead(code_name, f"§ {section}" if section else citation)
+    if title:
+        return reader_masthead(title, citation)
+    return reader_masthead(citation)
+
+
+def rule_reader_masthead(rule: dict[str, Any]) -> ReaderMasthead:
+    title = _masthead_text(rule.get("title"))
+    citation = _masthead_text(rule.get("citation"))
+    rule_number = _masthead_text(rule.get("rule_number"))
+    parsed = parse_rule_citation(citation) if citation else None
+    if parsed is not None:
+        rule_number = rule_number or parsed.rule_number
+    if not rule_number and title:
+        title_match = re.fullmatch(
+            r"California Rules of Court,?\s+rule\s+([0-9.]+)",
+            title,
+            flags=re.IGNORECASE,
+        )
+        if title_match is not None:
+            rule_number = title_match.group(1)
+    if rule_number:
+        return reader_masthead("California Rules of Court", f"Rule {rule_number}")
+    if title:
+        return reader_masthead(title, citation)
+    return reader_masthead(citation)
+
+
+def saved_answer_reader_masthead(
+    answer: dict[str, Any],
+    answer_entry: dict[str, Any],
+) -> ReaderMasthead:
+    return reader_masthead(
+        answer.get("title") or answer_entry.get("title") or "Saved agent answer",
+        answer.get("subtitle") or answer_entry.get("subtitle") or "",
+    )
+
+
+def current_case_reader_masthead(case_name: str, document_title: str) -> ReaderMasthead:
+    return reader_masthead(case_name or "Current Case", document_title)
+
+
+def prior_brief_reader_masthead(brief: PriorBrief) -> ReaderMasthead:
+    return reader_masthead(brief.title, us_long_date(brief.document_date))
 
 
 @dataclass(frozen=True)
@@ -2035,26 +2161,30 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             .case-reader-frame > scrolledwindow > viewport {{
               background-color: {READER_BG};
             }}
-            box.case-reader-fixed-header {{
-              background-color: {READER_COOL_GRAY_BG};
-              border-bottom: 1px solid #d4dbe4;
-              padding: 6px 12px 8px 12px;
+            box.reader-masthead {{
+              background-color: {READER_MASTHEAD_BG};
+              border-bottom: 1px solid {READER_MASTHEAD_DIVIDER};
+              padding: 8px 12px;
             }}
-            label.case-reader-fixed-header {{
+            label.reader-masthead-title {{
               color: {READER_FG};
-              background-color: {READER_COOL_GRAY_BG};
-              font-family: {reader_font_css(config.reader_font_family)};
-              font-size: {config.reader_font_size_pt}pt;
-              font-weight: bold;
+              background-color: transparent;
+              font-size: {max(11, round(config.reader_font_size_pt * 0.88))}pt;
+              font-weight: 600;
             }}
-            label.case-reader-source {{
-              color: {READER_MUTED_FG};
-              background-color: {READER_COOL_GRAY_BG};
-              font-family: {reader_font_css(config.reader_font_family)};
-              font-size: {max(8, round(config.reader_font_size_pt * 0.65))}pt;
+            label.reader-masthead-metadata {{
+              color: {READER_MASTHEAD_METADATA_FG};
+              background-color: transparent;
+              font-size: {max(9, round(config.reader_font_size_pt * 0.70))}pt;
               font-weight: normal;
             }}
-            button.case-reader-header-action-button {{
+            label.reader-masthead-source {{
+              color: {READER_MASTHEAD_SOURCE_FG};
+              background-color: transparent;
+              font-size: {max(8, round(config.reader_font_size_pt * 0.60))}pt;
+              font-weight: normal;
+            }}
+            button.reader-masthead-action-button {{
               color: {READER_FG};
               background-color: transparent;
               background-image: none;
@@ -2064,11 +2194,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
               min-width: 28px;
               min-height: 28px;
             }}
-            button.case-reader-header-action-button:hover {{
-              background-color: #dce3eb;
+            button.reader-masthead-action-button:hover {{
+              background-color: alpha(#000000, 0.06);
             }}
-            button.case-reader-header-action-button:active {{
-              background-color: #d0d9e3;
+            button.reader-masthead-action-button:active {{
+              background-color: alpha(#000000, 0.10);
             }}
             textview.case-reader {{
               color: {READER_FG};
@@ -3078,7 +3208,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             weight=Pango.Weight.BOLD,
         )
         self.reader_header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        self.reader_header_box.add_css_class("case-reader-fixed-header")
+        self.reader_header_box.add_css_class("reader-masthead")
         self.reader_header_box.set_hexpand(True)
         self.reader_header_box.set_visible(False)
 
@@ -3088,21 +3218,31 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
         self.reader_header_center_box = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL,
-            spacing=1,
+            spacing=2,
         )
         self.reader_header_center_box.set_hexpand(True)
 
         self.reader_header_label = Gtk.Label(label="", xalign=0.5)
-        self.reader_header_label.add_css_class("case-reader-fixed-header")
+        self.reader_header_label.add_css_class("reader-masthead-title")
         self.reader_header_label.set_wrap(True)
         self.reader_header_label.set_justify(Gtk.Justification.CENTER)
         self.reader_header_label.set_selectable(True)
         self.reader_header_label.set_hexpand(True)
         self.reader_header_center_box.append(self.reader_header_label)
 
+        self.reader_header_metadata_label = Gtk.Label(label="", xalign=0.5)
+        self.reader_header_metadata_label.add_css_class("reader-masthead-metadata")
+        self.reader_header_metadata_label.set_wrap(True)
+        self.reader_header_metadata_label.set_justify(Gtk.Justification.CENTER)
+        self.reader_header_metadata_label.set_hexpand(True)
+        self.reader_header_metadata_label.set_visible(False)
+        self.reader_header_center_box.append(self.reader_header_metadata_label)
+
         self.reader_source_label = Gtk.Label(label="", xalign=0.5)
-        self.reader_source_label.add_css_class("case-reader-source")
+        self.reader_source_label.add_css_class("reader-masthead-source")
+        self.reader_source_label.set_wrap(True)
         self.reader_source_label.set_justify(Gtk.Justification.CENTER)
+        self.reader_source_label.set_hexpand(True)
         self.reader_source_label.set_visible(False)
         self.reader_header_center_box.append(self.reader_source_label)
         self.reader_header_box.append(self.reader_header_center_box)
@@ -3120,7 +3260,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.reader_header_action_box.append(self.reader_clipboard_button)
 
         self.reader_subsequent_treatment_button = Gtk.Button(icon_name="go-next-symbolic")
-        self.reader_subsequent_treatment_button.add_css_class("case-reader-header-action-button")
+        self.reader_subsequent_treatment_button.add_css_class("reader-masthead-action-button")
         self.reader_subsequent_treatment_button.set_tooltip_text("Analyze subsequent treatment")
         self.reader_subsequent_treatment_button.set_valign(Gtk.Align.CENTER)
         self.reader_subsequent_treatment_button.set_visible(False)
@@ -3131,7 +3271,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.reader_header_action_box.append(self.reader_subsequent_treatment_button)
 
         self.reader_find_paginated_button = Gtk.Button(icon_name="edit-find-symbolic")
-        self.reader_find_paginated_button.add_css_class("case-reader-header-action-button")
+        self.reader_find_paginated_button.add_css_class("reader-masthead-action-button")
         self.reader_find_paginated_button.set_tooltip_text("Find paginated copy")
         self.reader_find_paginated_button.set_valign(Gtk.Align.CENTER)
         self.reader_find_paginated_button.set_visible(False)
@@ -3139,7 +3279,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.reader_header_action_box.append(self.reader_find_paginated_button)
 
         self.reader_save_prior_brief_button = Gtk.Button(icon_name="document-save-symbolic")
-        self.reader_save_prior_brief_button.add_css_class("case-reader-header-action-button")
+        self.reader_save_prior_brief_button.add_css_class("reader-masthead-action-button")
         self.reader_save_prior_brief_button.set_tooltip_text("Save original ODT as...")
         self.reader_save_prior_brief_button.set_visible(False)
         self.reader_save_prior_brief_button.connect(
@@ -3461,7 +3601,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def _build_reader_clipboard_button(self) -> Gtk.Button:
         button = Gtk.Button(icon_name=READER_CLIPBOARD_ICON)
-        button.add_css_class("case-reader-header-action-button")
+        button.add_css_class("reader-masthead-action-button")
         button.set_tooltip_text("Copy citation")
         button.set_valign(Gtk.Align.CENTER)
         button.set_sensitive(False)
@@ -4036,7 +4176,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_slip_case_number = ""
         self._reader_page_markers = []
         self._clear_reader_citation_links()
-        self._set_reader_header(f"{resolved.case_name}\nStatement of Case and Facts")
+        masthead = current_case_reader_masthead(
+            resolved.case_name,
+            "Statement of Case and Facts",
+        )
+        self._set_reader_header(masthead.title, None, None, masthead.metadata)
         self._reader_text = ""
         self.reader_buffer.set_text("")
         self._set_reader_busy(True, "Loading current-case SOCF...")
@@ -4065,7 +4209,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_slip_case_number = ""
         self._reader_page_markers = []
         self._clear_reader_citation_links()
-        self._set_reader_header(f"{case_name}\n{document.title}")
+        masthead = current_case_reader_masthead(case_name, document.title)
+        self._set_reader_header(masthead.title, None, None, masthead.metadata)
         self._reader_text = ""
         self.reader_buffer.set_text("")
         self._set_reader_busy(True, f"Loading {document.title}...")
@@ -4354,10 +4499,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 case_number=payload.slip_case_number,
             )
             if formatted is not None:
+                masthead = case_reader_masthead(payload.cluster, formatted)
                 self._set_reader_header(
-                    formatted.plain_text,
+                    masthead.title,
                     formatted,
                     payload.cluster,
+                    masthead.metadata,
                 )
         self._reader_source_url = payload.source_url
         set_source_provider = getattr(self, "_set_reader_source_provider", None)
@@ -4486,11 +4633,17 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         text: str,
         citation: FormattedCitation | None = None,
         cluster: dict[str, Any] | None = None,
+        subtitle: str = "",
     ) -> None:
-        header = text.strip()
+        masthead = reader_masthead(text, subtitle)
+        header = masthead.title
         self._reader_header_citation = citation
         self._reader_display_cluster = cluster
         self.reader_header_label.set_text(header)
+        metadata_label = getattr(self, "reader_header_metadata_label", None)
+        if metadata_label is not None:
+            metadata_label.set_text(masthead.metadata)
+            metadata_label.set_visible(bool(masthead.metadata))
         source_label = getattr(self, "reader_source_label", None)
         if source_label is not None:
             source_label.set_text("")
@@ -7383,10 +7536,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 self.client.cached_clusters(),
                 select_cluster_id=cluster_id_from_cluster(saved.cluster),
             )
+            formatted = self._case_header_citation(saved.cluster)
+            masthead = case_reader_masthead(saved.cluster, formatted)
             self._set_reader_header(
-                self._case_header_text(saved.cluster),
-                self._case_header_citation(saved.cluster),
+                masthead.title,
+                formatted,
                 saved.cluster,
+                masthead.metadata,
             )
             self._reader_source_url = str(saved.opinion.get("source_url") or "")
             self._set_reader_source_provider(str(saved.opinion.get("source_provider") or "external_web"))
@@ -7729,10 +7885,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_pagination_mode = READER_PAGINATION_OFFICIAL
         self._reader_slip_source_url = ""
         self._reader_slip_case_number = ""
+        formatted = self._case_header_citation(cluster)
+        masthead = case_reader_masthead(cluster, formatted)
         self._set_reader_header(
-            self._case_header_text(cluster),
-            self._case_header_citation(cluster),
+            masthead.title,
+            formatted,
             cluster,
+            masthead.metadata,
         )
         self._reader_source_url = str(saved.opinion.get("source_url") or "")
         self._set_reader_source_provider(str(saved.opinion.get("source_provider") or cluster["source_provider"]))
@@ -7995,7 +8154,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         set_position_key = getattr(self, "_set_reader_position_key", None)
         if set_position_key is not None:
             set_position_key("agent_answer", answer_id)
-        title = str(answer.get("title") or answer_entry.get("title") or "Saved agent answer")
+        masthead = saved_answer_reader_masthead(answer, answer_entry)
+        title = masthead.title
         text = str(answer.get("text") or "").strip()
         self._selected_cluster = None
         self._selected_statute = None
@@ -8007,7 +8167,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_slip_case_number = ""
         self._reader_page_markers = []
         self._set_reader_busy(False)
-        self._set_reader_header(title)
+        self._set_reader_header(title, None, None, masthead.metadata)
         self._set_reader_text(text, apply_markdown=True)
         self._set_status(f"Loaded saved answer: {title}")
 
@@ -8984,7 +9144,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 return
             self._selected_prior_brief = brief
             self._set_reader_position_key("prior_brief", brief.brief_id)
-            self._set_reader_header(brief.title)
+            masthead = prior_brief_reader_masthead(brief)
+            self._set_reader_header(masthead.title, None, None, masthead.metadata)
             self._set_reader_text(
                 brief.text,
                 style_spans=_prior_brief_style_spans(brief),
@@ -9023,12 +9184,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_slip_case_number = ""
         self._clear_reader_citation_links()
         citation_text = str(statute.get("citation") or "").strip()
-        header = str(statute.get("title") or citation_text or "Untitled statute")
+        masthead = statute_reader_masthead(statute)
+        header = masthead.title or "Untitled statute"
         formatted = FormattedCitation(
             plain_text=citation_text,
             html_text=GLib.markup_escape_text(citation_text),
         ) if citation_text else None
-        self._set_reader_header(header, formatted)
+        self._set_reader_header(header, formatted, None, masthead.metadata)
         self._set_reader_text(str(statute.get("text") or "No statute text found."))
         self._set_status(f"Loaded {citation_text or header} from Research Cache.")
 
@@ -9051,12 +9213,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_slip_case_number = ""
         self._clear_reader_citation_links()
         citation_text = str(rule.get("citation") or "").strip()
-        header = str(rule.get("title") or citation_text or "Untitled rule")
+        masthead = rule_reader_masthead(rule)
+        header = masthead.title or "Untitled rule"
         formatted = FormattedCitation(
             plain_text=citation_text,
             html_text=GLib.markup_escape_text(citation_text),
         ) if citation_text else None
-        self._set_reader_header(header, formatted)
+        self._set_reader_header(header, formatted, None, masthead.metadata)
         self._set_reader_text(str(rule.get("text") or "No rule text found."))
         self._set_status(f"Loaded {citation_text or header} from Research Cache.")
 
@@ -9079,10 +9242,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_slip_source_url = ""
         self._reader_slip_case_number = ""
         self._reader_page_markers = []
+        formatted = self._case_header_citation(cluster)
+        masthead = case_reader_masthead(cluster, formatted)
         self._set_reader_header(
-            self._case_header_text(cluster),
-            self._case_header_citation(cluster),
+            masthead.title,
+            formatted,
             cluster,
+            masthead.metadata,
         )
         title = cluster_title(cluster)
         self.reader_buffer.set_text("")
@@ -11095,10 +11261,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._selected_prior_brief = brief
         if persist_position:
             self._set_reader_position_key("prior_brief", brief.brief_id)
-        document_date = us_long_date(brief.document_date)
-        self._set_reader_header(
-            f"{brief.title} · {document_date}" if document_date else brief.title
-        )
+        masthead = prior_brief_reader_masthead(brief)
+        self._set_reader_header(masthead.title, None, None, masthead.metadata)
         if target is not None and target.end_offset > target.offset:
             self._pending_quote_target = target
         self._set_reader_text(
