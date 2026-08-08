@@ -3,6 +3,15 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .citation_model import official_citation_parts_from_cluster
+
+
+# Exact reporter citations are stable identifiers for conventional case names that
+# cannot be recovered safely from damaged or overlong source captions. Keep these
+# exceptions narrow rather than applying risky caption-wide shortening rules.
+CANONICAL_TITLES_BY_OFFICIAL_CITATION = {
+    ("20", "Cal.4th", "1135"): "People v. SpeeDee Oil Change Systems, Inc.",
+}
 
 ESTATE_NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v", "deceased"}
 ESTATE_SURNAME_PARTICLES = {
@@ -304,6 +313,11 @@ def is_superior_court_writ_title(title: str) -> bool:
 
 
 def cluster_display_title_value(cluster: dict[str, Any]) -> str:
+    citation_parts = official_citation_parts_from_cluster(cluster)
+    canonical_title = CANONICAL_TITLES_BY_OFFICIAL_CITATION.get(citation_parts)
+    if canonical_title:
+        return canonical_title
+
     full_value = cluster.get("case_name_full")
     full_in_re = leading_in_re_title(full_value) if isinstance(full_value, str) else ""
     full_adoption = leading_adoption_title(full_value) if isinstance(full_value, str) else ""

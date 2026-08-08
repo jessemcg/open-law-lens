@@ -14,12 +14,14 @@ SOURCE_PROVIDER_COURTLISTENER = "courtlistener"
 SOURCE_PROVIDER_GOOGLE_SCHOLAR = "google_scholar"
 SOURCE_PROVIDER_CALIFORNIA_COURTS = "california_courts"
 SOURCE_PROVIDER_MANUAL_IMPORT = "manual_import"
+SOURCE_PROVIDER_EXTERNAL_WEB = "external_web"
 SOURCE_PROVIDER_UNKNOWN = "unknown"
 SOURCE_PROVIDER_LABELS = {
     SOURCE_PROVIDER_COURTLISTENER: "CourtListener",
     SOURCE_PROVIDER_GOOGLE_SCHOLAR: "Google Scholar",
     SOURCE_PROVIDER_CALIFORNIA_COURTS: "California Courts",
     SOURCE_PROVIDER_MANUAL_IMPORT: "Imported text",
+    SOURCE_PROVIDER_EXTERNAL_WEB: "External web",
     SOURCE_PROVIDER_UNKNOWN: "Unknown source",
 }
 
@@ -35,8 +37,19 @@ def normalize_source_provider(value: object) -> str:
     return SOURCE_PROVIDER_UNKNOWN
 
 
-def source_provider_label(value: object) -> str:
-    return SOURCE_PROVIDER_LABELS[normalize_source_provider(value)]
+def source_provider_label(value: object, source_url: str = "") -> str:
+    provider = normalize_source_provider(value)
+    if provider != SOURCE_PROVIDER_EXTERNAL_WEB:
+        return SOURCE_PROVIDER_LABELS[provider]
+    hostname = (urlparse(source_url.strip()).hostname or "").casefold()
+    hostname = hostname.removeprefix("www.")
+    known_sources = {
+        "scocal.stanford.edu": "Stanford Law School",
+        "law.justia.com": "Justia",
+    }
+    if hostname in known_sources:
+        return f"{known_sources[hostname]} ({hostname})"
+    return hostname or SOURCE_PROVIDER_LABELS[provider]
 
 
 def imported_source_provider(source_url: str) -> str:

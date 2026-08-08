@@ -168,7 +168,7 @@ class LibraryTests(unittest.TestCase):
                 ),
             }
             with library.connection() as conn:
-                conn.execute("DELETE FROM meta WHERE key = ?", ("case_titles_normalized_v3",))
+                conn.execute("DELETE FROM meta WHERE key = ?", ("case_titles_normalized_v4",))
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO cases(
@@ -190,6 +190,48 @@ class LibraryTests(unittest.TestCase):
 
             self.assertEqual(library.list_case_entries()[0]["title"], "In re Michael V.")
 
+    def test_ensure_repairs_known_canonical_title_in_library(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            cluster = {
+                "id": 1428347,
+                "case_name": (
+                    "People Ex Rel. Deparment of Corporations. v. "
+                    "Speedee Oil Change Systems, Inc."
+                ),
+                "citations": [
+                    {"volume": "20", "reporter": "Cal.4th", "page": "1135"}
+                ],
+            }
+            now = "2026-01-01T00:00:00+00:00"
+            with library.connection() as conn:
+                conn.execute("DELETE FROM meta WHERE key = ?", ("case_titles_normalized_v4",))
+                conn.execute(
+                    """
+                    INSERT INTO cases(
+                        cluster_id, title, citation_text, cluster_json,
+                        opinion_ids_json, added_at, last_accessed
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "1428347",
+                        cluster["case_name"],
+                        "20 Cal.4th 1135",
+                        json.dumps(cluster),
+                        "[]",
+                        now,
+                        now,
+                    ),
+                )
+
+            library.ensure()
+
+            self.assertEqual(
+                library.list_case_entries()[0]["title"],
+                "People v. SpeeDee Oil Change Systems, Inc.",
+            )
+
     def test_ensure_repairs_estate_titles_in_library_and_research_sets(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
@@ -208,7 +250,7 @@ class LibraryTests(unittest.TestCase):
             }
             now = "2026-01-01T00:00:00+00:00"
             with library.connection() as conn:
-                conn.execute("DELETE FROM meta WHERE key = ?", ("case_titles_normalized_v3",))
+                conn.execute("DELETE FROM meta WHERE key = ?", ("case_titles_normalized_v4",))
                 conn.execute(
                     """
                     INSERT INTO cases(
@@ -275,7 +317,7 @@ class LibraryTests(unittest.TestCase):
             self.assertEqual(json.loads(case_row["cluster_json"])["case_name"], "Moss v. Moss")
             self.assertEqual(json.loads(item_row["payload_json"])["case_name"], "Moss v. Moss")
 
-    def test_ensure_v3_normalizes_initial_parties_in_derived_titles(self) -> None:
+    def test_ensure_v4_normalizes_initial_parties_in_derived_titles(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
             library.ensure()
@@ -292,7 +334,7 @@ class LibraryTests(unittest.TestCase):
             with library.connection() as conn:
                 conn.execute(
                     "DELETE FROM meta WHERE key = ?",
-                    ("case_titles_normalized_v3",),
+                    ("case_titles_normalized_v4",),
                 )
                 conn.execute(
                     "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
@@ -356,7 +398,7 @@ class LibraryTests(unittest.TestCase):
                     """
                 ).fetchone()
                 migration_row = conn.execute(
-                    "SELECT value FROM meta WHERE key = 'case_titles_normalized_v3'"
+                    "SELECT value FROM meta WHERE key = 'case_titles_normalized_v4'"
                 ).fetchone()
             self.assertIsNotNone(case_row)
             self.assertIsNotNone(item_row)

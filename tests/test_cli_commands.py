@@ -38,12 +38,6 @@ class CliCommandTests(unittest.TestCase):
         )
         self.assertEqual(
             parser.parse_args(
-                ["best-published-citing-case", "--cluster-id", "6240402", "--json"]
-            ).command,
-            "best-published-citing-case",
-        )
-        self.assertEqual(
-            parser.parse_args(
                 ["published-citing-cases", "--cluster-id", "6240402", "--json"]
             ).command,
             "published-citing-cases",
@@ -190,42 +184,6 @@ class CliCommandTests(unittest.TestCase):
         client.fetch_url.assert_called_once()
         client.fetch_cluster_slip_opinion.assert_called_once()
         self.assertEqual(output.getvalue(), "Slip text\n")
-
-    def test_best_published_citing_case_prints_json(self) -> None:
-        search_result = MagicMock()
-        search_result.cluster_id = "999"
-        search_result.case_name = "Later Published Case"
-        search_result.citation = "20 Cal.App.5th 1"
-        search_result.date_filed = "2024-01-02"
-        search_result.status = "Published"
-        result = MagicMock()
-        result.result = search_result
-        result.score = 8
-        result.cite_count = 2
-        result.max_depth = 5
-        result.rows_scanned = 25
-        result.pages_scanned = 1
-        client = MagicMock()
-        client.fetch_url.return_value = {"id": 6240402}
-        client.best_published_citing_case.return_value = result
-        output = StringIO()
-        with (
-            patch("open_law_lens.cli.CourtListenerClient.default", return_value=client),
-            redirect_stdout(output),
-        ):
-            status = main([
-                "best-published-citing-case",
-                "--cluster-id",
-                "6240402",
-                "--json",
-            ])
-
-        self.assertEqual(status, 0)
-        client.fetch_url.assert_called_once()
-        client.best_published_citing_case.assert_called_once()
-        self.assertIn('"target_cluster_id": "6240402"', output.getvalue())
-        self.assertIn('"full_citation": "Later Published Case (2024) 20 Cal.App.5th 1"', output.getvalue())
-        self.assertIn('"score": 8', output.getvalue())
 
     def test_published_citing_cases_prints_json(self) -> None:
         search_result = MagicMock()

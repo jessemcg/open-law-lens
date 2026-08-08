@@ -1,6 +1,6 @@
 ---
 name: legal-researcher
-description: Research and verify California legal authorities through Open Law Lens, including published-case discovery, statutes, rules, subsequent treatment, official reporter citations, quotations, holdings, and pinpoint citations. Use for California Law, Helper Case, Subsequent Treatment, and Appeal Issue research.
+description: Research and verify California legal authorities through Open Law Lens, including published-case discovery, statutes, rules, subsequent treatment, official reporter citations, quotations, holdings, and pinpoint citations. Use for California Law, Subsequent Treatment, and Appeal Issue research.
 ---
 
 # Legal Researcher
@@ -39,7 +39,11 @@ The embedded launcher uses an already synchronized environment, so retain
    ```
 
    Use `extract-case --cluster-id <cluster_id>` when citation or name extraction
-   is unavailable or fails.
+   is unavailable or fails. `extract-case` already runs the complete official-copy
+   cascade (Library/CourtListener, California Courts slip text, Scholar, then one
+   cached native Tavily discovery pass). Check `official_pagination`,
+   `pagination_marker_count`, and `warnings`; usable unpaginated text may still
+   return `ok: true`. Use `--refresh` only when a fresh fallback retry is needed.
 5. Extract relevant enactments rather than relying on snippets:
 
    ```bash
@@ -57,17 +61,16 @@ followed, distinguished, limited, extended, or criticized.
 
 ## Web-search fallback
 
-Use Pi's `web_search` only when Open Law Lens or CourtListener lacks or appears
-to misstate an official reporter citation or official opinion text. This is
-especially appropriate for a recent published California slip opinion with a
-placeholder citation, only a docket number, or delayed reporter metadata.
+Use Pi's `web_search` only after enhanced `extract-case` remains unresolved and
+open-ended verification is genuinely needed. This is especially appropriate
+for investigating delayed reporter metadata or conflicting identity records,
+not for repeating the native official-copy resolver.
 
 Make narrow searches combining the exact case name, docket number, filed date,
-and reporter series such as `Cal.5th` or `Cal.App.5th`. Prefer official
-California court sources and trustworthy citation records. Search results are
-still only leads. After finding a likely official citation, retry
-`extract-case "<official citation>"` and rely on verified extracted text where
-available. State plainly if the citation or text remains uncertain.
+and reporter series such as `Cal.5th` or `Cal.App.5th`. Search results remain
+leads. After finding a likely official citation, retry `extract-case
+"<official citation>"` and rely on its validated extracted text. State plainly
+if the citation or text remains uncertain.
 
 Do not characterize a holding, treatment, quotation, or pinpoint from a search
 snippet alone.

@@ -487,6 +487,22 @@ class ClientTests(unittest.TestCase):
 
         self.assertEqual(cluster_short_title(cluster), "Example v. State")
 
+    def test_cluster_title_uses_canonical_name_for_known_official_citation(self) -> None:
+        cluster = {
+            "case_name": (
+                "People Ex Rel. Deparment of Corporations. v. "
+                "Speedee Oil Change Systems, Inc."
+            ),
+            "citations": [
+                {"volume": "20", "reporter": "Cal. 4th", "page": "1135"}
+            ],
+        }
+
+        self.assertEqual(
+            cluster_short_title(cluster),
+            "People v. SpeeDee Oil Change Systems, Inc.",
+        )
+
     def test_cluster_short_title_prefers_case_name_over_non_dependency_short_name(self) -> None:
         cluster = {
             "case_name": "DKN Holdings LLC v. Faerber",
@@ -1217,7 +1233,7 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(page.count, 0)
         self.assertEqual(page.next_url, "")
 
-    def test_best_published_citing_case_ranks_by_total_citation_depth(self) -> None:
+    def test_published_citing_cases_rank_by_total_citation_depth(self) -> None:
         class FakeCitingClient(CourtListenerClient):
             def __init__(self) -> None:
                 self.request_urls: list[str] = []
@@ -1304,10 +1320,10 @@ class ClientTests(unittest.TestCase):
                     ],
                 }
 
-        result = FakeCitingClient().best_published_citing_case({"id": 100})
+        results = FakeCitingClient().published_citing_cases({"id": 100}, limit=1)
 
-        self.assertIsNotNone(result)
-        assert result is not None
+        self.assertEqual(len(results), 1)
+        result = results[0]
         self.assertEqual(result.cluster["id"], 210)
         self.assertEqual(result.score, 7)
         self.assertEqual(result.cite_count, 1)
@@ -1316,7 +1332,7 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(result.rows_scanned, 4)
         self.assertEqual(result.result.status, "Published")
 
-    def test_best_published_citing_case_uses_stable_tiebreak(self) -> None:
+    def test_published_citing_cases_use_stable_tiebreak(self) -> None:
         class FakeCitingClient(CourtListenerClient):
             def __init__(self) -> None:
                 pass
@@ -1357,13 +1373,12 @@ class ClientTests(unittest.TestCase):
                     ],
                 }
 
-        result = FakeCitingClient().best_published_citing_case({"id": 100})
+        results = FakeCitingClient().published_citing_cases({"id": 100}, limit=1)
 
-        self.assertIsNotNone(result)
-        assert result is not None
-        self.assertEqual(result.cluster["id"], 210)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].cluster["id"], 210)
 
-    def test_best_published_citing_case_returns_none_without_target_opinions(self) -> None:
+    def test_published_citing_cases_return_empty_without_target_opinions(self) -> None:
         class FakeCitingClient(CourtListenerClient):
             def __init__(self) -> None:
                 pass
@@ -1377,9 +1392,12 @@ class ClientTests(unittest.TestCase):
             ):  # type: ignore[no-untyped-def]
                 return []
 
-        self.assertIsNone(FakeCitingClient().best_published_citing_case({"id": 100}))
+        self.assertEqual(
+            FakeCitingClient().published_citing_cases({"id": 100}),
+            [],
+        )
 
-    def test_best_published_citing_case_returns_none_without_published_rows(self) -> None:
+    def test_published_citing_cases_return_empty_without_published_rows(self) -> None:
         class FakeCitingClient(CourtListenerClient):
             def __init__(self) -> None:
                 pass
@@ -1408,7 +1426,31 @@ class ClientTests(unittest.TestCase):
                     "results": [{"citing_opinion": "/api/rest/v4/opinions/20/", "depth": 10}],
                 }
 
-        self.assertIsNone(FakeCitingClient().best_published_citing_case({"id": 100}))
+        self.assertEqual(
+            FakeCitingClient().published_citing_cases({"id": 100}),
+            [],
+        )
+
+    def test_search_api_result_uses_canonical_name_for_known_citation(self) -> None:
+        result = normalize_search_api_result(
+            {
+                "cluster_id": 1428347,
+                "caseName": (
+                    "People Ex Rel. Deparment of Corporations. v. "
+                    "Speedee Oil Change Systems, Inc."
+                ),
+                "citation": ["20 Cal. 4th 1135"],
+                "dateFiled": "1999-07-27",
+            }
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.case_name, "People v. SpeeDee Oil Change Systems, Inc.")
+        self.assertEqual(
+            search_result_full_citation(result),
+            "People v. SpeeDee Oil Change Systems, Inc. (1999) 20 Cal.4th 1135",
+        )
 
     def test_search_result_full_citation_uses_year_and_official_reporter(self) -> None:
         result = CourtListenerSearchResult(
@@ -1894,6 +1936,32 @@ class ClientTests(unittest.TestCase):
                     "type": "020lead",
                     "ordering_key": 1,
                     "plain_text": "Majority only.",
+                },
+            ]
+
+            reader_opinions = client.reader_opinions(opinions)
+
+            self.assertEqual([opinion["id"] for opinion in reader_opinions], [2])
+
+    def test_reader_opinions_prefers_validated_import_over_courtlistener_combined(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            client = CourtListenerClient(cache=JsonCache(Path(temp_dir) / "cache"), library=library)
+            opinions = [
+                {
+                    "id": 1,
+                    "type": "010combined",
+                    "plain_text": "[*818] Parallel reporter copy.",
+                    "source_provider": "courtlistener",
+                },
+                {
+                    "id": 2,
+                    "type": "010combined",
+                    "plain_text": "[*1140] Official reporter copy.",
+                    "source_type": "user_imported_official_text",
+                    "source_provider": "external_web",
+                    "retrieval_provider": "tavily",
                 },
             ]
 

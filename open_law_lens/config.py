@@ -108,9 +108,7 @@ For California case-law discovery, start with `$OLL case-search "<query>"`. Trea
 
 Confine research to California state law unless the user's question explicitly requires federal law. Prefer published California Supreme Court and California Court of Appeal authority when available. Use `case-search --include-unpublished` only when unpublished cases are useful for context, not as controlling authority.
 
-Use Pi's web search only as a fallback to verify or fill in an official reporter citation or official text when CourtListener metadata is missing or suspect. State when a citation remains uncertain.
-
-For a recent published California slip opinion with no official reporter citation, a placeholder like `___ Cal.App.5th ___`, or only a docket number, run targeted Google Scholar or web searches using the case name, docket number, filed date, and `Cal.App.5th`. If an official citation is found, retry `$OLL extract-case "<official citation>"` and rely on the extracted text, source, warnings, and reporter markers.
+For a recent published California slip opinion or any case missing Cal.5th or Cal.App.5th reporter markers, `extract-case` already runs the official-copy cascade through CourtListener, California Courts slip text, Scholar, and cached native Tavily discovery. Inspect its `official_pagination`, `pagination_marker_count`, and warnings; usable unpaginated text may still be returned. Use Pi's web search only for unresolved open-ended verification after that cascade. State when a citation remains uncertain.
 
 In the final answer, use normal legal prose for case names, statutes, rules, and citations. Do not wrap legal authorities or citations in backticks. Reserve backticks only for CLI commands, file paths, and other literal technical text.
 
@@ -196,7 +194,7 @@ Argument to assess:
 
 Research California law with Open Law Lens CLI commands. For case-law discovery, start with `$OLL case-search "<query>"`. Treat search results as leads only. When a promising search result has an official citation or recognizable case name, try `$OLL extract-case "<official citation or case name>"` first so saved durable-library text can be reused. Use `$OLL extract-case --cluster-id <cluster_id>` only when citation/name extraction fails or no reliable citation/name is available. Use `$OLL extract-statute "<citation>"` and `$OLL extract-rule "<citation>"` when statutes or rules matter.
 
-For a recent published California slip opinion with no official reporter citation, a placeholder like `___ Cal.App.5th ___`, or only a docket number, run targeted Google Scholar or web searches using the case name, docket number, filed date, and `Cal.App.5th`. If an official citation is found, retry `$OLL extract-case "<official citation>"` and rely on the extracted text, source, warnings, and reporter markers.
+For a recent published California slip opinion or any case missing Cal.5th or Cal.App.5th reporter markers, `extract-case` already runs the official-copy cascade through CourtListener, California Courts slip text, Scholar, and cached native Tavily discovery. Inspect its `official_pagination`, `pagination_marker_count`, and warnings; usable unpaginated text may still be returned. Use Pi's web search only for unresolved open-ended verification after that cascade.
 
 Confine research to California state law unless the argument explicitly requires federal law. Prefer published California Supreme Court and California Court of Appeal authority. Use unpublished cases only for context, not as controlling authority.
 
@@ -223,7 +221,7 @@ If that command fails, returns no useful leads, or the cluster id appears to be 
 Choose only the most significant published subsequent cases, usually 3 to 5 when that many exist. Before relying on any selected case, extract it with:
 $OLL extract-case --cluster-id <cluster_id>
 
-If CourtListener extraction lacks an official reporter citation or official text for a selected subsequent case, use Pi's web search only as a fallback to verify or fill in that citation/text. State when a citation remains uncertain.
+Rely first on enhanced `extract-case`, which automatically attempts the complete official-copy cascade. Use Pi's web search only for unresolved open-ended verification after that cascade. State when a citation remains uncertain.
 
 For each selected subsequent case, explain how it used the target case: agreed with it, distinguished it, limited it, extended it to a different fact pattern, criticized it, or used it in another identifiable way. If a citation lead exists but extracted or verified text does not support a treatment characterization, say that plainly.
 
@@ -398,7 +396,13 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
     appeal_prompt_hash = hashlib.sha256(
         str(appeal_issue_agent_prompt).strip().encode()
     ).hexdigest()
-    if appeal_prompt_hash in LEGACY_APPEAL_ISSUE_AGENT_PROMPT_SHA256ES:
+    if (
+        appeal_prompt_hash in LEGACY_APPEAL_ISSUE_AGENT_PROMPT_SHA256ES
+        or (
+            "Open Law Lens Appeal Issue Assessment Agent" in str(appeal_issue_agent_prompt)
+            and "missing record facts that could change the assessment" in str(appeal_issue_agent_prompt)
+        )
+    ):
         appeal_issue_agent_prompt = DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
     appeal_issue_presets = normalize_appeal_issue_presets(
         raw.get(CONFIG_KEY_APPEAL_ISSUE_PRESETS)

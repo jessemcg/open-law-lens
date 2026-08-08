@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 
 from .cache import JsonCache, cluster_id_from_cluster, normalize_citation, resource_id_from_url
 from .case_titles import cluster_short_title_value, cluster_title_value
+from .citation_model import official_citation_dict_from_text
 from .config import courtlistener_token
 from .library import CaseLibrary, DisplayText, decode_cp1252_control_chars, opinion_display_text
 from .quality import (
@@ -374,6 +375,11 @@ def normalize_search_api_result(row: dict[str, Any]) -> CourtListenerSearchResul
         "case_name_full": html_to_text(
             str(row.get("caseNameFull") or row.get("case_name_full") or "")
         ).strip(),
+        "citations": [
+            citation
+            for citation_text in _search_row_citations(row)
+            if (citation := official_citation_dict_from_text(citation_text)) is not None
+        ],
     }
     case_name = cluster_short_title_value(title_cluster)
     return CourtListenerSearchResult(
@@ -856,15 +862,6 @@ class CourtListenerClient:
             next_url=next_url,
         )
 
-    def best_published_citing_case(
-        self,
-        cluster: dict[str, Any],
-        *,
-        page_size: int = 25,
-    ) -> PublishedCitingCaseResult | None:
-        results = self.published_citing_cases(cluster, page_size=page_size, limit=1)
-        return results[0] if results else None
-
     def published_citing_cases(
         self,
         cluster: dict[str, Any],
@@ -1117,14 +1114,24 @@ class CourtListenerClient:
 
     def reader_opinions(self, opinions: list[dict[str, Any]]) -> list[dict[str, Any]]:
         combined: list[tuple[int, dict[str, Any]]] = []
+        imported_combined: list[tuple[int, dict[str, Any]]] = []
         separate: list[tuple[int, dict[str, Any]]] = []
         for index, opinion in enumerate(opinions):
             if not self.opinion_display(opinion).text:
                 continue
             if str(opinion.get("type") or "").casefold() == "010combined":
-                combined.append((index, opinion))
+                item = (index, opinion)
+                combined.append(item)
+                if str(opinion.get("source_type") or "") == "user_imported_official_text":
+                    imported_combined.append(item)
             else:
                 separate.append((index, opinion))
+        # A validated external copy is persisted as the preferred combined
+        # opinion. Do not concatenate it with CourtListener's combined copy:
+        # the latter may carry parallel-reporter markers that contaminate both
+        # the displayed text and pagination-quality result.
+        if imported_combined:
+            return [imported_combined[-1][1]]
         if combined:
             return [opinion for _, opinion in sorted(combined, key=_opinion_sort_key)]
         return [opinion for _, opinion in sorted(separate, key=_opinion_sort_key)]

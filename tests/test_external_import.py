@@ -19,6 +19,7 @@ from open_law_lens.external_import import (
     validated_import_official_citation,
 )
 from open_law_lens.library import CaseLibrary, opinion_display_text
+from open_law_lens.storage import source_provider_label
 from open_law_lens.quality import official_pagination_quality
 
 
@@ -323,6 +324,34 @@ class ExternalImportTests(unittest.TestCase):
         citations = imported_citations_from_text(CLAUDIA_TEXT, "115 Cal.App.5th 76")
 
         self.assertEqual(citations, [{"volume": "115", "reporter": "Cal.App.5th", "page": "76"}])
+
+    def test_external_web_plain_text_gets_paragraphs_and_heading_styles(self) -> None:
+        opinion = {
+            "plain_text": (
+                "Opening paragraph.\n"
+                "Factual and Procedural Background\n"
+                "The next paragraph explains the history."
+            ),
+            "source_type": "user_imported_official_text",
+            "source_provider": "external_web",
+        }
+
+        display = opinion_display_text(opinion)
+
+        self.assertIn("Opening paragraph.\n\nFactual", display.text)
+        self.assertEqual(
+            [display.text[span.start_offset:span.end_offset] for span in display.style_spans],
+            ["Factual and Procedural Background"],
+        )
+
+    def test_external_web_source_label_names_stanford(self) -> None:
+        self.assertEqual(
+            source_provider_label(
+                "external_web",
+                "https://scocal.stanford.edu/opinion/example",
+            ),
+            "Stanford Law School (scocal.stanford.edu)",
+        )
 
     def test_external_import_persists_to_library_cache_and_suggestions(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

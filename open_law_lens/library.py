@@ -21,7 +21,7 @@ from .citation_model import (
     official_citation_parts_from_text,
 )
 from .external_import import repair_reporter_only_imported_cluster
-from .import_text import clean_imported_opinion_text
+from .import_text import basic_external_opinion_html, clean_imported_opinion_text
 from .opinion_formatting import DisplayStyleSpan, infer_opinion_heading_spans
 from .storage import (
     external_import_matches_lookup as _external_import_matches_lookup,
@@ -35,9 +35,9 @@ from .text_formatting import quote_stack_replacements
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PROJECT_LIBRARY_DIR = PROJECT_ROOT / "library"
 DEFAULT_LIBRARY_DB = PROJECT_LIBRARY_DIR / "open_law_lens.sqlite3"
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 OFFICIAL_CITATION_ONLY_NORMALIZED_KEY = "official_citation_only_normalized_v2"
-CASE_TITLES_NORMALIZED_KEY = "case_titles_normalized_v3"
+CASE_TITLES_NORMALIZED_KEY = "case_titles_normalized_v4"
 REPORTER_ONLY_IMPORTED_NAMES_NORMALIZED_KEY = "imported_case_names_normalized_v2"
 RESEARCH_SET_SLIP_PAYLOAD_KEY = "_open_law_lens_slip_opinion"
 TEXT_FIELDS = (
@@ -611,7 +611,7 @@ def _normalize_opinion_display(
     style_spans = (
         infer_opinion_heading_spans(normalized.text, normalized.style_spans)
         if infer_headings
-        else []
+        else list(normalized.style_spans)
     )
     return DisplayText(
         text=normalized.text,
@@ -623,18 +623,30 @@ def _normalize_opinion_display(
 
 def opinion_display_text(opinion: dict[str, Any]) -> DisplayText:
     for field in TEXT_FIELDS:
+        external_basic_html = opinion.get("formatting_mode") == "basic_external_html"
         value = opinion.get(field)
         if not isinstance(value, str) or not value.strip():
             continue
         if opinion.get("source_type") == "user_imported_official_text":
             value = clean_imported_opinion_text(value)
+        if (
+            field == "plain_text"
+            and opinion.get("source_provider") == "external_web"
+            and opinion.get("source_type") == "user_imported_official_text"
+        ):
+            value = basic_external_opinion_html(value)
+            field = "html_with_citations"
+            external_basic_html = True
         if field.startswith("html") or field.startswith("xml"):
             parser = _DisplayTextExtractor(field)
             parser.feed(value)
             parser.close()
             return _normalize_opinion_display(
                 parser.display_text(),
-                infer_headings=re.search(r"<\s*pre\b", value, flags=re.IGNORECASE) is None,
+                infer_headings=(
+                    not external_basic_html
+                    and re.search(r"<\s*pre\b", value, flags=re.IGNORECASE) is None
+                ),
             )
         text = decode_cp1252_control_chars(value).strip()
         return _normalize_opinion_display(DisplayText(text=text, source_field=field, page_markers=[]))
@@ -721,6 +733,13 @@ class CaseLibrary:
                     source_field TEXT NOT NULL,
                     PRIMARY KEY (opinion_id, marker_index),
                     FOREIGN KEY (opinion_id) REFERENCES opinions(opinion_id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS official_copy_search_cache (
+                    identity_key TEXT PRIMARY KEY,
+                    outcome_json TEXT NOT NULL,
+                    added_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS research_sets (
@@ -1091,6 +1110,59 @@ class CaseLibrary:
         if not clusters:
             return None
         return [{"status": 200, "clusters": clusters}]
+
+    def read_official_copy_search(self, identity_key: str) -> dict[str, Any] | None:
+        key = str(identity_key or "").strip()
+        if not key:
+            return None
+        now = _utc_now()
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT outcome_json, expires_at FROM official_copy_search_cache WHERE identity_key = ?",
+                (key,),
+            ).fetchone()
+            if row is None:
+                return None
+            if str(row["expires_at"]) <= now:
+                conn.execute("DELETE FROM official_copy_search_cache WHERE identity_key = ?", (key,))
+                return None
+        try:
+            value = _json_loads(str(row["outcome_json"]))
+        except json.JSONDecodeError:
+            return None
+        return value if isinstance(value, dict) else None
+
+    def write_official_copy_search(
+        self,
+        identity_key: str,
+        outcome: dict[str, Any],
+        *,
+        ttl_hours: int = 24,
+    ) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        key = str(identity_key or "").strip()
+        if not key:
+            return
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        expires = (now_dt + timedelta(hours=max(1, ttl_hours))).isoformat()
+        with self.connection() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO official_copy_search_cache(
+                    identity_key, outcome_json, added_at, expires_at
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (key, _json_dumps(outcome), now, expires),
+            )
+
+    def delete_official_copy_search(self, identity_key: str) -> None:
+        with self.connection() as conn:
+            conn.execute(
+                "DELETE FROM official_copy_search_cache WHERE identity_key = ?",
+                (str(identity_key or "").strip(),),
+            )
 
     def upsert_cluster(self, cluster: dict[str, Any]) -> str:
         cluster = canonicalize_cluster_citations(cluster)

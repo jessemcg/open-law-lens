@@ -143,6 +143,8 @@ from .library import (
     normalize_display_quote_stacks,
     opinion_display_text,
 )
+from .official_copy import OfficialCopyResolution, resolve_with_tavily, result_hostname
+from .official_import import persist_official_opinion
 from .opinion_formatting import DisplayStyleSpan
 from .pi_runtime import (
     PiModel,
@@ -412,6 +414,7 @@ class CaseReaderPayload:
     quality_reason: str
     opinion_source: str
     source_provider: str
+    source_url: str = ""
     pagination_mode: str = READER_PAGINATION_NONE
     slip_source_url: str = ""
     slip_case_number: str = ""
@@ -524,6 +527,7 @@ def build_case_reader_payload(
     opinion_ids: tuple[str, ...] = (),
     opinion_source: str = "",
     source_provider: str = "",
+    source_url: str = "",
     pagination_mode: str = "",
     slip_source_url: str = "",
     slip_case_number: str = "",
@@ -583,6 +587,7 @@ def build_case_reader_payload(
             cluster,
             explicit=source_provider,
         ),
+        source_url=source_url,
         pagination_mode=resolved_pagination_mode,
         slip_source_url=slip_source_url,
         slip_case_number=slip_case_number,
@@ -1885,7 +1890,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._research_sets_menu_button: Gtk.MenuButton | None = None
         self.reader_clipboard_button: Gtk.Button | None = None
         self.reader_subsequent_treatment_button: Gtk.Button | None = None
-        self.reader_helper_case_button: Gtk.Button | None = None
+        self.reader_find_paginated_button: Gtk.Button | None = None
+        self._official_copy_searching = False
+        self._find_paginated_manual_retry = False
         self._reader_highlight_button: Gtk.Button | None = None
         self._reader_has_official_pagination = False
         self._reader_pagination_mode = READER_PAGINATION_NONE
@@ -3099,17 +3106,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         )
         self.reader_header_action_box.append(self.reader_subsequent_treatment_button)
 
-        self.reader_helper_case_button = Gtk.Button(icon_name="go-jump-symbolic")
-        self.reader_helper_case_button.add_css_class("case-reader-header-action-button")
-        self.reader_helper_case_button.set_tooltip_text("Find helper citing case")
-        self.reader_helper_case_button.set_valign(Gtk.Align.CENTER)
-        self.reader_helper_case_button.set_visible(False)
-        self.reader_helper_case_button.set_sensitive(False)
-        self.reader_helper_case_button.connect(
-            "clicked",
-            self._on_helper_case_clicked,
-        )
-        self.reader_header_action_box.append(self.reader_helper_case_button)
+        self.reader_find_paginated_button = Gtk.Button(icon_name="edit-find-symbolic")
+        self.reader_find_paginated_button.add_css_class("case-reader-header-action-button")
+        self.reader_find_paginated_button.set_tooltip_text("Find paginated copy")
+        self.reader_find_paginated_button.set_valign(Gtk.Align.CENTER)
+        self.reader_find_paginated_button.set_visible(False)
+        self.reader_find_paginated_button.connect("clicked", self._on_find_paginated_copy_clicked)
+        self.reader_header_action_box.append(self.reader_find_paginated_button)
 
         self.reader_save_prior_brief_button = Gtk.Button(icon_name="document-save-symbolic")
         self.reader_save_prior_brief_button.add_css_class("case-reader-header-action-button")
@@ -4096,6 +4099,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             schedule_restore = getattr(self, "_schedule_reader_position_restore", None)
             if schedule_restore is not None:
                 schedule_restore()
+        update_paginated = getattr(self, "_update_find_paginated_copy_button", None)
+        if update_paginated is not None:
+            update_paginated()
         return False
 
     def _apply_reader_style_span(
@@ -4154,6 +4160,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                     formatted,
                     payload.cluster,
                 )
+        self._reader_source_url = payload.source_url
         set_source_provider = getattr(self, "_set_reader_source_provider", None)
         if set_source_provider is not None:
             set_source_provider(payload.source_provider)
@@ -4315,11 +4322,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             )
             self.reader_save_prior_brief_button.set_visible(bool(header and is_prior_brief))
             self.reader_save_prior_brief_button.set_sensitive(source_exists)
-        self._update_reader_helper_case_button()
+        update_paginated = getattr(self, "_update_find_paginated_copy_button", None)
+        if update_paginated is not None:
+            update_paginated()
         self.reader_header_box.set_visible(bool(header))
 
     def _set_reader_source_provider(self, provider: str) -> None:
-        label = source_provider_label(provider)
+        label = source_provider_label(provider, getattr(self, "_reader_source_url", ""))
         self.reader_source_label.set_text(f"Source: {label}")
         self.reader_source_label.set_visible(bool(self.reader_header_label.get_text().strip()))
 
@@ -4439,30 +4448,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 if has_selection
                 else "Copy citation"
             )
-        self._update_reader_helper_case_button()
-
-    def _update_reader_helper_case_button(self) -> None:
-        if self.reader_helper_case_button is None:
-            return
-        available = self._helper_case_available()
-        self.reader_helper_case_button.set_visible(available)
-        self.reader_helper_case_button.set_sensitive(available)
-
-    def _helper_case_available(self) -> bool:
-        cluster = (
-            getattr(self, "_reader_display_cluster", None)
-            or getattr(self, "_selected_cluster", None)
-        )
-        if cluster is None:
-            return False
-        if getattr(self, "_reader_has_official_pagination", False):
-            return False
-        if getattr(self, "_reader_pagination_mode", READER_PAGINATION_NONE) == READER_PAGINATION_SLIP:
-            return False
-        if not getattr(self, "_reader_text", "").strip():
-            return False
-        return bool(cluster_citation_line(cluster))
-
     def _reader_selection_bounds(self) -> tuple[int, int, str] | None:
         bounds = self.reader_buffer.get_selection_bounds()
         if not bounds:
@@ -4512,32 +4497,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         )
         if self._set_formatted_clipboard(payload, "Could not copy selected text."):
             self._set_status("Selected text and pinpoint citation copied.")
-
-    def _on_helper_case_clicked(
-        self,
-        _button: Gtk.Button,
-    ) -> None:
-        cluster = (
-            getattr(self, "_reader_display_cluster", None)
-            or getattr(self, "_selected_cluster", None)
-        )
-        if cluster is None:
-            self._set_status("Select a case before asking Pi for a helper case.")
-            return
-        cluster_id = cluster_id_from_cluster(cluster)
-        if not cluster_id:
-            self._set_status("Selected case has no CourtListener cluster id.")
-            return
-        target_citation = cluster_citation_line(cluster)
-        if not target_citation:
-            self._set_status("No official reporter citation is available for this case.")
-            return
-        OpenLawLensWindow._start_helper_case_agent(
-            self,
-            cluster,
-            cluster_id,
-            target_citation,
-        )
 
     def _start_later_treatment_agent(
         self,
@@ -4591,60 +4550,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 "cluster_id": cluster_id,
                 "published_citing_cases_command": command,
             },
-        )
-
-    def _start_helper_case_agent(
-        self,
-        cluster: dict[str, Any],
-        cluster_id: str,
-        target_citation: str,
-    ) -> None:
-        if Vte is None or self._agent_terminal is None:
-            self._set_status("Embedded terminal is unavailable.")
-            return
-        prompt = OpenLawLensWindow._compose_helper_case_agent_prompt(
-            self,
-            cluster,
-            cluster_id,
-            target_citation,
-        )
-        prompt_path = self._write_prompt_file(prompt)
-        try:
-            workspace = self._create_agent_workspace()
-        except OSError as exc:
-            self._set_status(f"Unable to create agent workspace: {exc}")
-            return
-        self._set_agent_mode(AGENT_MODE_GENERAL)
-        self._case_agent_text_sources = []
-        self._agent_mode = AGENT_MODE_GENERAL
-        self._agent_last_question = f"Helper case for {cluster_short_title(cluster)}"
-        self._launch_agent_with_prompt(prompt_path, workspace, AGENT_MODE_GENERAL)
-
-    def _compose_helper_case_agent_prompt(
-        self,
-        cluster: dict[str, Any],
-        cluster_id: str,
-        target_citation: str,
-    ) -> str:
-        title = cluster_short_title(cluster)
-        command = agent_cli_command(
-            f"best-published-citing-case --cluster-id {cluster_id} --json"
-        )
-        return (
-            "Find the best published helper case for pinpointing the currently "
-            "viewed case.\n\n"
-            f"Target case: {title}\n"
-            f"Target official citation: {target_citation}\n"
-            f"CourtListener cluster id: {cluster_id}\n\n"
-            "Run exactly this bounded OpenLawLens CLI command:\n"
-            f"{command}\n\n"
-            "Use only that command's first-page published citing-case result. "
-            "Do not continue crawling CourtListener unless the user asks. "
-            "If the JSON says ok=false or has no result, say that no published "
-            "helper case was found in the first cited-by page. Otherwise return "
-            "only the best published helper case citation in a form the app can "
-            "link, followed by one short sentence explaining the total citation "
-            "depth and citation-reference count."
         )
 
     def _reader_selection_pinpoint_citation(self, start_offset: int, end_offset: int) -> str:
@@ -6569,7 +6474,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if self._external_lookup_window is not None:
             self._close_external_lookup_window()
         window = Gtk.Window(
-            title="Complete in Google Scholar" if clipboard_recovery else "Find Case Online"
+            title="Complete in Google Scholar" if clipboard_recovery else "Find Paginated Copy"
         )
         window.set_transient_for(self)
         window.set_modal(False)
@@ -6645,6 +6550,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             )
             box.append(import_button)
         else:
+            for rejected in getattr(self, "_last_official_copy_candidates", []):
+                reason = Gtk.Label(label=f"{rejected.url}\n{rejected.reason}", xalign=0)
+                reason.set_wrap(True)
+                reason.set_selectable(True)
+                box.append(reason)
+                open_candidate = Gtk.Button(label="Open candidate in browser")
+                open_candidate.connect("clicked", self._on_external_lookup_button_clicked, rejected.url)
+                box.append(open_candidate)
+            self._last_official_copy_candidates = []
             for label, url in self._external_search_urls(clean_query):
                 button = Gtk.Button(label=label)
                 button.set_halign(Gtk.Align.FILL)
@@ -6878,6 +6792,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if self._external_lookup_auto_find_button is not None:
             self._external_lookup_auto_find_button.set_sensitive(False)
             self._external_lookup_auto_find_button.set_label("Searching Scholar...")
+        update_paginated = getattr(self, "_update_find_paginated_copy_button", None)
+        if update_paginated is not None:
+            update_paginated()
         self._set_reader_busy(True, "Searching Google Scholar...")
         self._set_status("Auto-searching Google Scholar...")
         thread = threading.Thread(
@@ -6940,6 +6857,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if button is not None:
             button.set_sensitive(True)
             button.set_label("Auto-Find on Scholar")
+        update_paginated = getattr(self, "_update_find_paginated_copy_button", None)
+        if update_paginated is not None:
+            update_paginated()
 
         if (
             cache_generation is not None
@@ -7079,6 +6999,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             failure_prefix="Automatic Scholar import not saved",
             success_status="Imported Scholar official reporter text, saved to Library, and added to Research Cache.",
         ):
+            self._find_paginated_manual_retry = False
             self._close_external_lookup_window()
             return False
         self._handle_scholar_auto_failure(
@@ -7106,29 +7027,173 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 self._show_external_lookup_window(query, initial_source_url=initial_source_url)
             return
         if fallback_mode == SCHOLAR_FALLBACK_TRANSIENT_NOTICE:
-            self._set_status("Transient view only: official reporter pagination was not found.")
-            self._show_official_pagination_not_found_notice(can_view_current=True)
-            return
-        if fallback_mode == SCHOLAR_FALLBACK_CLIPBOARD_RECOVERY:
-            if failure_kind == "no_result":
-                self._set_status(OFFICIAL_PAGINATION_NOT_FOUND_ONLY_MESSAGE)
-                self._show_official_pagination_not_found_notice(can_view_current=False)
+            starter = getattr(self, "_start_tavily_official_copy", None)
+            if starter is None:
+                self._set_status("Transient view only: official reporter pagination was not found.")
+                self._show_official_pagination_not_found_notice(can_view_current=True)
                 return
-            self._set_status(
-                "Google Scholar could not be accessed automatically. Citation copied for manual lookup."
-            )
-            self._show_external_lookup_window(
-                query,
-                initial_source_url=initial_source_url,
-                clipboard_recovery=True,
-                case_name_hint=(
-                    self._active_lookup_case_name_hint
-                    or self._default_import_case_name()
-                ),
-            )
+            manual_retry = getattr(self, "_find_paginated_manual_retry", False)
+            self._find_paginated_manual_retry = False
+            starter(query, refresh=manual_retry, show_review_on_failure=manual_retry)
+            return
+        if fallback_mode in {
+            SCHOLAR_FALLBACK_CLIPBOARD_RECOVERY,
+            SCHOLAR_FALLBACK_NOTICE_ONLY,
+        }:
+            starter = getattr(self, "_start_tavily_official_copy", None)
+            if starter is not None:
+                starter(query, refresh=False, show_review_on_failure=False)
+                return
+            if fallback_mode == SCHOLAR_FALLBACK_CLIPBOARD_RECOVERY and failure_kind != "no_result":
+                self._set_status(
+                    "Google Scholar could not be accessed automatically. Citation copied for manual lookup."
+                )
+                self._show_external_lookup_window(
+                    query,
+                    initial_source_url=initial_source_url,
+                    clipboard_recovery=True,
+                    case_name_hint=(
+                        self._active_lookup_case_name_hint
+                        or self._default_import_case_name()
+                    ),
+                )
+                return
+            self._set_status(OFFICIAL_PAGINATION_NOT_FOUND_ONLY_MESSAGE)
+            self._show_official_pagination_not_found_notice(can_view_current=False)
             return
         self._set_status(OFFICIAL_PAGINATION_NOT_FOUND_ONLY_MESSAGE)
-        self._show_official_pagination_not_found_notice(can_view_current=False)
+
+    def _update_find_paginated_copy_button(self) -> None:
+        button = self.reader_find_paginated_button
+        if button is None:
+            return
+        cluster = self._reader_display_cluster or self._selected_cluster
+        status = str((cluster or {}).get("precedential_status") or (cluster or {}).get("status") or "").casefold()
+        published = bool(
+            status not in {"unpublished", "non-precedential", "nonprecedential"}
+            and (
+                status == "published"
+                or self._reader_pagination_mode == READER_PAGINATION_SLIP
+                or (cluster and official_citation_parts_from_cluster(cluster) is not None)
+            )
+        )
+        visible = bool(
+            cluster
+            and published
+            and self._reader_text.strip()
+            and not self._reader_has_official_pagination
+        )
+        button.set_visible(visible)
+        button.set_sensitive(
+            visible
+            and not getattr(self, "_official_copy_searching", False)
+            and not getattr(self, "_external_lookup_auto_finding", False)
+        )
+
+    def _on_find_paginated_copy_clicked(self, _button: Gtk.Button) -> None:
+        query = self._official_search_query()
+        if not query:
+            self._set_status("No published case is selected.")
+            return
+        self._find_paginated_manual_retry = True
+        self._start_scholar_auto_find(
+            query,
+            fallback_mode=SCHOLAR_FALLBACK_TRANSIENT_NOTICE,
+            auto_import=True,
+            cache_generation=self._research_cache_generation,
+        )
+
+    def _start_tavily_official_copy(
+        self,
+        query: str,
+        *,
+        refresh: bool,
+        show_review_on_failure: bool,
+    ) -> None:
+        cluster = dict(self._reader_display_cluster or self._selected_cluster or {})
+        if not cluster:
+            cluster = {
+                "case_name": imported_case_name_from_text(query) or query,
+                "official_citation": normalize_official_citation(query),
+                "precedential_status": "Published",
+            }
+        if self._official_copy_searching:
+            return
+        cluster_id = cluster_id_from_cluster(cluster)
+        cache_generation = self._research_cache_generation
+        self._official_copy_searching = True
+        self._update_find_paginated_copy_button()
+        self._set_status("Searching Tavily leads for a paginated copy...")
+        thread = threading.Thread(
+            target=self._tavily_official_copy_worker,
+            args=(cluster, query, refresh, show_review_on_failure, cluster_id, cache_generation),
+            daemon=True,
+        )
+        thread.start()
+
+    def _tavily_official_copy_worker(
+        self,
+        cluster: dict[str, Any],
+        query: str,
+        refresh: bool,
+        show_review_on_failure: bool,
+        cluster_id: str,
+        cache_generation: int,
+    ) -> None:
+        result = resolve_with_tavily(self.client, cluster, query=query, refresh=refresh)
+        GLib.idle_add(
+            self._finish_tavily_official_copy,
+            result,
+            query,
+            show_review_on_failure,
+            cluster_id,
+            cache_generation,
+        )
+
+    def _finish_tavily_official_copy(
+        self,
+        result: OfficialCopyResolution,
+        query: str,
+        show_review_on_failure: bool,
+        cluster_id: str,
+        cache_generation: int,
+    ) -> bool:
+        self._official_copy_searching = False
+        if cache_generation != self._research_cache_generation:
+            self._update_find_paginated_copy_button()
+            return False
+        current_id = cluster_id_from_cluster(self._reader_display_cluster or self._selected_cluster or {})
+        if cluster_id and current_id != cluster_id:
+            self._update_find_paginated_copy_button()
+            return False
+        if result.ok and result.imported is not None:
+            saved = result.imported
+            self._reader_has_official_pagination = True
+            self._reader_pagination_mode = READER_PAGINATION_OFFICIAL
+            self._set_sidebar_clusters(
+                self.client.cached_clusters(),
+                select_cluster_id=cluster_id_from_cluster(saved.cluster),
+            )
+            self._set_reader_header(
+                self._case_header_text(saved.cluster),
+                self._case_header_citation(saved.cluster),
+                saved.cluster,
+            )
+            self._reader_source_url = str(saved.opinion.get("source_url") or "")
+            self._set_reader_source_provider(str(saved.opinion.get("source_provider") or "external_web"))
+            self._set_reader_text(saved.display.text, saved.display.page_markers, saved.display.style_spans)
+            host = result_hostname(result)
+            self._set_status(
+                f"Loaded {saved.quality.marker_count} official reporter page marker(s) from {host or 'the discovered source'}."
+            )
+            self._update_find_paginated_copy_button()
+            return False
+        self._set_status(result.message)
+        self._update_find_paginated_copy_button()
+        if show_review_on_failure:
+            self._last_official_copy_candidates = result.candidates
+            self._show_external_lookup_window(query)
+        return False
 
     def _show_official_pagination_not_found_notice(self, *, can_view_current: bool) -> None:
         message = (
@@ -7434,52 +7499,21 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         failure_prefix: str,
         success_status: str,
     ) -> bool:
-        imported_text = clean_imported_opinion_text(imported_text)
-        if not imported_text:
-            self._set_status(f"{failure_prefix}: imported text was empty after cleanup.")
-            return False
         try:
-            cluster = build_external_import_cluster(
+            saved = persist_official_opinion(
+                self.client,
                 case_name=case_name,
                 official_citation=official_citation,
                 imported_text=imported_text,
                 source_url=source_url,
+                existing_cluster=self._selected_cluster,
             )
         except ValueError as exc:
-            self._set_status(str(exc))
+            self._set_status(f"{failure_prefix}: {exc}")
             return False
+        cluster = saved.cluster
+        display = saved.display
         cluster_id = cluster_id_from_cluster(cluster)
-        if not cluster_id:
-            self._set_status("Selected case has no cluster id.")
-            return False
-        text_field = "html_with_citations" if re.search(r"<[a-zA-Z][^>]*>", imported_text) else "plain_text"
-        opinion = {
-            "id": f"official-import-{cluster_id}",
-            "cluster_id": cluster_id,
-            text_field: imported_text,
-            "source_url": source_url,
-            "source_type": "user_imported_official_text",
-            "source_provider": cluster["source_provider"],
-        }
-        display = opinion_display_text(opinion)
-        quality = official_pagination_quality(cluster, [display])
-        if not quality.eligible:
-            self._set_status(f"{failure_prefix}: {quality.reason}")
-            return False
-        self.client.library.upsert_cluster(cluster)
-        self.client.library.upsert_opinion(opinion)
-        self.client.library.update_case_opinion_ids(cluster_id, [str(opinion["id"])])
-        self.client.library.upsert_lookup(
-            quality.official_citation,
-            [{"status": 200, "clusters": [cluster]}],
-        )
-        self.client.cache.upsert_cluster(cluster)
-        self.client.cache.write_resource("opinions", str(opinion["id"]), opinion)
-        self.client.cache.update_case_opinions(cluster, [str(opinion["id"])])
-        self.client.cache.write_lookup(
-            quality.official_citation,
-            [{"status": 200, "clusters": [cluster]}],
-        )
         self._set_sidebar_clusters(self.client.cached_clusters(), select_cluster_id=cluster_id)
         self._refresh_case_suggestion_index_async(force=True)
         self._reader_has_official_pagination = True
@@ -7491,7 +7525,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._case_header_citation(cluster),
             cluster,
         )
-        self._set_reader_source_provider(str(cluster["source_provider"]))
+        self._reader_source_url = str(saved.opinion.get("source_url") or "")
+        self._set_reader_source_provider(str(saved.opinion.get("source_provider") or cluster["source_provider"]))
         self._set_reader_text(
             display.text,
             display.page_markers,
@@ -8993,6 +9028,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                     cluster,
                     reader_opinions,
                 ),
+                source_url=next(
+                    (
+                        str(opinion.get("source_url") or "")
+                        for opinion in reader_opinions
+                        if str(opinion.get("source_url") or "").strip()
+                    ),
+                    "",
+                ),
             )
             GLib.idle_add(self._start_reader_payload_render, payload)
         except (CourtListenerError, ValueError, OSError) as exc:
@@ -9025,8 +9068,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._pending_auto_scholar_query = ""
         if eligible:
             self._set_status(self._official_pagination_status(source))
-        elif pagination_mode == READER_PAGINATION_SLIP:
-            self._set_status("Loaded California Courts slip opinion PDF with slip-opinion pagination.")
         elif pending_query:
             self._set_reader_busy(True, "Searching Google Scholar...")
             self._set_status("Searching Google Scholar for official reporter text...")
@@ -9036,9 +9077,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 auto_import=True,
                 cache_generation=cache_generation,
             )
+        elif pagination_mode == READER_PAGINATION_SLIP:
+            self._set_status("Loaded California Courts slip opinion PDF with slip-opinion pagination.")
         elif reason:
             self._set_status(f"Transient view only: {reason} Use Find Official Text or Import Official Text.")
         self._update_reader_clipboard_button()
+        update_paginated = getattr(self, "_update_find_paginated_copy_button", None)
+        if update_paginated is not None:
+            update_paginated()
         return False
 
     def _official_pagination_status(self, source: str) -> str:
