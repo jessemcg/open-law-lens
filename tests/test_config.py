@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from open_law_lens.agent_commands import AGENT_CLI_COMMAND_PREFIX
 from open_law_lens.config import (
     AGENT_PROFILE_LAW,
     AGENT_PROFILE_PRIOR_BRIEFS,
@@ -14,6 +15,7 @@ from open_law_lens.config import (
     DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
     DEFAULT_APPEAL_ISSUE_LABELS,
     DEFAULT_APPEAL_ISSUE_PRESETS,
+    DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE,
     DEFAULT_CASE_AGENT_PROMPT_TEMPLATE,
     DEFAULT_BARE_STATUTE_LAW_CODE,
     DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE,
@@ -258,12 +260,70 @@ Question:
             )
             self.assertIn("Cal.App.5th", config.general_agent_prompt_template)
 
+    def test_default_agent_prompts_use_workspace_safe_command_prefix(self) -> None:
+        for prompt in (
+            DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE,
+            DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE,
+            DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
+            DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
+        ):
+            self.assertIn(AGENT_CLI_COMMAND_PREFIX, prompt)
+            self.assertNotIn("uv run open-law-lens", prompt)
+            self.assertNotIn("uv run --no-sync open-law-lens", prompt)
+
     def test_custom_general_prompt_is_preserved(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "config.json"
             save_config(AppConfig(general_agent_prompt_template="Custom {question}"), path)
 
             self.assertEqual(load_config(path).general_agent_prompt_template, "Custom {question}")
+
+    def test_legacy_commands_in_custom_agent_prompts_are_normalized(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "general_agent_prompt_template": (
+                            "Run `uv run open-law-lens case-search \"<query>\"`.\n\n"
+                            "Question: {question}"
+                        ),
+                        "brief_agent_prompt_template": (
+                            "Run `uv run --no-sync open-law-lens extract-brief <brief_id>`."
+                        ),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(path)
+
+        self.assertIn(
+            f'{AGENT_CLI_COMMAND_PREFIX} case-search "<query>"',
+            config.general_agent_prompt_template,
+        )
+        self.assertIn(
+            f"{AGENT_CLI_COMMAND_PREFIX} extract-brief <brief_id>",
+            config.brief_agent_prompt_template,
+        )
+
+    def test_save_normalizes_legacy_agent_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            save_config(
+                AppConfig(
+                    general_agent_prompt_template=(
+                        "Run uv run open-law-lens case-search test. {question}"
+                    )
+                ),
+                path,
+            )
+            raw = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertIn(
+            f"{AGENT_CLI_COMMAND_PREFIX} case-search test",
+            raw["general_agent_prompt_template"],
+        )
 
     def test_legacy_case_prompt_migrates_to_new_default(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -509,6 +569,9 @@ Rating: Strong, Medium, Weak, or Frivolous"""
                 "law, prejudice, likely respondent arguments, and missing record facts "
                 "that could change the assessment."
             ),
+        ).replace(
+            AGENT_CLI_COMMAND_PREFIX,
+            "uv run open-law-lens",
         )
         self.assertNotEqual(
             previous_default,

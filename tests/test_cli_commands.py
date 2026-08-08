@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import unittest
 from io import StringIO
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import MagicMock, patch
 
+from open_law_lens.agent_commands import AGENT_CLI_COMMAND_PREFIX
 from open_law_lens.cli import PROJECT_DIR, _activate_open_authority, build_parser, main
 from open_law_lens.cli_commands import CLI_COMMANDS, build_cli_commands_text
 
@@ -144,7 +146,11 @@ class CliCommandTests(unittest.TestCase):
         self.assertEqual(status, 0)
         client.search_cases.assert_called_once()
         self.assertIn('"cluster_id": "6240402"', output.getvalue())
-        self.assertIn('"extract_command": "uv run open-law-lens extract-case --cluster-id 6240402"', output.getvalue())
+        payload = json.loads(output.getvalue())
+        self.assertEqual(
+            payload["results"][0]["extract_command"],
+            f"{AGENT_CLI_COMMAND_PREFIX} extract-case --cluster-id 6240402",
+        )
 
     def test_extract_slip_opinion_prints_json(self) -> None:
         result = MagicMock()
@@ -260,7 +266,11 @@ class CliCommandTests(unittest.TestCase):
         self.assertIn('"target_cluster_id": "6240402"', output.getvalue())
         self.assertIn('"result_count": 1', output.getvalue())
         self.assertIn('"full_citation": "Later Published Case (2024) 20 Cal.App.5th 1"', output.getvalue())
-        self.assertIn('"extract_command": "uv run open-law-lens extract-case --cluster-id 999"', output.getvalue())
+        payload = json.loads(output.getvalue())
+        self.assertEqual(
+            payload["results"][0]["extract_command"],
+            f"{AGENT_CLI_COMMAND_PREFIX} extract-case --cluster-id 999",
+        )
 
     def test_open_dispatches_to_running_app_without_launching(self) -> None:
         with (

@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .agent_commands import AGENT_CLI_COMMAND_PREFIX, normalize_agent_prompt_commands
+
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 CONFIG_PATH = Path(os.environ.get("OPEN_LAW_LENS_CONFIG", str(PROJECT_DIR / "config.json")))
@@ -102,18 +104,18 @@ DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens General Cal
 
 Answer only legal questions about California law. Use Open Law Lens CLI commands tied directly to CourtListener APIs for legal authority and legal research.
 
-For California case-law discovery, start with `uv run open-law-lens case-search "<query>"`. Treat search results as leads only. Extract the most relevant candidate opinions with `uv run open-law-lens extract-case --cluster-id <cluster_id>` before relying on a case in the answer.
+For California case-law discovery, start with `$OLL case-search "<query>"`. Treat search results as leads only. Extract the most relevant candidate opinions with `$OLL extract-case --cluster-id <cluster_id>` before relying on a case in the answer.
 
 Confine research to California state law unless the user's question explicitly requires federal law. Prefer published California Supreme Court and California Court of Appeal authority when available. Use `case-search --include-unpublished` only when unpublished cases are useful for context, not as controlling authority.
 
 Use Pi's web search only as a fallback to verify or fill in an official reporter citation or official text when CourtListener metadata is missing or suspect. State when a citation remains uncertain.
 
-For a recent published California slip opinion with no official reporter citation, a placeholder like `___ Cal.App.5th ___`, or only a docket number, run targeted Google Scholar or web searches using the case name, docket number, filed date, and `Cal.App.5th`. If an official citation is found, retry `uv run open-law-lens extract-case "<official citation>"` and rely on the extracted text, source, warnings, and reporter markers.
+For a recent published California slip opinion with no official reporter citation, a placeholder like `___ Cal.App.5th ___`, or only a docket number, run targeted Google Scholar or web searches using the case name, docket number, filed date, and `Cal.App.5th`. If an official citation is found, retry `$OLL extract-case "<official citation>"` and rely on the extracted text, source, warnings, and reporter markers.
 
 In the final answer, use normal legal prose for case names, statutes, rules, and citations. Do not wrap legal authorities or citations in backticks. Reserve backticks only for CLI commands, file paths, and other literal technical text.
 
 Question:
-{question}"""
+{question}""".replace("$OLL", AGENT_CLI_COMMAND_PREFIX)
 
 DEFAULT_CASE_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens Marked Research Cache Agent.
 
@@ -139,9 +141,9 @@ DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens Prior Brief A
 Answer only from the indexed prior brief archive and any current-case factual context explicitly selected for this run. Do not browse the web, research CourtListener, or treat prior advocacy as legal authority. Use the Open Law Lens CLI iteratively to find candidate briefs, then inspect the full text of every brief relied upon.
 
 Start with focused searches such as:
-`uv run --no-sync open-law-lens search-briefs "<terms>" --match all`
+`$OLL search-briefs "<terms>" --match all`
 Try related wording, phrase, and any-term searches when the first search is incomplete. Use `--sort newest` when recency matters. Read a candidate with:
-`uv run --no-sync open-law-lens extract-brief <brief_id>`
+`$OLL extract-brief <brief_id>`
 
 Identify every discussed source with the exact Markdown link returned by search, in this form: `[Exact indexed title](open-law-lens://prior-brief/<brief_id>)`. Put that linked title close to the discussion and any quote from that brief. Include useful direct quotes of only two to ten words, copied as exact continuous phrases. If the archive does not answer the question, say so plainly.
 
@@ -153,7 +155,7 @@ Question:
 Prior brief database snapshot:
 {brief_database}
 
-Indexed brief count: {brief_count}"""
+Indexed brief count: {brief_count}""".replace("$OLL", AGENT_CLI_COMMAND_PREFIX)
 
 DEFAULT_APPEAL_ISSUE_PRESETS: tuple[str, ...] = (
     "Substantial evidence does not support the challenged finding.",
@@ -192,9 +194,9 @@ Treat the supplied fact pattern as the complete factual record for this assessme
 Argument to assess:
 {issue}
 
-Research California law with Open Law Lens CLI commands. For case-law discovery, start with `uv run open-law-lens case-search "<query>"`. Treat search results as leads only. When a promising search result has an official citation or recognizable case name, try `uv run open-law-lens extract-case "<official citation or case name>"` first so saved durable-library text can be reused. Use `uv run open-law-lens extract-case --cluster-id <cluster_id>` only when citation/name extraction fails or no reliable citation/name is available. Use `uv run open-law-lens extract-statute "<citation>"` and `uv run open-law-lens extract-rule "<citation>"` when statutes or rules matter.
+Research California law with Open Law Lens CLI commands. For case-law discovery, start with `$OLL case-search "<query>"`. Treat search results as leads only. When a promising search result has an official citation or recognizable case name, try `$OLL extract-case "<official citation or case name>"` first so saved durable-library text can be reused. Use `$OLL extract-case --cluster-id <cluster_id>` only when citation/name extraction fails or no reliable citation/name is available. Use `$OLL extract-statute "<citation>"` and `$OLL extract-rule "<citation>"` when statutes or rules matter.
 
-For a recent published California slip opinion with no official reporter citation, a placeholder like `___ Cal.App.5th ___`, or only a docket number, run targeted Google Scholar or web searches using the case name, docket number, filed date, and `Cal.App.5th`. If an official citation is found, retry `uv run open-law-lens extract-case "<official citation>"` and rely on the extracted text, source, warnings, and reporter markers.
+For a recent published California slip opinion with no official reporter citation, a placeholder like `___ Cal.App.5th ___`, or only a docket number, run targeted Google Scholar or web searches using the case name, docket number, filed date, and `Cal.App.5th`. If an official citation is found, retry `$OLL extract-case "<official citation>"` and rely on the extracted text, source, warnings, and reporter markers.
 
 Confine research to California state law unless the argument explicitly requires federal law. Prefer published California Supreme Court and California Court of Appeal authority. Use unpublished cases only for context, not as controlling authority.
 
@@ -203,7 +205,7 @@ Analyze preservation, standard of review, factual support, governing law, prejud
 In the final answer, use normal legal prose for case names, statutes, rules, and citations. Reserve backticks for CLI commands, file paths, and other literal technical text.
 
 End with a rating line exactly in this form:
-Rating: Strong, Medium, Weak, or Frivolous"""
+Rating: Strong, Medium, Weak, or Frivolous""".replace("$OLL", AGENT_CLI_COMMAND_PREFIX)
 
 DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens Subsequent Treatment Agent.
 
@@ -219,13 +221,13 @@ Start with this Open Law Lens citing-cases command when the cluster id is accept
 If that command fails, returns no useful leads, or the cluster id appears to be a local external id, recover with targeted Open Law Lens case searches using the target case name, official citation, and distinctive citation phrases. Treat search results as leads only.
 
 Choose only the most significant published subsequent cases, usually 3 to 5 when that many exist. Before relying on any selected case, extract it with:
-uv run --no-sync open-law-lens extract-case --cluster-id <cluster_id>
+$OLL extract-case --cluster-id <cluster_id>
 
 If CourtListener extraction lacks an official reporter citation or official text for a selected subsequent case, use Pi's web search only as a fallback to verify or fill in that citation/text. State when a citation remains uncertain.
 
 For each selected subsequent case, explain how it used the target case: agreed with it, distinguished it, limited it, extended it to a different fact pattern, criticized it, or used it in another identifiable way. If a citation lead exists but extracted or verified text does not support a treatment characterization, say that plainly.
 
-Prefer California Supreme Court and published California Court of Appeal decisions. Do not use unpublished cases as controlling treatment. Keep the answer concise and include the official citation for each later case. In the final answer, use normal legal prose for case names and citations; reserve backticks for CLI commands, file paths, and other literal technical text."""
+Prefer California Supreme Court and published California Court of Appeal decisions. Do not use unpublished cases as controlling treatment. Keep the answer concise and include the official citation for each later case. In the final answer, use normal legal prose for case names and citations; reserve backticks for CLI commands, file paths, and other literal technical text.""".replace("$OLL", AGENT_CLI_COMMAND_PREFIX)
 
 
 @dataclass(frozen=True, slots=True)
@@ -405,20 +407,23 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
         courtlistener_token=str(token).strip(),
         concordance_file_path=str(concordance_path).strip(),
         general_agent_prompt_template=(
-            str(general_agent_prompt).strip() or DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE
+            normalize_agent_prompt_commands(str(general_agent_prompt).strip())
+            or DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE
         ),
         case_agent_prompt_template=(
-            str(case_agent_prompt).strip() or DEFAULT_CASE_AGENT_PROMPT_TEMPLATE
+            normalize_agent_prompt_commands(str(case_agent_prompt).strip())
+            or DEFAULT_CASE_AGENT_PROMPT_TEMPLATE
         ),
         brief_agent_prompt_template=(
-            str(brief_agent_prompt).strip() or DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE
+            normalize_agent_prompt_commands(str(brief_agent_prompt).strip())
+            or DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE
         ),
         appeal_issue_agent_prompt_template=(
-            str(appeal_issue_agent_prompt).strip()
+            normalize_agent_prompt_commands(str(appeal_issue_agent_prompt).strip())
             or DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
         ),
         later_treatment_agent_prompt_template=(
-            str(later_treatment_agent_prompt).strip()
+            normalize_agent_prompt_commands(str(later_treatment_agent_prompt).strip())
             or DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE
         ),
         appeal_issue_presets=appeal_issue_presets,
@@ -449,20 +454,27 @@ def save_config(config: AppConfig, path: Path = CONFIG_PATH) -> None:
         CONFIG_KEY_COURTLISTENER_TOKEN: config.courtlistener_token.strip(),
         CONFIG_KEY_CONCORDANCE_FILE_PATH: config.concordance_file_path.strip(),
         CONFIG_KEY_GENERAL_AGENT_PROMPT_TEMPLATE: (
-            config.general_agent_prompt_template.strip() or DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE
+            normalize_agent_prompt_commands(config.general_agent_prompt_template.strip())
+            or DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE
         ),
         CONFIG_KEY_CASE_AGENT_PROMPT_TEMPLATE: (
-            config.case_agent_prompt_template.strip() or DEFAULT_CASE_AGENT_PROMPT_TEMPLATE
+            normalize_agent_prompt_commands(config.case_agent_prompt_template.strip())
+            or DEFAULT_CASE_AGENT_PROMPT_TEMPLATE
         ),
         CONFIG_KEY_BRIEF_AGENT_PROMPT_TEMPLATE: (
-            config.brief_agent_prompt_template.strip() or DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE
+            normalize_agent_prompt_commands(config.brief_agent_prompt_template.strip())
+            or DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE
         ),
         CONFIG_KEY_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE: (
-            config.appeal_issue_agent_prompt_template.strip()
+            normalize_agent_prompt_commands(
+                config.appeal_issue_agent_prompt_template.strip()
+            )
             or DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
         ),
         CONFIG_KEY_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE: (
-            config.later_treatment_agent_prompt_template.strip()
+            normalize_agent_prompt_commands(
+                config.later_treatment_agent_prompt_template.strip()
+            )
             or DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE
         ),
         CONFIG_KEY_APPEAL_ISSUE_PRESETS: appeal_issue_presets,

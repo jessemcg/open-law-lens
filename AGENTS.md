@@ -9,6 +9,7 @@
 - `open_law_lens/library.py` owns the durable SQLite case library, display-text extraction, and reporter page-marker offsets.
 - `open_law_lens/config.py` owns local settings, including the CourtListener token.
 - `open_law_lens/pi_runtime.py` owns Pi runtime discovery, authenticated model enumeration, and atomic updates to the project Pi model setting.
+- `open_law_lens/agent_commands.py` owns the canonical workspace-safe Open Law Lens command prefix used in agent prompts and CLI suggestions.
 - `scripts/open-law-lens-agent-vte.sh` launches Pi from the embedded terminal. It must use the Node runtime shipped beside the selected Pi executable so desktop PATH differences cannot fall back to an incompatible system Node. Preserve its temporary-workspace and cache-directory behavior unless the task explicitly changes agent launch semantics.
 - `.pi/extensions/pi-web-search/` contains the pinned web-search extension bundled for the embedded Pi workflow. Do not replace it with a machine-local `.pi/npm/` dependency.
 - `.pi/SYSTEM.md` is the replacement legal-knowledge-work prompt copied into every private embedded Pi workspace and passed explicitly at launch.

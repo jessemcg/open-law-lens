@@ -57,7 +57,8 @@ class AgentVteWrapperTests(unittest.TestCase):
         executable.write_text(
             "#!/usr/bin/env bash\n"
             "printf '%s\\n' \"$@\" > \"$CAPTURE_ARGS\"\n"
-            "printf '%s\\n' \"$PI_CODING_AGENT_SESSION_DIR\" >> \"$CAPTURE_ARGS\"\n",
+            "printf '%s\\n' \"$PI_CODING_AGENT_SESSION_DIR\" >> \"$CAPTURE_ARGS\"\n"
+            "printf '%s\\n' \"$PWD\" >> \"$CAPTURE_ARGS\"\n",
             encoding="utf-8",
         )
         executable.chmod(0o755)
@@ -66,7 +67,8 @@ class AgentVteWrapperTests(unittest.TestCase):
             node.write_text(
                 "#!/usr/bin/env bash\n"
                 "printf '%s\\n' \"$@\" > \"$CAPTURE_ARGS\"\n"
-                "printf '%s\\n' \"$PI_CODING_AGENT_SESSION_DIR\" >> \"$CAPTURE_ARGS\"\n",
+                "printf '%s\\n' \"$PI_CODING_AGENT_SESSION_DIR\" >> \"$CAPTURE_ARGS\"\n"
+                "printf '%s\\n' \"$PWD\" >> \"$CAPTURE_ARGS\"\n",
                 encoding="utf-8",
             )
             node.chmod(0o755)
@@ -144,7 +146,8 @@ class AgentVteWrapperTests(unittest.TestCase):
             self.assertIn("read,bash,grep,find,ls,web_search", args)
             self.assertNotIn("--thinking", args)
             self.assertTrue(any(item.startswith("/skill:legal-researcher") for item in args))
-            self.assertEqual(args[-1], str(root / "workspace" / "pi-sessions"))
+            self.assertEqual(args[-2], str(root / "workspace" / "pi-sessions"))
+            self.assertEqual(args[-1], str(root / "workspace"))
 
     def test_explicit_runtime_profile_is_passed_to_pi(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -337,3 +340,8 @@ class AgentVteWrapperTests(unittest.TestCase):
         self.assertIn("do not add a generic record-completeness caveat", text)
         self.assertIn("missing record citation only where it affects", text)
         self.assertIn("material gaps in\n  the available legal sources", text)
+        self.assertIn(
+            'uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync '
+            "open-law-lens <command>",
+            text,
+        )

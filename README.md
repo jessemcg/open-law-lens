@@ -239,6 +239,13 @@ is only a fallback for verifying missing or suspect official reporter
 citations or official opinion text. Research Cache and Prior Brief runs disable
 skills and extensions and remain closed-corpus workflows.
 
+Pi remains in a private disposable workspace rather than using the source tree
+as its working directory. Agent-facing Open Law Lens commands explicitly select
+the installed project with this canonical prefix:
+`uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync open-law-lens ...`.
+This keeps command resolution deterministic without exposing the project tree
+through ordinary workspace discovery.
+
 Saved agent answers begin with an issue-specific title and compact disposition
 subtitle. Open Law Lens uses those fields in the Research Cache sidebar and
 enforces short sidebar-friendly limits: at most eight title words and five

@@ -13,10 +13,11 @@ results, snippets, and web pages as leads, not authority.
 Run commands from any workspace with:
 
 ```bash
-uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" open-law-lens <command>
+uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync open-law-lens <command>
 ```
 
-Use `--no-sync` when the environment is already synchronized.
+The embedded launcher uses an already synchronized environment, so retain
+`--no-sync` in agent commands.
 
 ## Research workflow
 
@@ -24,7 +25,7 @@ Use `--no-sync` when the environment is already synchronized.
 2. Search for California cases with focused terms:
 
    ```bash
-   uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" open-law-lens case-search "<query>"
+   uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync open-law-lens case-search "<query>"
    ```
 
 3. Treat results as leads. Prefer published California Supreme Court and Court
@@ -34,7 +35,7 @@ Use `--no-sync` when the environment is already synchronized.
    name so durable library text can be reused:
 
    ```bash
-   uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" open-law-lens extract-case "<citation or case name>"
+   uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync open-law-lens extract-case "<citation or case name>"
    ```
 
    Use `extract-case --cluster-id <cluster_id>` when citation or name extraction
@@ -42,8 +43,8 @@ Use `--no-sync` when the environment is already synchronized.
 5. Extract relevant enactments rather than relying on snippets:
 
    ```bash
-   uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" open-law-lens extract-statute "<citation>"
-   uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" open-law-lens extract-rule "<citation>"
+   uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync open-law-lens extract-statute "<citation>"
+   uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync open-law-lens extract-rule "<citation>"
    ```
 
 6. Verify each proposition, quotation, publication status, and pinpoint against

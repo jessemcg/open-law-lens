@@ -8,6 +8,7 @@ import sys
 from typing import Any
 
 from . import APP_ID
+from .agent_commands import agent_cli_command
 from .authority_resolver import extract_authority, extract_case_by_cluster_id, read_selected_text_from_os
 from .cache import JsonCache
 from .cli_commands import build_cli_commands_text
@@ -218,7 +219,9 @@ def _case_search_result_json(result: Any, rank: int) -> dict[str, Any]:
         "status": result.status,
         "cite_count": result.cite_count,
         "snippet": result.snippet,
-        "extract_command": f"uv run open-law-lens extract-case --cluster-id {result.cluster_id}",
+        "extract_command": agent_cli_command(
+            f"extract-case --cluster-id {result.cluster_id}"
+        ),
     }
 
 
@@ -295,13 +298,11 @@ def _published_citing_case_json(
         "score": result.score,
         "cite_count": result.cite_count,
         "max_depth": result.max_depth,
-        "extract_command": (
-            "uv run open-law-lens extract-case "
-            f"--cluster-id {search_result.cluster_id}"
+        "extract_command": agent_cli_command(
+            f"extract-case --cluster-id {search_result.cluster_id}"
         ),
-        "open_command": (
-            "uv run open-law-lens open "
-            f"{json.dumps(search_result_full_citation(search_result))}"
+        "open_command": agent_cli_command(
+            f"open {json.dumps(search_result_full_citation(search_result))}"
         ),
     }
     return base
@@ -323,13 +324,11 @@ def _published_citing_case_result_json(result: Any, rank: int) -> dict[str, Any]
         "score": result.score,
         "cite_count": result.cite_count,
         "max_depth": result.max_depth,
-        "extract_command": (
-            "uv run open-law-lens extract-case "
-            f"--cluster-id {search_result.cluster_id}"
+        "extract_command": agent_cli_command(
+            f"extract-case --cluster-id {search_result.cluster_id}"
         ),
-        "open_command": (
-            "uv run open-law-lens open "
-            f"{json.dumps(full_citation)}"
+        "open_command": agent_cli_command(
+            f"open {json.dumps(full_citation)}"
         ),
     }
 

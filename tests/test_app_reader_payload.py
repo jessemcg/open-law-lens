@@ -2410,7 +2410,11 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertIn("Argument to assess:", prompt)
         self.assertNotIn("Issue to assess:", prompt)
         self.assertIn("/tmp/workspace/fact_pattern/facts_extracted.txt", prompt)
-        self.assertIn("uv run open-law-lens case-search", prompt)
+        self.assertIn(
+            'uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync '
+            "open-law-lens case-search",
+            prompt,
+        )
         self.assertIn(
             'extract-case "<official citation or case name>"` first',
             prompt,
@@ -5938,7 +5942,11 @@ Opinion text.
             "10 Cal.App.5th 25",
         )
 
-        self.assertIn("best-published-citing-case --cluster-id 42 --json", prompt)
+        self.assertIn(
+            'uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync '
+            "open-law-lens best-published-citing-case --cluster-id 42 --json",
+            prompt,
+        )
         self.assertIn("first-page published citing-case result", prompt)
         self.assertIn("Do not continue crawling CourtListener", prompt)
         self.assertIn("Target official citation: 10 Cal.App.5th 25", prompt)
@@ -5971,8 +5979,15 @@ Opinion text.
                 "10 Cal.App.5th 25",
             )
 
-        self.assertIn("published-citing-cases --cluster-id 42 --limit 10 --json", prompt)
-        self.assertIn("extract-case --cluster-id <cluster_id>", prompt)
+        prefix = (
+            'uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync '
+            "open-law-lens "
+        )
+        self.assertIn(
+            f"{prefix}published-citing-cases --cluster-id 42 --limit 10 --json",
+            prompt,
+        )
+        self.assertIn(f"{prefix}extract-case --cluster-id <cluster_id>", prompt)
         self.assertIn("Pi's web search", prompt)
         self.assertIn("citation remains uncertain", prompt)
         self.assertIn("use normal legal prose for case names and citations", prompt)

@@ -41,6 +41,7 @@ from .agent import (
     quote_match_spans,
     resolved_agent_quote_spans,
 )
+from .agent_commands import agent_cli_command
 from .authority_resolver import first_authority_candidate
 from .cache import cluster_id_from_cluster
 from .cli_commands import CLI_COMMANDS
@@ -4577,9 +4578,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         cluster_id: str,
         target_citation: str,
     ) -> str:
-        command = (
-            "uv run --no-sync open-law-lens published-citing-cases "
-            f"--cluster-id {cluster_id} --limit 10 --json"
+        command = agent_cli_command(
+            f"published-citing-cases --cluster-id {cluster_id} --limit 10 --json"
         )
         config = load_config()
         return self._format_agent_prompt(
@@ -4627,9 +4627,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         target_citation: str,
     ) -> str:
         title = cluster_short_title(cluster)
-        command = (
-            "uv run --no-sync open-law-lens best-published-citing-case "
-            f"--cluster-id {cluster_id} --json"
+        command = agent_cli_command(
+            f"best-published-citing-case --cluster-id {cluster_id} --json"
         )
         return (
             "Find the best published helper case for pinpointing the currently "
