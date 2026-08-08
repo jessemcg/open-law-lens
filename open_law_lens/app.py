@@ -240,10 +240,32 @@ AGENT_MODE_ICONS = {
     QUERY_MODE_BRIEF_SEARCH: "system-search-symbolic",
 }
 QUERY_MODE_LABELS = {
-    AGENT_MODE_GENERAL: "Query Law",
-    AGENT_MODE_CASE: "Query Research Cache",
-    AGENT_MODE_BRIEF: "Query Prior Briefs",
-    QUERY_MODE_BRIEF_SEARCH: "Search Across Briefs",
+    AGENT_MODE_GENERAL: "Law",
+    AGENT_MODE_CASE: "Research Cache",
+    AGENT_MODE_BRIEF: "Prior Briefs",
+    QUERY_MODE_BRIEF_SEARCH: "Search Briefs",
+}
+QUERY_MODE_PRESENTATION = {
+    AGENT_MODE_GENERAL: {
+        "placeholder": "Ask a California law question",
+        "description": "Research California law; includes the checked Current Case.",
+        "submit": "Ask",
+    },
+    AGENT_MODE_CASE: {
+        "placeholder": "Ask about marked Research Cache authorities",
+        "description": "Uses marked cache items and the checked Current Case.",
+        "submit": "Ask",
+    },
+    AGENT_MODE_BRIEF: {
+        "placeholder": "Ask about prior briefing",
+        "description": "Uses indexed prior briefs and the checked Current Case.",
+        "submit": "Ask",
+    },
+    QUERY_MODE_BRIEF_SEARCH: {
+        "placeholder": "Search an exact phrase across prior briefs",
+        "description": "Exact-phrase local search; does not use the Agent.",
+        "submit": "Search",
+    },
 }
 AGENT_PROFILE_TITLES = {
     AGENT_PROFILE_LAW: "Query Law",
@@ -1808,7 +1830,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_session_button: Gtk.ToggleButton | None = None
         self._agent_save_answer_button: Gtk.Button | None = None
         self._agent_output_toggle_button: Gtk.Button | None = None
+        self._agent_output_header: Gtk.Widget | None = None
         self._agent_subview_strip: Gtk.Widget | None = None
+        self._agent_submit_button: Gtk.Button | None = None
+        self._composer_spinner: Gtk.Spinner | None = None
+        self._composer_message_label: Gtk.Label | None = None
+        self._composer_message_is_error = False
+        self._brief_search_summary_box: Gtk.Widget | None = None
+        self._brief_search_previous_button: Gtk.Button | None = None
+        self._brief_search_next_button: Gtk.Button | None = None
         self._agent_subview_name = AGENT_SUBVIEW_SESSION
         self._agent_subview_toggle_guard = False
         self._agent_mode_buttons: dict[str, Gtk.ToggleButton] = {}
@@ -1930,7 +1960,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._case_completion_click_gesture: Gtk.GestureClick | None = None
         self._case_suggestion_refresh_pending = False
         self._css_provider: Gtk.CssProvider | None = None
-        self._status_label: Gtk.Label | None = None
+        self._toast_overlay: Adw.ToastOverlay | None = None
+        self._active_toast: Adw.Toast | None = None
 
         self.set_title(APP_NAME)
         self.set_default_size(1260, 860)
@@ -2077,7 +2108,45 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             }}
             box.agent-ask-bar {{
               min-height: 34px;
-              margin-bottom: 6px;
+            }}
+            box.research-composer {{
+              padding: 2px;
+            }}
+            label.research-heading {{
+              font-weight: 600;
+            }}
+            label.composer-message {{
+              min-height: 20px;
+              font-size: 0.88rem;
+              color: alpha(@window_fg_color, 0.62);
+            }}
+            label.composer-message.error {{
+              color: @error_color;
+            }}
+            box.composer-scope-group > button.composer-scope-button {{
+              min-height: 28px;
+              padding: 4px 8px;
+              margin: 0;
+              border: none;
+              box-shadow: none;
+              background-image: none;
+              font-weight: normal;
+            }}
+            box.composer-scope-group > button.composer-scope-button.focus-ai-view-active,
+            box.composer-scope-group > button.composer-scope-button.focus-ai-view-active:hover {{
+              background-color: alpha(@window_fg_color, 0.12);
+              color: @window_fg_color;
+              background-image: none;
+            }}
+            separator.composer-scope-separator {{
+              margin: 5px 3px;
+            }}
+            button.composer-submit-button {{
+              min-width: 72px;
+              font-weight: 600;
+            }}
+            box.agent-output-header {{
+              margin-top: 2px;
             }}
             .no-bold {{
               font-weight: normal;
@@ -2101,28 +2170,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             }}
             button.focus-ai-view-active image {{
               color: @window_fg_color;
-            }}
-            box.query-action-strip button.query-action-button,
-            box.query-action-strip menubutton.query-action-button > button {{
-              min-height: 28px;
-              padding: 4px 8px;
-              font-weight: normal;
-              border: none;
-              box-shadow: none;
-              background-color: transparent;
-              background-image: none;
-            }}
-            box.query-action-strip button.query-action-button:hover,
-            box.query-action-strip menubutton.query-action-button > button:hover,
-            box.query-action-strip menubutton.query-action-button:checked > button {{
-              background-color: alpha(@window_fg_color, 0.06);
-              background-image: none;
-            }}
-            box.query-action-strip button.query-action-button.focus-ai-view-active,
-            box.query-action-strip button.query-action-button.focus-ai-view-active:hover {{
-              background-color: alpha(@window_fg_color, 0.08);
-              color: @window_fg_color;
-              background-image: none;
             }}
             .case-list-frame {{
               border-radius: 8px;
@@ -2277,11 +2324,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
               font-size: 0.9rem;
               color: alpha(@window_fg_color, 0.72);
             }}
-            label.app-status-strip {{
-              min-height: 18px;
-              font-size: 0.88rem;
-              color: alpha(@window_fg_color, 0.52);
-            }}
             """.encode("utf-8")
         )
         if self._css_provider is None and (display := Gdk.Display.get_default()):
@@ -2307,19 +2349,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._install_case_completion_click_away(root)
         self._install_reader_find_key_controller(root)
 
-        status_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        status_row.set_hexpand(True)
-
-        status_label = Gtk.Label(label="", xalign=0)
-        status_label.add_css_class("app-status-strip")
-        status_label.set_ellipsize(Pango.EllipsizeMode.END)
-        status_label.set_single_line_mode(True)
-        status_label.set_hexpand(True)
-        status_row.append(status_label)
-        status_row.append(self._build_query_action_strip())
-        root.append(status_row)
-        self._status_label = status_label
-
         main = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         main.set_hexpand(True)
         main.set_vexpand(True)
@@ -2327,7 +2356,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         main.append(self._build_right_side())
         root.append(main)
 
-        toolbar_view.set_content(root)
+        toast_overlay = Adw.ToastOverlay()
+        toast_overlay.set_child(root)
+        self._toast_overlay = toast_overlay
+        toolbar_view.set_content(toast_overlay)
         return toolbar_view
 
     def _build_menu_button(self) -> Gtk.MenuButton:
@@ -2343,24 +2375,16 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return button
 
     def _build_query_action_strip(self) -> Gtk.Widget:
-        strip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-        strip.add_css_class("query-action-strip")
-        strip.set_halign(Gtk.Align.END)
-        for mode in (
-            AGENT_MODE_GENERAL,
-            AGENT_MODE_CASE,
-            AGENT_MODE_BRIEF,
-            QUERY_MODE_BRIEF_SEARCH,
-        ):
+        """Build the compact scope selector owned by the Research composer."""
+        strip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        strip.add_css_class("composer-scope-group")
+        strip.set_halign(Gtk.Align.START)
+        for mode in (AGENT_MODE_GENERAL, AGENT_MODE_CASE, AGENT_MODE_BRIEF):
             strip.append(self._build_agent_mode_button(mode))
         divider = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
-        divider.add_css_class("query-action-divider")
-        divider.set_margin_top(5)
-        divider.set_margin_bottom(5)
-        divider.set_margin_start(2)
-        divider.set_margin_end(2)
+        divider.add_css_class("composer-scope-separator")
         strip.append(divider)
-        strip.append(self._build_appeal_issue_menu_button())
+        strip.append(self._build_agent_mode_button(QUERY_MODE_BRIEF_SEARCH))
         return strip
 
     def _build_sidebar(self) -> Gtk.Widget:
@@ -3173,6 +3197,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
         label = Gtk.Label(label="Loading...", xalign=0)
         label.add_css_class("reader-busy-label")
+        label.set_accessible_role(Gtk.AccessibleRole.STATUS)
         box.append(label)
 
         self._reader_busy_box = box
@@ -3247,6 +3272,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         frame.set_halign(Gtk.Align.FILL)
 
         frame.append(self._build_agent_ask_bar())
+        frame.append(self._build_agent_output_header())
 
         self._agent_answer_buffer = Gtk.TextBuffer()
         self._agent_answer_view = Gtk.TextView(buffer=self._agent_answer_buffer)
@@ -3309,54 +3335,125 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return frame
 
     def _build_agent_ask_bar(self) -> Gtk.Widget:
+        composer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+        composer.add_css_class("research-composer")
+        composer.set_hexpand(True)
+
+        heading_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        heading = Gtk.Label(label="Research", xalign=0)
+        heading.add_css_class("research-heading")
+        heading.set_hexpand(True)
+        heading_row.append(heading)
+        heading_row.append(self._build_appeal_issue_menu_button())
+        composer.append(heading_row)
+
+        composer.append(self._build_query_action_strip())
+
+        message_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        spinner = Gtk.Spinner()
+        spinner.set_size_request(16, 16)
+        spinner.set_visible(False)
+        message_row.append(spinner)
+        message = Gtk.Label(label="", xalign=0)
+        message.add_css_class("composer-message")
+        message.set_wrap(True)
+        message.set_hexpand(True)
+        message.set_accessible_role(Gtk.AccessibleRole.STATUS)
+        message_row.append(message)
+
+        search_summary = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        search_summary.set_visible(False)
+        previous_button = Gtk.Button(icon_name="go-up-symbolic")
+        previous_button.add_css_class("flat")
+        previous_button.set_tooltip_text("Previous brief-search match (Ctrl+Shift+G)")
+        previous_button.update_property(
+            [Gtk.AccessibleProperty.LABEL], ["Previous brief-search match"]
+        )
+        previous_button.connect(
+            "clicked", lambda _button: self._move_brief_search_match(-1)
+        )
+        search_summary.append(previous_button)
+        next_button = Gtk.Button(icon_name="go-down-symbolic")
+        next_button.add_css_class("flat")
+        next_button.set_tooltip_text("Next brief-search match (Ctrl+G)")
+        next_button.update_property(
+            [Gtk.AccessibleProperty.LABEL], ["Next brief-search match"]
+        )
+        next_button.connect(
+            "clicked", lambda _button: self._move_brief_search_match(1)
+        )
+        search_summary.append(next_button)
+        message_row.append(search_summary)
+        composer.append(message_row)
+        self._composer_spinner = spinner
+        self._composer_message_label = message
+        self._brief_search_summary_box = search_summary
+        self._brief_search_previous_button = previous_button
+        self._brief_search_next_button = next_button
+
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         row.add_css_class("agent-ask-bar")
         row.set_hexpand(True)
-
         self.agent_question_entry = Gtk.Entry()
         self.agent_question_entry.set_hexpand(True)
-        self.agent_question_entry.set_placeholder_text("Ask a California law question")
         self.agent_question_entry.connect("activate", self._on_agent_launch)
+        self.agent_question_entry.connect("changed", self._on_agent_question_changed)
         row.append(self.agent_question_entry)
+        submit = Gtk.Button(label="Ask")
+        submit.add_css_class("composer-submit-button")
+        submit.set_sensitive(False)
+        submit.connect("clicked", self._on_agent_launch)
+        row.append(submit)
+        self._agent_submit_button = submit
+        composer.append(row)
 
-        subview_strip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-        subview_strip.add_css_class("focus-pill-group")
+        self._set_agent_mode(AGENT_MODE_GENERAL)
+        return composer
+
+    def _build_agent_output_header(self) -> Gtk.Widget:
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        header.add_css_class("agent-output-header")
+        header.set_hexpand(True)
+        header.set_visible(False)
+
+        tabs = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        tabs.add_css_class("focus-pill-group")
         self._agent_answer_button = self._build_agent_subview_button(
-            "A:",
-            AGENT_SUBVIEW_ANSWER,
-            "Show the latest linked Agent final answer",
+            "Answer", AGENT_SUBVIEW_ANSWER, "Show the latest linked Agent final answer"
         )
-        subview_strip.append(self._agent_answer_button)
+        tabs.append(self._agent_answer_button)
         self._agent_session_button = self._build_agent_subview_button(
-            "S:",
-            AGENT_SUBVIEW_SESSION,
-            "Show the embedded Agent terminal session",
+            "Session", AGENT_SUBVIEW_SESSION, "Show the embedded Agent terminal session"
         )
-        subview_strip.append(self._agent_session_button)
-        self._agent_save_answer_button = Gtk.Button(icon_name="document-save-symbolic")
+        tabs.append(self._agent_session_button)
+        tabs.set_hexpand(True)
+        header.append(tabs)
+        self._agent_subview_strip = tabs
+
+        self._agent_save_answer_button = Gtk.Button(label="Save")
         self._agent_save_answer_button.add_css_class("flat")
         self._agent_save_answer_button.set_tooltip_text("Save final answer to Research Cache")
         self._agent_save_answer_button.set_sensitive(False)
         self._agent_save_answer_button.connect("clicked", self._on_save_agent_answer_clicked)
-        subview_strip.append(self._agent_save_answer_button)
-        self._agent_subview_strip = subview_strip
-        row.append(subview_strip)
+        header.append(self._agent_save_answer_button)
 
-        collapse_button = Gtk.Button(icon_name="go-up-symbolic")
+        collapse_button = Gtk.Button(label="Hide")
         collapse_button.add_css_class("flat")
-        collapse_button.set_tooltip_text("Hide agent output")
-        collapse_button.set_visible(False)
+        collapse_button.set_tooltip_text("Hide Agent output")
         collapse_button.connect("clicked", self._on_agent_output_toggle_clicked)
-        row.append(collapse_button)
+        header.append(collapse_button)
         self._agent_output_toggle_button = collapse_button
-
-        self._set_agent_mode(AGENT_MODE_GENERAL)
-        return row
+        self._agent_output_header = header
+        return header
 
     def _build_appeal_issue_menu_button(self) -> Gtk.MenuButton:
-        button = Gtk.MenuButton(icon_name="cafe-symbolic")
+        button = Gtk.MenuButton()
+        button.set_child(
+            OpenLawLensWindow._build_labeled_icon(
+                "cafe-symbolic", "Assess Argument…"
+            )
+        )
         button.add_css_class("flat")
-        button.add_css_class("query-action-button")
         button.set_tooltip_text("Assess Argument")
         self._appeal_issue_menu_button = button
         self._refresh_appeal_issue_menu()
@@ -3431,7 +3528,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         button = Gtk.ToggleButton()
         button.add_css_class("flat")
         button.add_css_class("no-bold")
-        button.add_css_class("query-action-button")
+        button.add_css_class("composer-scope-button")
         button.set_child(
             self._build_labeled_icon(
                 AGENT_MODE_ICONS[mode],
@@ -3470,12 +3567,114 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         button.connect("toggled", self._on_agent_subview_button_toggled, subview_name)
         return button
 
+    def _scope_presentation(self, mode: str | None = None) -> dict[str, str]:
+        return QUERY_MODE_PRESENTATION.get(
+            mode or self._selected_agent_mode,
+            QUERY_MODE_PRESENTATION[AGENT_MODE_GENERAL],
+        )
+
+    def _set_composer_message(
+        self,
+        text: str,
+        *,
+        busy: bool = False,
+        error: bool = False,
+        search_summary: bool = False,
+    ) -> None:
+        label = self._composer_message_label
+        spinner = self._composer_spinner
+        if label is not None:
+            label.set_text(text)
+            if error:
+                label.add_css_class("error")
+            else:
+                label.remove_css_class("error")
+        self._composer_message_is_error = error
+        if spinner is not None:
+            spinner.set_visible(busy)
+            if busy:
+                spinner.start()
+            else:
+                spinner.stop()
+        if self._brief_search_summary_box is not None:
+            self._brief_search_summary_box.set_visible(search_summary)
+
+    def _set_composer_idle(self) -> None:
+        if (
+            getattr(self, "_agent_active", False)
+            and not getattr(self, "_agent_last_answer_text", "").strip()
+        ):
+            self._set_composer_message("Agent is running…", busy=True)
+            return
+        self._set_composer_message(self._scope_presentation()["description"])
+
+    def _set_composer_busy(self, text: str) -> None:
+        self._set_composer_message(text, busy=True)
+
+    def _set_composer_error(self, text: str) -> None:
+        self._set_composer_message(text, error=True)
+
+    def _show_toast(self, text: str, *, error: bool = False) -> None:
+        if not text or self._toast_overlay is None:
+            return
+        if self._active_toast is not None:
+            self._active_toast.dismiss()
+        toast = Adw.Toast(title=text)
+        toast.set_timeout(8 if error else 3)
+        self._active_toast = toast
+        toast.connect("dismissed", self._on_toast_dismissed, toast)
+        self._toast_overlay.add_toast(toast)
+
+    def _on_toast_dismissed(self, _toast: Adw.Toast, active: Adw.Toast) -> None:
+        if self._active_toast is active:
+            self._active_toast = None
+
     def _set_status(self, text: str) -> None:
+        """Compatibility dispatcher for legacy call sites; no message history is kept."""
         if not text:
             return
-        if self._status_label is None:
+        lower = text.casefold()
+        if any(
+            phrase in lower
+            for phrase in (
+                "embedded terminal is unavailable",
+                "fact pattern file not found",
+                "argument to assess",
+                "speech question file",
+                "agent wrapper not found",
+            )
+        ):
+            self._set_composer_error(text)
             return
-        self._status_label.set_text(text)
+        if lower.startswith("match "):
+            self._set_composer_message(text, search_summary=True)
+            return
+        if lower.startswith("no prior briefs contain"):
+            self._set_composer_message(text)
+            return
+        if lower.startswith("prior brief library:"):
+            self._set_composer_idle()
+            self._show_toast(text)
+            return
+        if any(word in lower for word in ("agent", "prior brief", "marked authorities")):
+            if lower.startswith(("unable", "enter", "mark ", "no ", "selected ")) or " failed " in lower:
+                self._set_composer_error(text)
+            elif lower.startswith(("preparing", "updating", "auto-searching", "started")):
+                self._set_composer_busy(text)
+            elif "session ended" in lower:
+                self._set_composer_idle()
+            elif "final answer mirrored" in lower:
+                self._set_composer_idle()
+            else:
+                self._set_composer_message(text)
+            return
+        if lower.startswith(("loading ", "looking up ", "opening ", "searching ", "fetching ")):
+            self._set_reader_busy(True, text)
+            return
+        if lower.startswith(("loaded ", "opened ")):
+            return
+        error = lower.startswith(("unable", "could not", "failed", "no ", "not "))
+        self._show_toast(text, error=error)
 
     def _start_background_worker(
         self,
@@ -5168,6 +5367,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._brief_search_query = ""
         self._brief_search_warning = ""
         self._clear_brief_search_tags()
+        summary = getattr(self, "_brief_search_summary_box", None)
+        if summary is not None:
+            summary.set_visible(False)
 
     def _clear_brief_search_tags(self) -> None:
         reader_buffer = getattr(self, "reader_buffer", None)
@@ -5482,16 +5684,24 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             or self._agent_search_output_visible
         )
         output_visible = has_agent_output and not self._agent_output_collapsed
+        output_header = getattr(self, "_agent_output_header", None)
+        if output_header is not None:
+            output_header.set_visible(has_agent_output)
         if self._agent_output_toggle_button is not None:
             self._agent_output_toggle_button.set_visible(has_agent_output)
-            self._agent_output_toggle_button.set_icon_name(
-                "go-down-symbolic" if self._agent_output_collapsed else "go-up-symbolic"
-            )
+            if hasattr(self._agent_output_toggle_button, "set_label"):
+                self._agent_output_toggle_button.set_label(
+                    "Show" if self._agent_output_collapsed else "Hide"
+                )
+            elif hasattr(self._agent_output_toggle_button, "set_icon_name"):
+                self._agent_output_toggle_button.set_icon_name(
+                    "go-down-symbolic" if self._agent_output_collapsed else "go-up-symbolic"
+                )
             self._agent_output_toggle_button.set_tooltip_text(
-                "Show agent output" if self._agent_output_collapsed else "Hide agent output"
+                "Show Agent output" if self._agent_output_collapsed else "Hide Agent output"
             )
         if self._agent_subview_strip is not None:
-            self._agent_subview_strip.set_visible(output_visible)
+            self._agent_subview_strip.set_visible(has_agent_output)
         if self._agent_save_answer_button is not None:
             self._agent_save_answer_button.set_sensitive(bool(self._agent_last_answer_text.strip()))
         if self._agent_answer_scroller is not None:
@@ -5644,31 +5854,23 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _set_agent_mode(self, mode: str) -> None:
         previous_mode = self._selected_agent_mode
         self._selected_agent_mode = (
-            mode
-            if mode
-            in {
-                AGENT_MODE_GENERAL,
-                AGENT_MODE_CASE,
-                AGENT_MODE_BRIEF,
-                QUERY_MODE_BRIEF_SEARCH,
-            }
-            else AGENT_MODE_GENERAL
+            mode if mode in QUERY_MODE_PRESENTATION else AGENT_MODE_GENERAL
         )
         if (
             previous_mode == QUERY_MODE_BRIEF_SEARCH
             and self._selected_agent_mode != QUERY_MODE_BRIEF_SEARCH
         ):
             self._clear_brief_search_session()
+        presentation = self._scope_presentation()
         if hasattr(self, "agent_question_entry"):
-            if self._selected_agent_mode == AGENT_MODE_GENERAL:
-                placeholder = "Ask a California law question"
-            elif self._selected_agent_mode == AGENT_MODE_CASE:
-                placeholder = "Ask about marked Research Cache authorities"
-            elif self._selected_agent_mode == AGENT_MODE_BRIEF:
-                placeholder = "Ask about prior briefing"
-            else:
-                placeholder = "Search an exact phrase across prior briefs"
-            self.agent_question_entry.set_placeholder_text(placeholder)
+            self.agent_question_entry.set_placeholder_text(presentation["placeholder"])
+        if self._agent_submit_button is not None:
+            self._agent_submit_button.set_label(presentation["submit"])
+            if hasattr(self, "agent_question_entry"):
+                self._agent_submit_button.set_sensitive(
+                    bool(self.agent_question_entry.get_text().strip())
+                )
+        self._set_composer_idle()
         self._agent_mode_toggle_guard = True
         try:
             for name, button in self._agent_mode_buttons.items():
@@ -5680,6 +5882,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                     button.remove_css_class("focus-ai-view-active")
         finally:
             self._agent_mode_toggle_guard = False
+
+    def _on_agent_question_changed(self, entry: Gtk.Entry) -> None:
+        if self._agent_submit_button is not None:
+            self._agent_submit_button.set_sensitive(bool(entry.get_text().strip()))
+        if self._composer_message_is_error:
+            self._set_composer_idle()
 
     def _on_agent_mode_button_toggled(
         self,
@@ -5693,6 +5901,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 self._set_agent_mode(mode)
             return
         self._set_agent_mode(mode)
+        self.agent_question_entry.grab_focus()
 
     def _focus_entry_and_select_text(self, entry: Gtk.Entry) -> None:
         entry.grab_focus()
@@ -9819,6 +10028,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_search_highlight_tags.clear()
         if self._agent_answer_buffer is not None:
             self._agent_answer_buffer.set_text("")
+        self._sync_agent_subviews()
 
     def _stop_agent_answer_polling(self) -> None:
         if self._agent_answer_poll_id is not None:

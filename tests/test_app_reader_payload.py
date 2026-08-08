@@ -17,6 +17,7 @@ from open_law_lens.app import (
     AGENT_PROFILE_BY_MODE,
     QUERY_MODE_BRIEF_SEARCH,
     QUERY_MODE_LABELS,
+    QUERY_MODE_PRESENTATION,
     READER_CLIPBOARD_ICON,
     SCHOLAR_FALLBACK_CLIPBOARD_RECOVERY,
     SCHOLAR_FALLBACK_NOTICE_ONLY,
@@ -127,6 +128,7 @@ class AppReaderPayloadTests(unittest.TestCase):
 
         session_widget = DummyWidget()
         subview_strip = DummyWidget()
+        output_header = DummyWidget()
         output_toggle = DummyWidget()
         window = SimpleNamespace(
             _agent_active=False,
@@ -135,6 +137,7 @@ class AppReaderPayloadTests(unittest.TestCase):
             _agent_search_output_visible=False,
             _agent_output_collapsed=False,
             _agent_output_toggle_button=output_toggle,
+            _agent_output_header=output_header,
             _agent_subview_strip=subview_strip,
             _agent_save_answer_button=DummyWidget(),
             _agent_answer_scroller=DummyWidget(),
@@ -147,9 +150,16 @@ class AppReaderPayloadTests(unittest.TestCase):
         OpenLawLensWindow._sync_agent_subviews(window)  # type: ignore[arg-type]
 
         self.assertTrue(output_toggle.visible)
+        self.assertTrue(output_header.visible)
         self.assertTrue(subview_strip.visible)
         self.assertTrue(session_widget.visible)
         self.assertEqual(session_widget.size_request, (-1, 240))
+
+        window._agent_output_collapsed = True
+        OpenLawLensWindow._sync_agent_subviews(window)  # type: ignore[arg-type]
+        self.assertTrue(output_header.visible)
+        self.assertTrue(subview_strip.visible)
+        self.assertFalse(session_widget.visible)
 
     def test_agent_answer_uses_measured_height_with_session_height_cap(self) -> None:
         class DummyScroller:
@@ -365,6 +375,32 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertTrue(icon_ref.is_file())
         self.assertIn("<svg", icon_ref.read_text(encoding="utf-8"))
 
+    def test_query_mode_presentation_centralizes_composer_copy(self) -> None:
+        self.assertEqual(
+            QUERY_MODE_PRESENTATION[AGENT_MODE_GENERAL],
+            {
+                "placeholder": "Ask a California law question",
+                "description": "Research California law; includes the checked Current Case.",
+                "submit": "Ask",
+            },
+        )
+        self.assertEqual(
+            QUERY_MODE_PRESENTATION[AGENT_MODE_CASE]["description"],
+            "Uses marked cache items and the checked Current Case.",
+        )
+        self.assertEqual(
+            QUERY_MODE_PRESENTATION[AGENT_MODE_BRIEF]["description"],
+            "Uses indexed prior briefs and the checked Current Case.",
+        )
+        self.assertEqual(
+            QUERY_MODE_PRESENTATION[QUERY_MODE_BRIEF_SEARCH],
+            {
+                "placeholder": "Search an exact phrase across prior briefs",
+                "description": "Exact-phrase local search; does not use the Agent.",
+                "submit": "Search",
+            },
+        )
+
     def test_query_mode_labels_include_local_brief_search(self) -> None:
         self.assertEqual(
             [
@@ -374,10 +410,10 @@ class AppReaderPayloadTests(unittest.TestCase):
                 QUERY_MODE_LABELS[QUERY_MODE_BRIEF_SEARCH],
             ],
             [
-                "Query Law",
-                "Query Research Cache",
-                "Query Prior Briefs",
-                "Search Across Briefs",
+                "Law",
+                "Research Cache",
+                "Prior Briefs",
+                "Search Briefs",
             ],
         )
         self.assertEqual(
@@ -385,13 +421,10 @@ class AppReaderPayloadTests(unittest.TestCase):
             "system-search-symbolic",
         )
 
-    def test_query_action_strip_separates_assess_argument(self) -> None:
+    def test_query_scope_strip_separates_local_brief_search(self) -> None:
         class DummyWindow:
             def _build_agent_mode_button(self, mode: str) -> Gtk.ToggleButton:
                 return Gtk.ToggleButton(label=mode)
-
-            def _build_appeal_issue_menu_button(self) -> Gtk.MenuButton:
-                return Gtk.MenuButton(icon_name="cafe-symbolic")
 
         strip = OpenLawLensWindow._build_query_action_strip(  # type: ignore[arg-type]
             DummyWindow()
@@ -403,18 +436,65 @@ class AppReaderPayloadTests(unittest.TestCase):
             child = child.get_next_sibling()
 
         self.assertEqual(
-            [button.get_label() for button in children[:4]],
-            [
-                AGENT_MODE_GENERAL,
-                AGENT_MODE_CASE,
-                AGENT_MODE_BRIEF,
-                QUERY_MODE_BRIEF_SEARCH,
-            ],
+            [button.get_label() for button in children[:3]],
+            [AGENT_MODE_GENERAL, AGENT_MODE_CASE, AGENT_MODE_BRIEF],
         )
-        self.assertEqual(len(children), 6)
-        self.assertIsInstance(children[4], Gtk.Separator)
-        self.assertEqual(children[4].get_orientation(), Gtk.Orientation.VERTICAL)
-        self.assertIsInstance(children[5], Gtk.MenuButton)
+        self.assertEqual(len(children), 5)
+        self.assertIsInstance(children[3], Gtk.Separator)
+        self.assertEqual(children[3].get_orientation(), Gtk.Orientation.VERTICAL)
+        self.assertEqual(children[4].get_label(), QUERY_MODE_BRIEF_SEARCH)
+
+    def test_question_changes_update_submit_and_clear_inline_error(self) -> None:
+        submit = MagicMock()
+        idle = MagicMock()
+        entry = SimpleNamespace(get_text=lambda: "  question  ")
+        window = SimpleNamespace(
+            _agent_submit_button=submit,
+            _composer_message_is_error=True,
+            _set_composer_idle=idle,
+        )
+
+        OpenLawLensWindow._on_agent_question_changed(  # type: ignore[arg-type]
+            window, entry
+        )
+
+        submit.set_sensitive.assert_called_once_with(True)
+        idle.assert_called_once_with()
+
+    def test_status_dispatcher_routes_context_and_transient_feedback(self) -> None:
+        window = SimpleNamespace(
+            _agent_active=False,
+            _set_composer_error=MagicMock(),
+            _set_composer_busy=MagicMock(),
+            _set_composer_idle=MagicMock(),
+            _set_composer_message=MagicMock(),
+            _set_reader_busy=MagicMock(),
+            _show_toast=MagicMock(),
+        )
+
+        OpenLawLensWindow._set_status(  # type: ignore[arg-type]
+            window, "Embedded terminal is unavailable."
+        )
+        window._set_composer_error.assert_called_once_with(
+            "Embedded terminal is unavailable."
+        )
+        OpenLawLensWindow._set_status(  # type: ignore[arg-type]
+            window, "Selected text and pinpoint citation copied."
+        )
+        window._show_toast.assert_called_once_with(
+            "Selected text and pinpoint citation copied.", error=False
+        )
+        OpenLawLensWindow._set_status(  # type: ignore[arg-type]
+            window, "Match 2 of 7 · Brief 1 of 3"
+        )
+        window._set_composer_message.assert_called_once_with(
+            "Match 2 of 7 · Brief 1 of 3", search_summary=True
+        )
+        window._agent_active = True
+        OpenLawLensWindow._set_status(  # type: ignore[arg-type]
+            window, "Agent final answer mirrored."
+        )
+        window._set_composer_idle.assert_called_once_with()
 
     def test_focus_brief_search_selects_mode_and_focuses_entry(self) -> None:
         entry = object()
@@ -2586,8 +2666,14 @@ class AppReaderPayloadTests(unittest.TestCase):
             "cafe-symbolic.svg",
         )
 
-        self.assertIsNone(button.get_child())
-        self.assertEqual(button.get_icon_name(), "cafe-symbolic")
+        content = button.get_child()
+        self.assertIsInstance(content, Gtk.Box)
+        icon = content.get_first_child()
+        label = icon.get_next_sibling()
+        self.assertIsInstance(icon, Gtk.Image)
+        self.assertEqual(icon.get_icon_name(), "cafe-symbolic")
+        self.assertIsInstance(label, Gtk.Label)
+        self.assertEqual(label.get_text(), "Assess Argument…")
         self.assertEqual(button.get_tooltip_text(), "Assess Argument")
         self.assertTrue(icon_ref.is_file())
 

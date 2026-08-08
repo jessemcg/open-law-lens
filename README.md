@@ -238,7 +238,7 @@ There are four main agent workflows:
   workspace, launches Pi in Appeal mode, and directs it to research
   California law through Open Law Lens CLI commands.
 
-The separate Search Across Briefs mode performs a local, non-LLM exact-phrase
+The separate **Search Briefs** scope performs a local, non-LLM exact-phrase
 search. It opens matching briefs newest-first in the main reader without adding
 them to the Research Cache. Use `Ctrl+S` to activate this mode, then `Ctrl+G`
 and `Ctrl+Shift+G` to move forward and backward through occurrences across
@@ -247,7 +247,7 @@ matching briefs.
 Agent runtime settings, including the four per-query Pi model/reasoning
 profiles, prompt templates, appeal issue presets, and fact-pattern source, are
 available in the app Settings window. Subsequent Treatment uses the Query Law
-profile. Search Across Briefs is local and does not launch Pi.
+profile. **Search Briefs** is local and does not launch Pi.
 
 Law, Subsequent Treatment, and Appeal runs explicitly load the legal-researcher
 skill and the user-level `pi-web-access` extension. Agents should use the
@@ -303,10 +303,10 @@ rendered in bold in the SOCF reader.
 ## Appeal Issue Assessment
 
 The Appeal Issue Assessment workflow is for quickly testing possible appellate
-claims against a fact pattern. It is available from the appeal-argument button
-next to the agent question bar. The menu includes assessment actions for
-configured argument presets, a custom assessment action, and a shortcut to edit
-the appeal argument settings.
+claims against a fact pattern. It is available from the visible **Assess
+Argument…** menu in the Research composer heading. The menu includes assessment
+actions for configured argument presets, a custom assessment action, and a
+shortcut to edit the appeal argument settings.
 
 By default, Open Law Lens tries to use the SOCF ODT for the currently selected
 case. The Settings window can point the workflow at a different fact-pattern
