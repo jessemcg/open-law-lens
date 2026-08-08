@@ -109,10 +109,18 @@ copy model credentials into the project or its temporary Agent workspaces.
 
 The embedded Agent defaults to `openai-codex/gpt-5.6-sol`, which is a model
 provider and model selected through Pi; it does not mean that Open Law Lens
-uses the Codex coding agent. The pinned `pi-web-search` 1.3.1 extension is
-bundled in this repository, so users do not need to install it separately. The
-launcher also uses the Node runtime installed alongside Pi instead of the
-desktop session's system Node.
+uses the Codex coding agent. Install the user-level `pi-web-access` package for
+research-capable Agent workflows:
+
+```bash
+pi install npm:pi-web-access
+```
+
+Open Law Lens explicitly loads that package from Pi's user agent directory
+while keeping unrelated extensions disabled. This uses the same package updates
+and `~/.pi/web-search.json` credentials as ordinary Pi sessions. The launcher
+also uses the Node runtime installed alongside Pi instead of the desktop
+session's system Node.
 
 The Settings window lists the models currently authorized in Pi and lets each
 user choose a separate model and reasoning effort for Query Law, Query Research
@@ -234,10 +242,10 @@ available in the app Settings window. Helper Case and Subsequent Treatment use
 the Query Law profile. Search Across Briefs is local and does not launch Pi.
 
 Law, Helper Case, Subsequent Treatment, and Appeal runs explicitly load the
-legal-researcher skill and the bundled `pi-web-search` extension. The web tool
-is only a fallback for verifying missing or suspect official reporter
-citations or official opinion text. Research Cache and Prior Brief runs disable
-skills and extensions and remain closed-corpus workflows.
+legal-researcher skill and the user-level `pi-web-access` extension. Only its
+`web_search` tool is enabled, as a fallback for verifying missing or suspect
+official reporter citations or official opinion text. Research Cache and Prior
+Brief runs disable skills and extensions and remain closed-corpus workflows.
 
 Pi remains in a private disposable workspace rather than using the source tree
 as its working directory. Agent-facing Open Law Lens commands explicitly select
@@ -387,7 +395,9 @@ routes you back to manual review, depending on the lookup path.
   checks.
 - `scripts/open-law-lens-agent-vte.sh`: embedded Pi terminal launcher.
 - `.pi/settings.json`: project-local fallback Pi provider and model.
-- `.pi/extensions/pi-web-search/`: bundled, pinned Pi web-search extension.
+- `~/.pi/agent/npm/node_modules/pi-web-access/`: user-level web-access
+  package explicitly loaded for research-capable Agent runs (or the equivalent
+  path under `PI_CODING_AGENT_DIR`).
 - `.pi/skills/legal-researcher/SKILL.md`: Pi legal-research workflow and
   web-search fallback rules.
 
@@ -398,8 +408,8 @@ Do not commit local runtime data:
 - `config.json`: local settings and CourtListener token.
 - `cache/`: disposable CourtListener lookup and import cache.
 - `library/`: durable local SQLite authority library.
-- `.pi/npm/`: optional machine-local Pi package cache; the embedded workflow
-  does not use it.
+- `.pi/npm/`: optional project-local Pi package cache; the embedded workflow
+  uses the user-level Pi package installation instead.
 - `.venv/`, `__pycache__/`, `.pytest_cache/`, and `.mypy_cache/`: generated
   development artifacts.
 

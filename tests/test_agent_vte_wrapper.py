@@ -16,7 +16,7 @@ LEGAL_RESEARCHER_SKILL = (
 
 
 class AgentVteWrapperTests(unittest.TestCase):
-    def _fixture(self, root: Path, *, bundle_web_search: bool) -> tuple[Path, Path, Path]:
+    def _fixture(self, root: Path) -> tuple[Path, Path, Path]:
         project = root / "project"
         workspace = root / "workspace"
         prompt = root / "prompt.txt"
@@ -35,16 +35,19 @@ class AgentVteWrapperTests(unittest.TestCase):
         (project / ".pi" / "SYSTEM.md").write_text(
             "Open Law Lens legal knowledge work", encoding="utf-8"
         )
-        if bundle_web_search:
-            package = project / ".pi" / "extensions" / "pi-web-search"
-            (package / "src").mkdir(parents=True)
-            (package / "src" / "index.ts").write_text("", encoding="utf-8")
-            (package / "package.json").write_text(
-                '{"name":"pi-web-search","version":"1.3.1"}',
-                encoding="utf-8",
-            )
         prompt.write_text("Research this issue.", encoding="utf-8")
         return project, workspace, prompt
+
+    @staticmethod
+    def _install_web_access(root: Path) -> Path:
+        package = root / "pi-agent" / "npm" / "node_modules" / "pi-web-access"
+        package.mkdir(parents=True)
+        (package / "index.ts").write_text("", encoding="utf-8")
+        (package / "package.json").write_text(
+            '{"name":"pi-web-access","version":"0.19.0"}',
+            encoding="utf-8",
+        )
+        return package
 
     def _fake_pi(
         self,
@@ -82,10 +85,9 @@ class AgentVteWrapperTests(unittest.TestCase):
         with_sibling_node: bool = False,
         profile: tuple[str, str, str] | None = None,
     ) -> list[str]:
-        project, workspace, prompt = self._fixture(
-            root,
-            bundle_web_search=mode in {"general", "appeal"},
-        )
+        project, workspace, prompt = self._fixture(root)
+        if mode in {"general", "appeal"}:
+            self._install_web_access(root)
         pi, output = self._fake_pi(
             root,
             with_sibling_node=with_sibling_node,
@@ -98,6 +100,7 @@ class AgentVteWrapperTests(unittest.TestCase):
                 "OPEN_LAW_LENS_AGENT_MODE": mode,
                 "OPEN_LAW_LENS_PROJECT_DIR": str(project),
                 "OPEN_LAW_LENS_PI_BIN": str(pi),
+                "PI_CODING_AGENT_DIR": str(root / "pi-agent"),
                 "CAPTURE_ARGS": str(output),
             }
         )
@@ -135,11 +138,10 @@ class AgentVteWrapperTests(unittest.TestCase):
                 args[extension_index + 1],
                 str(
                     root
-                    / "workspace"
-                    / ".pi"
-                    / "extensions"
-                    / "pi-web-search"
-                    / "src"
+                    / "pi-agent"
+                    / "npm"
+                    / "node_modules"
+                    / "pi-web-access"
                     / "index.ts"
                 ),
             )
@@ -171,10 +173,7 @@ class AgentVteWrapperTests(unittest.TestCase):
     def test_incomplete_runtime_profile_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            project, workspace, prompt = self._fixture(
-                root,
-                bundle_web_search=False,
-            )
+            project, workspace, prompt = self._fixture(root)
             pi, _output = self._fake_pi(root)
             env = os.environ.copy()
             env.update(
@@ -239,13 +238,10 @@ class AgentVteWrapperTests(unittest.TestCase):
             self.assertIn("read,bash,grep,find,ls", args)
             self.assertNotIn("read,bash,grep,find,ls,web_search", args)
 
-    def test_research_mode_reports_missing_bundled_extension(self) -> None:
+    def test_research_mode_reports_missing_user_extension(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            project, workspace, prompt = self._fixture(
-                root,
-                bundle_web_search=False,
-            )
+            project, workspace, prompt = self._fixture(root)
             pi, _output = self._fake_pi(root)
             env = os.environ.copy()
             env.update(
@@ -255,6 +251,7 @@ class AgentVteWrapperTests(unittest.TestCase):
                     "OPEN_LAW_LENS_AGENT_MODE": "general",
                     "OPEN_LAW_LENS_PROJECT_DIR": str(project),
                     "OPEN_LAW_LENS_PI_BIN": str(pi),
+                    "PI_CODING_AGENT_DIR": str(root / "pi-agent"),
                 }
             )
 
@@ -268,17 +265,15 @@ class AgentVteWrapperTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 2)
             self.assertIn(
-                "Bundled pi-web-search extension not found:",
+                "User-level pi-web-access extension not found:",
                 result.stderr,
             )
-            self.assertNotIn("pi install", result.stderr)
+            self.assertIn("pi install npm:pi-web-access", result.stderr)
 
     def test_wrapper_rejects_missing_system_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            project, workspace, prompt = self._fixture(
-                root, bundle_web_search=False
-            )
+            project, workspace, prompt = self._fixture(root)
             (project / ".pi" / "SYSTEM.md").unlink()
             pi, _output = self._fake_pi(root)
             env = os.environ.copy()
@@ -303,24 +298,13 @@ class AgentVteWrapperTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("Pi system prompt not found or empty", result.stderr)
 
-    def test_repository_bundles_pinned_web_search_source(self) -> None:
+    def test_repository_does_not_vendor_web_access(self) -> None:
         settings = json.loads(
             (PROJECT_DIR / ".pi" / "settings.json").read_text(encoding="utf-8")
         )
-        package = (
-            PROJECT_DIR
-            / ".pi"
-            / "extensions"
-            / "pi-web-search"
-            / "package.json"
-        )
-        metadata = json.loads(package.read_text(encoding="utf-8"))
 
         self.assertNotIn("packages", settings)
-        self.assertEqual(metadata["name"], "pi-web-search")
-        self.assertEqual(metadata["version"], "1.3.1")
-        self.assertTrue((package.parent / "src" / "index.ts").is_file())
-        self.assertTrue((package.parent / "LICENSE").is_file())
+        self.assertFalse((PROJECT_DIR / ".pi" / "extensions").exists())
         system_prompt = (PROJECT_DIR / ".pi" / "SYSTEM.md").read_text(
             encoding="utf-8"
         )

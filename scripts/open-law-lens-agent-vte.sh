@@ -79,20 +79,26 @@ if [[ -n "$pi_node" ]] \
 fi
 
 skill="$project_dir/.pi/skills/legal-researcher/SKILL.md"
-extension="$project_dir/.pi/extensions/pi-web-search/src/index.ts"
-package_json="$project_dir/.pi/extensions/pi-web-search/package.json"
+pi_agent_dir="${PI_CODING_AGENT_DIR:-${HOME:-}/.pi/agent}"
+if [[ "$pi_agent_dir" == "~" ]]; then
+  pi_agent_dir="${HOME:-}"
+elif [[ "$pi_agent_dir" == "~/"* ]]; then
+  pi_agent_dir="${HOME:-}/${pi_agent_dir:2}"
+fi
+extension="${OPEN_LAW_LENS_WEB_ACCESS_EXTENSION:-$pi_agent_dir/npm/node_modules/pi-web-access/index.ts}"
+package_json="$(dirname "$extension")/package.json"
 if [[ "$agent_mode" == "general" || "$agent_mode" == "appeal" ]]; then
   if [[ ! -f "$skill" ]]; then
     printf 'Legal researcher skill not found: %s\n' "$skill" >&2
     exit 2
   fi
   if [[ ! -f "$extension" || ! -f "$package_json" ]]; then
-    printf 'Bundled pi-web-search extension not found: %s\n' "$extension" >&2
+    printf 'User-level pi-web-access extension not found: %s\n' "$extension" >&2
+    printf 'Install it with: pi install npm:pi-web-access\n' >&2
     exit 2
   fi
-  if ! grep -Eq '"name"[[:space:]]*:[[:space:]]*"pi-web-search"' "$package_json" \
-    || ! grep -Eq '"version"[[:space:]]*:[[:space:]]*"1\.3\.1"' "$package_json"; then
-    printf 'Expected pi-web-search version 1.3.1 in %s\n' "$package_json" >&2
+  if ! grep -Eq '"name"[[:space:]]*:[[:space:]]*"pi-web-access"' "$package_json"; then
+    printf 'Expected the pi-web-access package in %s\n' "$package_json" >&2
     exit 2
   fi
 fi
@@ -103,8 +109,6 @@ cp -a "$project_dir/.pi/settings.json" "$workspace/.pi/"
 cp -a "$project_dir/.pi/SYSTEM.md" "$workspace/.pi/"
 [[ ! -d "$project_dir/.pi/skills" ]] \
   || cp -a "$project_dir/.pi/skills" "$workspace/.pi/"
-[[ ! -d "$project_dir/.pi/extensions" ]] \
-  || cp -a "$project_dir/.pi/extensions" "$workspace/.pi/"
 export TMPDIR="$workspace/tmp"
 export UV_CACHE_DIR="$workspace/uv-cache"
 export PI_CODING_AGENT_SESSION_DIR="$workspace/pi-sessions"
@@ -130,7 +134,7 @@ if [[ -n "$pi_provider" ]]; then
 fi
 if [[ "$agent_mode" == "general" || "$agent_mode" == "appeal" ]]; then
   args+=(--skill "$workspace/.pi/skills/legal-researcher/SKILL.md")
-  args+=(--extension "$workspace/.pi/extensions/pi-web-search/src/index.ts")
+  args+=(--extension "$extension")
   tools+=",web_search"
   prompt=$'/skill:legal-researcher\n'"$prompt"
 fi

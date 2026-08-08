@@ -11,7 +11,7 @@
 - `open_law_lens/pi_runtime.py` owns Pi runtime discovery, authenticated model enumeration, and atomic updates to the project Pi model setting.
 - `open_law_lens/agent_commands.py` owns the canonical workspace-safe Open Law Lens command prefix used in agent prompts and CLI suggestions.
 - `scripts/open-law-lens-agent-vte.sh` launches Pi from the embedded terminal. It must use the Node runtime shipped beside the selected Pi executable so desktop PATH differences cannot fall back to an incompatible system Node. Preserve its temporary-workspace and cache-directory behavior unless the task explicitly changes agent launch semantics.
-- `.pi/extensions/pi-web-search/` contains the pinned web-search extension bundled for the embedded Pi workflow. Do not replace it with a machine-local `.pi/npm/` dependency.
+- Research-capable embedded Agent runs explicitly load the user-level `pi-web-access` package from Pi's agent directory while `--no-extensions` keeps unrelated extensions disabled. Do not vendor extension source or install it under the project's `.pi/npm/` directory.
 - `.pi/SYSTEM.md` is the replacement legal-knowledge-work prompt copied into every private embedded Pi workspace and passed explicitly at launch.
 - `open-law-lens-icon.png` is the project icon used by the desktop launcher.
 - `pyproject.toml` and `uv.lock` define the Python 3.13 uv environment. Keep them synchronized when changing dependencies.
@@ -48,7 +48,7 @@
 - `cache/` contains disposable local CourtListener lookup, cluster, opinion, and case-index data. Do not commit generated cache data unless a task explicitly asks for a fixture, and then place it under an intentional test fixture path.
 - The app sidebar is the Research Cache, not the full library. Clearing Research Cache should hide sidebar cases while preserving the durable library database.
 - `.venv/`, `__pycache__/`, `.pytest_cache/`, and `.mypy_cache/` are generated and should stay out of diffs.
-- `.pi/npm/` is Pi's generated project-local package cache. It is not required by the bundled extension and should stay out of diffs.
+- `.pi/npm/` is Pi's generated project-local package cache. The embedded workflow uses Pi's user-level package installation instead, so this directory should stay out of diffs.
 - Prefer `OPEN_LAW_LENS_CACHE_DIR` for isolated test or smoke-run caches instead of using or clearing the user’s default cache.
 - Prefer `OPEN_LAW_LENS_LIBRARY_DB` for isolated tests or experiments that should not touch the user’s durable library.
 - `COURTLISTENER_TOKEN` may be used by the app/client, but credentials should remain in environment variables or local config only.
