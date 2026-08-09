@@ -23,6 +23,7 @@ from open_law_lens.config import (
     DEFAULT_READER_FONT_FAMILY,
     DEFAULT_READER_FONT_SIZE_PT,
     PiAgentProfile,
+    READER_FONT_FAMILY_OPTIONS,
     load_config,
     save_config,
 )
@@ -85,7 +86,7 @@ class ConfigTests(unittest.TestCase):
                         ),
                     },
                     reader_font_size_pt=14,
-                    reader_font_family="Georgia",
+                    reader_font_family="Caladea",
                     default_bare_statute_law_code="FAM",
                 ),
                 path,
@@ -115,7 +116,7 @@ class ConfigTests(unittest.TestCase):
                 "low",
             )
             self.assertEqual(config.reader_font_size_pt, 14)
-            self.assertEqual(config.reader_font_family, "Georgia")
+            self.assertEqual(config.reader_font_family, "Caladea")
             self.assertEqual(config.default_bare_statute_law_code, "FAM")
 
     def test_legacy_xhigh_settings_are_ignored_and_removed_on_save(self) -> None:
@@ -721,6 +722,36 @@ Rating: Strong, Medium, Weak, or Frivolous"""
             save_config(AppConfig(reader_font_family="Century Schoolbook"), path)
 
             self.assertEqual(load_config(path).reader_font_family, "Century Schoolbook")
+
+    def test_reader_font_options_include_installed_readability_choices(self) -> None:
+        names = [name for name, _css in READER_FONT_FAMILY_OPTIONS]
+
+        self.assertEqual(
+            names,
+            [
+                "Noto Serif",
+                "Bitstream Charter",
+                "Linux Libertine O",
+                "Caladea",
+                "Gentium Book Basic",
+                "DejaVu Serif",
+                "Century Schoolbook",
+                "TeX Gyre Schola",
+                "Lato",
+            ],
+        )
+
+    def test_removed_reader_fonts_migrate_to_installed_alternatives(self) -> None:
+        replacements = {
+            "Georgia": "Caladea",
+            "Merriweather": "Bitstream Charter",
+            "Source Sans 3": "Lato",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            for removed, replacement in replacements.items():
+                path.write_text(json.dumps({"reader_font_family": removed}))
+                self.assertEqual(load_config(path).reader_font_family, replacement)
 
     def test_environment_concordance_path_overrides_config(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

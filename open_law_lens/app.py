@@ -217,6 +217,9 @@ READER_MASTHEAD_BG = "#f5f6f7"
 READER_MASTHEAD_DIVIDER = "#dfe2e5"
 READER_MASTHEAD_METADATA_FG = "#4d5866"
 READER_MASTHEAD_SOURCE_FG = "#69737e"
+READER_MASTHEAD_TITLE_FONT_SIZE_PT = 13
+READER_MASTHEAD_METADATA_FONT_SIZE_PT = 10
+READER_MASTHEAD_SOURCE_FONT_SIZE_PT = 9
 READER_COOL_GRAY_BG = "#e8edf3"
 READER_RENDER_TEXT_CHUNK_SIZE = 8000
 READER_RENDER_TAG_CHUNK_SIZE = 250
@@ -2169,19 +2172,19 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             label.reader-masthead-title {{
               color: {READER_FG};
               background-color: transparent;
-              font-size: {max(11, round(config.reader_font_size_pt * 0.88))}pt;
+              font-size: {READER_MASTHEAD_TITLE_FONT_SIZE_PT}pt;
               font-weight: 600;
             }}
             label.reader-masthead-metadata {{
               color: {READER_MASTHEAD_METADATA_FG};
               background-color: transparent;
-              font-size: {max(9, round(config.reader_font_size_pt * 0.70))}pt;
+              font-size: {READER_MASTHEAD_METADATA_FONT_SIZE_PT}pt;
               font-weight: normal;
             }}
             label.reader-masthead-source {{
               color: {READER_MASTHEAD_SOURCE_FG};
               background-color: transparent;
-              font-size: {max(8, round(config.reader_font_size_pt * 0.60))}pt;
+              font-size: {READER_MASTHEAD_SOURCE_FONT_SIZE_PT}pt;
               font-weight: normal;
             }}
             button.reader-masthead-action-button {{

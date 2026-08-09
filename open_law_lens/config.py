@@ -59,18 +59,25 @@ BARE_STATUTE_LAW_CODE_OPTIONS: tuple[tuple[str, str], ...] = (
 )
 READER_FONT_FAMILY_OPTIONS: tuple[tuple[str, str], ...] = (
     ("Noto Serif", '"Noto Serif", "Liberation Serif", "DejaVu Serif", serif'),
-    ("Georgia", 'Georgia, "Times New Roman", "Liberation Serif", serif'),
-    ("Merriweather", '"Merriweather", "Noto Serif", "Liberation Serif", serif'),
+    ("Bitstream Charter", '"Bitstream Charter", Charter, serif'),
+    ("Linux Libertine O", '"Linux Libertine O", "Linux Libertine", serif'),
+    ("Caladea", 'Caladea, Cambria, "Liberation Serif", serif'),
+    ("Gentium Book Basic", '"Gentium Book Basic", Gentium, serif'),
+    ("DejaVu Serif", '"DejaVu Serif", "Liberation Serif", serif'),
     ("Century Schoolbook", '"Century Schoolbook", "C059", "TeX Gyre Schola", serif'),
-    ("Source Sans 3", '"Source Sans 3", "Noto Sans", "Liberation Sans", sans-serif'),
     (
         "TeX Gyre Schola",
         '"TeX Gyre Schola", "New Century Schoolbook", '
         '"Century Schoolbook L", "URW Schoolbook L", serif',
     ),
+    ("Lato", 'Lato, Carlito, "Noto Sans", "Liberation Sans", sans-serif'),
 )
 DEFAULT_READER_FONT_FAMILY = READER_FONT_FAMILY_OPTIONS[0][0]
-LEGACY_READER_FONT_FAMILY_ALIASES: dict[str, str] = {}
+LEGACY_READER_FONT_FAMILY_ALIASES: dict[str, str] = {
+    "Georgia": "Caladea",
+    "Merriweather": "Bitstream Charter",
+    "Source Sans 3": "Lato",
+}
 
 LEGACY_GENERAL_AGENT_PROMPT_SHA256ES = (
     "a168fd313f71015a9a730bd2912aba0d1a9e51bfdeb28ecdaed039707e07d92a",
