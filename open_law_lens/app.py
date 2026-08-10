@@ -221,6 +221,8 @@ READER_MASTHEAD_TITLE_FONT_SIZE_PT = 13
 READER_MASTHEAD_METADATA_FONT_SIZE_PT = 10
 READER_MASTHEAD_SOURCE_FONT_SIZE_PT = 9
 READER_COOL_GRAY_BG = "#e8edf3"
+READER_PAGE_MARKER_FG = "#344054"
+READER_PAGE_MARKER_SCALE = 0.9
 READER_RENDER_TEXT_CHUNK_SIZE = 8000
 READER_RENDER_TAG_CHUNK_SIZE = 250
 BRIEF_SEARCH_SCROLL_MAX_ATTEMPTS = 4
@@ -3176,8 +3178,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         )
         self.page_marker_tag = self.reader_buffer.create_tag(
             "page-marker",
-            weight=Pango.Weight.ULTRABOLD,
+            weight=Pango.Weight.SEMIBOLD,
+            foreground=READER_PAGE_MARKER_FG,
             background=READER_COOL_GRAY_BG,
+            scale=READER_PAGE_MARKER_SCALE,
+        )
+        self._reader_page_marker_star_tag = self.reader_buffer.create_tag(
+            "page-marker-hidden-star",
+            invisible=True,
         )
         self._reader_citation_italic_tag = self.reader_buffer.create_tag(
             "reader-citation-italic",
@@ -4421,15 +4429,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._update_reader_clipboard_button()
         if page_markers:
             for marker in page_markers:
-                start = max(0, min(marker.start_offset, len(text)))
-                end = max(start, min(marker.end_offset, len(text)))
-                if start == end:
-                    continue
-                self.reader_buffer.apply_tag(
-                    self.page_marker_tag,
-                    self.reader_buffer.get_iter_at_offset(start),
-                    self.reader_buffer.get_iter_at_offset(end),
-                )
+                self._apply_reader_page_marker(marker, text)
         for span in style_spans or []:
             self._apply_reader_style_span(span, len(text))
         self._apply_reader_markdown_spans(markdown_spans)
@@ -4450,6 +4450,33 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if update_paginated is not None:
             update_paginated()
         return False
+
+    def _apply_reader_page_marker(self, marker: PageMarker, text: str) -> None:
+        start = max(0, min(marker.start_offset, len(text)))
+        end = max(start, min(marker.end_offset, len(text)))
+        if start == end:
+            return
+        self.reader_buffer.apply_tag(
+            self.page_marker_tag,
+            self.reader_buffer.get_iter_at_offset(start),
+            self.reader_buffer.get_iter_at_offset(end),
+        )
+
+        marker_text = text[start:end]
+        canonical_match = re.fullmatch(r"\[\*(\d{1,5})\]", marker_text)
+        star_tag = getattr(self, "_reader_page_marker_star_tag", None)
+        if (
+            star_tag is None
+            or canonical_match is None
+            or marker_text != marker.marker_text
+            or canonical_match.group(1) != marker.page_label.strip()
+        ):
+            return
+        self.reader_buffer.apply_tag(
+            star_tag,
+            self.reader_buffer.get_iter_at_offset(start + 1),
+            self.reader_buffer.get_iter_at_offset(start + 2),
+        )
 
     def _apply_reader_style_span(
         self,
@@ -4540,15 +4567,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return False
         end_index = min(index + READER_RENDER_TAG_CHUNK_SIZE, len(payload.page_markers))
         for marker in payload.page_markers[index:end_index]:
-            start = max(0, min(marker.start_offset, len(payload.text)))
-            end = max(start, min(marker.end_offset, len(payload.text)))
-            if start == end:
-                continue
-            self.reader_buffer.apply_tag(
-                self.page_marker_tag,
-                self.reader_buffer.get_iter_at_offset(start),
-                self.reader_buffer.get_iter_at_offset(end),
-            )
+            self._apply_reader_page_marker(marker, payload.text)
         if end_index < len(payload.page_markers):
             GLib.idle_add(self._apply_reader_payload_page_marker_chunk, payload, end_index)
             return False

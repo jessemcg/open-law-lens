@@ -339,8 +339,8 @@ project or global default applies to every agent workflow.
 Open Law Lens keeps a durable SQLite authority library at
 `library/open_law_lens.sqlite3` by default. The library stores raw
 CourtListener JSON plus display-ready opinion text. When CourtListener provides
-explicit reporter page markers, the app preserves them inline as markers such
-as `[*373]` and renders those markers prominently in the reader.
+explicit reporter page markers, the app preserves their canonical form, such as
+`[*373]`, while rendering them as subtle `[373]` badges in the reader.
 
 The `cache/` directory is a disposable JSON API cache. Lookups check the library
 first, then the JSON cache, then CourtListener. Cache or API hits are saved into

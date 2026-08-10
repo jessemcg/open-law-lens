@@ -3024,6 +3024,210 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(payload.text[payload.page_markers[0].start_offset:payload.page_markers[0].end_offset], "[*2]")
         self.assertEqual(payload.cited_links[0].lookup_text, "2 Cal.5th 10")
 
+    def test_reader_page_marker_hides_only_canonical_star(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.reader_buffer = Gtk.TextBuffer()
+                self.page_marker_tag = self.reader_buffer.create_tag("page-marker-test")
+                self._reader_page_marker_star_tag = self.reader_buffer.create_tag(
+                    "page-marker-hidden-star-test",
+                    invisible=True,
+                )
+
+        window = DummyWindow()
+        text = "Before [*373] after."
+        marker_start = text.index("[*373]")
+        marker = PageMarker(
+            page_label="373",
+            marker_text="[*373]",
+            start_offset=marker_start,
+            end_offset=marker_start + len("[*373]"),
+            source_field="plain_text",
+        )
+        window.reader_buffer.set_text(text)
+
+        OpenLawLensWindow._apply_reader_page_marker(  # type: ignore[arg-type]
+            window,
+            marker,
+            text,
+        )
+
+        start_iter = window.reader_buffer.get_iter_at_offset(marker.start_offset)
+        end_iter = window.reader_buffer.get_iter_at_offset(marker.end_offset)
+        self.assertEqual(window.reader_buffer.get_text(start_iter, end_iter, True), "[*373]")
+        self.assertEqual(window.reader_buffer.get_text(start_iter, end_iter, False), "[373]")
+        self.assertEqual(window.reader_buffer.get_char_count(), len(text))
+        for offset in range(marker.start_offset, marker.end_offset):
+            self.assertIn(
+                window.page_marker_tag,
+                window.reader_buffer.get_iter_at_offset(offset).get_tags(),
+            )
+        self.assertIn(
+            window._reader_page_marker_star_tag,
+            window.reader_buffer.get_iter_at_offset(marker.start_offset + 1).get_tags(),
+        )
+        self.assertNotIn(
+            window._reader_page_marker_star_tag,
+            window.reader_buffer.get_iter_at_offset(marker.start_offset + 2).get_tags(),
+        )
+
+    def test_reader_page_marker_keeps_malformed_and_slip_text_visible(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.reader_buffer = Gtk.TextBuffer()
+                self.page_marker_tag = self.reader_buffer.create_tag("page-marker-test")
+                self._reader_page_marker_star_tag = self.reader_buffer.create_tag(
+                    "page-marker-hidden-star-test",
+                    invisible=True,
+                )
+
+        window = DummyWindow()
+        text = "[*373] [Slip opn. p. 7]"
+        window.reader_buffer.set_text(text)
+        malformed = PageMarker(
+            page_label="373",
+            marker_text="[*999]",
+            start_offset=0,
+            end_offset=len("[*373]"),
+            source_field="plain_text",
+        )
+        slip_start = text.index("[Slip")
+        slip = PageMarker(
+            page_label="7",
+            marker_text="[Slip opn. p. 7]",
+            start_offset=slip_start,
+            end_offset=len(text),
+            source_field="slip_pdf",
+        )
+
+        OpenLawLensWindow._apply_reader_page_marker(  # type: ignore[arg-type]
+            window,
+            malformed,
+            text,
+        )
+        OpenLawLensWindow._apply_reader_page_marker(  # type: ignore[arg-type]
+            window,
+            slip,
+            text,
+        )
+
+        self.assertEqual(
+            window.reader_buffer.get_text(
+                window.reader_buffer.get_start_iter(),
+                window.reader_buffer.get_end_iter(),
+                False,
+            ),
+            text,
+        )
+        self.assertNotIn(
+            window._reader_page_marker_star_tag,
+            window.reader_buffer.get_iter_at_offset(1).get_tags(),
+        )
+        self.assertIn(
+            window.page_marker_tag,
+            window.reader_buffer.get_iter_at_offset(slip_start + 2).get_tags(),
+        )
+
+    def test_immediate_reader_text_uses_shared_page_marker_helper(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.reader_buffer = Gtk.TextBuffer()
+                self.page_marker_tag = self.reader_buffer.create_tag("page-marker-test")
+                self._reader_page_marker_star_tag = self.reader_buffer.create_tag(
+                    "page-marker-hidden-star-test",
+                    invisible=True,
+                )
+                self._reader_pagination_mode = "none"
+                self._pending_quote_target = None
+
+            def _set_reader_busy(self, _busy: bool) -> None:
+                pass
+
+            def _close_reader_find(self, *, clear_entry: bool) -> None:
+                pass
+
+            def _update_reader_clipboard_button(self) -> None:
+                pass
+
+            def _apply_reader_page_marker(self, marker: PageMarker, text: str) -> None:
+                OpenLawLensWindow._apply_reader_page_marker(self, marker, text)  # type: ignore[arg-type]
+
+            def _apply_reader_markdown_spans(self, _spans: object) -> None:
+                pass
+
+            def _apply_reader_citation_italics(self, _text: str) -> None:
+                pass
+
+            def _apply_reader_citation_links(self, _text: str) -> None:
+                pass
+
+        window = DummyWindow()
+        text = "[*373] Opinion text."
+        marker = PageMarker("373", "[*373]", 0, len("[*373]"), "plain_text")
+
+        OpenLawLensWindow._set_reader_text(  # type: ignore[arg-type]
+            window,
+            text,
+            page_markers=[marker],
+        )
+
+        self.assertEqual(
+            window.reader_buffer.get_text(
+                window.reader_buffer.get_start_iter(),
+                window.reader_buffer.get_end_iter(),
+                False,
+            ),
+            "[373] Opinion text.",
+        )
+
+    def test_chunked_reader_render_uses_shared_page_marker_helper(self) -> None:
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.reader_buffer = Gtk.TextBuffer()
+                self.page_marker_tag = self.reader_buffer.create_tag("page-marker-test")
+                self._reader_page_marker_star_tag = self.reader_buffer.create_tag(
+                    "page-marker-hidden-star-test",
+                    invisible=True,
+                )
+                self.next_indexes: list[int] = []
+
+            def _case_load_is_current(self, _generation: int, _cluster_id: str) -> bool:
+                return True
+
+            def _apply_reader_page_marker(self, marker: PageMarker, text: str) -> None:
+                OpenLawLensWindow._apply_reader_page_marker(self, marker, text)  # type: ignore[arg-type]
+
+            def _apply_reader_payload_style_chunk(self, _payload: object, index: int) -> bool:
+                self.next_indexes.append(index)
+                return False
+
+        window = DummyWindow()
+        text = "[*373] Opinion text."
+        window.reader_buffer.set_text(text)
+        payload = SimpleNamespace(
+            generation=1,
+            cluster_id="42",
+            text=text,
+            page_markers=[PageMarker("373", "[*373]", 0, len("[*373]"), "plain_text")],
+        )
+
+        with patch("open_law_lens.app.GLib.idle_add", side_effect=lambda func, *args: func(*args)):
+            OpenLawLensWindow._apply_reader_payload_page_marker_chunk(  # type: ignore[arg-type]
+                window,
+                payload,
+                0,
+            )
+
+        self.assertEqual(
+            window.reader_buffer.get_text(
+                window.reader_buffer.get_start_iter(),
+                window.reader_buffer.get_end_iter(),
+                False,
+            ),
+            "[373] Opinion text.",
+        )
+        self.assertEqual(window.next_indexes, [0])
+
     def test_immediate_reader_text_applies_heading_style_spans(self) -> None:
         class DummyWindow:
             def __init__(self) -> None:
