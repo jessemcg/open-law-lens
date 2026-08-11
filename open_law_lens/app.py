@@ -282,6 +282,8 @@ AGENT_PROFILE_TITLES = {
     AGENT_PROFILE_PRIOR_BRIEFS: "Query Prior Briefs",
     AGENT_PROFILE_ASSESS_ARGUMENT: "Assess Argument",
 }
+PI_MODEL_DROPDOWN_WIDTH_CHARS = 64
+PI_MODEL_DROPDOWN_MAX_WIDTH_CHARS = 80
 AGENT_PROFILE_BY_MODE = {
     AGENT_MODE_GENERAL: AGENT_PROFILE_LAW,
     AGENT_MODE_CASE: AGENT_PROFILE_RESEARCH_CACHE,
@@ -325,6 +327,34 @@ AGENT_MARKDOWN_HEADING_SCALES = {
     2: 1.3,
     3: 1.15,
 }
+
+
+def _setup_pi_model_list_item(
+    _factory: Gtk.SignalListItemFactory,
+    list_item: Gtk.ListItem,
+) -> None:
+    label = Gtk.Label(xalign=0)
+    label.set_width_chars(PI_MODEL_DROPDOWN_WIDTH_CHARS)
+    label.set_max_width_chars(PI_MODEL_DROPDOWN_MAX_WIDTH_CHARS)
+    label.set_wrap(True)
+    label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+    label.set_margin_top(6)
+    label.set_margin_bottom(6)
+    label.set_margin_start(12)
+    label.set_margin_end(12)
+    list_item.set_child(label)
+
+
+def _bind_pi_model_list_item(
+    _factory: Gtk.SignalListItemFactory,
+    list_item: Gtk.ListItem,
+) -> None:
+    item = list_item.get_item()
+    label = list_item.get_child()
+    if isinstance(item, Gtk.StringObject) and isinstance(label, Gtk.Label):
+        label.set_label(item.get_string())
+
+
 def appeal_issue_menu_label(issue: str, label: str = "", max_length: int = 72) -> str:
     source = label.strip() or issue
     for raw_line in source.splitlines():
@@ -1247,6 +1277,10 @@ class SettingsWindow(Adw.ApplicationWindow):
                 subtitle="Loading models authorized in Pi...",
             )
             model_row.set_model(Gtk.StringList.new(["Loading Pi models..."]))
+            model_list_factory = Gtk.SignalListItemFactory()
+            model_list_factory.connect("setup", _setup_pi_model_list_item)
+            model_list_factory.connect("bind", _bind_pi_model_list_item)
+            model_row.set_list_factory(model_list_factory)
             model_row.set_sensitive(False)
             model_row.connect(
                 "notify::selected",
