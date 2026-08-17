@@ -255,7 +255,15 @@ enhanced `extract-case` command first; Pi's `web_search` remains available only
 for unresolved, open-ended verification after that command's deterministic
 fallbacks. This agent-facing web search is separate from the native Python
 Tavily resolver described below. Research Cache and Prior Brief runs disable
-skills and extensions and remain closed-corpus workflows.
+skills and the web extension and remain closed-corpus workflows.
+
+All embedded runs additionally load the trusted, capture-only PiPlanner
+extension from `${XDG_DATA_HOME:-~/.local/share}/pi-planner/package/src/run-review-capture.ts`
+(override with `PI_PLANNER_REVIEW_CAPTURE_EXTENSION`) when it is installed.
+It registers no tools and does not broaden Agent capabilities; it snapshots the
+completed run (active branch only, no environment values or credentials) for
+independent `/review-run` audits in a normal coding Pi session. If it is
+absent, the Agent still launches normally with a concise stderr warning.
 
 Pi remains in a private disposable workspace rather than using the source tree
 as its working directory. Agent-facing Open Law Lens commands explicitly select
@@ -450,7 +458,11 @@ hostname.
   persistence service that preserves CourtListener cluster identity.
 - `open_law_lens/tavily.py`: native dependency-free Tavily client and shared Pi
   credential resolution.
-- `scripts/open-law-lens-agent-vte.sh`: embedded Pi terminal launcher.
+- `scripts/open-law-lens-agent-vte.sh`: embedded Pi terminal launcher. Alongside
+  `--no-extensions` isolation (and `pi-web-access` in research modes) it
+  explicitly loads the capture-only PiPlanner extension when installed; the
+  extension registers no tools and exports `PI_PLANNER_REVIEW_CAPTURE_APP=open-law-lens`,
+  the current mode as `PI_PLANNER_REVIEW_CAPTURE_WORKFLOW`, and the project root.
 - `.pi/settings.json`: project-local fallback Pi provider and model.
 - `~/.pi/agent/npm/node_modules/pi-web-access/`: user-level web-access
   package explicitly loaded for research-capable Agent runs (or the equivalent

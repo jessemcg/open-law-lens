@@ -57,23 +57,22 @@ class AgentVteWrapperTests(unittest.TestCase):
     ) -> tuple[Path, Path]:
         executable = root / "pi"
         output = root / "pi-arguments.txt"
-        executable.write_text(
+        fake_script = (
             "#!/usr/bin/env bash\n"
             "printf '%s\\n' \"$@\" > \"$CAPTURE_ARGS\"\n"
             "printf '%s\\n' \"$PI_CODING_AGENT_SESSION_DIR\" >> \"$CAPTURE_ARGS\"\n"
-            "printf '%s\\n' \"$PWD\" >> \"$CAPTURE_ARGS\"\n",
-            encoding="utf-8",
+            "printf '%s\\n' \"$PWD\" >> \"$CAPTURE_ARGS\"\n"
+            "{\n"
+            "  printf '%s\\n' \"${PI_PLANNER_REVIEW_CAPTURE_APP:-}\"\n"
+            "  printf '%s\\n' \"${PI_PLANNER_REVIEW_CAPTURE_WORKFLOW:-}\"\n"
+            "  printf '%s\\n' \"${PI_PLANNER_REVIEW_CAPTURE_PROJECT_ROOT:-}\"\n"
+            "} > \"$CAPTURE_ENV\"\n"
         )
+        executable.write_text(fake_script, encoding="utf-8")
         executable.chmod(0o755)
         if with_sibling_node:
             node = root / "node"
-            node.write_text(
-                "#!/usr/bin/env bash\n"
-                "printf '%s\\n' \"$@\" > \"$CAPTURE_ARGS\"\n"
-                "printf '%s\\n' \"$PI_CODING_AGENT_SESSION_DIR\" >> \"$CAPTURE_ARGS\"\n"
-                "printf '%s\\n' \"$PWD\" >> \"$CAPTURE_ARGS\"\n",
-                encoding="utf-8",
-            )
+            node.write_text(fake_script, encoding="utf-8")
             node.chmod(0o755)
         return executable, output
 
@@ -84,7 +83,8 @@ class AgentVteWrapperTests(unittest.TestCase):
         *,
         with_sibling_node: bool = False,
         profile: tuple[str, str, str] | None = None,
-    ) -> list[str]:
+        capture_extension: Path | None = None,
+    ) -> tuple[list[str], list[str]]:
         project, workspace, prompt = self._fixture(root)
         if mode in {"general", "appeal"}:
             self._install_web_access(root)
@@ -92,6 +92,7 @@ class AgentVteWrapperTests(unittest.TestCase):
             root,
             with_sibling_node=with_sibling_node,
         )
+        env_output = root / "pi-capture-env.txt"
         env = os.environ.copy()
         env.update(
             {
@@ -101,9 +102,15 @@ class AgentVteWrapperTests(unittest.TestCase):
                 "OPEN_LAW_LENS_PROJECT_DIR": str(project),
                 "OPEN_LAW_LENS_PI_BIN": str(pi),
                 "PI_CODING_AGENT_DIR": str(root / "pi-agent"),
+                # Guarantee the default PiPlanner capture path is absent so
+                # tests never depend on the host machine's installation state.
+                "XDG_DATA_HOME": str(root / "data-home"),
                 "CAPTURE_ARGS": str(output),
+                "CAPTURE_ENV": str(env_output),
             }
         )
+        if capture_extension is not None:
+            env["PI_PLANNER_REVIEW_CAPTURE_EXTENSION"] = str(capture_extension)
         if profile is not None:
             env.update(
                 {
@@ -113,12 +120,15 @@ class AgentVteWrapperTests(unittest.TestCase):
                 }
             )
         subprocess.run(["bash", str(WRAPPER)], env=env, check=True)
-        return output.read_text(encoding="utf-8").splitlines()
+        return (
+            output.read_text(encoding="utf-8").splitlines(),
+            env_output.read_text(encoding="utf-8").splitlines(),
+        )
 
     def test_research_mode_loads_skill_and_web_search(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            args = self._run(root, "general")
+            args, _env = self._run(root, "general")
             for flag in (
                 "--no-extensions",
                 "--no-skills",
@@ -153,7 +163,7 @@ class AgentVteWrapperTests(unittest.TestCase):
 
     def test_explicit_runtime_profile_is_passed_to_pi(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            args = self._run(
+            args, _env = self._run(
                 Path(temp_dir),
                 "brief",
                 profile=(
@@ -201,7 +211,7 @@ class AgentVteWrapperTests(unittest.TestCase):
     def test_research_mode_uses_node_shipped_beside_pi(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            args = self._run(
+            args, _env = self._run(
                 root,
                 "general",
                 with_sibling_node=True,
@@ -213,14 +223,14 @@ class AgentVteWrapperTests(unittest.TestCase):
 
     def test_appeal_mode_loads_legal_researcher_skill(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            args = self._run(Path(temp_dir), "appeal")
+            args, _env = self._run(Path(temp_dir), "appeal")
 
         self.assertIn("--skill", args)
         self.assertTrue(any(item.startswith("/skill:legal-researcher") for item in args))
 
     def test_closed_corpus_mode_disables_skill_and_web_search(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            args = self._run(Path(temp_dir), "case")
+            args, _env = self._run(Path(temp_dir), "case")
             for flag in (
                 "--no-extensions",
                 "--no-skills",
@@ -237,6 +247,105 @@ class AgentVteWrapperTests(unittest.TestCase):
             )
             self.assertIn("read,bash,grep,find,ls", args)
             self.assertNotIn("read,bash,grep,find,ls,web_search", args)
+
+    def test_capture_extension_added_alongside_web_access_in_research_mode(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            capture = root / "run-review-capture.ts"
+            capture.write_text("// capture only\n", encoding="utf-8")
+            args, capture_env = self._run(
+                root, "general", capture_extension=capture
+            )
+
+            extension_paths = [
+                args[index + 1]
+                for index, flag in enumerate(args)
+                if flag == "--extension"
+            ]
+            self.assertEqual(
+                extension_paths,
+                [
+                    str(capture),
+                    str(
+                        root
+                        / "pi-agent"
+                        / "npm"
+                        / "node_modules"
+                        / "pi-web-access"
+                        / "index.ts"
+                    ),
+                ],
+            )
+            # The capture extension loads directly after --no-extensions.
+            no_extensions = args.index("--no-extensions")
+            self.assertEqual(args[no_extensions + 1], "--extension")
+            self.assertEqual(args[no_extensions + 2], str(capture))
+            # Capture registers no tools; the allowlist is unchanged.
+            self.assertIn("read,bash,grep,find,ls,web_search", args)
+            self.assertEqual(
+                capture_env,
+                ["open-law-lens", "general", str(root / "project")],
+            )
+
+    def test_capture_extension_added_in_closed_corpus_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            capture = root / "run-review-capture.ts"
+            capture.write_text("// capture only\n", encoding="utf-8")
+            args, capture_env = self._run(
+                root, "brief", capture_extension=capture
+            )
+
+            extension_paths = [
+                args[index + 1]
+                for index, flag in enumerate(args)
+                if flag == "--extension"
+            ]
+            self.assertEqual(extension_paths, [str(capture)])
+            self.assertIn("read,bash,grep,find,ls", args)
+            self.assertNotIn("read,bash,grep,find,ls,web_search", args)
+            self.assertEqual(
+                capture_env,
+                ["open-law-lens", "brief", str(root / "project")],
+            )
+
+    def test_capture_absent_warns_and_still_launches(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            project, workspace, prompt = self._fixture(root)
+            pi, output = self._fake_pi(root)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "OPEN_LAW_LENS_AGENT_PROMPT_FILE": str(prompt),
+                    "OPEN_LAW_LENS_AGENT_WORKSPACE": str(workspace),
+                    "OPEN_LAW_LENS_AGENT_MODE": "case",
+                    "OPEN_LAW_LENS_PROJECT_DIR": str(project),
+                    "OPEN_LAW_LENS_PI_BIN": str(pi),
+                    "PI_CODING_AGENT_DIR": str(root / "pi-agent"),
+                    "XDG_DATA_HOME": str(root / "data-home"),
+                    "CAPTURE_ARGS": str(output),
+                    "CAPTURE_ENV": str(root / "pi-capture-env.txt"),
+                }
+            )
+
+            result = subprocess.run(
+                ["bash", str(WRAPPER)],
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0)
+            self.assertIn(
+                "Open Law Lens review capture unavailable:", result.stderr
+            )
+            args = output.read_text(encoding="utf-8").splitlines()
+            self.assertIn("--no-extensions", args)
+            self.assertNotIn("--extension", args)
 
     def test_research_mode_reports_missing_user_extension(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

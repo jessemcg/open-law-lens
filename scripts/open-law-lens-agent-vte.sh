@@ -103,6 +103,21 @@ if [[ "$agent_mode" == "general" || "$agent_mode" == "appeal" ]]; then
   fi
 fi
 
+# PiPlanner run-review capture: a trusted capture-only extension loaded
+# explicitly alongside --no-extensions (and, in research modes, pi-web-access).
+# It registers no tools and does not broaden embedded Agent capabilities.
+# Without it, the embedded Agent still launches, uncaptured.
+capture_extension="${PI_PLANNER_REVIEW_CAPTURE_EXTENSION:-${XDG_DATA_HOME:-${HOME:-}/.local/share}/pi-planner/package/src/run-review-capture.ts}"
+capture_args=()
+if [[ -f "$capture_extension" ]]; then
+  capture_args+=(--extension "$capture_extension")
+  export PI_PLANNER_REVIEW_CAPTURE_APP=open-law-lens
+  export PI_PLANNER_REVIEW_CAPTURE_WORKFLOW="$agent_mode"
+  export PI_PLANNER_REVIEW_CAPTURE_PROJECT_ROOT="$project_dir"
+else
+  printf 'Open Law Lens review capture unavailable: %s\n' "$capture_extension" >&2
+fi
+
 mkdir -p "$workspace/tmp" "$workspace/uv-cache" "$workspace/pi-sessions"
 mkdir -p "$workspace/.pi"
 cp -a "$project_dir/.pi/settings.json" "$workspace/.pi/"
@@ -123,6 +138,9 @@ tools="read,bash,grep,find,ls"
 args=(
   --approve
   --no-extensions
+)
+args+=(${capture_args[@]+"${capture_args[@]}"})
+args+=(
   --no-skills
   --no-prompt-templates
   --no-themes
