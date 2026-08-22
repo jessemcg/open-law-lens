@@ -21,8 +21,8 @@ CLI_COMMANDS: tuple[CliCommand, ...] = (
     CliCommand(
         name="extract-case",
         title="Extract Case",
-        description="Look up a case citation, case-like query, or CourtListener cluster ID and print JSON.",
-        example='uv run open-law-lens extract-case "13 Cal.4th 952"',
+        description="Look up a case citation, case-like query, or CourtListener cluster ID and print JSON. Use --find QUERY (repeatable) for bounded verified passages instead of full text.",
+        example='uv run open-law-lens extract-case "13 Cal.4th 952" --find "presumed father"',
     ),
     CliCommand(
         name="case-search",

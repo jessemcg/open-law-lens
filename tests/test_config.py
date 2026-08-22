@@ -46,14 +46,15 @@ class ConfigTests(unittest.TestCase):
                 DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
             )
             self.assertIn(
-                "Do not wrap legal authorities or citations in backticks",
+                "You are the Open Law Lens General California Law Agent",
                 config.general_agent_prompt_template,
             )
             self.assertIn(
-                "recent published California slip opinion",
+                "Confine research to California state law",
                 config.general_agent_prompt_template,
             )
-            self.assertIn("Cal.App.5th", config.general_agent_prompt_template)
+            self.assertIn("Question:\n{question}", config.general_agent_prompt_template)
+            self.assertNotIn("case-search", config.general_agent_prompt_template)
             self.assertEqual(config.appeal_issue_presets, list(DEFAULT_APPEAL_ISSUE_PRESETS))
             self.assertEqual(config.appeal_issue_labels, list(DEFAULT_APPEAL_ISSUE_LABELS))
             self.assertEqual(config.reader_font_size_pt, DEFAULT_READER_FONT_SIZE_PT)
@@ -225,10 +226,7 @@ Question:
             config = load_config(path)
 
             self.assertEqual(config.general_agent_prompt_template, DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE)
-            self.assertIn(
-                "Do not wrap legal authorities or citations in backticks",
-                config.general_agent_prompt_template,
-            )
+            self.assertNotIn("backticks", config.general_agent_prompt_template)
 
     def test_prior_default_general_prompt_migrates_to_recent_slip_guidance(self) -> None:
         previous_default = """You are the Open Law Lens General California Law Agent.
@@ -255,11 +253,65 @@ Question:
             config = load_config(path)
 
             self.assertEqual(config.general_agent_prompt_template, DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE)
-            self.assertIn(
-                "recent published California slip opinion",
-                config.general_agent_prompt_template,
+            self.assertNotIn("case-search", config.general_agent_prompt_template)
+
+    def test_stored_general_prompt_migrates_to_short_default(self) -> None:
+        stored_prompt = """You are the Open Law Lens General California Law Agent.
+
+Answer only legal questions about California law. Use Open Law Lens CLI commands tied directly to CourtListener APIs for legal authority and legal research. Do not use the CourtListener MCP server.
+
+For California case-law discovery, start with `uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync open-law-lens case-search "<query>"`. Treat search results as leads only. Extract the most relevant candidate opinions with `uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync open-law-lens extract-case --cluster-id <cluster_id>` before relying on a case in the answer.
+
+Confine research to California state law unless the user's question explicitly requires federal law. Prefer published California Supreme Court authority when available. Use `case-search --include-unpublished` only when unpublished cases are useful for context, not as controlling authority.
+
+Use Google Scholar or Codex web search only as a fallback to verify or fill in an official reporter citation or official text when CourtListener metadata is missing or suspect. State when a citation remains uncertain.
+
+Question:
+{question}"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text(
+                json.dumps({"general_agent_prompt_template": stored_prompt}),
+                encoding="utf-8",
             )
-            self.assertIn("Cal.App.5th", config.general_agent_prompt_template)
+
+            config = load_config(path)
+
+            self.assertEqual(
+                config.general_agent_prompt_template,
+                DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE,
+            )
+            self.assertNotIn("case-search", config.general_agent_prompt_template)
+
+    def test_superseded_tracked_default_migrates_to_short_default(self) -> None:
+        superseded_default = """You are the Open Law Lens General California Law Agent.
+
+Answer only legal questions about California law. Use Open Law Lens CLI commands tied directly to CourtListener APIs for legal authority and legal research.
+
+For California case-law discovery, start with `$OLL case-search "<query>"`. Treat search results as leads only. Extract the most relevant candidate opinions with `$OLL extract-case --cluster-id <cluster_id>` before relying on a case in the answer.
+
+Confine research to California state law unless the user's question explicitly requires federal law. Prefer published California Supreme Court and California Court of Appeal authority when available. Use `case-search --include-unpublished` only when unpublished cases are useful for context, not as controlling authority.
+
+For a recent published California slip opinion or any case missing Cal.5th or Cal.App.5th reporter markers, `extract-case` already runs the official-copy cascade through CourtListener, California Courts slip text, Scholar, and cached native Tavily discovery. Inspect its `official_pagination`, `pagination_marker_count`, and warnings; usable unpaginated text may still be returned. Use Pi's web search only for unresolved open-ended verification after that cascade. State when a citation remains uncertain.
+
+In the final answer, use normal legal prose for case names, statutes, rules, and citations. Do not wrap legal authorities or citations in backticks. Reserve backticks only for CLI commands, file paths, and other literal technical text.
+
+Question:
+{question}""".replace("$OLL", AGENT_CLI_COMMAND_PREFIX)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text(
+                json.dumps({"general_agent_prompt_template": superseded_default}),
+                encoding="utf-8",
+            )
+
+            config = load_config(path)
+
+            self.assertEqual(
+                config.general_agent_prompt_template,
+                DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE,
+            )
+            self.assertNotIn("case-search", config.general_agent_prompt_template)
 
     def test_default_agent_prompts_use_workspace_safe_command_prefix(self) -> None:
         for prompt in (
@@ -268,9 +320,14 @@ Question:
             DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
             DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
         ):
-            self.assertIn(AGENT_CLI_COMMAND_PREFIX, prompt)
             self.assertNotIn("uv run open-law-lens", prompt)
             self.assertNotIn("uv run --no-sync open-law-lens", prompt)
+        for prompt in (
+            DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE,
+            DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
+            DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
+        ):
+            self.assertIn(AGENT_CLI_COMMAND_PREFIX, prompt)
 
     def test_custom_general_prompt_is_preserved(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

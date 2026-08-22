@@ -110,6 +110,83 @@ class CliCommandTests(unittest.TestCase):
         extract.assert_called_once_with("6240402", refresh=False)
         self.assertIn('"identifier": "6240402"', output.getvalue())
 
+    def test_parser_accepts_repeated_find_with_extract_case(self) -> None:
+        parser = build_parser()
+
+        args = parser.parse_args(
+            ["extract-case", "13 Cal.4th 952", "--find", "omega", "--find", "alpha"]
+        )
+
+        self.assertEqual(args.find, ["omega", "alpha"])
+
+    def test_extract_case_find_and_text_are_mutually_exclusive(self) -> None:
+        parser = build_parser()
+
+        with self.assertRaises(SystemExit):
+            parser.parse_args(
+                ["extract-case", "13 Cal.4th 952", "--find", "omega", "--text"]
+            )
+
+    def test_extract_case_find_omits_full_text(self) -> None:
+        result = MagicMock()
+        result.ok = True
+        result.text = "The presumed father discussion."
+        result.error = ""
+        result.to_json.return_value = {
+            "ok": True,
+            "authority_type": "case",
+            "citation": "28 Cal.4th 56",
+            "text": "The presumed father discussion.",
+            "text_length": 29,
+        }
+        output = StringIO()
+        with (
+            patch("open_law_lens.cli.extract_authority", return_value=result),
+            redirect_stdout(output),
+        ):
+            status = main(
+                ["extract-case", "28 Cal.4th 56", "--find", "presumed father"]
+            )
+
+        self.assertEqual(status, 0)
+        payload = json.loads(output.getvalue())
+        self.assertNotIn("text", payload)
+        self.assertTrue(payload["text_omitted"])
+        self.assertIn("passages", payload)
+        self.assertEqual(payload["match_count"], 1)
+
+    def test_extract_case_cluster_id_with_find_omits_full_text(self) -> None:
+        result = MagicMock()
+        result.ok = True
+        result.text = "A presumed father may rebut."
+        result.error = ""
+        result.to_json.return_value = {
+            "ok": True,
+            "authority_type": "case",
+            "identifier": "6240402",
+            "text": "A presumed father may rebut.",
+            "text_length": 28,
+        }
+        output = StringIO()
+        with (
+            patch("open_law_lens.cli.extract_case_by_cluster_id", return_value=result),
+            redirect_stdout(output),
+        ):
+            status = main(
+                [
+                    "extract-case",
+                    "--cluster-id",
+                    "6240402",
+                    "--find",
+                    "presumed father",
+                ]
+            )
+
+        self.assertEqual(status, 0)
+        payload = json.loads(output.getvalue())
+        self.assertNotIn("text", payload)
+        self.assertIn("passages", payload)
+
     def test_case_search_prints_structured_json(self) -> None:
         search_result = MagicMock()
         search_result.cluster_id = "6240402"

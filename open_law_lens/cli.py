@@ -9,6 +9,7 @@ from typing import Any
 
 from . import APP_ID
 from .agent_commands import agent_cli_command
+from .authority_passages import build_authority_passages
 from .authority_resolver import extract_authority, extract_case_by_cluster_id, read_selected_text_from_os
 from .cache import JsonCache
 from .cli_commands import build_cli_commands_text
@@ -114,7 +115,24 @@ def _cmd_extract(args: argparse.Namespace) -> int:
     return _print_authority_result(args, "auto")
 
 
+def _print_case_result(result: Any, find_queries: list[str], text_mode: bool) -> int:
+    if find_queries:
+        _print_json(build_authority_passages(result, find_queries))
+        return 0 if result.ok else 1
+    if text_mode:
+        if result.text:
+            print(result.text)
+            return 0
+        if result.error:
+            print(result.error, file=sys.stderr)
+        return 1
+    _print_json(result.to_json())
+    return 0 if result.ok else 1
+
+
 def _cmd_extract_case(args: argparse.Namespace) -> int:
+    find_queries = [str(query).strip() for query in (getattr(args, "find", None) or [])]
+    find_queries = [query for query in find_queries if query]
     cluster_id = str(getattr(args, "cluster_id", "") or "").strip()
     if cluster_id:
         try:
@@ -146,18 +164,42 @@ def _cmd_extract_case(args: argparse.Namespace) -> int:
                 }
             )
             return 1
-        if getattr(args, "text", False):
-            if result.text:
-                print(result.text)
-                return 0
-            if result.error:
-                print(result.error, file=sys.stderr)
-            return 1
-        _print_json(result.to_json())
-        return 0 if result.ok else 1
+        return _print_case_result(result, find_queries, bool(getattr(args, "text", False)))
     if not str(getattr(args, "value", "") or "").strip():
         print("Case citation, query, or --cluster-id is required.", file=sys.stderr)
         return 1
+    if find_queries:
+        try:
+            result = extract_authority(
+                args.value,
+                authority_type="case",
+                refresh=getattr(args, "refresh", False),
+            )
+        except (CourtListenerError, LegInfoError, CaliforniaRulesError, ValueError, RuntimeError) as exc:
+            if getattr(args, "text", False):
+                print(str(exc), file=sys.stderr)
+                return 1
+            _print_json(
+                {
+                    "ok": False,
+                    "authority_type": "case",
+                    "input": args.value,
+                    "resolved_input": "",
+                    "source": "",
+                    "title": "",
+                    "citation": "",
+                    "identifier": "",
+                    "source_url": "",
+                    "text": "",
+                    "text_length": 0,
+                    "warnings": [],
+                    "official_pagination": False,
+                    "pagination_marker_count": 0,
+                    "error": str(exc),
+                }
+            )
+            return 1
+        return _print_case_result(result, find_queries, bool(getattr(args, "text", False)))
     return _print_authority_result(args, "case")
 
 
@@ -757,7 +799,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="bypass saved lookup and 24-hour official-copy discovery outcomes",
     )
-    extract_case_parser.add_argument("--text", action="store_true", help="print raw case text")
+    extract_case_output = extract_case_parser.add_mutually_exclusive_group()
+    extract_case_output.add_argument("--text", action="store_true", help="print raw case text")
+    extract_case_output.add_argument(
+        "--find",
+        action="append",
+        metavar="QUERY",
+        help="return bounded verified passages matching QUERY instead of full text; repeatable",
+    )
     extract_case_parser.set_defaults(func=_cmd_extract_case)
 
     slip_parser = subparsers.add_parser(

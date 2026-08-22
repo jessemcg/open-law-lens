@@ -174,6 +174,7 @@ Common California-focused examples:
 uv run open-law-lens lookup-citation "11 Cal.5th 614"
 uv run open-law-lens lookup-citation "11 Cal.5th 614" --text
 uv run open-law-lens extract-case "13 Cal.4th 952"
+uv run open-law-lens extract-case "13 Cal.4th 952" --find "presumed father"
 uv run open-law-lens case-search "beneficial relationship exception"
 uv run open-law-lens extract-statute "Welf. & Inst. Code, § 300"
 uv run open-law-lens extract-rule "Cal. Rules of Court, rule 8.1115"
@@ -188,6 +189,19 @@ pagination. Its JSON includes `official_pagination` and
 ```bash
 uv run open-law-lens extract-case "20 Cal.4th 1135" --refresh
 ```
+
+For narrow verified propositions and quotations, `--find` (repeatable) returns
+bounded exact source passages instead of the full opinion. The compact payload
+omits the full `text` field, keeps citation, source, warnings, `text_length`,
+and pagination metadata, and returns every passage with its original offsets,
+matched query names, and nearest preceding reporter page marker:
+
+```bash
+uv run open-law-lens extract-case "13 Cal.4th 952" --find "presumed father" --find "biological father"
+```
+
+`--find` is mutually exclusive with `--text`. Passing no `--find` keeps the
+ordinary full-JSON `extract-case` output unchanged.
 
 Maintenance and inspection commands:
 
@@ -249,13 +263,37 @@ profiles, prompt templates, appeal issue presets, and fact-pattern source, are
 available in the app Settings window. Subsequent Treatment uses the Query Law
 profile. **Search Briefs** is local and does not launch Pi.
 
-Law, Subsequent Treatment, and Appeal runs explicitly load the legal-researcher
-skill and the user-level `pi-web-access` extension. Agents should use the
-enhanced `extract-case` command first; Pi's `web_search` remains available only
-for unresolved, open-ended verification after that command's deterministic
-fallbacks. This agent-facing web search is separate from the native Python
-Tavily resolver described below. Research Cache and Prior Brief runs disable
-skills and the web extension and remain closed-corpus workflows.
+Law, Subsequent Treatment, and Appeal runs are research-capable. The launcher
+preloads the tracked legal-researcher skill into the disposable workspace's
+system prompt once (instead of passing `--skill` and spending a model turn
+reading the file), keeps `--no-skills` so no other skills load, and loads the
+user-level `pi-web-access` extension. Agents route by source through an
+explicit gate in that skill. There is a narrow enactment-only exception,
+reserved for requests that remain entirely textual (current statutory or rule
+text, a citation, or an effective date) with no further definition or
+consequence; everything else takes the mandatory enactment-plus-case route.
+Every definition or explanation of a legal status, doctrine, test, standard,
+or term of art — and any question touching scope, application, biology, burdens,
+rebuttal, conflicts, exceptions, rights, duties, or practical consequences —
+requires successfully extracting and citing at least one leading published
+California case. A "simple what is" question like "what is a presumed father"
+shortens the answer length but never waives that published-case floor or lets
+the agent silently treat statutes alone as sufficient. On the mandatory route,
+a known material case is direct-extracted with `extract-case --find` for narrow
+propositions in the same tool round as the statute extractions, and a focused
+`case-search --limit 5` is run only when no reliable citation or name is
+already known. Pi's `web_search` remains available only for unresolved,
+open-ended verification after those deterministic fallbacks. This agent-facing
+web search is separate from the native Python Tavily resolver
+described below. Research Cache and Prior Brief runs load no skill and no web
+extension and remain closed-corpus workflows.
+
+The wrapper also resolves `uv` deterministically before launching Pi. It uses
+the validated `OPEN_LAW_LENS_UV_BIN` override, then `uv` on `PATH`, then
+`$HOME/.local/bin/uv`, and prepends the resolved directory to `PATH` so the
+canonical `uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync ...`
+commands work even under a reduced desktop `PATH`. If `uv` cannot be resolved,
+the wrapper fails before any model work with a concise diagnostic.
 
 Pi remains in a private disposable workspace rather than using the source tree
 as its working directory. Agent-facing Open Law Lens commands explicitly select
@@ -328,8 +366,9 @@ Rating: Strong, Medium, Weak, or Frivolous
 ```
 
 The workflow is intentionally research-oriented. Pi is directed to use
-Open Law Lens CLI commands such as `case-search`, `extract-case`,
-`extract-statute`, and `extract-rule` before relying on authority.
+Open Law Lens CLI commands such as `extract-statute`, `extract-rule`,
+`extract-case` (including `extract-case --find` for narrow propositions),
+and focused `case-search` before relying on authority.
 
 Open Law Lens does not override Pi's thinking level per prompt. Pi's normal
 project or global default applies to every agent workflow.
@@ -432,6 +471,8 @@ hostname.
 - `open_law_lens/app.py`: GTK/Libadwaita app, reader, Research Cache, settings,
   and embedded Pi workflow.
 - `open_law_lens/cli.py`: `open-law-lens` command dispatcher.
+- `open_law_lens/authority_passages.py`: bounded verified opinion-passage
+  extraction backing `extract-case --find`.
 - `open_law_lens/client.py`: CourtListener API access and opinion extraction.
 - `open_law_lens/cache.py`: disposable JSON cache layout and citation
   normalization.
@@ -458,8 +499,9 @@ hostname.
 - `~/.pi/agent/npm/node_modules/pi-web-access/`: user-level web-access
   package explicitly loaded for research-capable Agent runs (or the equivalent
   path under `PI_CODING_AGENT_DIR`).
-- `.pi/skills/legal-researcher/SKILL.md`: Pi legal-research workflow and
-  web-search fallback rules.
+- `.pi/skills/legal-researcher/SKILL.md`: Pi legal-research workflow,
+  web-search fallback rules, and the pre-answer legal-source audit. The
+  launcher preloads this file into the system prompt for research modes.
 
 ## Local Files and Credentials
 

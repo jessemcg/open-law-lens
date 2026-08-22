@@ -14,6 +14,31 @@ library_db="${OPEN_LAW_LENS_LIBRARY_DB:-}"
 prior_briefs_db="${OPEN_LAW_LENS_PRIOR_BRIEFS_DB:-}"
 prior_briefs_dir="${OPEN_LAW_LENS_PRIOR_BRIEFS_DIR:-}"
 
+# Resolve uv before doing any model work. Order: validated explicit override,
+# then PATH lookup, then the standard user-local install.
+uv_bin="${OPEN_LAW_LENS_UV_BIN:-}"
+if [[ -n "$uv_bin" ]]; then
+  if [[ "$uv_bin" == */* ]]; then
+    [[ -x "$uv_bin" ]] || uv_bin=""
+  else
+    uv_bin="$(command -v "$uv_bin" 2>/dev/null || true)"
+  fi
+fi
+if [[ -z "$uv_bin" ]]; then
+  uv_bin="$(command -v uv 2>/dev/null || true)"
+fi
+if [[ -z "$uv_bin" ]]; then
+  if [[ -x "${HOME:-}/.local/bin/uv" ]]; then
+    uv_bin="${HOME}/.local/bin/uv"
+  fi
+fi
+if [[ -z "$uv_bin" || ! -x "$uv_bin" ]]; then
+  printf 'Open Law Lens requires the uv executable for agent research.\n' >&2
+  printf 'Install uv or set OPEN_LAW_LENS_UV_BIN to its full path.\n' >&2
+  exit 127
+fi
+export PATH="$(dirname "$uv_bin"):$PATH"
+
 if [[ -z "$prompt_file" || ! -f "$prompt_file" ]]; then
   printf 'Open Law Lens agent prompt file not found: %s\n' "$prompt_file" >&2
   exit 2
@@ -107,8 +132,13 @@ mkdir -p "$workspace/tmp" "$workspace/uv-cache" "$workspace/pi-sessions"
 mkdir -p "$workspace/.pi"
 cp -a "$project_dir/.pi/settings.json" "$workspace/.pi/"
 cp -a "$project_dir/.pi/SYSTEM.md" "$workspace/.pi/"
-[[ ! -d "$project_dir/.pi/skills" ]] \
-  || cp -a "$project_dir/.pi/skills" "$workspace/.pi/"
+# The mandatory legal-researcher skill is preloaded into the workspace system
+# prompt for research modes so Pi starts researching immediately instead of
+# spending a turn reading the skill file. Do not copy the skills directory.
+if [[ "$agent_mode" == "general" || "$agent_mode" == "appeal" ]]; then
+  printf '\n' >> "$workspace/.pi/SYSTEM.md"
+  cat "$skill" >> "$workspace/.pi/SYSTEM.md"
+fi
 export TMPDIR="$workspace/tmp"
 export UV_CACHE_DIR="$workspace/uv-cache"
 export PI_CODING_AGENT_SESSION_DIR="$workspace/pi-sessions"
@@ -135,10 +165,8 @@ if [[ -n "$pi_provider" ]]; then
   args+=(--provider "$pi_provider" --model "$pi_model" --thinking "$pi_thinking")
 fi
 if [[ "$agent_mode" == "general" || "$agent_mode" == "appeal" ]]; then
-  args+=(--skill "$workspace/.pi/skills/legal-researcher/SKILL.md")
   args+=(--extension "$extension")
   tools+=",web_search"
-  prompt=$'/skill:legal-researcher\n'"$prompt"
 fi
 args+=(--tools "$tools")
 

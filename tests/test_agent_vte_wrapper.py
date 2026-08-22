@@ -124,13 +124,18 @@ class AgentVteWrapperTests(unittest.TestCase):
                 "--no-context-files",
             ):
                 self.assertIn(flag, args)
-            self.assertIn("--skill", args)
+            self.assertNotIn("--skill", args)
+            self.assertFalse(any(item.startswith("/skill:legal-researcher") for item in args))
             self.assertEqual(args.count("--extension"), 1)
             self.assertNotIn("capture", stderr.lower())
+            system_prompt_path = Path(args[args.index("--system-prompt") + 1])
             self.assertEqual(
-                args[args.index("--system-prompt") + 1],
+                str(system_prompt_path),
                 str(root / "workspace" / ".pi" / "SYSTEM.md"),
             )
+            system_prompt = system_prompt_path.read_text(encoding="utf-8")
+            self.assertEqual(system_prompt.count("name: legal-researcher"), 1)
+            self.assertIn("Open Law Lens legal knowledge work", system_prompt)
             extension_index = args.index("--extension")
             self.assertEqual(
                 args[extension_index + 1],
@@ -145,7 +150,6 @@ class AgentVteWrapperTests(unittest.TestCase):
             )
             self.assertIn("read,bash,grep,find,ls,web_search", args)
             self.assertNotIn("--thinking", args)
-            self.assertTrue(any(item.startswith("/skill:legal-researcher") for item in args))
             self.assertEqual(args[-2], str(root / "workspace" / "pi-sessions"))
             self.assertEqual(args[-1], str(root / "workspace"))
 
@@ -209,12 +213,17 @@ class AgentVteWrapperTests(unittest.TestCase):
             self.assertIn("--extension", args)
             self.assertIn("read,bash,grep,find,ls,web_search", args)
 
-    def test_appeal_mode_loads_legal_researcher_skill(self) -> None:
+    def test_appeal_mode_preloads_legal_researcher_skill(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            args, stderr = self._run(Path(temp_dir), "appeal")
+            root = Path(temp_dir)
+            args, stderr = self._run(root, "appeal")
 
-        self.assertIn("--skill", args)
-        self.assertTrue(any(item.startswith("/skill:legal-researcher") for item in args))
+            self.assertNotIn("--skill", args)
+            self.assertFalse(any(item.startswith("/skill:legal-researcher") for item in args))
+            system_prompt = Path(args[args.index("--system-prompt") + 1]).read_text(
+                encoding="utf-8"
+            )
+            self.assertEqual(system_prompt.count("name: legal-researcher"), 1)
 
     def test_closed_corpus_mode_disables_skill_and_web_search(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -230,10 +239,14 @@ class AgentVteWrapperTests(unittest.TestCase):
             self.assertNotIn("--skill", args)
             self.assertNotIn("--extension", args)
             self.assertNotIn("capture", stderr.lower())
+            system_prompt = Path(args[args.index("--system-prompt") + 1]).read_text(
+                encoding="utf-8"
+            )
             self.assertEqual(
                 args[args.index("--system-prompt") + 1],
                 str(Path(temp_dir) / "workspace" / ".pi" / "SYSTEM.md"),
             )
+            self.assertNotIn("name: legal-researcher", system_prompt)
             self.assertIn("read,bash,grep,find,ls", args)
             self.assertNotIn("read,bash,grep,find,ls,web_search", args)
 
@@ -317,8 +330,8 @@ class AgentVteWrapperTests(unittest.TestCase):
         text = LEGAL_RESEARCHER_SKILL.read_text(encoding="utf-8")
 
         self.assertIn("For Appeal Issue research", text)
-        self.assertIn("names the specific appellate", text)
-        self.assertIn("`## Assessment`", text)
+        self.assertIn("make the required H1 title issue-specific", text)
+        self.assertIn("`# Assessment`", text)
         self.assertIn("treat the supplied fact pattern as the complete", text)
         self.assertIn("do not add a generic record-completeness caveat", text)
         self.assertIn("missing record citation only where it affects", text)
@@ -328,3 +341,185 @@ class AgentVteWrapperTests(unittest.TestCase):
             "open-law-lens <command>",
             text,
         )
+
+    def test_skill_contract_case_floor_and_audit_and_no_h1_h2_conflict(
+        self,
+    ) -> None:
+        text = LEGAL_RESEARCHER_SKILL.read_text(encoding="utf-8")
+        system = (PROJECT_DIR / ".pi" / "SYSTEM.md").read_text(encoding="utf-8")
+
+        # An explicit two-route gate replaces the discretionary "ask whether;
+        # if so" formulation. The old wording must not survive.
+        self.assertIn("Route gate", text)
+        self.assertIn("Route A", text)
+        self.assertIn("Route B", text)
+        self.assertNotIn("ask whether", text.lower())
+        self.assertNotIn("; if so", text)
+
+        # Legal-status and term-of-art questions are explicitly case-required.
+        self.assertIn(
+            "mandatory enactment-plus-case route",
+            text,
+        )
+        self.assertIn(
+            "definition\nor explanation of a legal status, doctrine, test, standard, or term of art",
+            text,
+        )
+        self.assertIn("least one leading published California case", text)
+
+        # The presumed-father example is explicitly outside the enactment-only
+        # exception.
+        self.assertIn("presumed father", text)
+        self.assertIn(
+            "mandatory-case (Route B) example, not a purely textual definition",
+            text,
+        )
+
+        # The enactment-only exception is limited to requests that remain
+        # entirely textual.
+        self.assertIn("narrow enactment-only exception", text)
+        self.assertIn("confined to that text", text)
+        self.assertIn("Do not define a", text)
+        self.assertIn(
+            "legal status, doctrine, test, standard, or term of art inside this route",
+            text,
+        )
+
+        # A mandatory route requires successful extraction and a final
+        # citation, and refuses silent downgrade to enactment-only.
+        self.assertIn(
+            "successfully extract and cite",
+            text,
+        )
+        self.assertIn(
+            "Do not silently decide that the statutes are \"enough\"",
+            text,
+        )
+        self.assertIn(
+            "disclose the case-law verification gap and confine",
+            text,
+        )
+
+        # Direct bounded extraction and same-round parallelism remain preferred
+        # over broad discovery.
+        self.assertIn(
+            'extract-case "<citation>" --find "<term>"',
+            text,
+        )
+        self.assertIn(
+            "independent statute/rule and known-case extractions in the same tool",
+            text,
+        )
+        self.assertIn(
+            "Stop after the current enactment and the minimum case authority",
+            text,
+        )
+        self.assertIn("run exactly one focused search", text)
+
+        # The pre-answer audit is a source gate: every mandatory trigger needs
+        # a case extraction plus a normalized citation in the body, and each
+        # proposition must trace to a directly extracted case.
+        self.assertIn("audit the title, subtitle, and body", text)
+        self.assertIn("successful\n  case extraction and a corresponding normalized case citation", text)
+        self.assertIn("Reconcile opening clauses", text)
+        self.assertIn(
+            'Preserve every material "except," "unless," "may," "must," and "only"',
+            text,
+        )
+        self.assertIn(
+            "Do not cite a case mentioned inside another opinion",
+            text,
+        )
+        self.assertIn("regardless of biology", text)
+        self.assertIn(
+            'An amendment note proves an effective date, not that an amendment changed',
+            text,
+        )
+
+        # The merged prompt contains no H1/H2 conflict: the skill defers to the
+        # system's required H1 title and no longer prescribes a level-two
+        # heading for the Appeal answer.
+        self.assertIn("# Specific Issue Title", system)
+        self.assertIn("*Short disposition*", system)
+        self.assertIn("make the required H1 title issue-specific", text)
+        self.assertIn("`# Cal-ICWA Inquiry`", text)
+        self.assertNotIn("level-two", text)
+        self.assertNotIn("`## Cal-ICWA Inquiry`", text)
+        self.assertNotIn("`## Assessment`", text)
+
+    def _minimal_env(self, root: Path, mode: str = "case") -> dict[str, str]:
+        project, workspace, prompt = self._fixture(root)
+        pi, output = self._fake_pi(root)
+        env = os.environ.copy()
+        env.update(
+            {
+                "OPEN_LAW_LENS_AGENT_PROMPT_FILE": str(prompt),
+                "OPEN_LAW_LENS_AGENT_WORKSPACE": str(workspace),
+                "OPEN_LAW_LENS_AGENT_MODE": mode,
+                "OPEN_LAW_LENS_PROJECT_DIR": str(project),
+                "OPEN_LAW_LENS_PI_BIN": str(pi),
+                "CAPTURE_ARGS": str(output),
+                "PATH": "/usr/bin:/bin",
+            }
+        )
+        return env
+
+    @staticmethod
+    def _write_executable(path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        path.chmod(0o755)
+
+    def test_missing_uv_fails_before_pi_launch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            env = self._minimal_env(root)
+            env["HOME"] = str(root / "no-uv-home")
+            (root / "no-uv-home").mkdir(parents=True)
+
+            result = subprocess.run(
+                ["bash", str(WRAPPER)],
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 127)
+        self.assertIn("requires the uv executable", result.stderr)
+
+    def test_uv_resolved_from_home_local_bin_on_minimal_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            env = self._minimal_env(root)
+            home = root / "home"
+            self._write_executable(home / ".local" / "bin" / "uv")
+            env["HOME"] = str(home)
+
+            result = subprocess.run(
+                ["bash", str(WRAPPER)],
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_uv_override_is_used(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            env = self._minimal_env(root)
+            override = root / "uv-override"
+            self._write_executable(override)
+            env["OPEN_LAW_LENS_UV_BIN"] = str(override)
+
+            result = subprocess.run(
+                ["bash", str(WRAPPER)],
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)

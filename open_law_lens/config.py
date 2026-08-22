@@ -84,6 +84,10 @@ LEGACY_GENERAL_AGENT_PROMPT_SHA256ES = (
     "50a9928018ec7d3b06b322db9e5a211e56c7a155b09537d1f7057906fb6a14e4",
     "5d787ed00945b45a32f60026679908a718fc7d174080951f5f3bbe5e70921dc6",
     "e8da4e994bce96bd6acc337c1361fa225adf62a6cc5f5044ff42ed17c1d14aec",
+    # Historical default that retained case-search/extract-case workflow text.
+    "34f68d9555ec52349ee41209d9e3a85359b1b71613a141df01c1caef9156ac59",
+    # Prompt as stored on disk before the workflow text moved into the skill.
+    "0d41e7db6fdb921685d704da391bbe8b2341118fae09f3a96e4534eba07210f0",
 )
 LEGACY_CASE_AGENT_PROMPT_SHA256ES = (
     "90bd5ba6984eb91b4b7c72c3a33617896ed2b6279ce3bdd5592f07f15fc73f9b",
@@ -102,6 +106,9 @@ LEGACY_APPEAL_ISSUE_AGENT_PROMPT_SHA256ES = (
     "cc5c2ba125d0ee0ff42d65db1b58f0d9e7fc281ad1a12d3693f82caca551af24",
     "148e132f9bf9440d84437f2116cb2f2bcc7bbc4654d1508d2644ea8a9dbb3614",
     "5efdaaf4380c89a75ed1073d8a6476511cd59d58c54837e6d741f8dfa386e8a2",
+    # Retained case-search-first research paragraph before the skill's route
+    # gate was aligned into the Appeal prompt.
+    "6e12830dcbf441e0a75670284678eeeebe193d27e33574eeed87f01a1af461bb",
 )
 LEGACY_LATER_TREATMENT_AGENT_PROMPT_SHA256ES = (
     "e73fc8abadd94b2affb966c126dfb0c2416e0fc86c1994baa486b01deb5d1834",
@@ -109,18 +116,10 @@ LEGACY_LATER_TREATMENT_AGENT_PROMPT_SHA256ES = (
 
 DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens General California Law Agent.
 
-Answer only legal questions about California law. Use Open Law Lens CLI commands tied directly to CourtListener APIs for legal authority and legal research.
-
-For California case-law discovery, start with `$OLL case-search "<query>"`. Treat search results as leads only. Extract the most relevant candidate opinions with `$OLL extract-case --cluster-id <cluster_id>` before relying on a case in the answer.
-
-Confine research to California state law unless the user's question explicitly requires federal law. Prefer published California Supreme Court and California Court of Appeal authority when available. Use `case-search --include-unpublished` only when unpublished cases are useful for context, not as controlling authority.
-
-For a recent published California slip opinion or any case missing Cal.5th or Cal.App.5th reporter markers, `extract-case` already runs the official-copy cascade through CourtListener, California Courts slip text, Scholar, and cached native Tavily discovery. Inspect its `official_pagination`, `pagination_marker_count`, and warnings; usable unpaginated text may still be returned. Use Pi's web search only for unresolved open-ended verification after that cascade. State when a citation remains uncertain.
-
-In the final answer, use normal legal prose for case names, statutes, rules, and citations. Do not wrap legal authorities or citations in backticks. Reserve backticks only for CLI commands, file paths, and other literal technical text.
+Answer only legal questions about California law. Confine research to California state law unless the user's question explicitly requires federal law.
 
 Question:
-{question}""".replace("$OLL", AGENT_CLI_COMMAND_PREFIX)
+{question}"""
 
 DEFAULT_CASE_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens Marked Research Cache Agent.
 
@@ -199,7 +198,7 @@ Treat the supplied fact pattern as the complete factual record for this assessme
 Argument to assess:
 {issue}
 
-Research California law with Open Law Lens CLI commands. For case-law discovery, start with `$OLL case-search "<query>"`. Treat search results as leads only. When a promising search result has an official citation or recognizable case name, try `$OLL extract-case "<official citation or case name>"` first so saved durable-library text can be reused. Use `$OLL extract-case --cluster-id <cluster_id>` only when citation/name extraction fails or no reliable citation/name is available. Use `$OLL extract-statute "<citation>"` and `$OLL extract-rule "<citation>"` when statutes or rules matter.
+Research California law with Open Law Lens CLI commands. Extract the current controlling enactment first with `$OLL extract-statute "<citation>"` and `$OLL extract-rule "<citation>"`. For a known material case, direct-extract it with `$OLL extract-case "<official citation or case name>"`, using `--find "<term>"` for a narrow bounded proposition. Use `$OLL extract-case --cluster-id <cluster_id>` only when citation or name extraction fails. Run a focused `$OLL case-search "<query>" --limit 5` only when no reliable citation or case name is known, then extract the best published result. Treat search results as leads only.
 
 For a recent published California slip opinion or any case missing Cal.5th or Cal.App.5th reporter markers, `extract-case` already runs the official-copy cascade through CourtListener, California Courts slip text, Scholar, and cached native Tavily discovery. Inspect its `official_pagination`, `pagination_marker_count`, and warnings; usable unpaginated text may still be returned. Use Pi's web search only for unresolved open-ended verification after that cascade.
 
