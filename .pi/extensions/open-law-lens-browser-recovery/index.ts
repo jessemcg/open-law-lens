@@ -20,6 +20,7 @@ import { env, execPath } from "node:process";
 import {
   ALLOWED_TOOLS,
   MAX_GET_APP_STATE_NODES,
+  MCP_DETAILS_MAX_BYTES,
   SERVER_NAME,
   authorizeWindow,
   decideTool,
@@ -131,6 +132,11 @@ export default async function (pi: ExtensionAPI) {
         sampling: false,
         elicitation: false,
         disableProxyTool: false,
+        outputGuard: {
+          // Keep the bounded tree available only to mcpScript. Model-facing
+          // output retains the adapter's normal 50 KiB / 2,000-line caps.
+          detailsMaxBytes: MCP_DETAILS_MAX_BYTES,
+        },
       },
     },
   });

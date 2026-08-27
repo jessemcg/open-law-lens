@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   ALLOWED_PRESS_KEYS,
   ALLOWED_TOOLS,
+  MCP_DETAILS_MAX_BYTES,
   authorizeWindow,
   decideTool,
   initialBrokerState,
@@ -31,6 +32,10 @@ test("allowlist is exactly the six desktop tools", () => {
     [...ALLOWED_TOOLS].sort(),
     ["doctor", "focused_window", "get_app_state", "list_windows", "perform_action", "press_key"].sort(),
   );
+});
+
+test("mcpScript details budget fits a bounded Firefox accessibility tree", () => {
+  assert.equal(MCP_DETAILS_MAX_BYTES, 2 * 1024 * 1024);
 });
 
 test("read-only tools are allowed without authorization", () => {

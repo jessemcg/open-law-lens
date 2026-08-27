@@ -29,6 +29,15 @@ export const ALLOWED_PRESS_KEYS: ReadonlySet<string> = new Set(["ctrl+a", "ctrl+
 /** Upper bound on `get_app_state` nodes to avoid flooding model context. */
 export const MAX_GET_APP_STATE_NODES = 1000;
 
+/**
+ * Keep the bounded accessibility tree available inside mcpScript for filtering.
+ * Model-facing MCP output remains guarded at the adapter defaults; only the
+ * extension-local details payload is raised above Firefox's roughly 400 KiB
+ * 1,000-node tree. This avoids spilling the tree to a file that the confined
+ * script worker cannot read.
+ */
+export const MCP_DETAILS_MAX_BYTES = 2 * 1024 * 1024;
+
 export interface AuthorizedWindow {
   windowId: number;
   title: string;

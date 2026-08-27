@@ -184,36 +184,144 @@ def recovery_environment(
 
 def recovery_system_prompt(request: ScholarRecoveryRequest) -> str:
     expected = request.expected_citation or request.query
-    return f"""You are recovering the exact officially paginated Google Scholar copy of one
+    case_name = request.case_name or "(not supplied; use the citation-only fallback)"
+    header = f"""You are recovering the exact officially paginated Google Scholar copy of one
 California published case using the user's current default HTTPS browser.
 
 Target query: {request.query}
 Expected official citation: {expected}
+Expected case name: {case_name}
 
 Your only job is to drive the confined desktop tools to open Scholar, select the
 exact matching case, copy its full opinion text, and record a machine-readable
-result. Follow these rules exactly and do nothing else:
-
-1. Run the computer-use doctor once and confirm readiness before any desktop
-   action. If it fails, record outcome "failed".
-2. Call `open_law_lens_launch_scholar_query` exactly once with the target query
-   to open Scholar in the default browser. Never substitute a different query.
-3. Identify the Scholar browser window by exact window_id and title/URL through
-   list_windows/focused_window/get_app_state (no screenshots, no app-id
-   targeting, no coordinates).
-4. Authorize only an observed scholar.google.com window, then use mcpScript to
-   find the result whose nearby text contains the expected citation, activate it
-   by element_index, and re-observe to confirm the Scholar opinion page.
-5. Copy the full opinion with only Ctrl+A then Ctrl+C (re-observing between
-   actions). Screenshots, typing, scrolling, clicking coordinates, login, and
-   CAPTCHA automation are forbidden.
-6. If a CAPTCHA or robot check appears, record outcome "blocked" and stop.
-7. If no matching case is found, record outcome "not_found".
-8. If the opinion copied successfully, record outcome "copied" with the exact
-   Scholar case URL (a https scholar.google.com/scholar_case URL).
-9. Always finish by calling `open_law_lens_complete_scholar_recovery` exactly
-   once with your outcome. Do not use bash, filesystem tools, or web_search.
+result. Follow the sequence below exactly. Do not request MCP server
+instructions, describe tools, or improvise alternate call shapes.
 """
+    procedure = r"""
+1. Call `mcp` once with tool `computer_use_linux_doctor`. If readiness has a
+   blocker, complete with outcome "failed".
+2. Call `open_law_lens_launch_scholar_query` exactly once with the target query.
+3. Call `mcp` with tool `computer_use_linux_list_windows`. Choose the exact
+   Scholar search window_id. Never use app-id targeting or coordinates.
+4. Observe that window ONLY through `mcpScript`, using the OBSERVE SCRIPT below.
+   A direct get_app_state call floods context. Every get_app_state call MUST
+   include the exact numeric window_id, `include_screenshot:false`,
+   `max_nodes:1000`, and `max_depth:14`; omitting max_nodes is policy-denied.
+5. From the OBSERVE SCRIPT's bounded output, authorize the observed window with
+   `open_law_lens_authorize_scholar_window` using its exact window_id, title,
+   and scholar.google.com URL.
+6. Run the SELECT SCRIPT below through `mcpScript`, replacing only WINDOW_ID
+   with the observed integer. The citation and case name are already safely
+   embedded. It re-observes the authorized window, validates citation
+   proximity, and invokes only the exact result's element_index. If it emits
+   found:false, complete
+   "not_found". Never act on an uncorroborated link.
+7. Run the OBSERVE SCRIPT again. The emitted URL must be an HTTPS
+   scholar.google.com/scholar_case URL and the title must identify the expected
+   case. A CAPTCHA/robot page means outcome "blocked".
+8. With a fresh observation already made, call `mcp` tool
+   `computer_use_linux_press_key` with args `{window_id: WINDOW_ID, key:
+   "Ctrl+A"}`. Run the OBSERVE SCRIPT once more, then call the same tool with
+   `{window_id: WINDOW_ID, key:"Ctrl+C"}`. Those are the only allowed keys.
+9. Complete exactly once with outcome "copied", the target query, and the exact
+   Scholar case URL emitted in step 7. On every failure, still call
+   `open_law_lens_complete_scholar_recovery` exactly once. Never use bash,
+   filesystem tools, web_search, screenshots, typing, scrolling, coordinate
+   clicks, login, or CAPTCHA automation.
+
+OBSERVE SCRIPT (replace WINDOW_ID with the observed integer):
+```js
+const windowId = WINDOW_ID;
+const r = await tools.call("computer_use_linux_get_app_state", {
+  window_id: windowId,
+  include_screenshot: false,
+  max_nodes: 1000,
+  max_depth: 14,
+});
+if (!r.ok) { emit({ ok: false, error: r.error }); return; }
+const p = r.data && r.data.structuredContent;
+const tree = (p && p.accessibility_tree) || [];
+const address = tree.find((n) =>
+  n.role === "combo box" &&
+  n.text && typeof n.text.content === "string" &&
+  n.text.content.includes("scholar.google.com/")
+);
+const rawUrl = address && address.text.content;
+const url = rawUrl && (rawUrl.startsWith("https://") ? rawUrl : `https://${rawUrl}`);
+emit({
+  ok: Boolean(url),
+  window_id: windowId,
+  title: p && p.window_context && p.window_context.title,
+  url: url || "",
+});
+```
+
+SELECT SCRIPT (replace WINDOW_ID only):
+```js
+const windowId = WINDOW_ID;
+const expected = "EXPECTED_CITATION";
+const caseName = "EXPECTED_CASE_NAME";
+const norm = (v) => String(v || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+const r = await tools.call("computer_use_linux_get_app_state", {
+  window_id: windowId,
+  include_screenshot: false,
+  max_nodes: 1000,
+  max_depth: 14,
+});
+if (!r.ok) { emit({ found: false, error: r.error }); return; }
+const p = r.data && r.data.structuredContent;
+const tree = (p && p.accessibility_tree) || [];
+const byIndex = new Map(tree.map((n) => [n.index, n]));
+const within = (node, ancestorIndex) => {
+  let pnode = node;
+  for (let i = 0; pnode && i < 16; i += 1, pnode = byIndex.get(pnode.parent_index)) {
+    if (pnode.index === ancestorIndex) return true;
+  }
+  return false;
+};
+const nodeText = (n) => `${n.name || ""} ${(n.text && n.text.content) || ""}`;
+const expectedNorm = norm(expected);
+const caseNorm = norm(caseName);
+const isShowing = (n) =>
+  Array.isArray(n.states) && n.states.includes("showing") && n.states.includes("visible");
+let selected = null;
+for (const link of tree.filter((n) => n.role === "link" && n.name && isShowing(n))) {
+  const linkNorm = norm(link.name);
+  if (!caseNorm || !(linkNorm.includes(caseNorm) || caseNorm.includes(linkNorm))) continue;
+  let heading = byIndex.get(link.parent_index);
+  while (heading && heading.role !== "heading") heading = byIndex.get(heading.parent_index);
+  const block = heading && byIndex.get(heading.parent_index);
+  if (!block) continue;
+  const nearby = tree.filter((n) => within(n, block.index)).map(nodeText).join(" ");
+  if (norm(nearby).includes(expectedNorm)) { selected = link; break; }
+}
+if (!selected) {
+  const hit = tree.find((n) => isShowing(n) && norm(nodeText(n)).includes(expectedNorm));
+  for (let block = hit && byIndex.get(hit.parent_index); block && !selected;
+       block = byIndex.get(block.parent_index)) {
+    const links = tree.filter((n) =>
+      n.role === "link" && isShowing(n) && within(n, block.index)
+    );
+    selected = links.find((link) => {
+      let parent = byIndex.get(link.parent_index);
+      while (parent && parent.index !== block.index) {
+        if (parent.role === "heading") return true;
+        parent = byIndex.get(parent.parent_index);
+      }
+      return false;
+    }) || null;
+  }
+}
+if (!selected) { emit({ found: false }); return; }
+const acted = await tools.call("computer_use_linux_perform_action", {
+  element_index: selected.index,
+});
+emit({ found: acted.ok, element_index: selected.index, name: selected.name || "" });
+```
+"""
+    procedure = procedure.replace('"EXPECTED_CITATION"', json.dumps(expected))
+    procedure = procedure.replace('"EXPECTED_CASE_NAME"', json.dumps(request.case_name))
+    return header + procedure
 
 
 RECOVERY_USER_MESSAGE = "Perform the default-browser Google Scholar recovery and record the result."
@@ -225,7 +333,7 @@ JOB_EXTENSION_REL = Path(".pi/extensions/open-law-lens-scholar-recovery/index.ts
 def recovery_pi_command(
     *,
     project_dir: Path,
-    prompt_path: Path,
+    system_prompt: str,
     profile: tuple[str, str, str] | None,
 ) -> list[str]:
     pi_executable = find_pi_executable()
@@ -254,7 +362,7 @@ def recovery_pi_command(
             "mcp,mcpScript,open_law_lens_authorize_scholar_window,"
             "open_law_lens_launch_scholar_query,open_law_lens_complete_scholar_recovery",
             "--system-prompt",
-            str(prompt_path),
+            system_prompt,
         ]
     )
     if profile is not None:
@@ -315,7 +423,8 @@ class ScholarRecoveryJob:
             encoding="utf-8",
         )
         prompt_path = self.runtime_dir / PROMPT_FILENAME
-        prompt_path.write_text(recovery_system_prompt(self.request), encoding="utf-8")
+        system_prompt = recovery_system_prompt(self.request)
+        prompt_path.write_text(system_prompt, encoding="utf-8")
         # A stale result from an earlier attempt must never leak into this run.
         self.result_path.unlink(missing_ok=True)
         self.env = recovery_environment(
@@ -325,7 +434,7 @@ class ScholarRecoveryJob:
         )
         self.command = recovery_pi_command(
             project_dir=self.project_dir,
-            prompt_path=prompt_path,
+            system_prompt=system_prompt,
             profile=self.profile,
         )
 

@@ -11,6 +11,7 @@ from open_law_lens.browser_recovery import (
     is_scholar_case_url,
     recovery_environment,
     recovery_pi_command,
+    recovery_system_prompt,
     request_from_query,
     validate_recovery_result,
 )
@@ -73,12 +74,31 @@ class BrowserRecoveryRequestTests(unittest.TestCase):
         self.assertEqual(request.cluster_id, "42")
         self.assertEqual(request.case_name, "In re C.L.")
 
+    def test_system_prompt_supplies_valid_bounded_mcp_call_shapes(self) -> None:
+        prompt = recovery_system_prompt(
+            ScholarRecoveryRequest(
+                query="11 Cal.5th 614",
+                expected_citation="11 Cal.5th 614",
+                case_name='In re "Caden" C.',
+            )
+        )
+        self.assertIn('"computer_use_linux_get_app_state"', prompt)
+        self.assertIn("max_nodes: 1000", prompt)
+        self.assertIn("include_screenshot: false", prompt)
+        self.assertIn("r.data && r.data.structuredContent", prompt)
+        self.assertIn('n.states.includes("showing")', prompt)
+        self.assertIn('n.states.includes("visible")', prompt)
+        self.assertIn('const expected = "11 Cal.5th 614";', prompt)
+        self.assertIn('const caseName = "In re \\"Caden\\" C.";', prompt)
+        self.assertNotIn('const expected = "EXPECTED_CITATION";', prompt)
+        self.assertNotIn('const caseName = "EXPECTED_CASE_NAME";', prompt)
+
     def test_command_loads_bridge_and_job_extensions(self) -> None:
         project_dir = Path("/src/open-law-lens")
-        prompt_path = Path("/tmp/recovery-prompt.txt")
+        system_prompt = "Purpose-specific Scholar recovery instructions."
         command = recovery_pi_command(
             project_dir=project_dir,
-            prompt_path=prompt_path,
+            system_prompt=system_prompt,
             profile=None,
         )
         joined = " ".join(command)
@@ -90,7 +110,9 @@ class BrowserRecoveryRequestTests(unittest.TestCase):
         self.assertIn("open_law_lens_authorize_scholar_window", joined)
         self.assertIn("open-law-lens-browser-recovery/index.ts", joined)
         self.assertIn("open-law-lens-scholar-recovery/index.ts", joined)
-        self.assertIn("--system-prompt", command)
+        prompt_index = command.index("--system-prompt")
+        self.assertEqual(command[prompt_index + 1], system_prompt)
+        self.assertNotEqual(command[prompt_index + 1], "/tmp/recovery-prompt.txt")
         self.assertEqual(command[-1], RECOVERY_USER_MESSAGE)
         # No bash or filesystem tools may be exposed.
         self.assertNotIn("bash,", joined)
