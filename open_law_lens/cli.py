@@ -37,6 +37,8 @@ from .scholar_browser import (
     scholar_launch_to_json,
 )
 from .external_import import normalize_official_citation
+from .browser_recovery import DEFAULT_TIMEOUT_SECONDS
+from .scholar_recovery_service import recover_official_copy
 from .slip_opinions import (
     DEFAULT_SLIP_OPINION_MAX_AGE_DAYS,
     SlipOpinionError,
@@ -187,77 +189,135 @@ def _print_case_result(result: Any, find_queries: list[str], text_mode: bool) ->
     return 0 if result.ok else 1
 
 
+def _stderr_progress(stage: str, elapsed: float | None) -> None:
+    suffix = "" if elapsed is None else f" ({elapsed:.0f}s)"
+    sys.stderr.write(f"open-law-lens: {stage}{suffix}\n")
+    sys.stderr.flush()
+
+
+def _recovery_progress_active(options: "argparse.Namespace") -> bool:
+    if bool(getattr(options, "progress", False)):
+        return True
+    try:
+        return bool(sys.stderr.isatty())
+    except Exception:
+        return False
+
+
+def _recover_official_authority(
+    result: Any,
+    *,
+    cluster_id: str,
+    progress: bool,
+    timeout: float | None,
+) -> Any:
+    """Apply one deterministic Scholar recovery to an unpaginated baseline.
+
+    Returns the re-extracted Library-backed authority on success, or the
+    original baseline (with an added recovery warning) otherwise. Usable
+    unpaginated baselines are never turned into a failure.
+    """
+    if getattr(result, "official_pagination", False):
+        return result
+    citation = normalize_official_citation(str(getattr(result, "citation", "") or ""))
+    if not citation and not (getattr(result, "identifier", "") or cluster_id):
+        return result
+    client = CourtListenerClient.default()
+    existing_cluster = None
+    target_cluster_id = str(getattr(result, "identifier", "") or cluster_id or "").strip()
+    if target_cluster_id:
+        try:
+            existing_cluster = client.fetch_url(
+                f"/api/rest/v4/clusters/{target_cluster_id}/",
+                kind="clusters",
+                refresh=False,
+            )
+        except (CourtListenerError, ValueError, RuntimeError):
+            existing_cluster = None
+    active_progress = _stderr_progress if progress else None
+    service = recover_official_copy(
+        client,
+        query=citation or str(getattr(result, "input", "") or ""),
+        citation=citation,
+        cluster_id=target_cluster_id,
+        case_name=str(getattr(result, "title", "") or ""),
+        existing_cluster=existing_cluster,
+        timeout=timeout or DEFAULT_TIMEOUT_SECONDS,
+        progress=active_progress,
+    )
+    if service.ok and service.authority is not None:
+        return service.authority
+    reason = _strip_recovery_reason(service.reason)
+    warning = f"Scholar recovery: {service.outcome}" + (f" — {reason}" if reason else "")
+    warnings = list(getattr(result, "warnings", []) or [])
+    warnings.append(warning)
+    if hasattr(result, "warnings"):
+        result.warnings = warnings
+    return result
+
+
+def _strip_recovery_reason(reason: str) -> str:
+    import re as _re
+
+    return _re.sub(r"\s+", " ", reason or "").strip()
+
+
 def _cmd_extract_case(args: argparse.Namespace) -> int:
     find_queries = [str(query).strip() for query in (getattr(args, "find", None) or [])]
     find_queries = [query for query in find_queries if query]
     cluster_id = str(getattr(args, "cluster_id", "") or "").strip()
-    if cluster_id:
-        try:
+    text_mode = bool(getattr(args, "text", False))
+    recover = bool(getattr(args, "recover_official", False))
+
+    try:
+        if cluster_id:
             result = extract_case_by_cluster_id(
                 cluster_id,
                 refresh=getattr(args, "refresh", False),
             )
-        except (CourtListenerError, ValueError, RuntimeError) as exc:
-            if getattr(args, "text", False):
-                print(str(exc), file=sys.stderr)
-                return 1
-            _print_json(
-                {
-                    "ok": False,
-                    "authority_type": "case",
-                    "input": cluster_id,
-                    "resolved_input": cluster_id,
-                    "source": "",
-                    "title": "",
-                    "citation": "",
-                    "identifier": cluster_id,
-                    "source_url": "",
-                    "text": "",
-                    "text_length": 0,
-                    "warnings": [],
-                    "official_pagination": False,
-                    "pagination_marker_count": 0,
-                    "error": str(exc),
-                }
-            )
+        elif not str(getattr(args, "value", "") or "").strip():
+            print("Case citation, query, or --cluster-id is required.", file=sys.stderr)
             return 1
-        return _print_case_result(result, find_queries, bool(getattr(args, "text", False)))
-    if not str(getattr(args, "value", "") or "").strip():
-        print("Case citation, query, or --cluster-id is required.", file=sys.stderr)
-        return 1
-    if find_queries:
-        try:
+        else:
             result = extract_authority(
                 args.value,
                 authority_type="case",
                 refresh=getattr(args, "refresh", False),
             )
-        except (CourtListenerError, LegInfoError, CaliforniaRulesError, ValueError, RuntimeError) as exc:
-            if getattr(args, "text", False):
-                print(str(exc), file=sys.stderr)
-                return 1
-            _print_json(
-                {
-                    "ok": False,
-                    "authority_type": "case",
-                    "input": args.value,
-                    "resolved_input": "",
-                    "source": "",
-                    "title": "",
-                    "citation": "",
-                    "identifier": "",
-                    "source_url": "",
-                    "text": "",
-                    "text_length": 0,
-                    "warnings": [],
-                    "official_pagination": False,
-                    "pagination_marker_count": 0,
-                    "error": str(exc),
-                }
-            )
+    except (CourtListenerError, LegInfoError, CaliforniaRulesError, ValueError, RuntimeError) as exc:
+        if text_mode:
+            print(str(exc), file=sys.stderr)
             return 1
-        return _print_case_result(result, find_queries, bool(getattr(args, "text", False)))
-    return _print_authority_result(args, "case")
+        _print_json(
+            {
+                "ok": False,
+                "authority_type": "case",
+                "input": cluster_id or args.value,
+                "resolved_input": cluster_id or "",
+                "source": "",
+                "title": "",
+                "citation": "",
+                "identifier": cluster_id,
+                "source_url": "",
+                "text": "",
+                "text_length": 0,
+                "warnings": [],
+                "official_pagination": False,
+                "pagination_marker_count": 0,
+                "error": str(exc),
+            }
+        )
+        return 1
+
+    if recover:
+        result = _recover_official_authority(
+            result,
+            cluster_id=cluster_id,
+            progress=_recovery_progress_active(args),
+            timeout=getattr(args, "timeout", None),
+        )
+
+    return _print_case_result(result, find_queries, text_mode)
 
 
 def _cmd_extract_slip_opinion(args: argparse.Namespace) -> int:
@@ -609,6 +669,40 @@ def _cmd_import_scholar_clipboard(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_recover_scholar(args: argparse.Namespace) -> int:
+    query = re.sub(r"\s+", " ", str(getattr(args, "value", "") or "").strip())
+    if not query:
+        print("A Scholar search query is required.", file=sys.stderr)
+        return 1
+    citation = str(getattr(args, "citation", "") or "").strip()
+    case_name = str(getattr(args, "case_name", "") or "").strip()
+    cluster_id = str(getattr(args, "cluster_id", "") or "").strip()
+    client = CourtListenerClient.default()
+    existing_cluster = None
+    if cluster_id:
+        try:
+            existing_cluster = client.fetch_url(
+                f"/api/rest/v4/clusters/{cluster_id}/",
+                kind="clusters",
+                refresh=False,
+            )
+        except (CourtListenerError, ValueError, RuntimeError):
+            existing_cluster = None
+    progress = _stderr_progress if _recovery_progress_active(args) else None
+    service = recover_official_copy(
+        client,
+        query=query,
+        citation=citation,
+        cluster_id=cluster_id,
+        case_name=case_name,
+        existing_cluster=existing_cluster,
+        timeout=getattr(args, "timeout", None) or DEFAULT_TIMEOUT_SECONDS,
+        progress=progress,
+    )
+    _print_json(service.to_json())
+    return 0 if service.ok else 1
+
+
 def _cmd_lookup_statute(args: argparse.Namespace) -> int:
     client = CourtListenerClient.default()
     statute = client.lookup_statute(args.citation, refresh=args.refresh)
@@ -919,6 +1013,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="bypass saved lookup and 24-hour official-copy discovery outcomes",
     )
+    extract_case_parser.add_argument(
+        "--recover-official",
+        action="store_true",
+        help="perform one deterministic default-browser Google Scholar recovery when official pagination is missing",
+    )
+    extract_case_parser.add_argument(
+        "--progress",
+        action="store_true",
+        help="report recovery stage progress to stderr",
+    )
+    extract_case_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="recovery timeout in seconds",
+    )
     extract_case_output = extract_case_parser.add_mutually_exclusive_group()
     extract_case_output.add_argument("--text", action="store_true", help="print raw case text")
     extract_case_output.add_argument(
@@ -1048,6 +1158,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--cluster-id", help="optional existing CourtListener cluster identity"
     )
     import_scholar_parser.set_defaults(func=_cmd_import_scholar_clipboard)
+
+    recover_scholar_parser = subparsers.add_parser(
+        "recover-scholar",
+        help="perform one deterministic default-browser Google Scholar recovery for diagnostics",
+    )
+    recover_scholar_parser.add_argument("value", help="Scholar search query, e.g. '11 Cal.5th 614'")
+    recover_scholar_parser.add_argument("--citation", help="expected California official reporter citation")
+    recover_scholar_parser.add_argument("--case-name", help="expected case name")
+    recover_scholar_parser.add_argument("--cluster-id", help="optional existing CourtListener cluster identity")
+    recover_scholar_parser.add_argument("--progress", action="store_true", help="report stage progress to stderr")
+    recover_scholar_parser.add_argument("--timeout", type=float, default=None, help="recovery timeout in seconds")
+    recover_scholar_parser.set_defaults(func=_cmd_recover_scholar)
 
     commands_parser = subparsers.add_parser("commands", help="list available CLI authority commands")
     commands_parser.set_defaults(func=_cmd_commands)

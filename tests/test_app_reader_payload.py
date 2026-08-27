@@ -19,8 +19,6 @@ from open_law_lens.app import (
     QUERY_MODE_LABELS,
     QUERY_MODE_PRESENTATION,
     READER_CLIPBOARD_ICON,
-    ScholarClipboardImport,
-    ScholarRecoveryOutcome,
     Gdk,
     Gtk,
     Pango,
@@ -41,6 +39,9 @@ from open_law_lens.app import (
     _current_case_style_spans,
     strip_agent_legal_authority_backticks,
 )
+from open_law_lens.browser_recovery import ScholarRecoveryOutcome
+from open_law_lens.scholar_browser import ScholarClipboardImport
+from open_law_lens.scholar_recovery_service import ScholarRecoveryServiceResult
 from open_law_lens.agent import CaseTextSource, QuoteTarget
 from open_law_lens.cache import JsonCache
 from open_law_lens.citation_links import CitedCaseLink
@@ -4021,14 +4022,18 @@ class AppReaderPayloadTests(unittest.TestCase):
                 self._browser_recovery_cluster_id = ""
                 self._browser_recovery_citation = ""
                 self._browser_recovery_case_name = ""
+                self._browser_recovery_cancel_requested = False
                 self._reader_display_cluster = None
                 self._selected_cluster = None
                 self._research_cache_generation = 3
                 self.notices: list[bool] = []
                 self.statuses: list[str] = []
-                self.import_started = False
+                self.refreshed: list[object] = []
 
             def _update_find_paginated_copy_button(self) -> None:
+                pass
+
+            def _set_browser_recovery_cancel_visible(self, _visible: bool) -> None:
                 pass
 
             def _browser_recovery_failure_message(self, outcome: str) -> str:
@@ -4045,55 +4050,77 @@ class AppReaderPayloadTests(unittest.TestCase):
             def _show_official_pagination_not_found_notice(self, *, can_view_current: bool) -> None:
                 self.notices.append(can_view_current)
 
-            def _start_browser_recovery_import(self, _outcome: object, _query: str) -> None:
-                self.import_started = True
+            def _refresh_after_scholar_import(self, imported: object) -> None:
+                self.refreshed.append(imported)
 
         return DummyWindow
 
+    def _service_result(
+        self,
+        outcome: str,
+        *,
+        message: str = "",
+        imported: object | None = None,
+        recovery_outcome: str | None = None,
+    ) -> ScholarRecoveryServiceResult:
+        recovery = ScholarRecoveryOutcome(
+            1,
+            recovery_outcome or outcome,
+            "10 Cal.App.5th 25",
+            "",
+            message,
+        )
+        return ScholarRecoveryServiceResult(
+            outcome=outcome,
+            recovery=recovery,
+            imported=imported,  # type: ignore[arg-type]
+            reason=message,
+        )
+
     def test_browser_recovery_not_found_keeps_baseline_and_shows_notice(self) -> None:
         window = self._browser_recovery_dummy_window()()  # type: ignore[call-arg]
-        outcome = ScholarRecoveryOutcome(1, "not_found", "10 Cal.App.5th 25", "", "")
+        service = self._service_result("not_found")
 
         OpenLawLensWindow._finish_browser_recovery(  # type: ignore[arg-type]
             window,
-            outcome,
-            Path("/tmp/does-not-exist-recovery"),
+            service,
         )
 
-        self.assertFalse(window.import_started)
+        self.assertEqual(window.refreshed, [])
         self.assertEqual(window.notices, [True])
         self.assertIn("no matching official reporter copy", window.statuses[-1])
 
     def test_browser_recovery_blocked_reports_blocker_without_import(self) -> None:
         window = self._browser_recovery_dummy_window()()  # type: ignore[call-arg]
-        outcome = ScholarRecoveryOutcome(1, "blocked", "10 Cal.App.5th 25", "", "CAPTCHA shown")
+        service = self._service_result("blocked", message="CAPTCHA shown", recovery_outcome="blocked")
 
         OpenLawLensWindow._finish_browser_recovery(  # type: ignore[arg-type]
             window,
-            outcome,
-            Path("/tmp/does-not-exist-recovery"),
+            service,
         )
 
-        self.assertFalse(window.import_started)
+        self.assertEqual(window.refreshed, [])
         self.assertEqual(window.statuses[-1], "CAPTCHA shown")
 
-    def test_browser_recovery_copied_starts_clipboard_import(self) -> None:
+    def test_browser_recovery_imported_refreshes_reader(self) -> None:
         window = self._browser_recovery_dummy_window()()  # type: ignore[call-arg]
-        outcome = ScholarRecoveryOutcome(
-            1,
-            "copied",
-            "10 Cal.App.5th 25",
-            "https://scholar.google.com/scholar_case?case=1",
+        imported = ScholarClipboardImport(
+            "In re C.L.",
+            "116 Cal.App.5th 53",
+            "42",
+            "1",
+            3,
+            True,
             "",
         )
+        service = self._service_result("imported", imported=imported, recovery_outcome="copied")
 
         OpenLawLensWindow._finish_browser_recovery(  # type: ignore[arg-type]
             window,
-            outcome,
-            Path("/tmp/does-not-exist-recovery"),
+            service,
         )
 
-        self.assertTrue(window.import_started)
+        self.assertEqual(window.refreshed, [imported])
 
     def test_clipboard_recovery_imports_matching_opinion(self) -> None:
         class DummyFeedback:
@@ -4196,10 +4223,14 @@ Opinion text.
             def __init__(self) -> None:
                 self.notices: list[bool] = []
                 self.statuses: list[str] = []
+                self._reader_busy_label = None
                 self.client = MagicMock()
                 self.client.cache.read_cached_cluster.return_value = None
 
             def _set_reader_busy(self, _busy: bool, _message: str = "") -> None:
+                pass
+
+            def _update_browser_recovery_stage(self, _stage: object, _elapsed: object) -> None:
                 pass
 
             def _show_official_pagination_not_found_notice(self, *, can_view_current: bool) -> None:
@@ -4225,7 +4256,7 @@ Opinion text.
             "No qualifying official pagination.",
         )
 
-        OpenLawLensWindow._finish_browser_recovery_import(  # type: ignore[arg-type]
+        OpenLawLensWindow._refresh_after_scholar_import(  # type: ignore[arg-type]
             window,
             imported,
         )
@@ -4238,10 +4269,14 @@ Opinion text.
             def __init__(self) -> None:
                 self.statuses: list[str] = []
                 self.reloaded: list[object] = []
+                self._reader_busy_label = None
                 self.client = MagicMock()
                 self.client.cache.read_cached_cluster.return_value = None
 
             def _set_reader_busy(self, _busy: bool, _message: str = "") -> None:
+                pass
+
+            def _update_browser_recovery_stage(self, _stage: object, _elapsed: object) -> None:
                 pass
 
             def _refresh_case_suggestion_index_async(self, *, force: bool = False) -> None:
@@ -4264,7 +4299,7 @@ Opinion text.
             "",
         )
 
-        OpenLawLensWindow._finish_browser_recovery_import(  # type: ignore[arg-type]
+        OpenLawLensWindow._refresh_after_scholar_import(  # type: ignore[arg-type]
             window,
             imported,
         )
@@ -5136,28 +5171,48 @@ Opinion text.
                 self._browser_recovery_transient_notice = False
                 self._browser_recovery_cache_generation = 1
                 self._browser_recovery_query = "117 Cal.App.5th 379"
+                self._browser_recovery_cluster_id = ""
+                self._reader_display_cluster = None
+                self._selected_cluster = None
                 self._research_cache_generation = 2
-                self.import_started = False
+                self._browser_recovery_cancel_requested = False
+                self.refreshed: list[object] = []
 
             def _update_find_paginated_copy_button(self) -> None:
+                pass
+
+            def _set_browser_recovery_cancel_visible(self, _visible: bool) -> None:
                 pass
 
             def _set_reader_busy(self, _busy: bool, _message: str = "") -> None:
                 pass
 
-            def _start_browser_recovery_import(self, _outcome: object, _query: str) -> None:
-                self.import_started = True
+            def _refresh_after_scholar_import(self, imported: object) -> None:
+                self.refreshed.append(imported)
 
         window = DummyWindow()
+        imported = ScholarClipboardImport(
+            "In re C.L.",
+            "116 Cal.App.5th 53",
+            "42",
+            "1",
+            3,
+            True,
+            "",
+        )
+        service = ScholarRecoveryServiceResult(
+            outcome="imported",
+            recovery=ScholarRecoveryOutcome(1, "copied", "117 Cal.App.5th 379", "https://scholar.google.com/scholar_case?case=1", ""),
+            imported=imported,
+        )
 
         result = OpenLawLensWindow._finish_browser_recovery(  # type: ignore[arg-type]
             window,
-            ScholarRecoveryOutcome(1, "copied", "117 Cal.App.5th 379", "https://scholar.google.com/scholar_case?case=1", ""),
-            Path("/tmp/does-not-exist-recovery"),
+            service,
         )
 
         self.assertFalse(result)
-        self.assertFalse(window.import_started)
+        self.assertEqual(window.refreshed, [])
 
     def test_cached_statute_row_opens_cache_without_background_refresh(self) -> None:
         class DummyWindow:

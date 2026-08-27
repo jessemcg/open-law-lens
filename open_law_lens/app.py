@@ -143,13 +143,7 @@ from .library import (
     normalize_display_quote_stacks,
     opinion_display_text,
 )
-from .browser_recovery import (
-    BrowserRecoveryError,
-    ScholarRecoveryOutcome,
-    request_from_query,
-    run_scholar_recovery,
-    query_law_profile,
-)
+from .scholar_recovery_service import recover_official_copy
 from .official_import import persist_official_opinion
 from .opinion_formatting import DisplayStyleSpan
 from .pi_runtime import (
@@ -167,12 +161,6 @@ from .reader_highlights import (
     ReaderHighlight,
     resolved_reader_highlights,
     toggle_reader_highlight,
-)
-from .scholar_browser import (
-    ScholarBrowserError,
-    ScholarClipboardImport,
-    import_scholar_text,
-    read_regular_clipboard,
 )
 from .scholar_search import build_scholar_search_url
 from .slip_opinions import (
@@ -2094,6 +2082,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._browser_recovery_case_name = ""
         self._browser_recovery_transient_notice = False
         self._browser_recovery_cache_generation: int | None = None
+        self._browser_recovery_cancel_requested = False
+        self._browser_recovery_cancel_button: Gtk.Button | None = None
         self._find_paginated_manual_retry = False
         self._reader_highlight_button: Gtk.Button | None = None
         self._reader_has_official_pagination = False
@@ -3385,6 +3375,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         label.add_css_class("reader-busy-label")
         label.set_accessible_role(Gtk.AccessibleRole.STATUS)
         box.append(label)
+
+        cancel = Gtk.Button(label="Cancel")
+        cancel.add_css_class("flat")
+        cancel.set_tooltip_text("Cancel Scholar recovery")
+        cancel.connect("clicked", self._on_browser_recovery_cancel_clicked)
+        cancel.set_visible(False)
+        box.append(cancel)
+        self._browser_recovery_cancel_button = cancel
 
         self._reader_busy_box = box
         self._reader_busy_spinner = spinner
@@ -7142,6 +7140,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             "not_found": "Google Scholar returned no matching official reporter copy.",
             "blocked": "Google Scholar showed a CAPTCHA or blocked the recovery; complete it in the visible browser window.",
             "failed": "Default-browser Scholar recovery could not run. The current baseline is retained.",
+            "rejected": "The copied Scholar opinion failed validation and was not saved.",
+            "busy": "Another Scholar recovery is already running.",
         }.get(outcome, "Default-browser Scholar recovery stopped without an official reporter copy.")
 
     def _recovery_identity(self) -> tuple[str, str, str, str]:
@@ -7185,13 +7185,16 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._browser_recovery_cache_generation = (
             self._research_cache_generation if cache_generation is None else cache_generation
         )
+        self._browser_recovery_cancel_requested = False
         self._update_find_paginated_copy_button()
-        self._set_reader_busy(True, "Recovering official copy in browser...")
+        self._set_reader_busy(True, "Finding Scholar case")
+        self._set_browser_recovery_cancel_visible(True)
+        if self._browser_recovery_cancel_button is not None:
+            self._browser_recovery_cancel_button.set_sensitive(True)
         self._set_status("Recovering official pagination through Google Scholar...")
-        runtime_dir = Path(tempfile.mkdtemp(prefix="open-law-lens-scholar-"))
         thread = threading.Thread(
             target=self._browser_recovery_worker,
-            args=(clean_query, expected_citation, cluster_id, case_name, runtime_dir),
+            args=(clean_query, expected_citation, cluster_id, case_name),
             daemon=True,
         )
         thread.start()
@@ -7202,42 +7205,55 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         expected_citation: str,
         cluster_id: str,
         case_name: str,
-        runtime_dir: Path,
     ) -> None:
+        existing_cluster = self._reader_display_cluster or self._selected_cluster or None
         try:
-            request = request_from_query(
-                query,
-                expected_citation=expected_citation,
+            service = recover_official_copy(
+                self.client,
+                query=query,
+                citation=expected_citation,
                 cluster_id=cluster_id,
                 case_name=case_name,
+                existing_cluster=existing_cluster,
+                progress=self._browser_recovery_progress,
+                cancelled=self._browser_recovery_cancelled,
             )
-        except BrowserRecoveryError as exc:
-            GLib.idle_add(
-                self._finish_browser_recovery,
-                ScholarRecoveryOutcome(1, "failed", query, "", str(exc)),
-                runtime_dir,
-            )
+        except Exception as exc:  # noqa: BLE001 - never leak into the worker thread
+            GLib.idle_add(self._finish_browser_recovery_unexpected_error, str(exc))
             return
-        try:
-            outcome = run_scholar_recovery(
-                request,
-                project_dir=PROJECT_DIR,
-                runtime_dir=runtime_dir,
-                profile=query_law_profile(),
-            )
-        except (BrowserRecoveryError, OSError) as exc:
-            outcome = ScholarRecoveryOutcome(1, "failed", query, "", str(exc))
-        GLib.idle_add(self._finish_browser_recovery, outcome, runtime_dir)
+        GLib.idle_add(self._finish_browser_recovery, service)
 
-    def _finish_browser_recovery(self, outcome: ScholarRecoveryOutcome, runtime_dir: Path) -> bool:
+    def _browser_recovery_progress(self, stage: str, elapsed: float | None) -> None:
+        GLib.idle_add(self._update_browser_recovery_stage, stage, elapsed)
+
+    def _update_browser_recovery_stage(self, stage: str, elapsed: float | None) -> None:
+        text = stage if elapsed is None else f"{stage} — {elapsed:.0f}s"
+        if self._reader_busy_label is not None:
+            self._reader_busy_label.set_text(text)
+        return False
+
+    def _set_browser_recovery_cancel_visible(self, visible: bool) -> None:
+        if self._browser_recovery_cancel_button is not None:
+            self._browser_recovery_cancel_button.set_visible(visible)
+
+    def _on_browser_recovery_cancel_clicked(self, _button: Gtk.Button) -> None:
+        self._browser_recovery_cancel_requested = True
+        if self._reader_busy_label is not None:
+            self._reader_busy_label.set_text("Cancelling Scholar recovery...")
+
+    def _browser_recovery_cancelled(self) -> bool:
+        return self._browser_recovery_cancel_requested
+
+    def _finish_browser_recovery(self, service: Any) -> bool:
         self._browser_recovery_running = False
+        self._browser_recovery_cancel_requested = False
         self._find_paginated_manual_retry = False
         transient_notice = self._browser_recovery_transient_notice
         self._browser_recovery_transient_notice = False
         generation = self._browser_recovery_cache_generation
         self._browser_recovery_cache_generation = None
         self._update_find_paginated_copy_button()
-        shutil.rmtree(runtime_dir, ignore_errors=True)
+        self._set_browser_recovery_cancel_visible(False)
         if generation is not None and generation != self._research_cache_generation:
             self._set_reader_busy(False)
             return False
@@ -7246,63 +7262,33 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_reader_busy(False)
         if current_id and reader_id and current_id != reader_id:
             return False
-        query = outcome.query or self._browser_recovery_query
-        if outcome.outcome == "copied":
-            self._start_browser_recovery_import(outcome, query)
+        imported = getattr(service, "imported", None)
+        if getattr(service, "ok", False) and imported is not None:
+            self._refresh_after_scholar_import(imported)
             return False
-        self._set_status(outcome.message or self._browser_recovery_failure_message(outcome.outcome))
+        reason = getattr(service, "reason", "") or self._browser_recovery_failure_message(
+            getattr(service, "outcome", "failed")
+        )
+        self._set_status(reason)
         if transient_notice:
             self._show_official_pagination_not_found_notice(can_view_current=True)
         return False
 
-    def _start_browser_recovery_import(self, outcome: ScholarRecoveryOutcome, query: str) -> None:
-        citation = self._browser_recovery_citation
-        cluster_id = self._browser_recovery_cluster_id
-        case_name = self._browser_recovery_case_name
-        existing_cluster = self._reader_display_cluster or self._selected_cluster or None
-        self._set_reader_busy(True, "Importing Scholar opinion...")
-        thread = threading.Thread(
-            target=self._browser_recovery_import_worker,
-            args=(outcome, citation, cluster_id, case_name, existing_cluster),
-            daemon=True,
-        )
-        thread.start()
-
-    def _browser_recovery_import_worker(
-        self,
-        outcome: ScholarRecoveryOutcome,
-        citation: str,
-        cluster_id: str,
-        case_name: str,
-        existing_cluster: dict[str, Any] | None,
-    ) -> None:
-        try:
-            clipboard_text = read_regular_clipboard()
-            imported = import_scholar_text(
-                self.client,
-                citation=citation,
-                source_url=outcome.source_url,
-                clipboard_text=clipboard_text,
-                case_name=case_name,
-                existing_cluster=existing_cluster,
-            )
-        except (ScholarBrowserError, ValueError, RuntimeError) as exc:
-            GLib.idle_add(self._finish_browser_recovery_import_error, str(exc))
-            return
-        GLib.idle_add(self._finish_browser_recovery_import, imported)
-
-    def _finish_browser_recovery_import_error(self, message: str) -> bool:
+    def _finish_browser_recovery_unexpected_error(self, message: str) -> bool:
+        self._browser_recovery_running = False
+        self._browser_recovery_cancel_requested = False
+        self._set_browser_recovery_cancel_visible(False)
         self._set_reader_busy(False)
-        self._set_status(f"Scholar opinion import not saved: {message}")
+        self._set_status(f"Scholar recovery failed: {message}")
         self._show_official_pagination_not_found_notice(can_view_current=True)
         return False
 
-    def _finish_browser_recovery_import(self, imported: ScholarClipboardImport) -> bool:
-        self._set_reader_busy(False)
-        if not imported.eligible:
+    def _refresh_after_scholar_import(self, imported: Any) -> None:
+        self._update_browser_recovery_stage("Refreshing reader", None)
+        if not getattr(imported, "eligible", True):
             self._set_status("Imported Scholar text did not provide official reporter pagination.")
             self._show_official_pagination_not_found_notice(can_view_current=True)
-            return False
+            return
         cluster_id = imported.cluster_id
         self._refresh_case_suggestion_index_async(force=True)
         self._set_sidebar_clusters(self.client.cached_clusters(), select_cluster_id=cluster_id)
@@ -7316,7 +7302,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             )
             thread.start()
         self._set_status("Imported Scholar official reporter text, saved to Library, and added to Research Cache.")
-        return False
 
     def _update_find_paginated_copy_button(self) -> None:
         button = self.reader_find_paginated_button
