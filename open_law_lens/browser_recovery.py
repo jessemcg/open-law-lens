@@ -756,13 +756,17 @@ class ScholarRecoveryJob:
             ) + normalize_match_token(_tree_text(scoped)):
                 return self._outcome("not_found", "The opened opinion did not match the expected case.")
 
+            # The opinion title is now the fresh baseline for the copy
+            # mutations; the earlier search-results title is intentionally
+            # stale once we have navigated onto the opinion page.
+            opinion_title = observed_title
+
             self._report("Copying opinion")
-            # Select-all with exact window targeting, then re-observe.
-            self._revalidate_window(window_id, title)
+            self._revalidate_window(window_id, opinion_title)
             self.client.press_key(key="Ctrl+A", window_id=window_id)
             time.sleep(0.5)
-            tree, observed_title, _ = self._observe(window_id)
-            self._revalidate_identity(window_id, title, observed_title)
+            tree, after_select_title, _ = self._observe(window_id)
+            self._revalidate_identity(window_id, opinion_title, after_select_title)
 
             self.client.press_key(key="Ctrl+C", window_id=window_id)
 
@@ -784,7 +788,11 @@ class ScholarRecoveryJob:
         for window in windows:
             if window.get("window_id") == window_id:
                 title = str(window.get("title") or "")
-                if title and expected_title and title != expected_title:
+                if (
+                    title
+                    and expected_title
+                    and normalize_match_token(title) != normalize_match_token(expected_title)
+                ):
                     raise BrowserRecoveryError("The Scholar window title changed before input.")
                 return
         raise BrowserRecoveryError("The Scholar window disappeared before input.")
@@ -792,7 +800,11 @@ class ScholarRecoveryJob:
     def _revalidate_identity(
         self, window_id: int, expected_title: str, observed_title: str
     ) -> None:
-        if observed_title and expected_title and observed_title != expected_title:
+        if (
+            observed_title
+            and expected_title
+            and normalize_match_token(observed_title) != normalize_match_token(expected_title)
+        ):
             raise BrowserRecoveryError("The Scholar window title changed during copy.")
 
     def cancel(self) -> None:

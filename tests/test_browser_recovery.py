@@ -10,10 +10,12 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 from open_law_lens.browser_recovery import (
     RecoveryBusyError,
     RecoveryLock,
+    ScholarRecoveryJob,
     ScholarRecoveryRequest,
     detect_barrier,
     find_result_link,
@@ -292,6 +294,130 @@ class RecoveryLockTests(unittest.TestCase):
         with RecoveryLock(environment=self.env):
             other = RecoveryLock(environment=self.env)
             self.assertFalse(other.acquire())
+
+
+class _FakeLock:
+    """No-op recovery lock so state-machine tests never touch the real dir."""
+
+    def acquire(self) -> bool:
+        return True
+
+    def release(self) -> None:
+        pass
+
+
+class _FakeClient:
+    """A scripted in-memory Computer Use client for the state machine.
+
+    ``perform_action`` flips ``navigated``, which changes both the window title
+    (search -> opinion) and the accessibility tree (search results -> opinion),
+    reproducing the real navigation that previously tripped title revalidation.
+    """
+
+    SEARCH_TITLE = "Google Scholar"
+    OPINION_TITLE = "In re Rylei S. - Google Scholar"
+
+    def __init__(self) -> None:
+        self.max_nodes = 1000
+        self.max_depth = 14
+        self.process = object()  # truthy so run() skips start()
+        self.navigated = False
+        self.pressed: list[tuple[str, int]] = []
+
+    def doctor(self) -> dict[str, Any]:
+        return {
+            "readiness": {
+                "can_register_mcp_tools": True,
+                "can_build_accessibility_tree": True,
+                "can_query_windows": True,
+                "can_send_development_input": True,
+                "blockers": [],
+            }
+        }
+
+    def list_windows(self) -> dict[str, Any]:
+        title = self.OPINION_TITLE if self.navigated else self.SEARCH_TITLE
+        return {"windows": [{"window_id": 7, "title": title}]}
+
+    def get_app_state(
+        self, *, window_id: int, max_nodes: int, max_depth: int
+    ) -> dict[str, Any]:
+        if self.navigated:
+            return {
+                "accessibility_tree": self._opinion_tree(),
+                "window_context": {"title": self.OPINION_TITLE},
+            }
+        return {
+            "accessibility_tree": self._search_tree(),
+            "window_context": {"title": self.SEARCH_TITLE},
+        }
+
+    def perform_action(self, *, element_index: int) -> dict[str, Any]:
+        self.navigated = True
+        return {"ok": True, "element_index": element_index}
+
+    def press_key(self, *, key: str, window_id: int) -> dict[str, Any]:
+        self.pressed.append((key, window_id))
+        return {"ok": True}
+
+    @staticmethod
+    def _search_tree() -> list[dict[str, Any]]:
+        return [
+            node(0, "application", "Firefox"),
+            node(1, "frame", "Google Scholar", states=["showing", "visible"], parent=0),
+            node(
+                2,
+                "combo box",
+                text={"content": "https://scholar.google.com/scholar?q=81+Cal.App.5th+309"},
+                parent=1,
+            ),
+            node(3, "panel", "page", parent=1),
+            node(4, "group", "result-block", parent=3),
+            node(5, "heading", "In re Rylei S.", parent=4),
+            node(6, "link", "In re Rylei S.", states=["showing", "visible"], parent=5),
+            node(7, "static text", "81 Cal.App.5th 309", parent=4),
+        ]
+
+    @staticmethod
+    def _opinion_tree() -> list[dict[str, Any]]:
+        return [
+            node(0, "application", "Firefox"),
+            node(1, "frame", "In re Rylei S. - Google Scholar", states=["showing", "visible"], parent=0),
+            node(
+                2,
+                "combo box",
+                text={"content": "https://scholar.google.com/scholar_case?case=123"},
+                parent=1,
+            ),
+            node(3, "panel", "page", parent=1),
+            node(4, "static text", "81 Cal.App.5th 309 (2022) OPINION", parent=3),
+        ]
+
+
+class TitleChangeStateMachineTests(unittest.TestCase):
+    """Regression: navigating search -> opinion changes the title but must not
+    abort the copy step."""
+
+    def test_copy_proceeds_after_title_changes_from_search_to_opinion(self) -> None:
+        client = _FakeClient()
+        request = ScholarRecoveryRequest(
+            query="81 Cal.App.5th 309",
+            expected_citation="81 Cal.App.5th 309",
+            case_name="In re Rylei S.",
+        )
+        job = ScholarRecoveryJob(request, client=client)
+
+        with mock.patch(
+            "open_law_lens.browser_recovery.RecoveryLock", return_value=_FakeLock()
+        ), mock.patch(
+            "open_law_lens.browser_recovery.launch_scholar_url",
+            return_value=("Firefox", "firefox.desktop"),
+        ):
+            outcome = job.run()
+
+        self.assertEqual(outcome.outcome, "copied")
+        self.assertEqual(outcome.source_url, "https://scholar.google.com/scholar_case?case=123")
+        self.assertEqual(client.pressed, [("Ctrl+A", 7), ("Ctrl+C", 7)])
 
 
 if __name__ == "__main__":
