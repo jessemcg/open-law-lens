@@ -36,9 +36,11 @@ FAKE_SERVER = textwrap.dedent(
     TOOLS = [
         {"name": "doctor", "description": "report readiness"},
         {"name": "list_windows", "description": "list windows"},
+        {"name": "focused_window", "description": "get focused window"},
         {"name": "get_app_state", "description": "get app state"},
         {"name": "perform_action", "description": "invoke action"},
         {"name": "press_key", "description": "press key"},
+        {"name": "activate_window", "description": "focus exact window"},
         {"name": "screenshot", "description": "forbidden screenshot"},
         {"name": "click", "description": "forbidden click"},
         {"name": "type_text", "description": "forbidden type"},
@@ -96,6 +98,12 @@ FAKE_SERVER = textwrap.dedent(
                             ]
                         }
                     })
+                elif name == "focused_window":
+                    respond(message_id, {
+                        "structuredContent": {
+                            "focused_window": {"window_id": 7, "title": "Google Scholar"}
+                        }
+                    })
                 elif name == "get_app_state":
                     wid = args.get("window_id")
                     include_screenshot = args.get("include_screenshot")
@@ -125,6 +133,10 @@ FAKE_SERVER = textwrap.dedent(
                 elif name == "press_key":
                     respond(message_id, {
                         "structuredContent": {"ok": True, "key": args.get("key"), "window_id": args.get("window_id")}
+                    })
+                elif name == "activate_window":
+                    respond(message_id, {
+                        "structuredContent": {"ok": True, "window_id": args.get("window_id")}
                     })
                 elif name == "screenshot":
                     respond_error(message_id, "screenshot attempted")
@@ -207,6 +219,18 @@ class ComputerUseMCPClientTests(unittest.TestCase):
         finally:
             client.close()
 
+    def test_focused_window_and_exact_activation(self) -> None:
+        client = self.make_client()
+        client.start()
+        try:
+            focused = client.focused_window()
+            self.assertEqual(focused["focused_window"]["window_id"], 7)
+            activated = client.activate_window(window_id=7)
+            self.assertTrue(activated["ok"])
+            self.assertEqual(activated["window_id"], 7)
+        finally:
+            client.close()
+
     def test_perform_action_and_press_key(self) -> None:
         client = self.make_client()
         client.start()
@@ -259,6 +283,8 @@ class ComputerUseMCPClientTests(unittest.TestCase):
                 client.call_tool("get_app_state", {"app_id": "org.mozilla.firefox"})
             with self.assertRaises(ComputerUsePolicyError):
                 client.call_tool("press_key", {"key": "Ctrl+A", "title": "Firefox"})
+            with self.assertRaises(ComputerUsePolicyError):
+                client.call_tool("activate_window", {"app_id": "com.mcglaw.OpenLawLens"})
         finally:
             client.close()
 
@@ -281,6 +307,8 @@ class ComputerUseMCPClientTests(unittest.TestCase):
                 client.get_app_state(window_id=0)
             with self.assertRaises(ComputerUsePolicyError):
                 client.press_key(key="Ctrl+C", window_id=-1)
+            with self.assertRaises(ComputerUsePolicyError):
+                client.activate_window(window_id=0)
         finally:
             client.close()
 
@@ -404,10 +432,18 @@ class DoctorReadinessTests(unittest.TestCase):
 
 
 class AllowedSurfaceTests(unittest.TestCase):
-    def test_allowed_tools_are_the_five(self) -> None:
+    def test_allowed_tools_are_the_seven(self) -> None:
         self.assertEqual(
             set(ALLOWED_TOOLS),
-            {"doctor", "list_windows", "get_app_state", "perform_action", "press_key"},
+            {
+                "doctor",
+                "list_windows",
+                "focused_window",
+                "get_app_state",
+                "perform_action",
+                "press_key",
+                "activate_window",
+            },
         )
 
     def test_allowed_keys_are_only_ctrl_a_and_ctrl_c(self) -> None:

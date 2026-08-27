@@ -16,6 +16,9 @@ The job is deliberately small and side-effect constrained:
 * It only ever performs a targeted ``perform_action`` (semantic element index)
   and targeted ``Ctrl+A`` / ``Ctrl+C`` key presses with an exact numeric
   ``window_id``, revalidating window/frame/title/URL around every mutation.
+* When recovery ends, it returns focus to the exact window that initiated the
+  job only if the Scholar window still has focus. It never steals focus back
+  after the user switches elsewhere, and it leaves barriers visible.
 * Barriers (CAPTCHA, robot check, unusual traffic, login, consent) stop the job
   immediately with ``blocked`` and no interaction.
 * No accessibility tree, clipboard content, opinion text, or full URL is ever
@@ -602,8 +605,10 @@ class ScholarRecoveryJob:
         self._owns_client = client is None
         self.client = client
         self._started_at = time.monotonic()
+        self._origin_window_id: int | None = None
         self._target_window_id: int | None = None
         self._target_title: str = ""
+        self._final_outcome = ""
         self._handler_name = ""
         self._handler_desktop_id = ""
 
@@ -629,6 +634,7 @@ class ScholarRecoveryJob:
         return self._elapsed() > self.timeout
 
     def _outcome(self, outcome: str, message: str, source_url: str = "") -> ScholarRecoveryOutcome:
+        self._final_outcome = outcome
         return ScholarRecoveryOutcome(
             version=RESULT_VERSION,
             outcome=outcome,
@@ -666,6 +672,18 @@ class ScholarRecoveryJob:
             )
 
     # -- state 3: snapshot windows -----------------------------------------
+
+    def _capture_origin_window(self) -> None:
+        try:
+            payload = self.client.focused_window()
+        except (ComputerUseMCPError, OSError):
+            return
+        focused = payload.get("focused_window")
+        if not isinstance(focused, Mapping):
+            return
+        window_id = focused.get("window_id")
+        if isinstance(window_id, int) and window_id > 0:
+            self._origin_window_id = window_id
 
     def _snapshot_windows(self) -> set[int]:
         payload = self.client.list_windows()
@@ -790,6 +808,7 @@ class ScholarRecoveryJob:
                     self.client.start()
 
             self._check_desktop()
+            self._capture_origin_window()
             prior = self._snapshot_windows()
             search_url = self._open_scholar()
 
@@ -886,12 +905,36 @@ class ScholarRecoveryJob:
         except (BrowserRecoveryError, ComputerUseMCPError, OSError) as exc:
             return self._outcome("failed", str(exc))
         finally:
+            self._return_focus_if_appropriate()
             lock.release()
             if self._owns_client and self.client is not None:
                 try:
                     self.client.close()
                 except Exception:
                     self.client.terminate()
+
+    def _return_focus_if_appropriate(self) -> None:
+        """Return to the initiator without overriding a deliberate switch."""
+        if (
+            self.client is None
+            or self._final_outcome == "blocked"
+            or self._origin_window_id is None
+            or self._target_window_id is None
+            or self._origin_window_id == self._target_window_id
+        ):
+            return
+        try:
+            payload = self.client.focused_window()
+            focused = payload.get("focused_window")
+            if not isinstance(focused, Mapping):
+                return
+            if focused.get("window_id") != self._target_window_id:
+                return
+            self.client.activate_window(window_id=self._origin_window_id)
+        except (ComputerUseMCPError, OSError):
+            # Focus restoration is best-effort and must never change the
+            # recovery/import outcome.
+            return
 
     def _revalidate_window(self, window_id: int) -> str:
         windows = self.client.list_windows().get("windows") or []

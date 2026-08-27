@@ -405,6 +405,8 @@ class _FakeClient:
         self.process = object()  # truthy so run() skips start()
         self.navigated = False
         self.pressed: list[tuple[str, int]] = []
+        self.focused_window_id = 3
+        self.activated: list[int] = []
 
     def doctor(self) -> dict[str, Any]:
         return {
@@ -421,6 +423,14 @@ class _FakeClient:
         title = self.OPINION_TITLE if self.navigated else self.SEARCH_TITLE
         return {"windows": [{"window_id": 7, "title": title}]}
 
+    def focused_window(self) -> dict[str, Any]:
+        return {"focused_window": {"window_id": self.focused_window_id}}
+
+    def activate_window(self, *, window_id: int) -> dict[str, Any]:
+        self.activated.append(window_id)
+        self.focused_window_id = window_id
+        return {"ok": True}
+
     def get_app_state(
         self, *, window_id: int, max_nodes: int, max_depth: int
     ) -> dict[str, Any]:
@@ -436,6 +446,7 @@ class _FakeClient:
 
     def perform_action(self, *, element_index: int) -> dict[str, Any]:
         self.navigated = True
+        self.focused_window_id = 7
         return {"ok": True, "element_index": element_index}
 
     def press_key(self, *, key: str, window_id: int) -> dict[str, Any]:
@@ -536,6 +547,35 @@ class TitleChangeStateMachineTests(unittest.TestCase):
         self.assertEqual(outcome.outcome, "copied")
         self.assertEqual(outcome.source_url, "https://scholar.google.com/scholar_case?case=123")
         self.assertEqual(client.pressed, [("Ctrl+A", 7), ("Ctrl+C", 7)])
+        self.assertEqual(client.activated, [3])
+
+    def test_does_not_restore_focus_after_user_switches_elsewhere(self) -> None:
+        client = _FakeClient()
+        job = ScholarRecoveryJob(
+            ScholarRecoveryRequest(query="81 Cal.App.5th 309"), client=client
+        )
+        job._origin_window_id = 3
+        job._target_window_id = 7
+        job._final_outcome = "copied"
+        client.focused_window_id = 9
+
+        job._return_focus_if_appropriate()
+
+        self.assertEqual(client.activated, [])
+
+    def test_leaves_blocked_scholar_window_focused(self) -> None:
+        client = _FakeClient()
+        job = ScholarRecoveryJob(
+            ScholarRecoveryRequest(query="81 Cal.App.5th 309"), client=client
+        )
+        job._origin_window_id = 3
+        job._target_window_id = 7
+        job._final_outcome = "blocked"
+        client.focused_window_id = 7
+
+        job._return_focus_if_appropriate()
+
+        self.assertEqual(client.activated, [])
 
     def test_copy_uses_case_url_when_opinion_context_title_lags(self) -> None:
         client = _StaleOpinionContextTitleClient()

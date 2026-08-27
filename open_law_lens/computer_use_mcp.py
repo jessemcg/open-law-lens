@@ -9,7 +9,8 @@ The client is deliberately narrow. It exposes exactly five tools and rejects
 everything else, and it refuses every dangerous input shape so the recovery
 state machine above it cannot accidentally screenshoot, click by coordinate,
 type, scroll, drag, activate by broad app identity, run setup operations, or
-press any key other than targeted ``Ctrl+A`` and ``Ctrl+C``.
+press any key other than targeted ``Ctrl+A`` and ``Ctrl+C``. Focus restoration
+is limited to an exact numeric window captured before Scholar opens.
 
 Privacy invariants:
 
@@ -37,16 +38,26 @@ from typing import Any, Mapping
 MCP_PROTOCOL_VERSION = "2024-11-05"
 
 # The only MCP tools this client may call. Names are the raw stdio server
-# names (unprefixed), which are exactly the five deterministic operations the
+# names (unprefixed), which are exactly the seven deterministic operations the
 # recovery state machine needs.
 ALLOWED_TOOLS: tuple[str, ...] = (
+    "doctor",
+    "list_windows",
+    "focused_window",
+    "get_app_state",
+    "perform_action",
+    "press_key",
+    "activate_window",
+)
+# Focus return is best-effort so an older otherwise-capable server can still
+# complete recovery without it.
+REQUIRED_TOOL_NAMES: tuple[str, ...] = (
     "doctor",
     "list_windows",
     "get_app_state",
     "perform_action",
     "press_key",
 )
-REQUIRED_TOOL_NAMES: tuple[str, ...] = ALLOWED_TOOLS
 
 # Policy-denied MCP tools. These must never be invoked, and their presence in a
 # tools/list result does not change the allowlist.
@@ -58,13 +69,11 @@ FORBIDDEN_TOOLS: frozenset[str] = frozenset(
         "scroll",
         "drag",
         "set_value",
-        "activate_window",
         "move_window",
         "resize_window",
         "setup_accessibility",
         "setup_window_targeting",
         "list_apps",
-        "focused_window",
     }
 )
 
@@ -414,7 +423,9 @@ class ComputerUseMCPClient:
             return self._policy_perform_action(clean)
         if name == "press_key":
             return self._policy_press_key(clean)
-        if name in {"doctor", "list_windows"}:
+        if name == "activate_window":
+            return self._policy_activate_window(clean)
+        if name in {"doctor", "list_windows", "focused_window"}:
             return {}
         # Unreachable due to allowlist, but defensive.
         raise ComputerUsePolicyError(f"Tool {name!r} is not allowed.")
@@ -527,6 +538,18 @@ class ComputerUseMCPClient:
                 "press_key requires an exact numeric window_id."
             )
         return {"key": normalized, "window_id": window_id}
+
+    def _policy_activate_window(self, clean: dict[str, Any]) -> dict[str, Any]:
+        if set(clean) != {"window_id"}:
+            raise ComputerUsePolicyError(
+                "activate_window requires only an exact numeric window_id."
+            )
+        window_id = clean.get("window_id")
+        if not isinstance(window_id, int) or window_id <= 0:
+            raise ComputerUsePolicyError(
+                "activate_window requires an exact numeric window_id."
+            )
+        return {"window_id": window_id}
 
     def _concise_error(self, result: dict[str, Any], name: str) -> str:
         message = str(result.get("message") or result.get("_meta") or "").strip()
@@ -652,6 +675,9 @@ class ComputerUseMCPClient:
     def list_windows(self) -> dict[str, Any]:
         return self.call_tool("list_windows", {})
 
+    def focused_window(self) -> dict[str, Any]:
+        return self.call_tool("focused_window", {})
+
     def get_app_state(
         self,
         *,
@@ -671,6 +697,9 @@ class ComputerUseMCPClient:
 
     def press_key(self, *, key: str, window_id: int) -> dict[str, Any]:
         return self.call_tool("press_key", {"key": key, "window_id": window_id})
+
+    def activate_window(self, *, window_id: int) -> dict[str, Any]:
+        return self.call_tool("activate_window", {"window_id": window_id})
 
     # -- shutdown -----------------------------------------------------------
 
