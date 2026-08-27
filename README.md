@@ -55,8 +55,8 @@ Or save it in the app menu under Settings. The Settings path writes a local
   data, display text, and reporter page-marker metadata.
 - Disposable JSON API cache under `cache/`.
 - Subsequent-treatment agent workflow using Open Law Lens CLI citation-graph leads.
-- Deterministic CourtListener, California Courts, Google Scholar, and Tavily
-  fallback flow for official reporter text and pagination gaps.
+- CourtListener-first baseline with a single confined default-browser Google
+  Scholar recovery for official reporter text and pagination gaps.
 - Reader links for cited cases, statutes, and rules.
 - Named Research Cache sets.
 - Exact-phrase search across the indexed prior-brief archive, with newest-first
@@ -190,10 +190,9 @@ uv run open-law-lens extract-rule "Cal. Rules of Court, rule 8.1115"
 uv run open-law-lens published-citing-cases --cluster-id 6240402 --limit 10 --json
 ```
 
-`extract-case` automatically attempts to resolve qualifying official reporter
-pagination. Its JSON includes `official_pagination` and
-`pagination_marker_count`; use `--refresh` to bypass saved lookup data and the
-24-hour Tavily discovery-outcome cache:
+`extract-case` supplies the Library/CourtListener/slip baseline. Its JSON
+includes `official_pagination` and `pagination_marker_count`; use `--refresh`
+to bypass saved Library/CourtListener/slip lookup data:
 
 ```bash
 uv run open-law-lens extract-case "20 Cal.4th 1135" --refresh
@@ -293,9 +292,10 @@ propositions in the same tool round as the statute extractions, and a focused
 `case-search --limit 5` is run only when no reliable citation or name is
 already known. Pi's `web_search` remains available only for unresolved,
 open-ended verification after those deterministic fallbacks. This agent-facing
-web search is separate from the native Python Tavily resolver
-described below. Research Cache and Prior Brief runs load no skill and no web
-extension and remain closed-corpus workflows.
+web search is separate from the confined default-browser Scholar official-copy
+recovery described below, and is never used to retrieve an official reporter
+copy. Research Cache and Prior Brief runs load no skill and no web extension
+and remain closed-corpus workflows.
 
 The wrapper also resolves `uv` deterministically before launching Pi. It uses
 the validated `OPEN_LAW_LENS_UV_BIN` override, then `uv` on `PATH`, then
@@ -406,66 +406,36 @@ OPEN_LAW_LENS_LIBRARY_DB=/tmp/open-law-lens-library.sqlite3 \
 uv run open-law-lens show-cache
 ```
 
-## Official-Pagination Fallback
+## Official-Copy Source Order
 
 CourtListener and the durable Library remain the primary case sources. Entering
 a citation in the GUI, running `extract-case` (including `--cluster-id`), or
 using `extract` for a detected case invokes the same resolver. When a published
-California case lacks qualifying official reporter page markers, the resolver
-uses this sequence:
+California case lacks qualifying official reporter page markers, the source
+order is:
 
 1. Durable Library and CourtListener.
 2. The California Courts slip-opinion display fallback when applicable.
-3. Direct Google Scholar lookup.
-4. One native Tavily discovery pass.
-5. The best readable CourtListener or slip text, with an explicit pagination
+3. One confined default-browser Google Scholar recovery.
+4. Stop: the best CourtListener or slip text, with an explicit pagination
    warning, if no qualifying reporter copy is found.
 
-Tavily is skipped after an earlier source supplies qualifying official
-pagination and for known unpublished cases. JSON reports
-`official_pagination` and `pagination_marker_count`; usable unpaginated text may
-still return `ok: true` with warnings.
+Known unpublished cases skip the Scholar recovery and report that no official
+reporter copy exists. JSON reports `official_pagination` and
+`pagination_marker_count`; usable unpaginated text may still return `ok: true`
+with warnings. Native Tavily discovery and direct-HTTP Scholar search were
+removed; the only non-baseline official-copy path is the confined
+default-browser Scholar recovery described below.
 
-The native client makes one Tavily `basic` request per unresolved identity,
-requests at most 10 results and Markdown raw content, and preserves Tavily's
-result order while de-duplicating URLs. Tavily is discovery only: Open Law Lens
-ignores synthesized answers and snippets. It is not a Pi Agent session and does
-not open the embedded Pi terminal.
-
-Open Law Lens fetches each original public HTTPS URL itself and validates the
-case identity, exact official citation, substantial opinion text, and reporter
-page markers before writing anything. Candidate fetching rejects URL
-credentials and private, loopback, link-local, or reserved destinations and
-revalidates every redirect. If direct retrieval is blocked or unusable, Tavily
-Markdown `raw_content` may be validated as a fallback. Any public HTTPS site may
-qualify; Stanford and Justia are useful sources, not an allowlist.
-
-A saved opinion keeps the original `source_url` and records
-`source_provider: "external_web"`, `retrieval_provider: "tavily"`, and
-`retrieval_mode: "direct"` or `"tavily_raw"`. If CourtListener already supplied
-a cluster, the imported copy becomes its preferred combined opinion while the
-CourtListener cluster ID and citation-graph metadata are preserved. This avoids
-duplicate cases and prevents parallel-reporter pagination from being mixed with
-the validated official copy. Search answers, credentials, and failed candidate
-bodies are never stored as authority.
-
-Native Tavily access shares Pi Web Access configuration; Open Law Lens does not
-have a separate API-key setting. Configuration is discovered at
-`PI_CODING_AGENT_DIR/web-search.json`, otherwise
-`$XDG_CONFIG_HOME/pi/web-search.json`, otherwise `~/.pi/web-search.json`.
-`TAVILY_API_KEY`, literal `tavilyApiKey` values, `$NAME`/`${NAME}` references,
-escaped `$`/`!` literals, and trusted `!command` credential sources use Pi Web
-Access semantics.
-
-A durable SQLite outcome cache prevents repeated Tavily requests for the same
-unresolved identity for 24 hours. Missing credentials, authentication failures,
-and transient network failures are not cached. `extract-case --refresh`
-bypasses and replaces a cached discovery outcome. In the reader, **Find
-paginated copy** forces a fresh Scholar/Tavily retry and is hidden once a
-qualifying copy loads. If the retry still fails, **Find Paginated Copy** lists
-candidate URLs and concise rejection reasons while retaining browser, URL-fetch,
-clipboard, and manual-import controls. Manual imports pass the same citation and
-pagination quality gate.
+A saved Scholar opinion records `source_provider: "google_scholar"` and
+`retrieval_mode: "browser_clipboard"`, preserves its original `source_url`, and
+becomes the preferred combined opinion of its CourtListener cluster when one
+exists. The Python app—not the model—reads the regular clipboard and persists
+through the shared validation/persistence service, which requires substantial
+opinion text, a valid Scholar case URL, an official California reporter
+citation, matching case identity, and qualifying reporter markers. A mismatch,
+snippet, stale clipboard, or missing markers performs no Library or Research
+Cache write. No opinion or clipboard text is logged.
 
 Validated external opinions receive conservative reader formatting: extracted
 blocks are separated as paragraphs and recognized opinion headings are bold.
@@ -550,12 +520,14 @@ official opinions remain in the durable Library.
   issue assessment.
 - `open_law_lens/quality.py`: official reporter citation and pagination quality
   checks.
-- `open_law_lens/official_copy.py`: deterministic Tavily discovery, identity
-  validation, outcome caching, and resolver results.
-- `open_law_lens/official_import.py`: shared Scholar, Tavily, URL, and clipboard
-  persistence service that preserves CourtListener cluster identity.
-- `open_law_lens/tavily.py`: native dependency-free Tavily client and shared Pi
-  credential resolution.
+- `open_law_lens/official_import.py`: shared external-opinion persistence
+  service that preserves CourtListener cluster identity.
+- `open_law_lens/browser_recovery.py`: confined default-browser Google Scholar
+  recovery job; runs a private `pi --print --no-session` subprocess using the
+  Query Law model profile with only `mcp`, `mcpScript`, the Scholar-window
+  authorization tool, and two fixed job tools.
+- `open_law_lens/scholar_browser.py`: default-browser Scholar launch and
+  clipboard import for the recovery job.
 - `scripts/open-law-lens-agent-vte.sh`: embedded Pi terminal launcher. It keeps
   unrelated extensions disabled with `--no-extensions`; closed-corpus modes
   load no extension, while research-capable modes load only the user-level

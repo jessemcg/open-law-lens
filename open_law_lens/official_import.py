@@ -42,7 +42,6 @@ def persist_official_opinion(
     source_url: str,
     existing_cluster: dict[str, Any] | None = None,
     source_provider: str = "",
-    retrieval_provider: str = "",
     retrieval_mode: str = "direct",
 ) -> OfficialImportResult:
     cleaned = clean_imported_opinion_text(imported_text)
@@ -85,8 +84,6 @@ def persist_official_opinion(
     if not cluster_id:
         raise ValueError("Selected case has no cluster id.")
     provider = source_provider or imported_source_provider(source_url)
-    if retrieval_provider == "tavily":
-        provider = SOURCE_PROVIDER_EXTERNAL_WEB
     digest = hashlib.sha256(f"{cluster_id}\0{source_url}\0{citation}".encode()).hexdigest()[:16]
     text_field = "html_with_citations" if re.search(r"<[a-zA-Z][^>]*>", cleaned) else "plain_text"
     opinion_text: dict[str, str] = {text_field: cleaned}
@@ -109,8 +106,6 @@ def persist_official_opinion(
     }
     if formatting_mode:
         opinion["formatting_mode"] = formatting_mode
-    if retrieval_provider:
-        opinion["retrieval_provider"] = retrieval_provider
     display = opinion_display_text(opinion)
     quality = official_pagination_quality(cluster, [display])
     if not quality.eligible:

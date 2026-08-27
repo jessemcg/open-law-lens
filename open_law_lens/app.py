@@ -143,7 +143,13 @@ from .library import (
     normalize_display_quote_stacks,
     opinion_display_text,
 )
-from .official_copy import OfficialCopyResolution, resolve_with_tavily, result_hostname
+from .browser_recovery import (
+    BrowserRecoveryError,
+    ScholarRecoveryOutcome,
+    request_from_query,
+    run_scholar_recovery,
+    query_law_profile,
+)
 from .official_import import persist_official_opinion
 from .opinion_formatting import DisplayStyleSpan
 from .pi_runtime import (
@@ -162,14 +168,13 @@ from .reader_highlights import (
     resolved_reader_highlights,
     toggle_reader_highlight,
 )
-from .scholar_search import (
-    ScholarAccessBlockedError,
-    ScholarNoResultError,
-    ScholarSearchError,
-    ScholarSearchResult,
-    build_scholar_search_url,
-    search_first_case_direct,
+from .scholar_browser import (
+    ScholarBrowserError,
+    ScholarClipboardImport,
+    import_scholar_text,
+    read_regular_clipboard,
 )
+from .scholar_search import build_scholar_search_url
 from .slip_opinions import (
     DEFAULT_SLIP_OPINION_MAX_AGE_DAYS,
     SlipOpinionError,
@@ -296,10 +301,6 @@ PRIOR_BRIEF_MARKDOWN_LINK_RE = re.compile(
 GOOGLE_SCHOLAR_CASE_SEARCH_TEMPLATE = "https://scholar.google.com/scholar?hl=en&as_sdt=6,33&q={query}"
 GOOGLE_SCHOLAR_CASE_LAW_HOME_URL = "https://scholar.google.com/scholar?hl=en&as_sdt=6,33"
 EXTERNAL_URL_RE = re.compile(r"https?://\S+")
-SCHOLAR_FALLBACK_MANUAL_WINDOW = "manual_window"
-SCHOLAR_FALLBACK_TRANSIENT_NOTICE = "transient_notice"
-SCHOLAR_FALLBACK_NOTICE_ONLY = "notice_only"
-SCHOLAR_FALLBACK_CLIPBOARD_RECOVERY = "clipboard_recovery"
 OFFICIAL_PAGINATION_NOT_FOUND_TITLE = "Official Pagination Not Found"
 OFFICIAL_PAGINATION_NOT_FOUND_MESSAGE = (
     "A version of this case with pagination from the official reporter was not found. "
@@ -2086,7 +2087,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.reader_clipboard_button: Gtk.Button | None = None
         self.reader_subsequent_treatment_button: Gtk.Button | None = None
         self.reader_find_paginated_button: Gtk.Button | None = None
-        self._official_copy_searching = False
+        self._browser_recovery_running = False
+        self._browser_recovery_query = ""
+        self._browser_recovery_citation = ""
+        self._browser_recovery_cluster_id = ""
+        self._browser_recovery_case_name = ""
+        self._browser_recovery_transient_notice = False
+        self._browser_recovery_cache_generation: int | None = None
         self._find_paginated_manual_retry = False
         self._reader_highlight_button: Gtk.Button | None = None
         self._reader_has_official_pagination = False
@@ -2098,13 +2105,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._last_lookup_text = ""
         self._external_lookup_window: Gtk.Window | None = None
         self._external_lookup_query: str = ""
-        self._external_lookup_auto_find_button: Gtk.Button | None = None
         self._external_lookup_source_entry: Gtk.Entry | None = None
-        self._external_lookup_auto_finding = False
-        self._external_lookup_auto_query = ""
-        self._external_lookup_auto_fallback_mode = SCHOLAR_FALLBACK_MANUAL_WINDOW
-        self._external_lookup_auto_import = False
-        self._external_lookup_auto_cache_generation: int | None = None
         self._active_lookup_case_name_hint = ""
         self._pending_auto_scholar_cluster_id = ""
         self._pending_auto_scholar_query = ""
@@ -6968,42 +6969,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             )
             box.append(import_button)
         else:
-            for rejected in getattr(self, "_last_official_copy_candidates", []):
-                reason = Gtk.Label(label=f"{rejected.url}\n{rejected.reason}", xalign=0)
-                reason.set_wrap(True)
-                reason.set_selectable(True)
-                box.append(reason)
-                open_candidate = Gtk.Button(label="Open candidate in browser")
-                open_candidate.connect("clicked", self._on_external_lookup_button_clicked, rejected.url)
-                box.append(open_candidate)
-            self._last_official_copy_candidates = []
-            for label, url in self._external_search_urls(clean_query):
-                button = Gtk.Button(label=label)
-                button.set_halign(Gtk.Align.FILL)
-                button.set_hexpand(True)
-                button.connect("clicked", self._on_external_lookup_button_clicked, url)
-                box.append(button)
-
-            auto_find_button = Gtk.Button(label="Auto-Find on Scholar")
-            auto_find_button.set_tooltip_text(
-                "Automatically search Google Scholar and import the first case result"
-            )
-            auto_find_button.connect("clicked", self._on_external_lookup_auto_find_clicked)
-            box.append(auto_find_button)
-            self._external_lookup_auto_find_button = auto_find_button
-
-            source_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            source_entry = Gtk.Entry()
-            source_entry.set_hexpand(True)
-            source_entry.set_placeholder_text("Google Scholar case URL")
-            source_entry.set_text(initial_source_url)
-            source_row.append(source_entry)
-            fetch_button = Gtk.Button(label="Fetch URL")
-            fetch_button.connect("clicked", self._on_external_lookup_fetch_clicked, source_entry)
-            source_row.append(fetch_button)
-            box.append(source_row)
-            self._external_lookup_source_entry = source_entry
-
             import_button = Gtk.Button(label="Import Official Text")
             import_button.connect(
                 "clicked",
@@ -7021,11 +6986,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _on_external_lookup_closed(self, _window: Gtk.Window) -> bool:
         self._external_lookup_window = None
         self._external_lookup_query = ""
-        self._external_lookup_auto_find_button = None
         self._external_lookup_source_entry = None
-        self._external_lookup_auto_finding = False
-        self._external_lookup_auto_query = ""
-        self._external_lookup_auto_cache_generation = None
         return False
 
     def _close_external_lookup_window(self) -> None:
@@ -7176,310 +7137,186 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             fetch_on_present=True,
         )
 
-    def _on_external_lookup_auto_find_clicked(self, _button: Gtk.Button) -> None:
-        self._start_scholar_auto_find(
-            self._external_lookup_query,
-            fallback_mode=SCHOLAR_FALLBACK_MANUAL_WINDOW,
-            auto_import=False,
-        )
+    def _browser_recovery_failure_message(self, outcome: str) -> str:
+        return {
+            "not_found": "Google Scholar returned no matching official reporter copy.",
+            "blocked": "Google Scholar showed a CAPTCHA or blocked the recovery; complete it in the visible browser window.",
+            "failed": "Default-browser Scholar recovery could not run. The current baseline is retained.",
+        }.get(outcome, "Default-browser Scholar recovery stopped without an official reporter copy.")
 
-    def _start_scholar_auto_find(
+    def _recovery_identity(self) -> tuple[str, str, str, str]:
+        query = self._official_search_query().strip()
+        citation = self._default_import_official_citation()
+        cluster = self._reader_display_cluster or self._selected_cluster or {}
+        cluster_id = cluster_id_from_cluster(cluster)
+        case_name = self._default_import_case_name()
+        return query, citation, cluster_id, case_name
+
+    def _start_browser_recovery(
         self,
         query: str,
         *,
-        fallback_mode: str,
-        auto_import: bool,
+        expected_citation: str = "",
+        cluster_id: str = "",
+        case_name: str = "",
+        transient_notice: bool = False,
         cache_generation: int | None = None,
     ) -> None:
-        clean_query = re.sub(r"\s+", " ", query).strip()
-        if self._external_lookup_auto_finding:
+        clean_query = re.sub(r"\s+", " ", query or "").strip()
+        if self._browser_recovery_running:
             return
-        query = clean_query
-        if not query.strip():
-            self._set_status("No search query available for Auto-Find.")
+        if not expected_citation.strip():
+            expected_citation = self._default_import_official_citation()
+        if not case_name.strip():
+            case_name = self._default_import_case_name()
+        if not cluster_id.strip():
+            cluster_id = cluster_id_from_cluster(self._reader_display_cluster or self._selected_cluster or {})
+        if not clean_query and not expected_citation.strip():
+            self._set_status("No search query available for browser recovery.")
             return
-        self._external_lookup_auto_finding = True
-        self._external_lookup_auto_query = query
-        self._external_lookup_auto_fallback_mode = fallback_mode
-        self._external_lookup_auto_import = auto_import
-        self._external_lookup_auto_cache_generation = (
-            self._research_cache_generation
-            if cache_generation is None
-            else cache_generation
+        if not clean_query:
+            clean_query = expected_citation.strip()
+        self._browser_recovery_running = True
+        self._browser_recovery_query = clean_query
+        self._browser_recovery_citation = expected_citation.strip()
+        self._browser_recovery_cluster_id = cluster_id.strip()
+        self._browser_recovery_case_name = case_name.strip()
+        self._browser_recovery_transient_notice = transient_notice
+        self._browser_recovery_cache_generation = (
+            self._research_cache_generation if cache_generation is None else cache_generation
         )
-        if self._external_lookup_auto_find_button is not None:
-            self._external_lookup_auto_find_button.set_sensitive(False)
-            self._external_lookup_auto_find_button.set_label("Searching Scholar...")
-        update_paginated = getattr(self, "_update_find_paginated_copy_button", None)
-        if update_paginated is not None:
-            update_paginated()
-        self._set_reader_busy(True, "Searching Google Scholar...")
-        self._set_status("Auto-searching Google Scholar...")
+        self._update_find_paginated_copy_button()
+        self._set_reader_busy(True, "Recovering official copy in browser...")
+        self._set_status("Recovering official pagination through Google Scholar...")
+        runtime_dir = Path(tempfile.mkdtemp(prefix="open-law-lens-scholar-"))
         thread = threading.Thread(
-            target=self._external_lookup_auto_find_worker,
-            args=(query,),
+            target=self._browser_recovery_worker,
+            args=(clean_query, expected_citation, cluster_id, case_name, runtime_dir),
             daemon=True,
         )
         thread.start()
 
-    def _external_lookup_auto_find_worker(self, query: str) -> None:
-        try:
-            result = search_first_case_direct(query)
-        except ScholarNoResultError as exc:
-            GLib.idle_add(
-                self._finish_external_lookup_auto_find,
-                query,
-                None,
-                "no_result",
-                str(exc),
-            )
-            return
-        except ScholarAccessBlockedError as exc:
-            GLib.idle_add(
-                self._finish_external_lookup_auto_find,
-                query,
-                None,
-                "access_blocked",
-                str(exc),
-            )
-            return
-        except ScholarSearchError as exc:
-            GLib.idle_add(
-                self._finish_external_lookup_auto_find,
-                query,
-                None,
-                "search_error",
-                str(exc),
-            )
-            return
-        GLib.idle_add(self._finish_external_lookup_auto_find, query, result, "", "")
-
-    def _finish_external_lookup_auto_find(
+    def _browser_recovery_worker(
         self,
         query: str,
-        result: ScholarSearchResult | None,
-        failure_kind: str,
-        error: str,
-    ) -> bool:
-        if query != self._external_lookup_auto_query:
-            return False
-        self._external_lookup_auto_finding = False
-        self._external_lookup_auto_query = ""
-        auto_import = self._external_lookup_auto_import
-        fallback_mode = self._external_lookup_auto_fallback_mode
-        cache_generation = self._external_lookup_auto_cache_generation
-        self._external_lookup_auto_import = False
-        self._external_lookup_auto_fallback_mode = SCHOLAR_FALLBACK_MANUAL_WINDOW
-        self._external_lookup_auto_cache_generation = None
-        button = self._external_lookup_auto_find_button
-        if button is not None:
-            button.set_sensitive(True)
-            button.set_label("Auto-Find on Scholar")
-        update_paginated = getattr(self, "_update_find_paginated_copy_button", None)
-        if update_paginated is not None:
-            update_paginated()
+        expected_citation: str,
+        cluster_id: str,
+        case_name: str,
+        runtime_dir: Path,
+    ) -> None:
+        try:
+            request = request_from_query(
+                query,
+                expected_citation=expected_citation,
+                cluster_id=cluster_id,
+                case_name=case_name,
+            )
+        except BrowserRecoveryError as exc:
+            GLib.idle_add(
+                self._finish_browser_recovery,
+                ScholarRecoveryOutcome(1, "failed", query, "", str(exc)),
+                runtime_dir,
+            )
+            return
+        try:
+            outcome = run_scholar_recovery(
+                request,
+                project_dir=PROJECT_DIR,
+                runtime_dir=runtime_dir,
+                profile=query_law_profile(),
+            )
+        except (BrowserRecoveryError, OSError) as exc:
+            outcome = ScholarRecoveryOutcome(1, "failed", query, "", str(exc))
+        GLib.idle_add(self._finish_browser_recovery, outcome, runtime_dir)
 
-        if (
-            cache_generation is not None
-            and cache_generation != self._research_cache_generation
-        ):
-            return False
-
-        if result is not None:
-            if self._external_lookup_source_entry is not None:
-                self._external_lookup_source_entry.set_text(result.url)
-            title = f" - {result.title}" if result.title else ""
-            action = "importing" if auto_import else "fetching"
-            self._set_status(f"Found case on Scholar{title}. {action.capitalize()} text...")
-            if auto_import:
-                self._start_scholar_auto_import(
-                    query,
-                    result,
-                    fallback_mode,
-                    cache_generation,
-                )
-                return False
+    def _finish_browser_recovery(self, outcome: ScholarRecoveryOutcome, runtime_dir: Path) -> bool:
+        self._browser_recovery_running = False
+        self._find_paginated_manual_retry = False
+        transient_notice = self._browser_recovery_transient_notice
+        self._browser_recovery_transient_notice = False
+        generation = self._browser_recovery_cache_generation
+        self._browser_recovery_cache_generation = None
+        self._update_find_paginated_copy_button()
+        shutil.rmtree(runtime_dir, ignore_errors=True)
+        if generation is not None and generation != self._research_cache_generation:
             self._set_reader_busy(False)
-            # Reuse the existing Import + Fetch flow with the discovered URL.
-            self._on_import_official_text(
-                None,
-                None,
-                initial_source_url=result.url,
-                fetch_on_present=True,
-                fetch_error_fallback_query=query,
-            )
             return False
-
+        current_id = self._browser_recovery_cluster_id
+        reader_id = cluster_id_from_cluster(self._reader_display_cluster or self._selected_cluster or {})
         self._set_reader_busy(False)
-        self._handle_scholar_auto_failure(
-            query,
-            f"Auto-Find could not complete: {error or 'unknown error'}.",
-            fallback_mode,
-            failure_kind=failure_kind,
-        )
+        if current_id and reader_id and current_id != reader_id:
+            return False
+        query = outcome.query or self._browser_recovery_query
+        if outcome.outcome == "copied":
+            self._start_browser_recovery_import(outcome, query)
+            return False
+        self._set_status(outcome.message or self._browser_recovery_failure_message(outcome.outcome))
+        if transient_notice:
+            self._show_official_pagination_not_found_notice(can_view_current=True)
         return False
 
-    def _start_scholar_auto_import(
-        self,
-        query: str,
-        result: ScholarSearchResult,
-        fallback_mode: str,
-        cache_generation: int | None,
-    ) -> None:
-        self._set_reader_busy(True, "Importing Scholar text...")
+    def _start_browser_recovery_import(self, outcome: ScholarRecoveryOutcome, query: str) -> None:
+        citation = self._browser_recovery_citation
+        cluster_id = self._browser_recovery_cluster_id
+        case_name = self._browser_recovery_case_name
+        existing_cluster = self._reader_display_cluster or self._selected_cluster or None
+        self._set_reader_busy(True, "Importing Scholar opinion...")
         thread = threading.Thread(
-            target=self._scholar_auto_import_worker,
-            args=(query, result, fallback_mode, cache_generation),
+            target=self._browser_recovery_import_worker,
+            args=(outcome, citation, cluster_id, case_name, existing_cluster),
             daemon=True,
         )
         thread.start()
 
-    def _scholar_auto_import_worker(
+    def _browser_recovery_import_worker(
         self,
-        query: str,
-        result: ScholarSearchResult,
-        fallback_mode: str,
-        cache_generation: int | None,
+        outcome: ScholarRecoveryOutcome,
+        citation: str,
+        cluster_id: str,
+        case_name: str,
+        existing_cluster: dict[str, Any] | None,
     ) -> None:
         try:
-            webpage = extract_webpage_text(result.url)
-        except RuntimeError as exc:
-            GLib.idle_add(
-                self._finish_scholar_auto_import_error,
-                query,
-                result.url,
-                str(exc),
-                fallback_mode,
-                cache_generation,
+            clipboard_text = read_regular_clipboard()
+            imported = import_scholar_text(
+                self.client,
+                citation=citation,
+                source_url=outcome.source_url,
+                clipboard_text=clipboard_text,
+                case_name=case_name,
+                existing_cluster=existing_cluster,
             )
+        except (ScholarBrowserError, ValueError, RuntimeError) as exc:
+            GLib.idle_add(self._finish_browser_recovery_import_error, str(exc))
             return
-        GLib.idle_add(
-            self._finish_scholar_auto_import,
-            query,
-            webpage,
-            fallback_mode,
-            cache_generation,
-        )
+        GLib.idle_add(self._finish_browser_recovery_import, imported)
 
-    def _finish_scholar_auto_import_error(
-        self,
-        query: str,
-        source_url: str,
-        message: str,
-        fallback_mode: str,
-        cache_generation: int | None = None,
-    ) -> bool:
-        if cache_generation is not None and cache_generation != self._research_cache_generation:
-            return False
+    def _finish_browser_recovery_import_error(self, message: str) -> bool:
         self._set_reader_busy(False)
-        self._handle_scholar_auto_failure(
-            query,
-            f"Scholar found a case, but automatic import failed: {message}",
-            fallback_mode,
-            initial_source_url=source_url,
-            failure_kind=(
-                "access_blocked"
-                if re.search(r"\bHTTP\s+(?:403|429)\b", message, flags=re.IGNORECASE)
-                else "fetch_error"
-            ),
-        )
+        self._set_status(f"Scholar opinion import not saved: {message}")
+        self._show_official_pagination_not_found_notice(can_view_current=True)
         return False
 
-    def _finish_scholar_auto_import(
-        self,
-        query: str,
-        webpage: ExtractedWebpage,
-        fallback_mode: str,
-        cache_generation: int | None = None,
-    ) -> bool:
-        if cache_generation is not None and cache_generation != self._research_cache_generation:
-            return False
-        imported_text = clean_imported_opinion_text(webpage.text) or webpage.text
-        case_source = "\n".join(part for part in (webpage.title, imported_text) if part)
-        try:
-            official_citation = validated_import_official_citation(query, case_source)
-        except ValueError:
-            self._handle_scholar_auto_failure(
-                query,
-                "Scholar first result did not match the requested official citation.",
-                fallback_mode,
-                initial_source_url=webpage.url,
-                failure_kind="mismatch",
-            )
-            return False
-        official_citation = official_citation or self._default_import_official_citation()
-        case_name = imported_case_name_from_text(case_source) or self._default_import_case_name()
-        if self._save_imported_official_text(
-            case_name=case_name,
-            official_citation=official_citation,
-            imported_text=imported_text,
-            source_url=webpage.url,
-            failure_prefix="Automatic Scholar import not saved",
-            success_status="Imported Scholar official reporter text, saved to Library, and added to Research Cache.",
-        ):
-            self._find_paginated_manual_retry = False
-            self._close_external_lookup_window()
-            return False
-        self._handle_scholar_auto_failure(
-            query,
-            "Scholar did not provide official reporter pagination.",
-            fallback_mode,
-            initial_source_url=webpage.url,
-            failure_kind="missing_pagination",
-        )
-        return False
-
-    def _handle_scholar_auto_failure(
-        self,
-        query: str,
-        message: str,
-        fallback_mode: str,
-        *,
-        initial_source_url: str = "",
-        failure_kind: str = "",
-    ) -> None:
+    def _finish_browser_recovery_import(self, imported: ScholarClipboardImport) -> bool:
         self._set_reader_busy(False)
-        if fallback_mode == SCHOLAR_FALLBACK_MANUAL_WINDOW:
-            self._set_status(f"{message} Open Scholar manually and paste the case URL.")
-            if query.strip():
-                self._show_external_lookup_window(query, initial_source_url=initial_source_url)
-            return
-        if fallback_mode == SCHOLAR_FALLBACK_TRANSIENT_NOTICE:
-            starter = getattr(self, "_start_tavily_official_copy", None)
-            if starter is None:
-                self._set_status("Transient view only: official reporter pagination was not found.")
-                self._show_official_pagination_not_found_notice(can_view_current=True)
-                return
-            manual_retry = getattr(self, "_find_paginated_manual_retry", False)
-            self._find_paginated_manual_retry = False
-            starter(query, refresh=manual_retry, show_review_on_failure=manual_retry)
-            return
-        if fallback_mode in {
-            SCHOLAR_FALLBACK_CLIPBOARD_RECOVERY,
-            SCHOLAR_FALLBACK_NOTICE_ONLY,
-        }:
-            starter = getattr(self, "_start_tavily_official_copy", None)
-            if starter is not None:
-                starter(query, refresh=False, show_review_on_failure=False)
-                return
-            if fallback_mode == SCHOLAR_FALLBACK_CLIPBOARD_RECOVERY and failure_kind != "no_result":
-                self._set_status(
-                    "Google Scholar could not be accessed automatically. Citation copied for manual lookup."
-                )
-                self._show_external_lookup_window(
-                    query,
-                    initial_source_url=initial_source_url,
-                    clipboard_recovery=True,
-                    case_name_hint=(
-                        self._active_lookup_case_name_hint
-                        or self._default_import_case_name()
-                    ),
-                )
-                return
-            self._set_status(OFFICIAL_PAGINATION_NOT_FOUND_ONLY_MESSAGE)
-            self._show_official_pagination_not_found_notice(can_view_current=False)
-            return
-        self._set_status(OFFICIAL_PAGINATION_NOT_FOUND_ONLY_MESSAGE)
+        if not imported.eligible:
+            self._set_status("Imported Scholar text did not provide official reporter pagination.")
+            self._show_official_pagination_not_found_notice(can_view_current=True)
+            return False
+        cluster_id = imported.cluster_id
+        self._refresh_case_suggestion_index_async(force=True)
+        self._set_sidebar_clusters(self.client.cached_clusters(), select_cluster_id=cluster_id)
+        cluster = self.client.cache.read_cached_cluster(cluster_id)
+        if cluster is not None:
+            generation = self._begin_case_load(cluster)
+            thread = threading.Thread(
+                target=self._case_worker,
+                args=(cluster, generation, self._research_cache_generation),
+                daemon=True,
+            )
+            thread.start()
+        self._set_status("Imported Scholar official reporter text, saved to Library, and added to Research Cache.")
+        return False
 
     def _update_find_paginated_copy_button(self) -> None:
         button = self.reader_find_paginated_button
@@ -7502,119 +7339,21 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             and not self._reader_has_official_pagination
         )
         button.set_visible(visible)
-        button.set_sensitive(
-            visible
-            and not getattr(self, "_official_copy_searching", False)
-            and not getattr(self, "_external_lookup_auto_finding", False)
-        )
+        button.set_sensitive(visible and not self._browser_recovery_running)
 
     def _on_find_paginated_copy_clicked(self, _button: Gtk.Button) -> None:
-        query = self._official_search_query()
-        if not query:
+        query, citation, cluster_id, case_name = self._recovery_identity()
+        if not query and not citation:
             self._set_status("No published case is selected.")
             return
-        self._find_paginated_manual_retry = True
-        self._start_scholar_auto_find(
-            query,
-            fallback_mode=SCHOLAR_FALLBACK_TRANSIENT_NOTICE,
-            auto_import=True,
+        self._start_browser_recovery(
+            query or citation,
+            expected_citation=citation,
+            cluster_id=cluster_id,
+            case_name=case_name,
+            transient_notice=True,
             cache_generation=self._research_cache_generation,
         )
-
-    def _start_tavily_official_copy(
-        self,
-        query: str,
-        *,
-        refresh: bool,
-        show_review_on_failure: bool,
-    ) -> None:
-        cluster = dict(self._reader_display_cluster or self._selected_cluster or {})
-        if not cluster:
-            cluster = {
-                "case_name": imported_case_name_from_text(query) or query,
-                "official_citation": normalize_official_citation(query),
-                "precedential_status": "Published",
-            }
-        if self._official_copy_searching:
-            return
-        cluster_id = cluster_id_from_cluster(cluster)
-        cache_generation = self._research_cache_generation
-        self._official_copy_searching = True
-        self._update_find_paginated_copy_button()
-        self._set_status("Searching Tavily leads for a paginated copy...")
-        thread = threading.Thread(
-            target=self._tavily_official_copy_worker,
-            args=(cluster, query, refresh, show_review_on_failure, cluster_id, cache_generation),
-            daemon=True,
-        )
-        thread.start()
-
-    def _tavily_official_copy_worker(
-        self,
-        cluster: dict[str, Any],
-        query: str,
-        refresh: bool,
-        show_review_on_failure: bool,
-        cluster_id: str,
-        cache_generation: int,
-    ) -> None:
-        result = resolve_with_tavily(self.client, cluster, query=query, refresh=refresh)
-        GLib.idle_add(
-            self._finish_tavily_official_copy,
-            result,
-            query,
-            show_review_on_failure,
-            cluster_id,
-            cache_generation,
-        )
-
-    def _finish_tavily_official_copy(
-        self,
-        result: OfficialCopyResolution,
-        query: str,
-        show_review_on_failure: bool,
-        cluster_id: str,
-        cache_generation: int,
-    ) -> bool:
-        self._official_copy_searching = False
-        if cache_generation != self._research_cache_generation:
-            self._update_find_paginated_copy_button()
-            return False
-        current_id = cluster_id_from_cluster(self._reader_display_cluster or self._selected_cluster or {})
-        if cluster_id and current_id != cluster_id:
-            self._update_find_paginated_copy_button()
-            return False
-        if result.ok and result.imported is not None:
-            saved = result.imported
-            self._reader_has_official_pagination = True
-            self._reader_pagination_mode = READER_PAGINATION_OFFICIAL
-            self._set_sidebar_clusters(
-                self.client.cached_clusters(),
-                select_cluster_id=cluster_id_from_cluster(saved.cluster),
-            )
-            formatted = self._case_header_citation(saved.cluster)
-            masthead = case_reader_masthead(saved.cluster, formatted)
-            self._set_reader_header(
-                masthead.title,
-                formatted,
-                saved.cluster,
-                masthead.metadata,
-            )
-            self._reader_source_url = str(saved.opinion.get("source_url") or "")
-            self._set_reader_source_provider(str(saved.opinion.get("source_provider") or "external_web"))
-            self._set_reader_text(saved.display.text, saved.display.page_markers, saved.display.style_spans)
-            host = result_hostname(result)
-            self._set_status(
-                f"Loaded {saved.quality.marker_count} official reporter page marker(s) from {host or 'the discovered source'}."
-            )
-            self._update_find_paginated_copy_button()
-            return False
-        self._set_status(result.message)
-        self._update_find_paginated_copy_button()
-        if show_review_on_failure:
-            self._last_official_copy_candidates = result.candidates
-            self._show_external_lookup_window(query)
-        return False
 
     def _show_official_pagination_not_found_notice(self, *, can_view_current: bool) -> None:
         message = (
@@ -8409,14 +8148,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return False
         self._set_reader_header("")
         self.reader_buffer.set_text("")
-        self._set_reader_busy(True, "Searching Google Scholar...")
-        self._set_status("CourtListener lookup unavailable. Searching Google Scholar...")
-        self._start_scholar_auto_find(
-            citation,
-            fallback_mode=SCHOLAR_FALLBACK_CLIPBOARD_RECOVERY,
-            auto_import=True,
-            cache_generation=cache_generation,
-        )
+        self._set_reader_busy(True, "Recovering official copy in browser...")
+        self._set_status("CourtListener lookup unavailable. Recovering through Google Scholar...")
+        self._start_browser_recovery(citation, cache_generation=cache_generation)
         return False
 
     def _lookup_status_text(
@@ -9111,14 +8845,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             query = (scholar_query or citation).strip()
             if query:
                 self.reader_buffer.set_text("")
-                self._set_reader_busy(True, "Searching Google Scholar...")
-                self._set_status("No CourtListener match shown. Searching Google Scholar...")
-                self._start_scholar_auto_find(
-                    query,
-                    fallback_mode=SCHOLAR_FALLBACK_CLIPBOARD_RECOVERY,
-                    auto_import=True,
-                    cache_generation=cache_generation,
-                )
+                self._set_reader_busy(True, "Recovering official copy in browser...")
+                self._set_status("No CourtListener match shown. Recovering through Google Scholar...")
+                self._start_browser_recovery(query, cache_generation=cache_generation)
             else:
                 self._set_reader_busy(False)
                 self.reader_buffer.set_text(status)
@@ -9357,22 +9086,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     ) -> None:
         cluster_id = cluster_id_from_cluster(cluster)
         try:
-            cached_slip = OpenLawLensWindow._cached_slip_opinion_for_cluster(self, cluster)
-            if cached_slip is not None:
-                payload = build_case_reader_payload(
-                    cluster,
-                    [cached_slip.display],
-                    generation=generation,
-                    cache_generation=cache_generation,
-                    opinion_ids=(),
-                    opinion_source="Research Cache",
-                    source_provider=SOURCE_PROVIDER_CALIFORNIA_COURTS,
-                    pagination_mode=READER_PAGINATION_SLIP,
-                    slip_source_url=cached_slip.source_url,
-                    slip_case_number=cached_slip.case_number,
-                )
-                GLib.idle_add(self._start_reader_payload_render, payload)
-                return
+            # An explicit slip-download request bypasses CourtListener. This is
+            # the only path that fetches a slip first.
             if force_slip_opinion:
                 GLib.idle_add(
                     self._set_reader_busy,
@@ -9409,6 +9124,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                     )
                     GLib.idle_add(self._start_reader_payload_render, payload)
                     return
+
+            # CourtListener opinions are always checked before any cached or
+            # newly downloaded slip opinion, so newly added reporter pagination
+            # supersedes an older slip copy.
             opinions = self.client.fetch_cluster_opinions(
                 cluster,
                 populate_research_cache=False,
@@ -9423,10 +9142,26 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             displays = [self.client.opinion_display(opinion) for opinion in reader_opinions]
             quality = official_pagination_quality(cluster, displays)
             if not quality.eligible:
+                cached_slip = OpenLawLensWindow._cached_slip_opinion_for_cluster(self, cluster)
+                if cached_slip is not None:
+                    payload = build_case_reader_payload(
+                        cluster,
+                        [cached_slip.display],
+                        generation=generation,
+                        cache_generation=cache_generation,
+                        opinion_ids=(),
+                        opinion_source="Research Cache",
+                        source_provider=SOURCE_PROVIDER_CALIFORNIA_COURTS,
+                        pagination_mode=READER_PAGINATION_SLIP,
+                        slip_source_url=cached_slip.source_url,
+                        slip_case_number=cached_slip.case_number,
+                    )
+                    GLib.idle_add(self._start_reader_payload_render, payload)
+                    return
                 try:
                     slip = self.client.fetch_cluster_slip_opinion(
                         cluster,
-                        force=force_slip_opinion,
+                        force=False,
                         max_age_days=DEFAULT_SLIP_OPINION_MAX_AGE_DAYS,
                         populate_research_cache=False,
                     )
@@ -9500,12 +9235,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if eligible:
             self._set_status(self._official_pagination_status(source))
         elif pending_query:
-            self._set_reader_busy(True, "Searching Google Scholar...")
-            self._set_status("Searching Google Scholar for official reporter text...")
-            self._start_scholar_auto_find(
+            self._set_reader_busy(True, "Recovering official copy in browser...")
+            self._set_status("Recovering official reporter text through Google Scholar...")
+            self._start_browser_recovery(
                 pending_query,
-                fallback_mode=SCHOLAR_FALLBACK_TRANSIENT_NOTICE,
-                auto_import=True,
+                transient_notice=True,
                 cache_generation=cache_generation,
             )
         elif pagination_mode == READER_PAGINATION_SLIP:

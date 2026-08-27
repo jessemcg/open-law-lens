@@ -19,9 +19,8 @@ from open_law_lens.app import (
     QUERY_MODE_LABELS,
     QUERY_MODE_PRESENTATION,
     READER_CLIPBOARD_ICON,
-    SCHOLAR_FALLBACK_CLIPBOARD_RECOVERY,
-    SCHOLAR_FALLBACK_NOTICE_ONLY,
-    SCHOLAR_FALLBACK_TRANSIENT_NOTICE,
+    ScholarClipboardImport,
+    ScholarRecoveryOutcome,
     Gdk,
     Gtk,
     Pango,
@@ -3507,7 +3506,7 @@ class AppReaderPayloadTests(unittest.TestCase):
         )
         self.assertEqual(reader_masthead("Same title", " same   title ").metadata, "")
 
-    def test_ineligible_loaded_case_starts_scholar_with_transient_notice_mode(self) -> None:
+    def test_ineligible_loaded_case_starts_browser_recovery(self) -> None:
         class DummyWindow:
             def __init__(self) -> None:
                 self._reader_has_official_pagination = True
@@ -3515,7 +3514,7 @@ class AppReaderPayloadTests(unittest.TestCase):
                 self._pending_auto_scholar_query = "10 Cal.App.5th 25"
                 self.busy: list[tuple[bool, str]] = []
                 self.statuses: list[str] = []
-                self.auto_find_calls: list[dict[str, object]] = []
+                self.recovery_calls: list[dict[str, object]] = []
 
             def _set_reader_busy(self, busy: bool, message: str = "") -> None:
                 self.busy.append((busy, message))
@@ -3523,19 +3522,20 @@ class AppReaderPayloadTests(unittest.TestCase):
             def _set_status(self, status: str) -> None:
                 self.statuses.append(status)
 
-            def _start_scholar_auto_find(
+            def _start_browser_recovery(
                 self,
                 query: str,
                 *,
-                fallback_mode: str,
-                auto_import: bool,
+                expected_citation: str = "",
+                cluster_id: str = "",
+                case_name: str = "",
+                transient_notice: bool = False,
                 cache_generation: int | None = None,
             ) -> None:
-                self.auto_find_calls.append(
+                self.recovery_calls.append(
                     {
                         "query": query,
-                        "fallback_mode": fallback_mode,
-                        "auto_import": auto_import,
+                        "transient_notice": transient_notice,
                         "cache_generation": cache_generation,
                     }
                 )
@@ -3557,14 +3557,13 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertFalse(window._reader_has_official_pagination)
         self.assertEqual(window._pending_auto_scholar_cluster_id, "")
         self.assertEqual(window._pending_auto_scholar_query, "")
-        self.assertEqual(window.statuses[-1], "Searching Google Scholar for official reporter text...")
+        self.assertEqual(window.statuses[-1], "Recovering official reporter text through Google Scholar...")
         self.assertEqual(
-            window.auto_find_calls,
+            window.recovery_calls,
             [
                 {
                     "query": "10 Cal.App.5th 25",
-                    "fallback_mode": SCHOLAR_FALLBACK_TRANSIENT_NOTICE,
-                    "auto_import": True,
+                    "transient_notice": True,
                     "cache_generation": None,
                 }
             ],
@@ -3629,7 +3628,7 @@ class AppReaderPayloadTests(unittest.TestCase):
             populate_research_cache=False,
         )
 
-    def test_case_worker_uses_cached_slip_payload_before_courtlistener_blob(self) -> None:
+    def test_case_worker_checks_courtlistener_before_cached_slip(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = JsonCache(Path(temp_dir) / "cache")
             cache.write_slip_opinion_payload(
@@ -3659,8 +3658,15 @@ class AppReaderPayloadTests(unittest.TestCase):
                     self.payloads = []
                     self.client = MagicMock()
                     self.client.cache = cache
-                    self.client.fetch_cluster_opinions.side_effect = AssertionError(
-                        "CourtListener opinion blob should not be fetched"
+                    self.client.last_opinion_source = "Fetched"
+                    self.client.fetch_cluster_opinions.return_value = [
+                        {"id": 10, "plain_text": "Unpaginated CourtListener text."}
+                    ]
+                    self.client.reader_opinions.return_value = self.client.fetch_cluster_opinions.return_value
+                    self.client.opinion_display.return_value = DisplayText(
+                        "Unpaginated CourtListener text.",
+                        "plain_text",
+                        [],
                     )
                     self.client.fetch_cluster_slip_opinion.side_effect = AssertionError(
                         "Slip PDF should already be cached"
@@ -3685,7 +3691,7 @@ class AppReaderPayloadTests(unittest.TestCase):
             with patch("open_law_lens.app.GLib.idle_add", side_effect=lambda func, *args: func(*args)):
                 OpenLawLensWindow._case_worker(window, cluster, 7, 8)  # type: ignore[arg-type]
 
-            window.client.fetch_cluster_opinions.assert_not_called()
+            window.client.fetch_cluster_opinions.assert_called_once()
             window.client.fetch_cluster_slip_opinion.assert_not_called()
             self.assertEqual(len(window.payloads), 1)
             payload = window.payloads[0]
@@ -4004,16 +4010,34 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(cache_generation, 3)
         self.assertTrue(force_slip)
 
-    def test_transient_scholar_failure_shows_notice_without_manual_window(self) -> None:
+    def _browser_recovery_dummy_window(self) -> object:
         class DummyWindow:
             def __init__(self) -> None:
-                self.busy: list[tuple[bool, str]] = []
-                self.statuses: list[str] = []
+                self._browser_recovery_running = True
+                self._find_paginated_manual_retry = True
+                self._browser_recovery_transient_notice = True
+                self._browser_recovery_cache_generation = None
+                self._browser_recovery_query = "10 Cal.App.5th 25"
+                self._browser_recovery_cluster_id = ""
+                self._browser_recovery_citation = ""
+                self._browser_recovery_case_name = ""
+                self._reader_display_cluster = None
+                self._selected_cluster = None
+                self._research_cache_generation = 3
                 self.notices: list[bool] = []
-                self.external_windows: list[tuple[str, str]] = []
+                self.statuses: list[str] = []
+                self.import_started = False
 
-            def _set_reader_busy(self, busy: bool, message: str = "") -> None:
-                self.busy.append((busy, message))
+            def _update_find_paginated_copy_button(self) -> None:
+                pass
+
+            def _browser_recovery_failure_message(self, outcome: str) -> str:
+                return {
+                    "not_found": "Google Scholar returned no matching official reporter copy.",
+                }.get(outcome, f"failure:{outcome}")
+
+            def _set_reader_busy(self, _busy: bool, _message: str = "") -> None:
+                pass
 
             def _set_status(self, status: str) -> None:
                 self.statuses.append(status)
@@ -4021,123 +4045,55 @@ class AppReaderPayloadTests(unittest.TestCase):
             def _show_official_pagination_not_found_notice(self, *, can_view_current: bool) -> None:
                 self.notices.append(can_view_current)
 
-            def _show_external_lookup_window(self, query: str, *, initial_source_url: str = "") -> None:
-                self.external_windows.append((query, initial_source_url))
+            def _start_browser_recovery_import(self, _outcome: object, _query: str) -> None:
+                self.import_started = True
 
-        window = DummyWindow()
+        return DummyWindow
 
-        OpenLawLensWindow._handle_scholar_auto_failure(  # type: ignore[arg-type]
+    def test_browser_recovery_not_found_keeps_baseline_and_shows_notice(self) -> None:
+        window = self._browser_recovery_dummy_window()()  # type: ignore[call-arg]
+        outcome = ScholarRecoveryOutcome(1, "not_found", "10 Cal.App.5th 25", "", "")
+
+        OpenLawLensWindow._finish_browser_recovery(  # type: ignore[arg-type]
             window,
-            "10 Cal.App.5th 25",
-            "Auto-Find could not complete: no case result.",
-            SCHOLAR_FALLBACK_TRANSIENT_NOTICE,
+            outcome,
+            Path("/tmp/does-not-exist-recovery"),
         )
 
-        self.assertEqual(window.busy[-1], (False, ""))
-        self.assertEqual(window.statuses[-1], "Transient view only: official reporter pagination was not found.")
+        self.assertFalse(window.import_started)
         self.assertEqual(window.notices, [True])
-        self.assertEqual(window.external_windows, [])
+        self.assertIn("no matching official reporter copy", window.statuses[-1])
 
-    def test_notice_only_scholar_failure_does_not_open_manual_window(self) -> None:
-        class DummyWindow:
-            def __init__(self) -> None:
-                self.statuses: list[str] = []
-                self.notices: list[bool] = []
-                self.external_windows: list[str] = []
+    def test_browser_recovery_blocked_reports_blocker_without_import(self) -> None:
+        window = self._browser_recovery_dummy_window()()  # type: ignore[call-arg]
+        outcome = ScholarRecoveryOutcome(1, "blocked", "10 Cal.App.5th 25", "", "CAPTCHA shown")
 
-            def _set_reader_busy(self, _busy: bool, _message: str = "") -> None:
-                pass
-
-            def _set_status(self, status: str) -> None:
-                self.statuses.append(status)
-
-            def _show_official_pagination_not_found_notice(self, *, can_view_current: bool) -> None:
-                self.notices.append(can_view_current)
-
-            def _show_external_lookup_window(self, query: str, *, initial_source_url: str = "") -> None:
-                del initial_source_url
-                self.external_windows.append(query)
-
-        window = DummyWindow()
-
-        OpenLawLensWindow._handle_scholar_auto_failure(  # type: ignore[arg-type]
+        OpenLawLensWindow._finish_browser_recovery(  # type: ignore[arg-type]
             window,
-            "missing citation",
-            "Auto-Find could not complete.",
-            SCHOLAR_FALLBACK_NOTICE_ONLY,
+            outcome,
+            Path("/tmp/does-not-exist-recovery"),
         )
 
-        self.assertEqual(
-            window.statuses[-1],
-            "A version of this case with pagination from the official reporter was not found.",
+        self.assertFalse(window.import_started)
+        self.assertEqual(window.statuses[-1], "CAPTCHA shown")
+
+    def test_browser_recovery_copied_starts_clipboard_import(self) -> None:
+        window = self._browser_recovery_dummy_window()()  # type: ignore[call-arg]
+        outcome = ScholarRecoveryOutcome(
+            1,
+            "copied",
+            "10 Cal.App.5th 25",
+            "https://scholar.google.com/scholar_case?case=1",
+            "",
         )
-        self.assertEqual(window.notices, [False])
-        self.assertEqual(window.external_windows, [])
 
-    def test_blocked_scholar_lookup_opens_clipboard_recovery(self) -> None:
-        class DummyWindow:
-            def __init__(self) -> None:
-                self._active_lookup_case_name_hint = "A.H. v. Superior Court"
-                self.statuses: list[str] = []
-                self.recoveries: list[dict[str, object]] = []
-
-            def _set_reader_busy(self, _busy: bool, _message: str = "") -> None:
-                pass
-
-            def _set_status(self, status: str) -> None:
-                self.statuses.append(status)
-
-            def _default_import_case_name(self) -> str:
-                return ""
-
-            def _show_external_lookup_window(self, query: str, **kwargs: object) -> None:
-                self.recoveries.append({"query": query, **kwargs})
-
-        window = DummyWindow()
-
-        OpenLawLensWindow._handle_scholar_auto_failure(  # type: ignore[arg-type]
+        OpenLawLensWindow._finish_browser_recovery(  # type: ignore[arg-type]
             window,
-            "89 Cal.App.5th 504",
-            "Google Scholar blocked the automated search request.",
-            SCHOLAR_FALLBACK_CLIPBOARD_RECOVERY,
-            failure_kind="access_blocked",
+            outcome,
+            Path("/tmp/does-not-exist-recovery"),
         )
 
-        self.assertIn("Citation copied", window.statuses[-1])
-        self.assertEqual(window.recoveries[0]["query"], "89 Cal.App.5th 504")
-        self.assertTrue(window.recoveries[0]["clipboard_recovery"])
-        self.assertEqual(
-            window.recoveries[0]["case_name_hint"],
-            "A.H. v. Superior Court",
-        )
-
-    def test_clipboard_recovery_keeps_explicit_no_result_notice(self) -> None:
-        class DummyWindow:
-            def __init__(self) -> None:
-                self.statuses: list[str] = []
-                self.notices: list[bool] = []
-
-            def _set_reader_busy(self, _busy: bool, _message: str = "") -> None:
-                pass
-
-            def _set_status(self, status: str) -> None:
-                self.statuses.append(status)
-
-            def _show_official_pagination_not_found_notice(self, *, can_view_current: bool) -> None:
-                self.notices.append(can_view_current)
-
-        window = DummyWindow()
-
-        OpenLawLensWindow._handle_scholar_auto_failure(  # type: ignore[arg-type]
-            window,
-            "89 Cal.App.5th 504",
-            "No case result was found.",
-            SCHOLAR_FALLBACK_CLIPBOARD_RECOVERY,
-            failure_kind="no_result",
-        )
-
-        self.assertEqual(window.notices, [False])
-        self.assertIn("not found", window.statuses[-1])
+        self.assertTrue(window.import_started)
 
     def test_clipboard_recovery_imports_matching_opinion(self) -> None:
         class DummyFeedback:
@@ -4235,156 +4191,85 @@ Opinion text.
         )
         self.assertIn("does not match", feedback.text)
 
-    def test_ineligible_scholar_auto_import_uses_transient_notice_mode(self) -> None:
+    def test_browser_recovery_import_ineligible_shows_notice(self) -> None:
         class DummyWindow:
             def __init__(self) -> None:
-                self.failures: list[dict[str, str]] = []
+                self.notices: list[bool] = []
+                self.statuses: list[str] = []
+                self.client = MagicMock()
+                self.client.cache.read_cached_cluster.return_value = None
 
-            def _default_import_official_citation(self) -> str:
-                return "10 Cal.App.5th 25"
+            def _set_reader_busy(self, _busy: bool, _message: str = "") -> None:
+                pass
 
-            def _default_import_case_name(self) -> str:
-                return "Example v. State"
+            def _show_official_pagination_not_found_notice(self, *, can_view_current: bool) -> None:
+                self.notices.append(can_view_current)
 
-            def _save_imported_official_text(self, **_kwargs: object) -> bool:
-                return False
+            def _refresh_case_suggestion_index_async(self, *, force: bool = False) -> None:
+                pass
 
-            def _close_external_lookup_window(self) -> None:
-                raise AssertionError("External lookup window should not close on failed save.")
+            def _set_sidebar_clusters(self, _clusters: object, **_kwargs: object) -> None:
+                pass
 
-            def _handle_scholar_auto_failure(
-                self,
-                query: str,
-                message: str,
-                fallback_mode: str,
-                *,
-                initial_source_url: str = "",
-                failure_kind: str = "",
-            ) -> None:
-                del failure_kind
-                self.failures.append(
-                    {
-                        "query": query,
-                        "message": message,
-                        "fallback_mode": fallback_mode,
-                        "initial_source_url": initial_source_url,
-                    }
-                )
+            def _set_status(self, status: str) -> None:
+                self.statuses.append(status)
 
         window = DummyWindow()
-        webpage = ExtractedWebpage(
-            url="https://scholar.google.com/scholar_case?case=123",
-            title="Example v. State",
-            text="Different pagination text.",
-        )
-
-        result = OpenLawLensWindow._finish_scholar_auto_import(  # type: ignore[arg-type]
-            window,
-            "10 Cal.App.5th 25",
-            webpage,
-            SCHOLAR_FALLBACK_TRANSIENT_NOTICE,
-        )
-
-        self.assertFalse(result)
-        self.assertEqual(window.failures[0]["query"], "10 Cal.App.5th 25")
-        self.assertEqual(window.failures[0]["fallback_mode"], SCHOLAR_FALLBACK_TRANSIENT_NOTICE)
-        self.assertEqual(window.failures[0]["initial_source_url"], webpage.url)
-
-    def test_scholar_auto_import_rejects_mismatched_official_citation(self) -> None:
-        class DummyWindow:
-            def __init__(self) -> None:
-                self.failures: list[dict[str, str]] = []
-
-            def _default_import_official_citation(self) -> str:
-                return ""
-
-            def _default_import_case_name(self) -> str:
-                return ""
-
-            def _save_imported_official_text(self, **_kwargs: object) -> bool:
-                raise AssertionError("Mismatched Scholar result should not be saved.")
-
-            def _close_external_lookup_window(self) -> None:
-                raise AssertionError("External lookup window should not close on failed save.")
-
-            def _handle_scholar_auto_failure(
-                self,
-                query: str,
-                message: str,
-                fallback_mode: str,
-                *,
-                initial_source_url: str = "",
-                failure_kind: str = "",
-            ) -> None:
-                del failure_kind
-                self.failures.append(
-                    {
-                        "query": query,
-                        "message": message,
-                        "fallback_mode": fallback_mode,
-                        "initial_source_url": initial_source_url,
-                    }
-                )
-
-        window = DummyWindow()
-        webpage = ExtractedWebpage(
-            url="https://scholar.google.com/scholar_case?case=wrong",
-            title="Wrong Case",
-            text="Wrong Case (2026) 10 Cal.App.5th 25.",
-        )
-
-        result = OpenLawLensWindow._finish_scholar_auto_import(  # type: ignore[arg-type]
-            window,
+        imported = ScholarClipboardImport(
+            "In re C.L.",
             "116 Cal.App.5th 53",
-            webpage,
-            SCHOLAR_FALLBACK_NOTICE_ONLY,
+            "42",
+            "1",
+            0,
+            False,
+            "No qualifying official pagination.",
         )
 
-        self.assertFalse(result)
-        self.assertEqual(window.failures[0]["query"], "116 Cal.App.5th 53")
-        self.assertIn("did not match", window.failures[0]["message"])
-        self.assertEqual(window.failures[0]["initial_source_url"], webpage.url)
+        OpenLawLensWindow._finish_browser_recovery_import(  # type: ignore[arg-type]
+            window,
+            imported,
+        )
 
-    def test_scholar_auto_import_allows_matching_official_citation(self) -> None:
+        self.assertEqual(window.notices, [True])
+        self.assertIn("did not provide official reporter pagination", window.statuses[-1])
+
+    def test_browser_recovery_import_eligible_reloads(self) -> None:
         class DummyWindow:
             def __init__(self) -> None:
-                self.saved: list[dict[str, object]] = []
-                self.closed = False
+                self.statuses: list[str] = []
+                self.reloaded: list[object] = []
+                self.client = MagicMock()
+                self.client.cache.read_cached_cluster.return_value = None
 
-            def _default_import_official_citation(self) -> str:
-                return ""
+            def _set_reader_busy(self, _busy: bool, _message: str = "") -> None:
+                pass
 
-            def _default_import_case_name(self) -> str:
-                return ""
+            def _refresh_case_suggestion_index_async(self, *, force: bool = False) -> None:
+                self.reloaded.append(force)
 
-            def _save_imported_official_text(self, **kwargs: object) -> bool:
-                self.saved.append(kwargs)
-                return True
+            def _set_sidebar_clusters(self, _clusters: object, **_kwargs: object) -> None:
+                pass
 
-            def _close_external_lookup_window(self) -> None:
-                self.closed = True
-
-            def _handle_scholar_auto_failure(self, *_args: object, **_kwargs: object) -> None:
-                raise AssertionError("Matching Scholar result should not fail.")
+            def _set_status(self, status: str) -> None:
+                self.statuses.append(status)
 
         window = DummyWindow()
-        webpage = ExtractedWebpage(
-            url="https://scholar.google.com/scholar_case?case=3488447941400747812",
-            title="In re C.L.",
-            text="In re C.L. (2025) 116 Cal.App.5th 53.",
-        )
-
-        result = OpenLawLensWindow._finish_scholar_auto_import(  # type: ignore[arg-type]
-            window,
+        imported = ScholarClipboardImport(
+            "In re C.L.",
             "116 Cal.App.5th 53",
-            webpage,
-            SCHOLAR_FALLBACK_NOTICE_ONLY,
+            "42",
+            "1",
+            3,
+            True,
+            "",
         )
 
-        self.assertFalse(result)
-        self.assertTrue(window.closed)
-        self.assertEqual(window.saved[0]["official_citation"], "116 Cal.App.5th 53")
-        self.assertEqual(window.saved[0]["case_name"], "In re C.L.")
+        OpenLawLensWindow._finish_browser_recovery_import(  # type: ignore[arg-type]
+            window,
+            imported,
+        )
+
+        self.assertIn("Imported Scholar official reporter text", window.statuses[-1])
 
     def test_reader_and_agent_citation_links_use_shared_lookup_path(self) -> None:
         class DummyWindow:
@@ -5243,26 +5128,36 @@ Opinion text.
             self.assertEqual(cache.list_statute_entries(), [])
             self.assertEqual(cache.list_rule_entries(), [])
 
-    def test_stale_scholar_import_does_not_write_after_set_change(self) -> None:
+    def test_stale_browser_recovery_does_not_write_after_set_change(self) -> None:
         class DummyWindow:
-            _research_cache_generation = 2
+            def __init__(self) -> None:
+                self._browser_recovery_running = True
+                self._find_paginated_manual_retry = True
+                self._browser_recovery_transient_notice = False
+                self._browser_recovery_cache_generation = 1
+                self._browser_recovery_query = "117 Cal.App.5th 379"
+                self._research_cache_generation = 2
+                self.import_started = False
 
-            def _save_imported_official_text(self, **_kwargs: object) -> bool:
-                raise AssertionError("Stale Scholar result must not be saved.")
+            def _update_find_paginated_copy_button(self) -> None:
+                pass
 
-        result = OpenLawLensWindow._finish_scholar_auto_import(  # type: ignore[arg-type]
-            DummyWindow(),
-            "117 Cal.App.5th 379",
-            ExtractedWebpage(
-                "https://example.test/kg",
-                "In re K.G.",
-                "117 Cal.App.5th 379 (2025)\nIn re K.G.",
-            ),
-            SCHOLAR_FALLBACK_NOTICE_ONLY,
-            1,
+            def _set_reader_busy(self, _busy: bool, _message: str = "") -> None:
+                pass
+
+            def _start_browser_recovery_import(self, _outcome: object, _query: str) -> None:
+                self.import_started = True
+
+        window = DummyWindow()
+
+        result = OpenLawLensWindow._finish_browser_recovery(  # type: ignore[arg-type]
+            window,
+            ScholarRecoveryOutcome(1, "copied", "117 Cal.App.5th 379", "https://scholar.google.com/scholar_case?case=1", ""),
+            Path("/tmp/does-not-exist-recovery"),
         )
 
         self.assertFalse(result)
+        self.assertFalse(window.import_started)
 
     def test_cached_statute_row_opens_cache_without_background_refresh(self) -> None:
         class DummyWindow:
@@ -5500,7 +5395,7 @@ Opinion text.
                 self.sidebar_snapshots: list[list[str]] = []
                 self.statuses: list[str] = []
                 self.busy_messages: list[str] = []
-                self.scholar_queries: list[str] = []
+                self.recovery_queries: list[str] = []
 
             def cached_clusters(self) -> list[dict[str, object]]:
                 return []
@@ -5520,16 +5415,13 @@ Opinion text.
             def _refresh_case_suggestion_index_async(self, *, force: bool = False) -> None:
                 pass
 
-            def _start_scholar_auto_find(
+            def _start_browser_recovery(
                 self,
                 query: str,
-                *,
-                fallback_mode: str,
-                auto_import: bool,
-                cache_generation: int | None = None,
+                **kwargs: object,
             ) -> None:
-                del fallback_mode, auto_import, cache_generation
-                self.scholar_queries.append(query)
+                del kwargs
+                self.recovery_queries.append(query)
 
         window = DummyWindow()
 
@@ -5544,7 +5436,7 @@ Opinion text.
             "116 Cal.App.5th 53",
         )
 
-        self.assertEqual(window.scholar_queries, ["116 Cal.App.5th 53"])
+        self.assertEqual(window.recovery_queries, ["116 Cal.App.5th 53"])
         self.assertEqual(window._pending_auto_scholar_cluster_id, "")
         self.assertEqual(window._pending_auto_scholar_query, "")
 
@@ -6455,7 +6347,8 @@ Opinion text.
             prompt,
         )
         self.assertIn(f"{prefix}extract-case --cluster-id <cluster_id>", prompt)
-        self.assertIn("Pi's web search", prompt)
+        self.assertIn("confined default-browser Google Scholar recovery", prompt)
+        self.assertIn("Never use generic web search as an official-copy fallback", prompt)
         self.assertIn("citation remains uncertain", prompt)
         self.assertIn("use normal legal prose for case names and citations", prompt)
         self.assertIn("agreed with it, distinguished it, limited it", prompt)

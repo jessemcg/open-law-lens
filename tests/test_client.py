@@ -1961,7 +1961,7 @@ class ClientTests(unittest.TestCase):
                     "plain_text": "[*1140] Official reporter copy.",
                     "source_type": "user_imported_official_text",
                     "source_provider": "external_web",
-                    "retrieval_provider": "tavily",
+                    "retrieval_mode": "browser_clipboard",
                 },
             ]
 

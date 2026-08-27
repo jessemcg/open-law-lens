@@ -109,9 +109,13 @@ LEGACY_APPEAL_ISSUE_AGENT_PROMPT_SHA256ES = (
     # Retained case-search-first research paragraph before the skill's route
     # gate was aligned into the Appeal prompt.
     "6e12830dcbf441e0a75670284678eeeebe193d27e33574eeed87f01a1af461bb",
+    # Default that still referred to the removed Tavily/direct-HTTP Scholar
+    # official-copy cascade.
+    "cb07bcae20bd7e440cf1bb061f2abba0fa8b7a58fe008d1c7edc17739a78b2ab",
 )
 LEGACY_LATER_TREATMENT_AGENT_PROMPT_SHA256ES = (
     "e73fc8abadd94b2affb966c126dfb0c2416e0fc86c1994baa486b01deb5d1834",
+    "53b08107f87f27b6cd70b895eef4d43522ca311e4c2f40f47aa6cd92b640469e",
 )
 
 DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens General California Law Agent.
@@ -200,7 +204,7 @@ Argument to assess:
 
 Research California law with Open Law Lens CLI commands. Extract the current controlling enactment first with `$OLL extract-statute "<citation>"` and `$OLL extract-rule "<citation>"`. For a known material case, direct-extract it with `$OLL extract-case "<official citation or case name>"`, using `--find "<term>"` for a narrow bounded proposition. Use `$OLL extract-case --cluster-id <cluster_id>` only when citation or name extraction fails. Run a focused `$OLL case-search "<query>" --limit 5` only when no reliable citation or case name is known, then extract the best published result. Treat search results as leads only.
 
-For a recent published California slip opinion or any case missing Cal.5th or Cal.App.5th reporter markers, `extract-case` already runs the official-copy cascade through CourtListener, California Courts slip text, Scholar, and cached native Tavily discovery. Inspect its `official_pagination`, `pagination_marker_count`, and warnings; usable unpaginated text may still be returned. Use Pi's web search only for unresolved open-ended verification after that cascade.
+For a recent published California slip opinion or any published case still missing Cal.5th or Cal.App.5th reporter markers, `extract-case` supplies the Library/CourtListener/slip baseline text. If a relied-on case remains unpaginated, perform one confined default-browser Google Scholar recovery and import the official copy; on no result or no qualifying markers, stop and rely on the baseline with a disclosed pagination limitation. Never fall back to Tavily, direct HTTP Scholar, alternate opinion sites, or generic web search for an official copy.
 
 Confine research to California state law unless the argument explicitly requires federal law. Prefer published California Supreme Court and California Court of Appeal authority. Use unpublished cases only for context, not as controlling authority.
 
@@ -227,7 +231,7 @@ If that command fails, returns no useful leads, or the cluster id appears to be 
 Choose only the most significant published subsequent cases, usually 3 to 5 when that many exist. Before relying on any selected case, extract it with:
 $OLL extract-case --cluster-id <cluster_id>
 
-Rely first on enhanced `extract-case`, which automatically attempts the complete official-copy cascade. Use Pi's web search only for unresolved open-ended verification after that cascade. State when a citation remains uncertain.
+Rely first on enhanced `extract-case`, which supplies the CourtListener/slip baseline. If a relied-on published case is still unpaginated, perform one confined default-browser Google Scholar recovery; on no result or no qualifying markers, rely on the baseline with a disclosed pagination limitation. Never use generic web search as an official-copy fallback. State when a citation remains uncertain.
 
 For each selected subsequent case, explain how it used the target case: agreed with it, distinguished it, limited it, extended it to a different fact pattern, criticized it, or used it in another identifiable way. If a citation lead exists but extracted or verified text does not support a treatment characterization, say that plainly.
 

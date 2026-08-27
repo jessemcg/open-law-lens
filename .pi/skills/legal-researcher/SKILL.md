@@ -72,12 +72,11 @@ practical consequences.
    ```
 
    Use `extract-case --cluster-id <cluster_id>` when citation or name
-   extraction is unavailable or fails. `extract-case` already runs the complete
-   official-copy cascade (Library/CourtListener, California Courts slip text,
-   Scholar, then one cached native Tavily discovery pass). Check
-   `official_pagination`, `pagination_marker_count`, and `warnings`; usable
-   unpaginated text may still return `ok: true`. Use `--refresh` only when a
-   fresh fallback retry is needed.
+   extraction is unavailable or fails. `extract-case` supplies the
+   Library/CourtListener/slip baseline text. Check `official_pagination`,
+   `pagination_marker_count`, and `warnings`; usable unpaginated text may still
+   return `ok: true`. Use `--refresh` only when a fresh baseline refresh is
+   needed.
 
 4. Issue independent statute/rule and known-case extractions in the same tool
    round when both are needed. Do not sequence the case extraction only after
@@ -128,10 +127,13 @@ followed, distinguished, limited, extended, or criticized.
 
 ## Web-search fallback
 
-Use Pi's `web_search` only after enhanced `extract-case` remains unresolved and
-open-ended verification is genuinely needed. This is especially appropriate
-for investigating delayed reporter metadata or conflicting identity records,
-not for repeating the native official-copy resolver.
+Use Pi's `web_search` only for open-ended, unresolved verification that is not
+official-copy recovery, such as investigating delayed reporter metadata or a
+conflicting identity record. Never use `web_search` to retrieve an official
+reporter copy, to repeat the default-browser Scholar recovery, or as a fallback
+opinion-discovery service. Tavily, direct HTTP Scholar, alternate opinion
+sites, and generic web search are never acceptable sources for an official
+copy.
 
 Make narrow searches combining the exact case name, docket number, filed date,
 and reporter series such as `Cal.5th` or `Cal.App.5th`. Search results remain
@@ -142,65 +144,42 @@ if the citation or text remains uncertain.
 Do not characterize a holding, treatment, quotation, or pinpoint from a search
 snippet alone.
 
-## Default-browser Scholar recovery
+## Official-copy recovery contract
 
-Browser-based recovery is a last-resort safety net, available only in
-research-capable modes that load the browser-recovery bridge. It opens Google
-Scholar in the user's current default HTTPS browser (never a hardcoded
-browser, app ID, executable, or profile) and can import a qualifying official
-copy when every headless path has already failed.
+`extract-case` supplies the Library/CourtListener/slip baseline text. It never
+performs direct HTTP Scholar search or native Tavily discovery. The only
+non-baseline source for an officially paginated reporter copy is one confined
+attempt in the user's current default HTTPS browser (never a hardcoded browser,
+app ID, executable, or profile), driven by the app's confined, safety-checked
+recovery job.
 
-Invoke it only when **all** of these hold:
+Apply this source order and stop at the first point that resolves:
 
-- The question is on the mandatory case route and a relied-on published case
-  still lacks qualifying official reporter pagination.
-- You have already finished the deterministic cascade: Library/CourtListener,
-  California Courts slip text, direct Scholar HTTP, and the native Tavily pass.
-- You have an exact California official reporter citation (e.g.
-  `11 Cal.5th 614`) for that case.
+1. **CourtListener / Library.** A CourtListener opinion that already embeds
+   qualifying `[*page]` reporter markers is the official copy.
+2. **California Courts slip opinion.** For a recent published California case,
+   the slip opinion is the next best baseline; it is not an official reporter
+   copy but is usable with a disclosed pagination limitation.
+3. **One default-browser Google Scholar attempt.** Only when a relied-on
+   published case still lacks official pagination. The recovery job resolves
+   the current default browser, opens Scholar, and imports a qualifying copy
+   when one is found.
+4. **Stop.** On no result, no qualifying reporter markers, a CAPTCHA, an
+   inaccessible link, or any job failure, stop and rely on the best baseline
+   (slip opinion first, otherwise formatted CourtListener text) with an
+   explicit pagination limitation. Do not proceed to any other service.
 
-Follow this sequence once:
+Never fall through to Tavily, direct HTTP Scholar, an alternate opinion site,
+or generic `web_search` to obtain an official copy. After a successful import,
+rerun `extract-case` (or `extract-case --find "<term>"`) so the answer quotes
+and cites the newly saved Library copy.
 
-1. Run `computer_use_linux_doctor` once and confirm readiness before the first
-   desktop action.
-2. Record `computer_use_linux_list_windows`, run
-   `open-law-lens open-scholar-browser "<citation>"`, then poll
-   `computer_use_linux_list_windows` again to identify either a newly created
-   default-browser window or an existing browser window whose active tab or
-   title changed to Scholar. Identify the window by its exact `window_id` and
-   title/URL evidence; do not target a browser by application ID.
-3. Inspect that exact window with `computer_use_linux_get_app_state` using its
-   `window_id` (no screenshot, a bounded `max_nodes`). Verify the address node
-   is on `scholar.google.com` and the content contains the requested citation
-   before authorizing.
-4. Authorize only after verification:
-   `open_law_lens_authorize_scholar_window` with the observed `window_id`,
-   title, and `scholar.google.com` URL.
-5. Use `mcpScript` to filter the accessibility tree in-process: isolate the
-   target frame and find the result block whose nearby text contains the exact
-   citation, then read its case-title link's `element_index`.
-6. Activate that link with `computer_use_linux_perform_action` using only the
-   `element_index` (no `action` or selector overrides), then re-observe and
-   require a Scholar opinion-page URL, the matching citation and case identity,
-   and no robot/CAPTCHA warning.
-7. To copy the full opinion: `computer_use_linux_press_key` with the authorized
-   `window_id`, `Ctrl+A`, re-observe, then `Ctrl+C`.
-8. Import and verify:
-   `open-law-lens import-scholar-clipboard --citation "<citation>" --source-url "<scholar_case_url>"`.
-   On success, rerun `open-law-lens extract-case "<citation>" --find "<term>"`
-   (or `extract-case`) so the answer uses the newly saved Library copy.
-9. Leave the browser on the imported opinion for transparency. Do not close,
-   rearrange, inspect, or act on unrelated browser windows.
-
-The bridge enforces safety: every mutating call consumes a freshness token, so
-re-observe with `get_app_state` between actions; only `Ctrl+A` and `Ctrl+C` are
-permitted keystrokes; coordinates, error-actions, typing, scrolling, dragging,
-and screenshots are all denied. If a CAPTCHA or robot check appears, stop and
-tell the user exactly which visible browser window needs attention; resume only
-after the user confirms and a fresh state check shows the opinion or search
-page. If the default browser does not expose a safe exact-result link action,
-ask the user to click the exact result manually rather than using coordinates.
-Never automate CAPTCHA, robot checks, login, or account interaction.
+The recovery accepts either an exact California official reporter citation
+(e.g. `11 Cal.5th 614`) or, for a recent slip that has no reporter citation
+yet, an existing CourtListener cluster plus case-name/docket/date identity. A
+CAPTCHA, robot check, login prompt, or missing exact-result action stops the
+job immediately; never solve or interact with it, and never fall back to
+coordinates, typing, scrolling, screenshots, or unrelated windows.
 
 ## Pre-answer legal-source audit
 

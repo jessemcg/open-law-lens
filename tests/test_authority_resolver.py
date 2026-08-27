@@ -4,40 +4,14 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from open_law_lens.authority_resolver import (
-    _extract_case_from_scholar,
     detect_authority_candidates,
     extract_case,
     extract_case_by_cluster_id,
     first_authority_candidate,
 )
-from open_law_lens.scholar_search import ScholarSearchResult
-from open_law_lens.web_import import ExtractedWebpage
 
 
 class AuthorityResolverTests(unittest.TestCase):
-    def test_scholar_fallback_rejects_mismatched_official_citation_before_writes(self) -> None:
-        client = MagicMock()
-        with (
-            patch(
-                "open_law_lens.authority_resolver.search_first_case_direct",
-                return_value=ScholarSearchResult("https://example.test/wrong", "People v. Carter"),
-            ),
-            patch(
-                "open_law_lens.authority_resolver.extract_webpage_text",
-                return_value=ExtractedWebpage(
-                    "https://example.test/wrong",
-                    "People v. Carter",
-                    "97 Cal.App.5th 960 (2023)\nPeople v. Carter.",
-                ),
-            ),
-        ):
-            result = _extract_case_from_scholar("117 Cal.App.5th 379", client=client)
-
-        self.assertFalse(result.ok)
-        self.assertIn("did not match", result.error)
-        client.library.upsert_cluster.assert_not_called()
-        client.cache.upsert_cluster.assert_not_called()
-
     def test_detects_first_authority_by_text_position(self) -> None:
         candidates = detect_authority_candidates(
             "See 13 Cal.4th 952 and Welf. & Inst. Code, § 300."
@@ -56,17 +30,28 @@ class AuthorityResolverTests(unittest.TestCase):
         client.lookup_citation.return_value = [{"status": 200, "clusters": []}]
         client.clusters_from_lookup.return_value = []
 
-        with (
-            patch("open_law_lens.authority_resolver._case_suggestions", return_value=[]),
-            patch("open_law_lens.authority_resolver._extract_case_from_scholar") as scholar,
-        ):
-            scholar.return_value.ok = False
-            scholar.return_value.input = ""
-            scholar.return_value.warnings = []
+        with patch("open_law_lens.authority_resolver._case_suggestions", return_value=[]):
             result = extract_case("123 Cal.App.5th 456", client=client)
 
         client.lookup_citation.assert_called_once_with("123 Cal.App.5th 456", refresh=False)
         self.assertFalse(result.ok)
+        self.assertTrue(any("Google Scholar recovery is next" in w for w in result.warnings))
+
+    def test_no_cluster_reports_no_baseline_and_browser_recovery_next(self) -> None:
+        client = MagicMock()
+        client.lookup_citation.return_value = [{"status": 200, "clusters": []}]
+        client.clusters_from_lookup.return_value = []
+
+        with patch("open_law_lens.authority_resolver._case_suggestions", return_value=[]):
+            result = extract_case("In re Example", client=client)
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.text, "")
+        self.assertTrue(any("Google Scholar recovery is next" in w for w in result.warnings))
+        self.assertTrue(result.error)
+        # Neither Tavily nor a direct HTTP Scholar search may be reached.
+        client.library.upsert_cluster.assert_not_called()
+        client.cache.upsert_cluster.assert_not_called()
 
     def test_ambiguous_case_suggestion_falls_through_to_direct_lookup(self) -> None:
         client = MagicMock()
@@ -76,11 +61,7 @@ class AuthorityResolverTests(unittest.TestCase):
         with (
             patch("open_law_lens.authority_resolver.resolve_case_lookup_text", return_value=None),
             patch("open_law_lens.authority_resolver._case_suggestions", return_value=[object(), object()]),
-            patch("open_law_lens.authority_resolver._extract_case_from_scholar") as scholar,
         ):
-            scholar.return_value.ok = False
-            scholar.return_value.input = ""
-            scholar.return_value.warnings = []
             extract_case("In re Example", client=client)
 
         client.lookup_citation.assert_called_once_with("In re Example", refresh=False)

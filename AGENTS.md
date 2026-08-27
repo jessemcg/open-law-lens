@@ -8,8 +8,8 @@
 - `open_law_lens/client.py` owns CourtListener API access and opinion-text extraction.
 - `open_law_lens/cache.py` owns local JSON cache layout and citation normalization.
 - `open_law_lens/library.py` owns the durable SQLite case library, display-text extraction, reporter page-marker offsets, and official-copy outcome cache.
-- `open_law_lens/official_copy.py` owns the deterministic official-pagination resolver and candidate validation; `open_law_lens/official_import.py` is the single external-opinion persistence service.
-- `open_law_lens/tavily.py` owns native Tavily requests and Pi Web Access-compatible credential discovery. Never add Tavily credentials to Open Law Lens settings.
+- `open_law_lens/official_import.py` is the single external-opinion persistence service. `open_law_lens/authority_resolver.py` supplies the CourtListener/slip baseline and never performs direct HTTP Scholar or Tavily discovery.
+- `open_law_lens/browser_recovery.py` owns the confined default-browser Google Scholar recovery job (a private `pi --print --no-session` subprocess using the Query Law profile). Native Tavily discovery (`tavily.py`) and `official_copy.py` were removed; their opinions are deleted by a one-time library migration.
 - `open_law_lens/config.py` owns local settings, including the CourtListener token and the default agent prompt templates.
 - `open_law_lens/pi_runtime.py` owns Pi runtime discovery, authenticated model enumeration, and atomic updates to the project Pi model setting.
 - `open_law_lens/agent_commands.py` owns the canonical workspace-safe Open Law Lens command prefix used in agent prompts and CLI suggestions.
@@ -56,7 +56,7 @@
 - Prefer `OPEN_LAW_LENS_CACHE_DIR` for isolated test or smoke-run caches instead of using or clearing the user’s default cache.
 - Prefer `OPEN_LAW_LENS_LIBRARY_DB` for isolated tests or experiments that should not touch the user’s durable library.
 - `COURTLISTENER_TOKEN` may be used by the app/client, but credentials should remain in environment variables or local config only.
-- Native Tavily discovery shares Pi's `web-search.json`/`TAVILY_API_KEY`; never persist the key, Tavily answers, or failed candidate bodies in the Library.
+- The browser recovery job runs Pi with only `mcp`, `mcpScript`, the Scholar-window authorization tool, and two fixed job tools; it never exposes `bash`, filesystem tools, or `web_search`, and never logs opinion or clipboard text.
 
 ## Desktop Launcher Notes
 - Shared desktop files live outside this repo in `/home/jesse/Dropbox/MCGLAW/config_files/Desktop_Files`.

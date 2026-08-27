@@ -24,19 +24,10 @@ from .client import (
     official_california_reporter_citation,
 )
 from .config import concordance_file_path
-from .external_import import (
-    clean_imported_opinion_text,
-    imported_case_name_from_text,
-    normalize_official_citation,
-    validated_import_official_citation,
-)
-from .official_copy import resolve_with_tavily
-from .official_import import persist_official_opinion
+from .external_import import imported_case_name_from_text, normalize_official_citation
 from .quality import official_pagination_quality
 from .rules import parse_rule_citation
-from .scholar_search import ScholarSearchError, search_first_case_direct
 from .statutes import parse_statute_citation
-from .web_import import extract_webpage_text
 
 
 @dataclass(frozen=True)
@@ -222,39 +213,26 @@ def extract_case(
     result = client.lookup_citation(resolved, refresh=refresh)
     clusters = dedupe_case_clusters(client.clusters_from_lookup(result))
     if not clusters:
-        scholar_result = _extract_case_from_scholar(resolved, client=client)
-        if scholar_result.ok:
-            scholar_result.input = original_input or citation
-            scholar_result.warnings = [*warnings, *scholar_result.warnings]
-            return scholar_result
-        identity_cluster = {
-            "case_name": imported_case_name_from_text(resolved) or resolved,
-            "official_citation": normalize_official_citation(resolved),
-            "precedential_status": "Published",
-        }
-        tavily = resolve_with_tavily(client, identity_cluster, query=resolved, refresh=refresh)
-        if tavily.ok and tavily.imported is not None:
-            imported = tavily.imported
-            return AuthorityResult(
-                ok=True,
-                authority_type="case",
-                input=original_input or citation,
-                resolved_input=imported.quality.official_citation or resolved,
-                source="Tavily discovery",
-                title=cluster_short_title(imported.cluster),
-                citation=imported.quality.official_citation,
-                identifier=cluster_id_from_cluster(imported.cluster),
-                source_url=str(imported.opinion.get("source_url") or ""),
-                text=imported.display.text,
-                warnings=warnings,
-                official_pagination=True,
-                pagination_marker_count=imported.quality.marker_count,
-            )
-        scholar_result.input = original_input or citation
-        scholar_result.warnings = [*warnings, *scholar_result.warnings, tavily.message]
-        if not scholar_result.error:
-            scholar_result.error = tavily.message
-        return scholar_result
+        return AuthorityResult(
+            ok=False,
+            authority_type="case",
+            input=original_input or citation,
+            resolved_input=resolved,
+            source="",
+            title=imported_case_name_from_text(resolved) or resolved,
+            citation=normalize_official_citation(resolved),
+            identifier="",
+            source_url="",
+            text="",
+            warnings=[
+                *warnings,
+                "No CourtListener case cluster matched. Browser Google Scholar recovery is next.",
+            ],
+            error=(
+                "Neither a CourtListener/slip baseline nor an official Scholar copy "
+                "was available."
+            ),
+        )
     return _extract_case_from_cluster(
         clusters[0],
         resolved=resolved,
@@ -347,32 +325,22 @@ def _extract_case_from_cluster(
     except (AttributeError, RuntimeError, ValueError):
         pass
 
-    fallback_query = (
-        formatted.plain_text
-        if formatted is not None
-        else " ".join(part for part in (cluster_short_title(cluster), citation) if part)
-    ) or resolved
-    scholar = _extract_case_from_scholar(fallback_query, client=client, existing_cluster=cluster)
-    if scholar.ok:
-        scholar.input = original_input
-        scholar.warnings = warnings
-        return scholar
-    if scholar.error:
-        warnings.append(f"Google Scholar fallback: {scholar.error}")
-    tavily = resolve_with_tavily(client, cluster, query=fallback_query, refresh=refresh)
-    if tavily.ok and tavily.imported is not None:
-        imported = tavily.imported
+    if is_known_unpublished(cluster):
+        warnings.append("Known unpublished cases do not have an official reporter copy.")
         return AuthorityResult(
-            ok=True, authority_type="case", input=original_input,
-            resolved_input=imported.quality.official_citation or resolved,
-            source="Tavily discovery", title=cluster_short_title(imported.cluster),
-            citation=imported.quality.official_citation,
-            identifier=cluster_id_from_cluster(imported.cluster),
-            source_url=str(imported.opinion.get("source_url") or ""), text=imported.display.text,
-            warnings=warnings, official_pagination=True,
-            pagination_marker_count=imported.quality.marker_count,
+            ok=bool(best_text), authority_type="case", input=original_input,
+            resolved_input=resolved, source=best_source, title=cluster_short_title(cluster),
+            citation=citation, identifier=cluster_id_from_cluster(cluster),
+            source_url=str(cluster.get("absolute_url") or cluster.get("resource_uri") or ""),
+            text=best_text, warnings=warnings,
+            error="" if best_text else "No opinion text found after official-copy fallbacks.",
+            official_pagination=False, pagination_marker_count=0,
         )
-    warnings.append(tavily.message)
+
+    warnings.append(
+        "No official reporter copy was found; a default-browser Google Scholar "
+        "recovery is the next step."
+    )
     return AuthorityResult(
         ok=bool(best_text), authority_type="case", input=original_input,
         resolved_input=resolved, source=best_source, title=cluster_short_title(cluster),
@@ -384,45 +352,9 @@ def _extract_case_from_cluster(
     )
 
 
-def _extract_case_from_scholar(
-    query: str,
-    *,
-    client: CourtListenerClient,
-    existing_cluster: dict[str, Any] | None = None,
-) -> AuthorityResult:
-    try:
-        found = search_first_case_direct(query)
-        webpage = extract_webpage_text(found.url, require_https=True)
-        imported_text = clean_imported_opinion_text(webpage.text) or webpage.text
-        source = "\n".join(part for part in (found.title, webpage.title, imported_text) if part)
-        official_citation = validated_import_official_citation(query, source)
-        imported = persist_official_opinion(
-            client,
-            case_name=imported_case_name_from_text(source),
-            official_citation=official_citation,
-            imported_text=imported_text,
-            source_url=webpage.url,
-            existing_cluster=existing_cluster,
-            source_provider="google_scholar",
-            retrieval_mode="direct",
-        )
-        formatted = format_official_california_citation(imported.cluster)
-        return AuthorityResult(
-            ok=True, authority_type="case", input=query,
-            resolved_input=imported.quality.official_citation or query,
-            source="Google Scholar", title=cluster_short_title(imported.cluster),
-            citation=formatted.plain_text if formatted else imported.quality.official_citation,
-            identifier=cluster_id_from_cluster(imported.cluster), source_url=webpage.url,
-            text=imported.display.text, official_pagination=True,
-            pagination_marker_count=imported.quality.marker_count,
-        )
-    except (ScholarSearchError, RuntimeError, ValueError) as exc:
-        return AuthorityResult(
-            ok=False, authority_type="case", input=query, resolved_input=query,
-            source="Google Scholar",
-            warnings=["Scholar fallback did not produce a qualifying official reporter import."],
-            error=str(exc),
-        )
+def is_known_unpublished(cluster: dict[str, Any]) -> bool:
+    status = str(cluster.get("precedential_status") or cluster.get("status") or "").casefold()
+    return status in {"unpublished", "non-precedential", "nonprecedential", "errata"}
 
 
 def read_selected_text_from_os() -> tuple[str, str]:

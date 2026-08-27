@@ -35,7 +35,8 @@ from .text_formatting import quote_stack_replacements
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PROJECT_LIBRARY_DIR = PROJECT_ROOT / "library"
 DEFAULT_LIBRARY_DB = PROJECT_LIBRARY_DIR / "open_law_lens.sqlite3"
-SCHEMA_VERSION = "3"
+SCHEMA_VERSION = "4"
+TAVILY_OPINIONS_MIGRATED_KEY = "tavily_opinions_migrated_v1"
 OFFICIAL_CITATION_ONLY_NORMALIZED_KEY = "official_citation_only_normalized_v2"
 CASE_TITLES_NORMALIZED_KEY = "case_titles_normalized_v4"
 REPORTER_ONLY_IMPORTED_NAMES_NORMALIZED_KEY = "imported_case_names_normalized_v2"
@@ -735,13 +736,6 @@ class CaseLibrary:
                     FOREIGN KEY (opinion_id) REFERENCES opinions(opinion_id) ON DELETE CASCADE
                 );
 
-                CREATE TABLE IF NOT EXISTS official_copy_search_cache (
-                    identity_key TEXT PRIMARY KEY,
-                    outcome_json TEXT NOT NULL,
-                    added_at TEXT NOT NULL,
-                    expires_at TEXT NOT NULL
-                );
-
                 CREATE TABLE IF NOT EXISTS research_sets (
                     set_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
@@ -780,6 +774,7 @@ class CaseLibrary:
             self._normalize_official_citation_only(conn)
             self._normalize_case_titles(conn)
             self._normalize_reporter_only_imported_case_names(conn)
+        self._migrate_remove_tavily_opinions()
 
     def _drop_legacy_statute_rule_tables(self, conn: sqlite3.Connection) -> None:
         conn.executescript(
@@ -788,6 +783,7 @@ class CaseLibrary:
             DROP TABLE IF EXISTS rule_aliases;
             DROP TABLE IF EXISTS statutes;
             DROP TABLE IF EXISTS rules;
+            DROP TABLE IF EXISTS official_copy_search_cache;
             """
         )
 
@@ -1110,59 +1106,6 @@ class CaseLibrary:
         if not clusters:
             return None
         return [{"status": 200, "clusters": clusters}]
-
-    def read_official_copy_search(self, identity_key: str) -> dict[str, Any] | None:
-        key = str(identity_key or "").strip()
-        if not key:
-            return None
-        now = _utc_now()
-        with self.connection() as conn:
-            row = conn.execute(
-                "SELECT outcome_json, expires_at FROM official_copy_search_cache WHERE identity_key = ?",
-                (key,),
-            ).fetchone()
-            if row is None:
-                return None
-            if str(row["expires_at"]) <= now:
-                conn.execute("DELETE FROM official_copy_search_cache WHERE identity_key = ?", (key,))
-                return None
-        try:
-            value = _json_loads(str(row["outcome_json"]))
-        except json.JSONDecodeError:
-            return None
-        return value if isinstance(value, dict) else None
-
-    def write_official_copy_search(
-        self,
-        identity_key: str,
-        outcome: dict[str, Any],
-        *,
-        ttl_hours: int = 24,
-    ) -> None:
-        from datetime import datetime, timedelta, timezone
-
-        key = str(identity_key or "").strip()
-        if not key:
-            return
-        now_dt = datetime.now(timezone.utc)
-        now = now_dt.isoformat()
-        expires = (now_dt + timedelta(hours=max(1, ttl_hours))).isoformat()
-        with self.connection() as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO official_copy_search_cache(
-                    identity_key, outcome_json, added_at, expires_at
-                ) VALUES (?, ?, ?, ?)
-                """,
-                (key, _json_dumps(outcome), now, expires),
-            )
-
-    def delete_official_copy_search(self, identity_key: str) -> None:
-        with self.connection() as conn:
-            conn.execute(
-                "DELETE FROM official_copy_search_cache WHERE identity_key = ?",
-                (str(identity_key or "").strip(),),
-            )
 
     def upsert_cluster(self, cluster: dict[str, Any]) -> str:
         cluster = canonicalize_cluster_citations(cluster)
@@ -2374,6 +2317,114 @@ class CaseLibrary:
             target.close()
             source.close()
         return backup_path
+
+    def _migrate_remove_tavily_opinions(self) -> None:
+        """One-time removal of opinions imported via native Tavily discovery.
+
+        The legacy native Tavily resolver is gone. Any stored opinion marked
+        ``retrieval_provider: "tavily"`` is deleted, along with its page
+        markers. External-only cases that lose their only opinion are removed
+        entirely (aliases, lookup references, and Research Set items).
+        CourtListener-backed cases are preserved with their remaining
+        opinions. A timestamped SQLite backup is created before any deletion;
+        if that backup fails, no migration changes are made.
+        """
+        with self.connection() as conn:
+            if conn.execute(
+                "SELECT 1 FROM meta WHERE key = ?", (TAVILY_OPINIONS_MIGRATED_KEY,)
+            ).fetchone() is not None:
+                return
+
+        with self.connection() as conn:
+            rows = conn.execute(
+                "SELECT opinion_id, cluster_id, opinion_json FROM opinions"
+            ).fetchall()
+        tavily_opinion_ids: set[str] = set()
+        tavily_clusters: set[str] = set()
+        for row in rows:
+            try:
+                opinion = _json_loads(str(row["opinion_json"]))
+            except json.JSONDecodeError:
+                opinion = None
+            if isinstance(opinion, dict) and str(opinion.get("retrieval_provider") or "") == "tavily":
+                tavily_opinion_ids.add(str(row["opinion_id"]))
+                tavily_clusters.add(str(row["cluster_id"]))
+
+        if not tavily_opinion_ids:
+            with self.connection() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+                    (TAVILY_OPINIONS_MIGRATED_KEY, _utc_now()),
+                )
+            return
+
+        # Create the backup before mutating anything. An exception here leaves
+        # the Library untouched and the meta key unset (migration retries later).
+        self.backup()
+
+        with self.connection() as conn:
+            opinion_placeholders = ",".join("?" for _ in tavily_opinion_ids)
+            opinion_values = tuple(sorted(tavily_opinion_ids))
+            conn.execute(
+                f"DELETE FROM page_markers WHERE opinion_id IN ({opinion_placeholders})",
+                opinion_values,
+            )
+            conn.execute(
+                f"DELETE FROM opinions WHERE opinion_id IN ({opinion_placeholders})",
+                opinion_values,
+            )
+
+            deleted_cluster_ids: set[str] = set()
+            for cluster_id in sorted(tavily_clusters):
+                case_row = conn.execute(
+                    "SELECT cluster_json, opinion_ids_json FROM cases WHERE cluster_id = ?",
+                    (cluster_id,),
+                ).fetchone()
+                if case_row is None:
+                    continue
+                try:
+                    cluster = _json_loads(str(case_row["cluster_json"]))
+                    opinion_ids = _json_loads(str(case_row["opinion_ids_json"]))
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(cluster, dict) or not isinstance(opinion_ids, list):
+                    continue
+                remaining = [
+                    str(opinion_id).strip()
+                    for opinion_id in opinion_ids
+                    if str(opinion_id).strip() not in tavily_opinion_ids
+                ]
+                name = str(cluster.get("source_type") or "")
+                is_external_only = name == "user_imported_external_case" or cluster_id.startswith("external-")
+                if not remaining and is_external_only:
+                    deleted_cluster_ids.add(cluster_id)
+                else:
+                    conn.execute(
+                        "UPDATE cases SET opinion_ids_json = ?, last_accessed = ? WHERE cluster_id = ?",
+                        (_json_dumps(remaining), _utc_now(), cluster_id),
+                    )
+
+            if deleted_cluster_ids:
+                self._rewrite_lookup_results_for_deleted_clusters(conn, deleted_cluster_ids)
+                case_placeholders = ",".join("?" for _ in deleted_cluster_ids)
+                case_values = tuple(sorted(deleted_cluster_ids))
+                conn.execute(
+                    f"DELETE FROM citation_aliases WHERE cluster_id IN ({case_placeholders})",
+                    case_values,
+                )
+                conn.execute(
+                    f"DELETE FROM research_set_items WHERE item_type = 'case' AND authority_id IN ({case_placeholders})",
+                    case_values,
+                )
+                conn.execute(
+                    f"DELETE FROM cases WHERE cluster_id IN ({case_placeholders})",
+                    case_values,
+                )
+
+            conn.execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+                (TAVILY_OPINIONS_MIGRATED_KEY, _utc_now()),
+            )
 
     def _delete_cases_and_lookup_references(self, cluster_ids: list[str]) -> None:
         prune_ids = {str(cluster_id).strip() for cluster_id in cluster_ids if str(cluster_id).strip()}
