@@ -78,6 +78,18 @@ practical consequences.
    return `ok: true`. Use `--refresh` only when a fresh baseline refresh is
    needed.
 
+   When a relied-on published case still lacks official reporter pagination,
+   use the recovery-enabled form so the command performs its own single
+   deterministic default-browser Scholar attempt, validation, and final
+   re-extraction:
+
+   ```bash
+   uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync open-law-lens extract-case "<citation>" --recover-official --find "<term>" --find "<term>"
+   ```
+
+   Always rely on that command's final result. Never orchestrate Scholar (or
+   any desktop/browser step) yourself.
+
 4. Issue independent statute/rule and known-case extractions in the same tool
    round when both are needed. Do not sequence the case extraction only after
    the statutes finish. Use the compact `--find` passages for the case; do not
@@ -148,10 +160,9 @@ snippet alone.
 
 `extract-case` supplies the Library/CourtListener/slip baseline text. It never
 performs direct HTTP Scholar search or native Tavily discovery. The only
-non-baseline source for an officially paginated reporter copy is one confined
-attempt in the user's current default HTTPS browser (never a hardcoded browser,
-app ID, executable, or profile), driven by the app's confined, safety-checked
-recovery job.
+non-baseline source for an officially paginated reporter copy is a single
+deterministic default-browser Google Scholar attempt that is performed **by the
+Open Law Lens command itself**, never by the agent.
 
 Apply this source order and stop at the first point that resolves:
 
@@ -160,26 +171,29 @@ Apply this source order and stop at the first point that resolves:
 2. **California Courts slip opinion.** For a recent published California case,
    the slip opinion is the next best baseline; it is not an official reporter
    copy but is usable with a disclosed pagination limitation.
-3. **One default-browser Google Scholar attempt.** Only when a relied-on
-   published case still lacks official pagination. The recovery job resolves
-   the current default browser, opens Scholar, and imports a qualifying copy
-   when one is found.
+3. **One recovery-enabled extraction.** When a relied-on published case still
+   lacks official pagination, run `extract-case "<citation>" --recover-official`
+   (or the equivalent `--cluster-id <id> --recover-official` form). The command
+   resolves the current default browser, opens Scholar, copies exactly one
+   corroborated opinion, runs import validation, persists a qualifying copy,
+   and re-extracts the final Library-backed result.
 4. **Stop.** On no result, no qualifying reporter markers, a CAPTCHA, an
-   inaccessible link, or any job failure, stop and rely on the best baseline
-   (slip opinion first, otherwise formatted CourtListener text) with an
-   explicit pagination limitation. Do not proceed to any other service.
+   inaccessible link, a validation rejection, or any command failure, stop and
+   rely on the best baseline (slip opinion first, otherwise formatted
+   CourtListener text) with an explicit pagination limitation. Do not proceed
+   to any other service and do not attempt a second recovery.
 
 Never fall through to Tavily, direct HTTP Scholar, an alternate opinion site,
-or generic `web_search` to obtain an official copy. After a successful import,
-rerun `extract-case` (or `extract-case --find "<term>"`) so the answer quotes
-and cites the newly saved Library copy.
+or generic `web_search` to obtain an official copy. Never use Computer Use,
+`mcp`, `mcpScript`, browser automation, or any desktop tool yourself to
+retrieve or copy an opinion. The recovery-enabled command already performs the
+single deterministic attempt and returns the validated final extraction; quote
+and cite that result directly.
 
-The recovery accepts either an exact California official reporter citation
-(e.g. `11 Cal.5th 614`) or, for a recent slip that has no reporter citation
-yet, an existing CourtListener cluster plus case-name/docket/date identity. A
-CAPTCHA, robot check, login prompt, or missing exact-result action stops the
-job immediately; never solve or interact with it, and never fall back to
-coordinates, typing, scrolling, screenshots, or unrelated windows.
+A CAPTCHA, robot check, login prompt, or missing exact-result action stops the
+command immediately with `blocked` and leaves the page visible; it never solves
+or interacts with it and never falls back to coordinates, typing, scrolling,
+screenshots, or unrelated windows.
 
 ## Pre-answer legal-source audit
 

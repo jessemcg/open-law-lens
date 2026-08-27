@@ -9,7 +9,9 @@
 - `open_law_lens/cache.py` owns local JSON cache layout and citation normalization.
 - `open_law_lens/library.py` owns the durable SQLite case library, display-text extraction, reporter page-marker offsets, and official-copy outcome cache.
 - `open_law_lens/official_import.py` is the single external-opinion persistence service. `open_law_lens/authority_resolver.py` supplies the CourtListener/slip baseline and never performs direct HTTP Scholar or Tavily discovery.
-- `open_law_lens/browser_recovery.py` owns the confined default-browser Google Scholar recovery job (a private `pi --print --no-session` subprocess using the Query Law profile). Native Tavily discovery (`tavily.py`) and `official_copy.py` were removed; their opinions are deleted by a one-time library migration.
+- `open_law_lens/browser_recovery.py` owns the deterministic default-browser Google Scholar recovery state machine. It drives Linux Computer Use directly through the first-party `ComputerUseMCPClient` (no Pi, model, or `pi-mcp-adapter`), acquires a cross-process recovery lock, scopes the exact target frame/tab, matches exactly one corroborated result, and performs only targeted `perform_action`/`Ctrl+A`/`Ctrl+C` mutations. Native Tavily discovery (`tavily.py`) and `official_copy.py` were removed; their opinions are deleted by a one-time library migration.
+- `open_law_lens/computer_use_mcp.py` is the bounded first-party stdio MCP client for the `computer-use-linux` MCP server. It exposes only `doctor`, `list_windows`, `get_app_state`, `perform_action`, and `press_key`, and rejects screenshots, coordinates, clicks, typing, scrolling, dragging, setup operations, broad app-identity targeting, and every key except targeted `Ctrl+A`/`Ctrl+C`.
+- `open_law_lens/scholar_recovery_service.py` owns the recovery-and-import flow: deterministic browser recovery -> regular clipboard read -> existing Scholar cleanup/validation -> `persist_official_opinion` -> Library re-extraction -> a typed final result. It is used by the CLI (`--recover-official` and `recover-scholar`), the GTK app, and embedded legal-researcher sessions.
 - `open_law_lens/config.py` owns local settings, including the CourtListener token and the default agent prompt templates.
 - `open_law_lens/pi_runtime.py` owns Pi runtime discovery, authenticated model enumeration, and atomic updates to the project Pi model setting.
 - `open_law_lens/agent_commands.py` owns the canonical workspace-safe Open Law Lens command prefix used in agent prompts and CLI suggestions.
@@ -56,7 +58,7 @@
 - Prefer `OPEN_LAW_LENS_CACHE_DIR` for isolated test or smoke-run caches instead of using or clearing the user’s default cache.
 - Prefer `OPEN_LAW_LENS_LIBRARY_DB` for isolated tests or experiments that should not touch the user’s durable library.
 - `COURTLISTENER_TOKEN` may be used by the app/client, but credentials should remain in environment variables or local config only.
-- The browser recovery job runs Pi with only `mcp`, `mcpScript`, the Scholar-window authorization tool, and two fixed job tools; it never exposes `bash`, filesystem tools, or `web_search`, and never logs opinion or clipboard text.
+- Deterministic Scholar recovery drives Linux Computer Use directly through the bounded `ComputerUseMCPClient`; it never launches a Pi/model process, never exposes `bash`/filesystem/`web_search`, and never logs opinion, clipboard, or accessibility-tree text. Embedded legal-researcher agents merely invoke `extract-case --recover-official` and rely on the command's final result rather than orchestrating the desktop.
 
 ## Desktop Launcher Notes
 - Shared desktop files live outside this repo in `/home/jesse/Dropbox/MCGLAW/config_files/Desktop_Files`.

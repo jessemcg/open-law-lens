@@ -122,14 +122,16 @@ and `~/.pi/web-search.json` credentials as ordinary Pi sessions. The launcher
 also uses the Node runtime installed alongside Pi instead of the desktop
 session's system Node.
 
-Default-browser Google Scholar recovery additionally requires the user-level
-`pi-mcp-adapter` and `@agent-sh/computer-use-linux` packages (tested with
-`2.29.0` and `0.4.9`):
+Default-browser Google Scholar recovery is deterministic and requires only the
+user-level `@agent-sh/computer-use-linux` package (tested with `0.4.9`). Run
+`computer-use-linux doctor` and confirm no readiness blockers:
 
 ```bash
-pi install npm:pi-mcp-adapter
 pi install npm:@agent-sh/computer-use-linux
+computer-use-linux doctor
 ```
+
+`pi-mcp-adapter` is no longer used for Scholar recovery.
 
 The Settings window lists the models currently authorized in Pi and lets each
 user choose a separate model and reasoning effort for Query Law, Query Research
@@ -416,7 +418,7 @@ order is:
 
 1. Durable Library and CourtListener.
 2. The California Courts slip-opinion display fallback when applicable.
-3. One confined default-browser Google Scholar recovery.
+3. One deterministic default-browser Google Scholar recovery.
 4. Stop: the best CourtListener or slip text, with an explicit pagination
    warning, if no qualifying reporter copy is found.
 
@@ -424,7 +426,7 @@ Known unpublished cases skip the Scholar recovery and report that no official
 reporter copy exists. JSON reports `official_pagination` and
 `pagination_marker_count`; usable unpaginated text may still return `ok: true`
 with warnings. Native Tavily discovery and direct-HTTP Scholar search were
-removed; the only non-baseline official-copy path is the confined
+removed; the only non-baseline official-copy path is the deterministic
 default-browser Scholar recovery described below.
 
 A saved Scholar opinion records `source_provider: "google_scholar"` and
@@ -448,39 +450,43 @@ hostname.
 ## Default-Browser Google Scholar Recovery
 
 When a published California case still lacks qualifying official reporter
-pagination after the deterministic cascade above, research-capable Agent
-workflows can recover the opinion through Google Scholar in the **current
-default HTTPS browser**. This path never hardcodes Firefox, Chrome, an app ID,
-an executable, or a profile: it resolves the default handler through Gio at
-runtime, so changing the default browser is respected automatically.
+pagination after the deterministic cascade above, Open Law Lens can recover the
+opinion through Google Scholar in the **current default HTTPS browser** using a
+single deterministic, model-free sequence. This path never hardcodes Firefox,
+Chrome, an app ID, an executable, or a profile: it resolves the default handler
+through Gio at runtime and drives Linux Computer Use directly through a bounded
+first-party MCP client (no Pi/model process and no `pi-mcp-adapter`).
 
-Two commands back this path:
+The recovery-enabled extraction performs the baseline lookup, one deterministic
+recovery attempt, import validation, and final re-extraction in one command:
 
 ```bash
-uv run open-law-lens open-scholar-browser "11 Cal.5th 614"
-uv run open-law-lens import-scholar-clipboard \
-  --citation "11 Cal.5th 614" \
-  --source-url "https://scholar.google.com/scholar_case?case=..."
+uv run open-law-lens extract-case "11 Cal.5th 614" --recover-official
+uv run open-law-lens extract-case "11 Cal.5th 614" --recover-official --find "beneficial relationship"
+uv run open-law-lens extract-case --cluster-id 6240402 --recover-official
 ```
 
-`open-scholar-browser` opens the case-law Scholar search in the default browser
-and reports the resolved handler name and desktop ID for observation only.
-`import-scholar-clipboard` reads only the regular clipboard (preferring
-`wl-paste`, falling back to `xclip`/`xsel`, capped at 8 MiB, never printing its
-contents), cleans browser/account chrome, requires an exact official-citation
-match and qualifying official pagination, and persists through the same
-validated Library path as other external imports with
-`source_provider: google_scholar` and `retrieval_mode: browser_clipboard`. On
-validation failure it exits nonzero without touching the Library or Research
-Cache.
+A focused diagnostics command uses the same service:
 
-A confined first-party Pi extension enforces the safety boundary: only
-`doctor`, `list_windows`, `focused_window`, `get_app_state`, `perform_action`,
-and `press_key` are exposed, plus the `mcp` gateway, `mcpScript`, and the
-`open_law_lens_authorize_scholar_window` tool. Every mutating call requires an
-authorized, freshly observed Scholar window; only `Ctrl+A` and `Ctrl+C` are
-permitted keystrokes; screenshots, pointer clicks, typing, scrolling, dragging,
-coordinates, and unrelated servers are denied.
+```bash
+uv run open-law-lens recover-scholar "11 Cal.5th 614" \
+  --citation "11 Cal.5th 614" --case-name "In re Caden C."
+```
+
+`open-scholar-browser` and `import-scholar-clipboard` remain available for
+manual clipboard workflows. `import-scholar-clipboard` reads only the regular
+clipboard (preferring `wl-paste`, falling back to `xclip`/`xsel`, capped at
+8 MiB, never printing its contents), cleans browser/account chrome, requires an
+exact official-citation match and qualifying official pagination, and persists
+with `source_provider: google_scholar` and `retrieval_mode: browser_clipboard`.
+
+The deterministic sequence scopes the exact target frame and selected tab,
+matches exactly one corroborated result, and performs only targeted
+`Ctrl+A`/`Ctrl+C` key presses on an exact numeric `window_id`. The bounded MCP
+client exposes only `doctor`, `list_windows`, `get_app_state`, `perform_action`,
+and `press_key`; screenshots, pointer coordinates, clicks, typing, scrolling,
+dragging, setup operations, and every key other than `Ctrl+A`/`Ctrl+C` are
+denied.
 
 Run the read-only readiness check once per computer before the first desktop
 recovery (do this on each machine after installation):
@@ -495,11 +501,13 @@ GNOME Wayland, logging out and back in if prompted) and re-run `doctor`.
 
 Recovery opens a **visible** default-browser window and leaves the browser open
 on the imported opinion for transparency. If a CAPTCHA or robot check appears,
-the workflow pauses and asks you to complete the visible challenge rather than
-attempting to solve it. External research writes to an isolated disposable
-cache — under the private runtime workspace — so the next normal Open Law Lens
-launch still shows your unchanged Research Cache sidebar, while validated
-official opinions remain in the durable Library.
+the command reports `blocked` and leaves the challenge visible rather than
+attempting to solve it. A copied but invalid opinion is rejected without
+touching the Library or Research Cache, and the CourtListener/slip baseline
+remains available. External research writes to an isolated disposable cache —
+under the private runtime workspace — so the next normal Open Law Lens launch
+still shows your unchanged Research Cache sidebar, while validated official
+opinions remain in the durable Library.
 
 ## Project Layout
 
@@ -522,12 +530,18 @@ official opinions remain in the durable Library.
   checks.
 - `open_law_lens/official_import.py`: shared external-opinion persistence
   service that preserves CourtListener cluster identity.
-- `open_law_lens/browser_recovery.py`: confined default-browser Google Scholar
-  recovery job; runs a private `pi --print --no-session` subprocess using the
-  Query Law model profile with only `mcp`, `mcpScript`, the Scholar-window
-  authorization tool, and two fixed job tools.
+- `open_law_lens/computer_use_mcp.py`: bounded first-party stdio MCP client for
+  the `computer-use-linux` MCP server; exposes only `doctor`, `list_windows`,
+  `get_app_state`, `perform_action`, and `press_key`.
+- `open_law_lens/browser_recovery.py`: deterministic default-browser Google
+  Scholar recovery state machine (model-free, drives Computer Use directly,
+  scopes the exact frame/tab, matches one corroborated result, copies with
+  targeted `Ctrl+A`/`Ctrl+C`).
+- `open_law_lens/scholar_recovery_service.py`: recovery-and-import service
+  (recovery -> clipboard read -> validation -> persistence -> re-extraction),
+  used by the CLI, GTK app, and embedded legal-researcher sessions.
 - `open_law_lens/scholar_browser.py`: default-browser Scholar launch and
-  clipboard import for the recovery job.
+  clipboard import primitives for recovery.
 - `scripts/open-law-lens-agent-vte.sh`: embedded Pi terminal launcher. It keeps
   unrelated extensions disabled with `--no-extensions`; closed-corpus modes
   load no extension, while research-capable modes load only the user-level

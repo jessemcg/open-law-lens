@@ -50,20 +50,7 @@ class AgentVteWrapperTests(unittest.TestCase):
         return package
 
     @staticmethod
-    def _install_browser_recovery(root: Path) -> None:
-        bridge = (
-            root
-            / "project"
-            / ".pi"
-            / "extensions"
-            / "open-law-lens-browser-recovery"
-            / "index.ts"
-        )
-        bridge.parent.mkdir(parents=True)
-        bridge.write_text("", encoding="utf-8")
-        adapter = root / "pi-agent" / "npm" / "node_modules" / "pi-mcp-adapter" / "index.ts"
-        adapter.parent.mkdir(parents=True)
-        adapter.write_text("", encoding="utf-8")
+    def _install_computer_use(root: Path) -> None:
         computer_use = (
             root
             / "pi-agent"
@@ -111,7 +98,7 @@ class AgentVteWrapperTests(unittest.TestCase):
         project, workspace, prompt = self._fixture(root)
         if mode in {"general", "appeal"}:
             self._install_web_access(root)
-            self._install_browser_recovery(root)
+            self._install_computer_use(root)
         pi, output = self._fake_pi(
             root,
             with_sibling_node=with_sibling_node,
@@ -156,7 +143,7 @@ class AgentVteWrapperTests(unittest.TestCase):
                 self.assertIn(flag, args)
             self.assertNotIn("--skill", args)
             self.assertFalse(any(item.startswith("/skill:legal-researcher") for item in args))
-            self.assertEqual(args.count("--extension"), 2)
+            self.assertEqual(args.count("--extension"), 1)
             self.assertNotIn("capture", stderr.lower())
             system_prompt_path = Path(args[args.index("--system-prompt") + 1])
             self.assertEqual(
@@ -178,21 +165,13 @@ class AgentVteWrapperTests(unittest.TestCase):
                     / "index.ts"
                 ),
             )
-            self.assertEqual(
-                extension_values[1],
-                str(
-                    root
-                    / "project"
-                    / ".pi"
-                    / "extensions"
-                    / "open-law-lens-browser-recovery"
-                    / "index.ts"
-                ),
-            )
             self.assertIn(
-                "read,bash,grep,find,ls,web_search,mcp,mcpScript,open_law_lens_authorize_scholar_window",
+                "read,bash,grep,find,ls,web_search",
                 args,
             )
+            self.assertNotIn("mcp", args)
+            self.assertNotIn("mcpScript", args)
+            self.assertNotIn("open_law_lens_authorize_scholar_window", args)
             self.assertNotIn("--thinking", args)
             self.assertEqual(args[-2], str(root / "workspace" / "pi-sessions"))
             self.assertEqual(args[-1], str(root / "workspace"))
@@ -256,9 +235,12 @@ class AgentVteWrapperTests(unittest.TestCase):
             self.assertEqual(args[0], str(root / "pi"))
             self.assertIn("--extension", args)
             self.assertIn(
-                "read,bash,grep,find,ls,web_search,mcp,mcpScript,open_law_lens_authorize_scholar_window",
+                "read,bash,grep,find,ls,web_search",
                 args,
             )
+            self.assertNotIn("mcp", args)
+            self.assertNotIn("mcpScript", args)
+            self.assertNotIn("open_law_lens_authorize_scholar_window", args)
 
     def test_appeal_mode_preloads_legal_researcher_skill(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -370,9 +352,12 @@ class AgentVteWrapperTests(unittest.TestCase):
             "computer-use-linux",
             "node_modules",
         }
+        self.assertFalse(
+            extensions.exists() and any(extensions.iterdir()),
+            "no first-party browser/Scholar recovery extensions may remain",
+        )
         if extensions.exists():
             names = {p.name for p in extensions.iterdir()}
-            self.assertTrue(names <= {"open-law-lens-browser-recovery", "open-law-lens-scholar-recovery"}, f"unexpected first-party extensions: {names - {'open-law-lens-browser-recovery', 'open-law-lens-scholar-recovery'}}")
             for vendored_name in vendored:
                 self.assertNotIn(vendored_name, names)
         system_prompt = (PROJECT_DIR / ".pi" / "SYSTEM.md").read_text(

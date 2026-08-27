@@ -21,8 +21,8 @@ CLI_COMMANDS: tuple[CliCommand, ...] = (
     CliCommand(
         name="extract-case",
         title="Extract Case",
-        description="Look up a case citation, case-like query, or CourtListener cluster ID and print JSON. Use --find QUERY (repeatable) for bounded verified passages instead of full text.",
-        example='uv run open-law-lens extract-case "13 Cal.4th 952" --find "presumed father"',
+        description="Look up a case citation, case-like query, or CourtListener cluster ID and print JSON. Use --find QUERY (repeatable) for bounded verified passages instead of full text. Add --recover-official for one deterministic default-browser Google Scholar recovery when a relied-on published case lacks official pagination.",
+        example='uv run open-law-lens extract-case "13 Cal.4th 952" --recover-official --find "presumed father"',
     ),
     CliCommand(
         name="case-search",
@@ -77,6 +77,12 @@ CLI_COMMANDS: tuple[CliCommand, ...] = (
         title="Import Scholar Clipboard",
         description="Validate and import an officially paginated Google Scholar opinion copied to the regular clipboard.",
         example='uv run open-law-lens import-scholar-clipboard --citation "11 Cal.5th 614" --source-url "https://scholar.google.com/scholar_case?case=..."',
+    ),
+    CliCommand(
+        name="recover-scholar",
+        title="Recover Scholar Copy",
+        description="Perform one deterministic default-browser Google Scholar recovery, validation, and import for a California case and print a bounded JSON result.",
+        example="uv run open-law-lens recover-scholar \"11 Cal.5th 614\" --citation \"11 Cal.5th 614\" --case-name \"In re Caden C.\"",
     ),
     CliCommand(
         name="commands",
