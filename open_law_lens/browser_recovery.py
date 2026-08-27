@@ -1,59 +1,80 @@
-"""Confined default-browser Google Scholar recovery job.
+"""Deterministic default-browser Google Scholar recovery state machine.
 
-This module owns the process lifecycle for the *one* non-desktop fallback that
-remains after the deterministic CourtListener -> California Courts slip
-baseline: a visible default-browser Google Scholar attempt driven by the
-confined first-party Pi extension. The app is the only caller and always the
-single reader/writer of the isolated result.
+This module owns the *only* desktop-recovery path for officially paginated
+Scholar copies. It replaces the former model-driven Pi subprocess with a
+deterministic state machine that drives Linux Computer Use directly through the
+first-party ``ComputerUseMCPClient``. No Pi, model, provider, or
+``pi-mcp-adapter`` import exists here.
 
 The job is deliberately small and side-effect constrained:
 
-* It runs a private ``pi --print --no-session`` subprocess in its own process
-  group, with a purpose-specific system prompt and extension/skill/context
-  discovery disabled.
-* Only ``mcp``, ``mcpScript``, the existing Scholar-window authorization tool,
-  and the two fixed job tools are exposed. ``bash``, filesystem tools, and
-  ``web_search`` are unavailable, so the model cannot reach any other
-  opinion-discovery service.
-* The launch tool runs the fixed request query through ``uv ... open-scholar-browser``
-  using argv execution (never a shell) and rejects any other query.
-* The completion tool writes a one-shot, machine-readable result file with
-  private permissions. No opinion text or clipboard content is logged.
+* It acquires a nonblocking user-session lock so only one recovery runs across
+  every Open Law Lens and Current Case TUI process.
+* It checks desktop readiness, snapshots existing windows, opens Scholar with
+  the current default HTTPS handler, scopes the exact target frame and tab, and
+  matches exactly one corroborated result.
+* It only ever performs a targeted ``perform_action`` (semantic element index)
+  and targeted ``Ctrl+A`` / ``Ctrl+C`` key presses with an exact numeric
+  ``window_id``, revalidating window/frame/title/URL around every mutation.
+* Barriers (CAPTCHA, robot check, unusual traffic, login, consent) stop the job
+  immediately with ``blocked`` and no interaction.
+* No accessibility tree, clipboard content, opinion text, or full URL is ever
+  logged.
 """
 
 from __future__ import annotations
 
-import json
+import fcntl
 import os
 import re
-import shutil
-import signal
-import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
-from .config import load_config
-from .pi_runtime import find_pi_node_executable, find_pi_executable
-from .scholar_browser import SCHOLAR_NETLOC, validate_scholar_source_url
+from .computer_use_mcp import (
+    ComputerUseMCPClient,
+    ComputerUseMCPError,
+    doctor_readiness,
+    scholar_identity_diagnostic,
+)
+from .scholar_browser import (
+    SCHOLAR_NETLOC,
+    build_scholar_case_search_url,
+    launch_scholar_url,
+    validate_scholar_source_url,
+)
 
 RESULT_VERSION = 1
 VALID_OUTCOMES = ("copied", "not_found", "blocked", "failed")
 
-REQUEST_FILENAME = "request.json"
-RESULT_FILENAME = "result.json"
-PROMPT_FILENAME = "prompt.txt"
-
-ENV_REQUEST_QUERY = "OPEN_LAW_LENS_SCHOLAR_QUERY"
-ENV_RESULT_PATH = "OPEN_LAW_LENS_SCHOLAR_RESULT_PATH"
-ENV_RECOVERY_DIR = "OPEN_LAW_LENS_SCHOLAR_RECOVERY_DIR"
-
 DEFAULT_TIMEOUT_SECONDS = 300.0
-DEFAULT_MAX_OUTPUT_BYTES = 256 * 1024
+DEFAULT_PAGE_DEADLINE_SECONDS = 120.0
+
+# Progress callback: ``progress(stage: str, elapsed_seconds: float) -> None``.
+ProgressCallback = Callable[[str, float], None]
+# Cancellation callback: ``cancelled() -> bool``.
+CancelCallback = Callable[[], bool]
+
+LOCK_DIR_REL = Path("open-law-lens")
+LOCK_FILENAME = "scholar-recovery.lock"
+
+# Barrier signals that must stop recovery without interaction.
+_BARRIER_PATTERNS: tuple[tuple[str, ...], ...] = (
+    ("captcha",),
+    ("i'm not a robot", "i am not a robot", "not a robot"),
+    ("unusual traffic", "automated queries"),
+    ("log in", "sign in", "login required"),
+    ("your choice", "consent", "before you continue"),
+)
 
 
 class BrowserRecoveryError(RuntimeError):
     """Base error for default-browser Scholar recovery."""
+
+
+class RecoveryBusyError(BrowserRecoveryError):
+    """Another recovery is already running in this user session."""
 
 
 @dataclass(frozen=True)
@@ -97,13 +118,13 @@ def normalize_recovery_query(query: str) -> str:
 def is_scholar_case_url(url: str) -> bool:
     try:
         validate_scholar_source_url(url)
-    except RuntimeError:
+    except Exception:
         return False
     return True
 
 
 def validate_recovery_result(payload: Any) -> ScholarRecoveryOutcome | None:
-    """Return a validated outcome, or ``None`` if the payload is not a valid result."""
+    """Return a validated outcome, or ``None`` if the payload is invalid."""
     if not isinstance(payload, dict):
         return None
     if payload.get("version") != RESULT_VERSION:
@@ -146,427 +167,687 @@ def request_from_query(
     )
 
 
-def resolve_uv_bin(environment: Mapping[str, str] | None = None) -> str:
-    """Resolve the ``uv`` executable for the job's launch tool.
+# ---------------------------------------------------------------------------
+# Cross-process user-session recovery lock
+# ---------------------------------------------------------------------------
 
-    Order matches the agent wrapper: validated explicit override, then PATH,
-    then the standard user-local install. Returns ``uv`` as a final fallback so
-    a missing binary surfaces as a launch error rather than an index error.
-    """
+
+def _runtime_dir(environment: Mapping[str, str] | None = None) -> Path:
     env = os.environ if environment is None else environment
-    override = str(env.get("OPEN_LAW_LENS_UV_BIN") or "").strip()
-    if override:
-        return override
-    discovered = shutil.which("uv")
-    if discovered:
-        return discovered
-    local_bin = Path.home() / ".local" / "bin" / "uv"
-    if local_bin.is_file():
-        return str(local_bin)
-    return "uv"
+    base = str(env.get("XDG_RUNTIME_DIR") or "").strip()
+    if not base:
+        base = str(env.get("TMPDIR") or "").strip() or "/tmp"
+    return Path(base)
 
 
-def recovery_environment(
-    *,
-    runtime_dir: Path,
-    request: ScholarRecoveryRequest,
-    project_dir: Path,
-    base: Mapping[str, str] | None = None,
-) -> dict[str, str]:
-    env = dict(os.environ if base is None else base)
-    env[ENV_RECOVERY_DIR] = str(runtime_dir)
-    env[ENV_REQUEST_QUERY] = request.query
-    env[ENV_RESULT_PATH] = str(runtime_dir / RESULT_FILENAME)
-    env["OPEN_LAW_LENS_PROJECT_DIR"] = str(project_dir)
-    env["OPEN_LAW_LENS_UV_BIN"] = resolve_uv_bin(env)
-    return env
+class RecoveryLock:
+    """A nonblocking user-session lock preventing concurrent recovery.
+
+    The lock uses ``flock`` on a file under ``$XDG_RUNTIME_DIR/open-law-lens/``,
+    so a second Open Law Lens window, embedded session, or Current Case TUI
+    workflow fails fast with ``RecoveryBusyError`` instead of queueing.
+    """
+
+    def __init__(self, environment: Mapping[str, str] | None = None) -> None:
+        lock_dir = _runtime_dir(environment) / LOCK_DIR_REL
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        self.path = lock_dir / LOCK_FILENAME
+        self._fd: int | None = None
+
+    def acquire(self) -> bool:
+        if self._fd is not None:
+            return True
+        try:
+            fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError:
+            return False
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            return False
+        self._fd = fd
+        # Clear any stale holder record (the fd itself is the lock).
+        try:
+            os.ftruncate(fd, 0)
+        except OSError:
+            pass
+        return True
+
+    def release(self) -> None:
+        if self._fd is None:
+            return
+        try:
+            fcntl.flock(self._fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        try:
+            os.close(self._fd)
+        except OSError:
+            pass
+        self._fd = None
+
+    def __enter__(self) -> "RecoveryLock":
+        if not self.acquire():
+            raise RecoveryBusyError("Another Scholar recovery is already running.")
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        self.release()
 
 
-def recovery_system_prompt(request: ScholarRecoveryRequest) -> str:
-    expected = request.expected_citation or request.query
-    case_name = request.case_name or "(not supplied; use the citation-only fallback)"
-    header = f"""You are recovering the exact officially paginated Google Scholar copy of one
-California published case using the user's current default HTTPS browser.
-
-Target query: {request.query}
-Expected official citation: {expected}
-Expected case name: {case_name}
-
-Your only job is to drive the confined desktop tools to open Scholar, select the
-exact matching case, copy its full opinion text, and record a machine-readable
-result. Follow the sequence below exactly. Do not request MCP server
-instructions, describe tools, or improvise alternate call shapes.
-"""
-    procedure = r"""
-1. Call `mcp` once with tool `computer_use_linux_doctor`. If readiness has a
-   blocker, complete with outcome "failed".
-2. Call `open_law_lens_launch_scholar_query` exactly once with the target query.
-3. Call `mcp` with tool `computer_use_linux_list_windows`. Choose the exact
-   Scholar search window_id. Never use app-id targeting or coordinates.
-4. Observe that window ONLY through `mcpScript`, using the OBSERVE SCRIPT below.
-   A direct get_app_state call floods context. Every get_app_state call MUST
-   include the exact numeric window_id, `include_screenshot:false`,
-   `max_nodes:1000`, and `max_depth:14`; omitting max_nodes is policy-denied.
-5. From the OBSERVE SCRIPT's bounded output, authorize the observed window with
-   `open_law_lens_authorize_scholar_window` using its exact window_id, title,
-   and scholar.google.com URL.
-6. Run the SELECT SCRIPT below through `mcpScript`, replacing only WINDOW_ID
-   with the observed integer. The citation and case name are already safely
-   embedded. It re-observes the authorized window, validates citation
-   proximity, and invokes only the exact result's element_index. If it emits
-   found:false, complete
-   "not_found". Never act on an uncorroborated link.
-7. Run the OBSERVE SCRIPT again. The emitted URL must be an HTTPS
-   scholar.google.com/scholar_case URL and the title must identify the expected
-   case. A CAPTCHA/robot page means outcome "blocked".
-8. With a fresh observation already made, call `mcp` tool
-   `computer_use_linux_press_key` with args `{window_id: WINDOW_ID, key:
-   "Ctrl+A"}`. Run the OBSERVE SCRIPT once more, then call the same tool with
-   `{window_id: WINDOW_ID, key:"Ctrl+C"}`. Those are the only allowed keys.
-9. Complete exactly once with outcome "copied", the target query, and the exact
-   Scholar case URL emitted in step 7. On every failure, still call
-   `open_law_lens_complete_scholar_recovery` exactly once. Never use bash,
-   filesystem tools, web_search, screenshots, typing, scrolling, coordinate
-   clicks, login, or CAPTCHA automation.
-
-OBSERVE SCRIPT (replace WINDOW_ID with the observed integer):
-```js
-const windowId = WINDOW_ID;
-const r = await tools.call("computer_use_linux_get_app_state", {
-  window_id: windowId,
-  include_screenshot: false,
-  max_nodes: 1000,
-  max_depth: 14,
-});
-if (!r.ok) { emit({ ok: false, error: r.error }); return; }
-const p = r.data && r.data.structuredContent;
-const tree = (p && p.accessibility_tree) || [];
-const address = tree.find((n) =>
-  n.role === "combo box" &&
-  n.text && typeof n.text.content === "string" &&
-  n.text.content.includes("scholar.google.com/")
-);
-const rawUrl = address && address.text.content;
-const url = rawUrl && (rawUrl.startsWith("https://") ? rawUrl : `https://${rawUrl}`);
-emit({
-  ok: Boolean(url),
-  window_id: windowId,
-  title: p && p.window_context && p.window_context.title,
-  url: url || "",
-});
-```
-
-SELECT SCRIPT (replace WINDOW_ID only):
-```js
-const windowId = WINDOW_ID;
-const expected = "EXPECTED_CITATION";
-const caseName = "EXPECTED_CASE_NAME";
-const norm = (v) => String(v || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
-const r = await tools.call("computer_use_linux_get_app_state", {
-  window_id: windowId,
-  include_screenshot: false,
-  max_nodes: 1000,
-  max_depth: 14,
-});
-if (!r.ok) { emit({ found: false, error: r.error }); return; }
-const p = r.data && r.data.structuredContent;
-const tree = (p && p.accessibility_tree) || [];
-const byIndex = new Map(tree.map((n) => [n.index, n]));
-const within = (node, ancestorIndex) => {
-  let pnode = node;
-  for (let i = 0; pnode && i < 16; i += 1, pnode = byIndex.get(pnode.parent_index)) {
-    if (pnode.index === ancestorIndex) return true;
-  }
-  return false;
-};
-const nodeText = (n) => `${n.name || ""} ${(n.text && n.text.content) || ""}`;
-const expectedNorm = norm(expected);
-const caseNorm = norm(caseName);
-const isShowing = (n) =>
-  Array.isArray(n.states) && n.states.includes("showing") && n.states.includes("visible");
-let selected = null;
-for (const link of tree.filter((n) => n.role === "link" && n.name && isShowing(n))) {
-  const linkNorm = norm(link.name);
-  if (!caseNorm || !(linkNorm.includes(caseNorm) || caseNorm.includes(linkNorm))) continue;
-  let heading = byIndex.get(link.parent_index);
-  while (heading && heading.role !== "heading") heading = byIndex.get(heading.parent_index);
-  const block = heading && byIndex.get(heading.parent_index);
-  if (!block) continue;
-  const nearby = tree.filter((n) => within(n, block.index)).map(nodeText).join(" ");
-  if (norm(nearby).includes(expectedNorm)) { selected = link; break; }
-}
-if (!selected) {
-  const hit = tree.find((n) => isShowing(n) && norm(nodeText(n)).includes(expectedNorm));
-  for (let block = hit && byIndex.get(hit.parent_index); block && !selected;
-       block = byIndex.get(block.parent_index)) {
-    const links = tree.filter((n) =>
-      n.role === "link" && isShowing(n) && within(n, block.index)
-    );
-    selected = links.find((link) => {
-      let parent = byIndex.get(link.parent_index);
-      while (parent && parent.index !== block.index) {
-        if (parent.role === "heading") return true;
-        parent = byIndex.get(parent.parent_index);
-      }
-      return false;
-    }) || null;
-  }
-}
-if (!selected) { emit({ found: false }); return; }
-const acted = await tools.call("computer_use_linux_perform_action", {
-  element_index: selected.index,
-});
-emit({ found: acted.ok, element_index: selected.index, name: selected.name || "" });
-```
-"""
-    procedure = procedure.replace('"EXPECTED_CITATION"', json.dumps(expected))
-    procedure = procedure.replace('"EXPECTED_CASE_NAME"', json.dumps(request.case_name))
-    return header + procedure
+# ---------------------------------------------------------------------------
+# Pure accessibility-tree helpers (unit-testable with synthetic trees)
+# ---------------------------------------------------------------------------
 
 
-RECOVERY_USER_MESSAGE = "Perform the default-browser Google Scholar recovery and record the result."
+def normalize_match_token(value: str) -> str:
+    """Casefold and strip non-alphanumerics for corroboration matching."""
+    return re.sub(r"[^a-z0-9]+", "", (value or "").casefold())
 
-BRIDGE_EXTENSION_REL = Path(".pi/extensions/open-law-lens-browser-recovery/index.ts")
-JOB_EXTENSION_REL = Path(".pi/extensions/open-law-lens-scholar-recovery/index.ts")
+
+def node_text(node: Mapping[str, Any]) -> str:
+    text = node.get("text")
+    if isinstance(text, str):
+        return text
+    if isinstance(text, dict):
+        return str(text.get("content") or "")
+    return ""
 
 
-def recovery_pi_command(
-    *,
-    project_dir: Path,
-    system_prompt: str,
-    profile: tuple[str, str, str] | None,
-) -> list[str]:
-    pi_executable = find_pi_executable()
-    node_executable = find_pi_node_executable(pi_executable)
-    args: list[str] = []
-    if node_executable:
-        args.append(node_executable)
-    args.append(pi_executable)
-    args.extend(
-        [
-            "--print",
-            "--no-session",
-            "--approve",
-            "--no-extensions",
-            "--no-skills",
-            "--no-prompt-templates",
-            "--no-themes",
-            "--no-context-files",
-            # Load only the shared safety bridge (mcp/mcpScript/authorize) and
-            # this OpenLawLens-only job extension. No ambient/global discovery.
-            "--extension",
-            str(project_dir / BRIDGE_EXTENSION_REL),
-            "--extension",
-            str(project_dir / JOB_EXTENSION_REL),
-            "--tools",
-            "mcp,mcpScript,open_law_lens_authorize_scholar_window,"
-            "open_law_lens_launch_scholar_query,open_law_lens_complete_scholar_recovery",
-            "--system-prompt",
-            system_prompt,
-        ]
+def node_name(node: Mapping[str, Any]) -> str:
+    name = node.get("name")
+    return str(name) if name else ""
+
+
+def node_full_text(node: Mapping[str, Any]) -> str:
+    return f"{node_name(node)} {node_text(node)}".strip()
+
+
+def node_is_visible(node: Mapping[str, Any]) -> bool:
+    states = node.get("states")
+    return bool(
+        isinstance(states, list)
+        and "showing" in states
+        and "visible" in states
     )
-    if profile is not None:
-        provider, model, thinking = profile
-        if provider and model and thinking:
-            args.extend(["--provider", provider, "--model", model, "--thinking", thinking])
-    args.append(RECOVERY_USER_MESSAGE)
-    return args
 
 
-def query_law_profile() -> tuple[str, str, str] | None:
-    """Return the configured Query Law profile, or ``None`` for Pi defaults."""
-    profiles = load_config().agent_runtime_profiles
-    profile = profiles.get("law")
-    if profile is None:
+def node_role(node: Mapping[str, Any]) -> str:
+    return str(node.get("role") or "").casefold()
+
+
+def _descendant_set(
+    tree: Sequence[Mapping[str, Any]], root_index: int
+) -> set[int]:
+    """Return the indexes of ``root_index`` and every descendant in ``tree``.
+
+    Walks each node's ``parent_index`` chain up to the root, bounded so a
+    malformed or cyclic tree cannot hang.
+    """
+    by_index: dict[int, Mapping[str, Any]] = {int(n.get("index")): n for n in tree}
+    result: set[int] = {root_index}
+    for node in tree:
+        current = int(node.get("index"))
+        for _ in range(512):
+            if current == root_index:
+                result.add(int(node.get("index")))
+                break
+            holder = by_index.get(current)
+            if holder is None:
+                break
+            pid = holder.get("parent_index")
+            if pid is None:
+                break
+            try:
+                pidx = int(pid)
+            except (TypeError, ValueError):
+                break
+            if pidx == current or pidx not in by_index:
+                break
+            current = pidx
+    return result
+
+
+def scope_frame_index(
+    tree: Sequence[Mapping[str, Any]], window_title: str
+) -> int | None:
+    """Return the frame node whose name matches the compositor window title.
+
+    Firefox can expose multiple tabs and same-process windows in one tree, so
+    the match must be confined to the exact frame for the selected tab.
+    """
+    expected = normalize_match_token(window_title)
+    if not expected:
         return None
-    provider = profile.provider.strip()
-    model = profile.model.strip()
-    thinking = profile.thinking.strip().lower()
-    if not (provider and model and thinking):
-        return None
-    return provider, model, thinking
+    matches: list[int] = []
+    for node in tree:
+        if node_role(node) != "frame":
+            continue
+        name = normalize_match_token(node_name(node))
+        if name and (name == expected or expected in name or name in expected):
+            matches.append(int(node.get("index")))
+    if len(matches) == 1:
+        return matches[0]
+    if matches:
+        # Prefer the visible frame when multiple collide.
+        for node in tree:
+            if int(node.get("index")) in matches and node_is_visible(node):
+                return int(node.get("index"))
+        return matches[0]
+    # Fallback: the visible frame node itself.
+    for node in tree:
+        if node_role(node) == "frame" and node_is_visible(node):
+            return int(node.get("index"))
+    return None
+
+
+def find_scholar_url(
+    tree: Sequence[Mapping[str, Any]], scoped: Sequence[Mapping[str, Any]]
+) -> str | None:
+    """Return the Scholar URL from the address-bar combo box, or ``None``.
+
+    Only ``https://`` URLs are surfaced, and only the Scholar host (or its
+    ``www.`` subdomain) qualifies.
+    """
+    for node in scoped:
+        if node_role(node) != "combo box":
+            continue
+        raw = node_text(node)
+        if not raw:
+            raw = node_name(node)
+        if "scholar.google" not in raw.casefold():
+            continue
+        address = raw.strip()
+        if not address.startswith("https://"):
+            # The address bar may prepend the scheme inconsistently.
+            address = "https://" + address.lstrip("/")
+        host_part = re.split(r"[/?#]", address)[2] if address.count("/") >= 2 else address
+        hostname = host_part.casefold()
+        if hostname == SCHOLAR_NETLOC or hostname.endswith("." + SCHOLAR_NETLOC):
+            return address
+    return None
+
+
+def detect_barrier(
+    tree: Sequence[Mapping[str, Any]], scoped: Sequence[Mapping[str, Any]]
+) -> str | None:
+    """Return a barrier reason if the scoped page is blocked, else ``None``."""
+    text = " ".join(node_full_text(node) for node in scoped).casefold()
+    for patterns in _BARRIER_PATTERNS:
+        for pattern in patterns:
+            if pattern in text:
+                return pattern
+    absent = ("page not found", "no results", "did not match any")
+    if any(word in text for word in absent):
+        return "missing page"
+    return None
+
+
+def find_result_link(
+    tree: Sequence[Mapping[str, Any]],
+    scoped: Sequence[Mapping[str, Any]],
+    expected_citation: str,
+    case_name: str,
+) -> Mapping[str, Any] | None:
+    """Return the single corroborated visible result link, or ``None``.
+
+    When a trustworthy case name is supplied, the link must match the name and
+    its containing block must also corroborate the expected citation. When only
+    a citation is known, a citation-only fallback is permitted but duplicate
+    candidates are rejected (never a guess).
+    """
+    by_index: dict[int, Mapping[str, Any]] = {
+        int(n.get("index")): n for n in tree
+    }
+    scoped_indexes = {int(n.get("index")) for n in scoped}
+
+    def within(node: Mapping[str, Any], ancestor_index: int) -> bool:
+        current = node
+        for _ in range(64):
+            if int(current.get("index")) == ancestor_index:
+                return True
+            pid = current.get("parent_index")
+            if pid is None:
+                return False
+            try:
+                parent = by_index[int(pid)]
+            except (KeyError, TypeError, ValueError):
+                return False
+            current = parent
+        return False
+
+    def block_for_link(link: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        """Walk up from the link to a heading, then return the heading's parent."""
+        current = link
+        heading = None
+        for _ in range(32):
+            pid = current.get("parent_index")
+            if pid is None:
+                break
+            try:
+                parent = by_index[int(pid)]
+            except (KeyError, TypeError, ValueError):
+                break
+            if node_role(parent) == "heading":
+                heading = parent
+                break
+            current = parent
+        if heading is None:
+            return None
+        parent_index = heading.get("parent_index")
+        if parent_index is None:
+            return heading
+        try:
+            return by_index[int(parent_index)]
+        except (KeyError, TypeError, ValueError):
+            return heading
+
+    def nearby_text(block: Mapping[str, Any]) -> str:
+        block_index = int(block.get("index"))
+        parts = []
+        for node in tree:
+            if int(node.get("index")) not in scoped_indexes:
+                continue
+            if within(node, block_index):
+                parts.append(node_full_text(node))
+        return " ".join(parts)
+
+    citation_norm = normalize_match_token(expected_citation)
+    case_norm = normalize_match_token(case_name)
+
+    visible_links = [
+        node
+        for node in scoped
+        if node_role(node) == "link"
+        and node_is_visible(node)
+        and node_name(node)
+    ]
+
+    candidates: list[Mapping[str, Any]] = []
+
+    # Pass 1: name + citation corroboration.
+    if case_norm:
+        for link in visible_links:
+            link_norm = normalize_match_token(node_name(link))
+            if not (case_norm in link_norm or link_norm in case_norm):
+                continue
+            block = block_for_link(link)
+            if block is None:
+                continue
+            if citation_norm and citation_norm in normalize_match_token(
+                nearby_text(block)
+            ):
+                candidates.append(link)
+
+    # Pass 2: citation-only fallback (only when no trustworthy case name).
+    if not candidates and citation_norm and not case_norm:
+        for link in visible_links:
+            block = block_for_link(link)
+            if block is None:
+                continue
+            if citation_norm in normalize_match_token(nearby_text(block)):
+                candidates.append(link)
+
+    # Deduplicate by index and reject ambiguity.
+    unique: dict[int, Mapping[str, Any]] = {}
+    for link in candidates:
+        unique[int(link.get("index"))] = link
+
+    if len(unique) == 1:
+        return next(iter(unique.values()))
+    return None
+
+
+# ---------------------------------------------------------------------------
+# State machine
+# ---------------------------------------------------------------------------
 
 
 class ScholarRecoveryJob:
-    """Owns the lifecycle of one running recovery subprocess.
+    """Owns the deterministic Scholar recovery state machine.
 
-    The subprocess runs in its own session (process group) so it can be
-    terminated as a unit. Output is bounded; the authoritative result is the
-    one-shot ``result.json`` written by the completion tool.
+    On success the job leaves the copied opinion text on the regular clipboard
+    and returns a ``copied`` outcome carrying the validated Scholar case URL.
+    The caller (``scholar_recovery_service``) is responsible for reading the
+    clipboard and persisting through the shared import path.
     """
 
     def __init__(
         self,
-        *,
-        runtime_dir: Path,
         request: ScholarRecoveryRequest,
-        project_dir: Path,
-        profile: tuple[str, str, str] | None = None,
+        *,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
-        max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
+        progress: ProgressCallback | None = None,
+        cancelled: CancelCallback | None = None,
+        client: ComputerUseMCPClient | None = None,
     ) -> None:
-        self.runtime_dir = runtime_dir
         self.request = request
-        self.project_dir = project_dir
-        self.profile = profile
         self.timeout = timeout
-        self.max_output_bytes = max_output_bytes
-        self.process: subprocess.Popen[str] | None = None
-        self.result_path = runtime_dir / RESULT_FILENAME
-        self.stdout_bytes = 0
-        self._done = False
+        self.progress = progress
+        self.cancelled = cancelled
+        self._owns_client = client is None
+        self.client = client
+        self._started_at = time.monotonic()
+        self._target_window_id: int | None = None
+        self._target_title: str = ""
+        self._handler_name = ""
+        self._handler_desktop_id = ""
 
-    def prepare(self) -> None:
-        self.runtime_dir.mkdir(parents=True, exist_ok=True)
-        (self.runtime_dir / REQUEST_FILENAME).write_text(
-            json.dumps(self.request.to_json(), ensure_ascii=True) + "\n",
-            encoding="utf-8",
-        )
-        prompt_path = self.runtime_dir / PROMPT_FILENAME
-        system_prompt = recovery_system_prompt(self.request)
-        prompt_path.write_text(system_prompt, encoding="utf-8")
-        # A stale result from an earlier attempt must never leak into this run.
-        self.result_path.unlink(missing_ok=True)
-        self.env = recovery_environment(
-            runtime_dir=self.runtime_dir,
-            request=self.request,
-            project_dir=self.project_dir,
-        )
-        self.command = recovery_pi_command(
-            project_dir=self.project_dir,
-            system_prompt=system_prompt,
-            profile=self.profile,
-        )
+    # -- helpers ------------------------------------------------------------
 
-    def start(self) -> None:
-        if self.process is not None:
-            raise BrowserRecoveryError("Recovery job already started.")
-        try:
-            self.process = subprocess.Popen(
-                self.command,
-                cwd=self.project_dir,
-                env=self.env,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                errors="replace",
-                start_new_session=True,
-            )
-        except OSError as exc:
-            raise BrowserRecoveryError(f"Unable to start Scholar recovery: {exc}") from exc
+    def _elapsed(self) -> float:
+        return time.monotonic() - self._started_at
 
-    def wait(self, timeout: float | None = None) -> ScholarRecoveryOutcome:
-        if self.process is None:
-            raise BrowserRecoveryError("Recovery job is not running.")
-        remaining = self.timeout if timeout is None else timeout
-        try:
-            assert self.process.stdout is not None
-            # Drain bounded output while the process runs so the pipe cannot
-            # fill and deadlock the model.
-            self._drain_output(budget=remaining)
-        except Exception:
-            self.terminate()
-            raise
-        outcome = self._read_result()
-        if outcome is not None:
-            self._done = True
-            return outcome
-        self._done = True
+    def _report(self, stage: str) -> None:
+        if self.progress is not None:
+            self.progress(stage, self._elapsed())
+
+    def _is_cancelled(self) -> bool:
+        if self.cancelled is not None:
+            try:
+                if self.cancelled():
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def _deadline_exceeded(self) -> bool:
+        return self._elapsed() > self.timeout
+
+    def _outcome(self, outcome: str, message: str, source_url: str = "") -> ScholarRecoveryOutcome:
         return ScholarRecoveryOutcome(
             version=RESULT_VERSION,
-            outcome="failed",
+            outcome=outcome,
             query=self.request.query,
-            source_url="",
-            message="Scholar recovery produced no valid result.",
+            source_url=source_url,
+            message=(message or ""),
         )
 
-    def _drain_output(self, *, budget: float) -> None:
-        import time
+    # -- state 1: acquire lock ---------------------------------------------
 
-        assert self.process is not None and self.process.stdout is not None
-        deadline = time.monotonic() + budget
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                self.terminate()
+    def _acquire_lock(self) -> RecoveryLock:
+        lock = RecoveryLock()
+        if not lock.acquire():
+            raise RecoveryBusyError("Another Scholar recovery is already running.")
+        return lock
+
+    # -- state 2: check desktop --------------------------------------------
+
+    def _check_desktop(self) -> None:
+        self._report("Checking desktop")
+        payload = self.client.doctor()
+        capabilities = doctor_readiness(payload)
+        if capabilities.blockers:
+            raise BrowserRecoveryError(
+                "Computer Use is not ready: " + "; ".join(capabilities.blockers)
+            )
+        if not (
+            capabilities.can_register_mcp_tools
+            and capabilities.can_build_accessibility_tree
+            and capabilities.can_query_windows
+            and capabilities.can_send_development_input
+        ):
+            raise BrowserRecoveryError(
+                "Computer Use is missing a required desktop capability."
+            )
+
+    # -- state 3: snapshot windows -----------------------------------------
+
+    def _snapshot_windows(self) -> set[int]:
+        payload = self.client.list_windows()
+        windows = payload.get("windows")
+        if not isinstance(windows, list):
+            return set()
+        return {int(w.get("window_id")) for w in windows if isinstance(w.get("window_id"), int)}
+
+    # -- state 4: open Scholar ---------------------------------------------
+
+    def _open_scholar(self) -> str:
+        self._report("Opening Scholar")
+        url = build_scholar_case_search_url(self.request.query)
+        self._handler_name, self._handler_desktop_id = launch_scholar_url(url)
+        return url
+
+    # -- state 5: find target window --------------------------------------
+
+    def _find_target_window(self, prior: set[int]) -> tuple[int, str]:
+        deadline = time.monotonic() + self.page_deadline()
+        while time.monotonic() < deadline:
+            if self._is_cancelled() or self._deadline_exceeded():
                 break
-            import select
+            payload = self.client.list_windows()
+            windows = payload.get("windows")
+            if not isinstance(windows, list):
+                windows = []
+            for window in windows:
+                window_id = window.get("window_id")
+                if not isinstance(window_id, int):
+                    continue
+                title = str(window.get("title") or "")
+                if "scholar" in title.casefold() or "google scholar" in title.casefold():
+                    return int(window_id), title
+                # A retitled/new window from the default handler that is Scholar.
+                if int(window_id) not in prior and self._matches_handler(window):
+                    if "scholar" in title.casefold():
+                        return int(window_id), title
+            time.sleep(0.5)
+        raise BrowserRecoveryError("The Scholar window did not appear.")
 
-            ready, _w, _e = select.select([self.process.stdout], [], [], min(remaining, 1.0))
-            if ready:
-                chunk = self.process.stdout.read(4096)
-                if not chunk:
-                    break
-                self._consume_output(chunk)
+    def _matches_handler(self, window: Mapping[str, Any]) -> bool:
+        identity = (
+            str(window.get("app_id") or "")
+            + " "
+            + str(window.get("wm_class") or "")
+        ).casefold()
+        handler = (
+            self._handler_name + " " + self._handler_desktop_id
+        ).casefold()
+        if not handler:
+            return True
+        token = re.sub(r"[^a-z0-9]+", "", handler)
+        haystack = re.sub(r"[^a-z0-9]+", "", identity)
+        return bool(token) and (token in haystack or haystack in token)
+
+    # -- state 6: observe results ------------------------------------------
+
+    def _observe(self, window_id: int) -> tuple[list[Mapping[str, Any]], str, str]:
+        payload = self.client.get_app_state(
+            window_id=window_id,
+            max_nodes=self.client.max_nodes,
+            max_depth=self.client.max_depth,
+        )
+        tree = payload.get("accessibility_tree")
+        if not isinstance(tree, list):
+            tree = []
+        title = ""
+        context = payload.get("window_context")
+        if isinstance(context, dict):
+            title = str(context.get("title") or "")
+        url = find_scholar_url(tree, tree)
+        return list(tree), title, (url or "")
+
+    # -- state 8: check barriers -------------------------------------------
+
+    def _check_barriers(
+        self, tree: list[Mapping[str, Any]], scoped: list[Mapping[str, Any]]
+    ) -> str | None:
+        return detect_barrier(tree, scoped)
+
+    # -- run ---------------------------------------------------------------
+
+    def page_deadline(self) -> float:
+        return min(DEFAULT_PAGE_DEADLINE_SECONDS, max(15.0, self.timeout / 2.0))
+
+    def run(self) -> ScholarRecoveryOutcome:
+        lock = self._acquire_lock()
+        try:
+            if self.client is None:
+                self.client = ComputerUseMCPClient(job_deadline=self.timeout)
+                self.client.start()
             else:
-                # Check whether the process exited without producing output.
-                if self.process.poll() is not None:
-                    # Drain any remaining buffered output.
-                    try:
-                        chunk = self.process.stdout.read()
-                        if chunk:
-                            self._consume_output(chunk)
-                    except OSError:
-                        pass
-                    break
-        if self.process.poll() is None:
-            self.terminate()
+                # An externally supplied client must already be started.
+                if self.client.process is None:
+                    self.client.start()
 
-    def _consume_output(self, chunk: str) -> None:
-        self.stdout_bytes += len(chunk.encode("utf-8", errors="replace"))
-        if self.stdout_bytes > self.max_output_bytes:
-            self.terminate()
+            self._check_desktop()
+            prior = self._snapshot_windows()
+            self._open_scholar()
 
-    def read_result(self) -> ScholarRecoveryOutcome | None:
-        return self._read_result()
+            self._report("Finding matching case")
+            window_id, title = self._find_target_window(prior)
+            self._target_window_id = window_id
+            self._target_title = title
 
-    def _read_result(self) -> ScholarRecoveryOutcome | None:
-        if not self.result_path.exists():
-            return None
-        try:
-            payload = json.loads(self.result_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return None
-        return validate_recovery_result(payload)
+            tree, observed_title, url = self._observe(window_id)
+            frame_index = scope_frame_index(tree, observed_title or title)
+            if frame_index is None:
+                return self._outcome("not_found", "No matching Scholar frame was found.")
+            scoped = [
+                node
+                for node in tree
+                if int(node.get("index")) in _descendant_set(tree, frame_index)
+            ]
 
-    def terminate(self) -> None:
-        process = self.process
-        if process is None or process.poll() is not None:
-            return
-        try:
-            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-        except (OSError, ProcessLookupError):
-            process.terminate()
-        try:
-            process.wait(timeout=5)
-        except Exception:
+            barrier = self._check_barriers(tree, scoped)
+            if barrier:
+                return self._outcome("blocked", f"Google Scholar showed {barrier}; leaving it visible.")
+
+            expected_citation = self.request.expected_citation or self.request.query
+            case_name = self.request.case_name
+
+            link = find_result_link(tree, scoped, expected_citation, case_name)
+            if link is None:
+                return self._outcome("not_found", "No single corroborated Scholar result matched.")
+
+            self._report("Opening opinion")
             try:
-                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-            except (OSError, ProcessLookupError):
-                process.kill()
-            process.wait()
+                self.client.perform_action(element_index=int(link.get("index")))
+            except ComputerUseMCPError as exc:
+                return self._outcome("failed", "Opening the Scholar result failed: " + str(exc))
+
+            # Revalidate the opinion page on the same numeric window/frame.
+            deadline = time.monotonic() + self.page_deadline()
+            opinion_url = ""
+            while time.monotonic() < deadline:
+                if self._is_cancelled() or self._deadline_exceeded():
+                    return self._outcome("failed", "Scholar recovery timed out.")
+                tree, observed_title, url = self._observe(window_id)
+                opinion_url = find_scholar_url(tree, tree)
+                if opinion_url and is_scholar_case_url(opinion_url):
+                    frame_index = scope_frame_index(tree, observed_title or title)
+                    if frame_index is None:
+                        return self._outcome("not_found", "No matching Scholar opinion frame was found.")
+                    scoped = [
+                        node
+                        for node in tree
+                        if int(node.get("index")) in _descendant_set(tree, frame_index)
+                    ]
+                    barrier = self._check_barriers(tree, scoped)
+                    if barrier:
+                        return self._outcome("blocked", f"Google Scholar showed {barrier}; leaving it visible.")
+                    break
+                time.sleep(0.5)
+            else:
+                return self._outcome("failed", "The Scholar opinion page did not load.")
+
+            # Verify the opinion identifies the expected case.
+            if case_name and normalize_match_token(case_name) not in normalize_match_token(
+                observed_title
+            ) + normalize_match_token(_tree_text(scoped)):
+                return self._outcome("not_found", "The opened opinion did not match the expected case.")
+
+            self._report("Copying opinion")
+            # Select-all with exact window targeting, then re-observe.
+            self._revalidate_window(window_id, title)
+            self.client.press_key(key="Ctrl+A", window_id=window_id)
+            time.sleep(0.5)
+            tree, observed_title, _ = self._observe(window_id)
+            self._revalidate_identity(window_id, title, observed_title)
+
+            self.client.press_key(key="Ctrl+C", window_id=window_id)
+
+            return self._outcome("copied", "Copied the Scholar opinion.", source_url=opinion_url)
+        except RecoveryBusyError:
+            return self._outcome("failed", "Another Scholar recovery is already running.")
+        except (BrowserRecoveryError, ComputerUseMCPError, OSError) as exc:
+            return self._outcome("failed", str(exc))
+        finally:
+            lock.release()
+            if self._owns_client and self.client is not None:
+                try:
+                    self.client.close()
+                except Exception:
+                    self.client.terminate()
+
+    def _revalidate_window(self, window_id: int, expected_title: str) -> None:
+        windows = self.client.list_windows().get("windows") or []
+        for window in windows:
+            if window.get("window_id") == window_id:
+                title = str(window.get("title") or "")
+                if title and expected_title and title != expected_title:
+                    raise BrowserRecoveryError("The Scholar window title changed before input.")
+                return
+        raise BrowserRecoveryError("The Scholar window disappeared before input.")
+
+    def _revalidate_identity(
+        self, window_id: int, expected_title: str, observed_title: str
+    ) -> None:
+        if observed_title and expected_title and observed_title != expected_title:
+            raise BrowserRecoveryError("The Scholar window title changed during copy.")
 
     def cancel(self) -> None:
-        self.terminate()
-        self._done = True
+        if self.client is not None:
+            self.client.cancel()
+
+
+def _tree_text(tree: Sequence[Mapping[str, Any]]) -> str:
+    return " ".join(node_full_text(node) for node in tree)
 
 
 def run_scholar_recovery(
     request: ScholarRecoveryRequest,
     *,
-    project_dir: Path,
-    runtime_dir: Path,
-    profile: tuple[str, str, str] | None = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    progress: ProgressCallback | None = None,
+    cancelled: CancelCallback | None = None,
 ) -> ScholarRecoveryOutcome:
+    """Run the deterministic Scholar recovery state machine.
+
+    This is the only desktop-recovery entry point. It returns one of the
+    ``copied`` / ``not_found`` / ``blocked`` / ``failed`` outcomes without ever
+    launching a model.
+    """
     job = ScholarRecoveryJob(
-        runtime_dir=runtime_dir,
-        request=request,
-        project_dir=project_dir,
-        profile=profile,
+        request,
         timeout=timeout,
+        progress=progress,
+        cancelled=cancelled,
     )
-    job.prepare()
-    job.start()
-    return job.wait()
+    return job.run()
+
+
+__all__ = [
+    "BrowserRecoveryError",
+    "CancelCallback",
+    "DEFAULT_TIMEOUT_SECONDS",
+    "ProgressCallback",
+    "RecoveryBusyError",
+    "RecoveryLock",
+    "ScholarRecoveryJob",
+    "ScholarRecoveryOutcome",
+    "ScholarRecoveryRequest",
+    "detect_barrier",
+    "find_result_link",
+    "find_scholar_url",
+    "is_scholar_case_url",
+    "node_full_text",
+    "node_name",
+    "node_text",
+    "normalize_match_token",
+    "normalize_recovery_query",
+    "request_from_query",
+    "run_scholar_recovery",
+    "scope_frame_index",
+    "validate_recovery_result",
+]
