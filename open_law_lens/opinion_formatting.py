@@ -513,3 +513,130 @@ def _deduplicate_spans(spans: Iterable[DisplayStyleSpan]) -> list[DisplayStyleSp
         unique.values(),
         key=lambda span: (span.start_offset, span.end_offset, span.kind),
     )
+
+
+# --- Display-only paragraph regrouping for structurally flat text ---------
+#
+# Flat CourtListener text (a single ``plain_text`` blob or a ``<pre>`` opinion)
+# is often one enormous run with no paragraph structure. The conservative
+# formatter below groups such text into readable paragraphs *without changing
+# the underlying words or punctuation* (modulo whitespace). It is display-only:
+# callers regenerate the display text from raw ``opinion_json`` on read, so raw
+# text is never rewritten.
+
+MIN_REGROUP_CHARS = 1200
+MIN_USEFUL_BLOCK_CHARS = 100
+TARGET_PARAGRAPH_CHARS = 800
+HARD_PARAGRAPH_CHARS = 1200
+MAX_STRUCTURED_BLOCK_CHARS = 4000
+
+# Abbreviations whose trailing period must not introduce a sentence boundary.
+# Ordered longest-first so multi-word reporter forms are protected wholly.
+_PROTECTED_ABBREVIATIONS = (
+    "F.Supp.", "F.3d", "F.2d", "L.Ed.", "S.Ct.", "Cal.App.5th", "Cal.App.4th",
+    "Cal.App.3d", "Cal.5th", "Cal.4th", "Cal.3d", "Cal.2d", "Cal.Rptr.",
+    "P.3d", "P.2d", "e.g.", "i.e.", "cf.", "U.S.", "No.", "Nos.", "vs.",
+    "etc.", "id.", "ibid.", "al.", "pp.", "subd.", "art.", "fn.", "Ct.",
+    "App.", "Cal.", "Supp.", "Dept.", "Gov.", "Corp.", "Inc.", "Co.",
+    "Ltd.", "Jr.", "Sr.", "Rep.", "Sen.", "Assn.", "Bros.", "St.",
+    "Mt.", "Ave.", "Blvd.", "Dr.", "Rev.", "Op.", "Dist.",
+)
+_SENTENCE_END_RE = re.compile(r"(?<=[.!?])[ \t\r\n]+(?=[A-Z\u201c\u2018\'\"])")
+
+
+def is_flat_opinion_text(text: str) -> bool:
+    """Return whether *text* is structurally flat (needs paragraph regrouping)."""
+    if len(text) < MIN_REGROUP_CHARS:
+        return False
+    blocks = [block for block in re.split(r"\n[ \t]*\n", text) if block.strip()]
+    useful = [block for block in blocks if len(_candidate_text(block)) >= MIN_USEFUL_BLOCK_CHARS]
+    if useful and len(useful) >= 3 and max(len(block) for block in blocks) <= MAX_STRUCTURED_BLOCK_CHARS:
+        return False
+    return True
+
+
+def _protect_abbreviations(text: str) -> str:
+    for abbreviation in _PROTECTED_ABBREVIATIONS:
+        text = text.replace(abbreviation, abbreviation.replace(".", "\u0000"))
+    return text
+
+
+def _restore_abbreviations(text: str) -> str:
+    return text.replace("\u0000", ".")
+
+
+def _split_sentences(text: str) -> list[str]:
+    protected = _protect_abbreviations(text)
+    pieces = [piece.strip() for piece in _SENTENCE_END_RE.split(protected) if piece.strip()]
+    return [_restore_abbreviations(piece) for piece in pieces]
+
+
+def _group_pieces_into_paragraphs(pieces: list[str]) -> list[str]:
+    paragraphs: list[str] = []
+    current = ""
+    for piece in pieces:
+        added = f"{current} {piece}" if current else piece
+        if len(added) > TARGET_PARAGRAPH_CHARS:
+            if current:
+                paragraphs.append(current)
+            current = piece
+            if len(piece) >= HARD_PARAGRAPH_CHARS:
+                paragraphs.append(piece)
+                current = ""
+        else:
+            current = added
+        if len(current) >= HARD_PARAGRAPH_CHARS:
+            paragraphs.append(current)
+            current = ""
+    if current:
+        paragraphs.append(current)
+    return paragraphs
+
+
+def regroup_flat_opinion_text(text: str) -> str | None:
+    """Return paragraph-regrouped text for structurally flat opinion text.
+
+    Returns ``None`` when *text* is already structured enough (fewer than three
+    useful blocks and no oversized block, or under ``MIN_REGROUP_CHARS``).
+    Otherwise it preserves every word and punctuation mark (modulo whitespace),
+    honours existing blank-line and single-newline boundaries, keeps recognized
+    opinion headings as their own paragraphs, and otherwise groups sentence
+    boundaries into roughly 400-1000 character paragraphs with a 1200-character
+    whitespace-only hard break.
+    """
+    if not is_flat_opinion_text(text):
+        return None
+
+    raw_blocks = [block for block in re.split(r"\n[ \t]*\n", text.strip()) if block.strip()]
+    paragraphs: list[str] = []
+    for block in raw_blocks:
+        # Respect existing single-newline boundaries first (one idea per line),
+        # then apply sentence grouping only to a very long line.
+        lines = [line.strip() for line in block.split("\n") if line.strip()]
+        current = ""
+        for line in lines:
+            candidate = _candidate_text(line)
+            if _is_heading_phrase(candidate):
+                if current:
+                    paragraphs.append(current)
+                    current = ""
+                paragraphs.append(candidate)
+                continue
+            if len(candidate) >= HARD_PARAGRAPH_CHARS:
+                if current:
+                    paragraphs.append(current)
+                    current = ""
+                paragraphs.extend(_group_pieces_into_paragraphs(_split_sentences(candidate)))
+                continue
+            if current:
+                current = f"{current} {candidate}"
+            else:
+                current = candidate
+            if len(current) >= HARD_PARAGRAPH_CHARS:
+                paragraphs.append(current)
+                current = ""
+        if current:
+            paragraphs.append(current)
+
+    normalized = "\n\n".join(paragraphs)
+    return normalized if normalized != text else None

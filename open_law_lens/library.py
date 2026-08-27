@@ -22,7 +22,11 @@ from .citation_model import (
 )
 from .external_import import repair_reporter_only_imported_cluster
 from .import_text import basic_external_opinion_html, clean_imported_opinion_text
-from .opinion_formatting import DisplayStyleSpan, infer_opinion_heading_spans
+from .opinion_formatting import (
+    DisplayStyleSpan,
+    infer_opinion_heading_spans,
+    regroup_flat_opinion_text,
+)
 from .storage import (
     external_import_matches_lookup as _external_import_matches_lookup,
     filter_lookup_result_for_citation as _filter_lookup_result_for_citation,
@@ -642,14 +646,31 @@ def opinion_display_text(opinion: dict[str, Any]) -> DisplayText:
             parser = _DisplayTextExtractor(field)
             parser.feed(value)
             parser.close()
+            display = parser.display_text()
+            is_pre = re.search(r"<\s*pre\b", value, flags=re.IGNORECASE) is not None
+            regroupeed: str | None = None
+            if is_pre:
+                regroupeed = regroup_flat_opinion_text(display.text)
+            if regroupeed is not None:
+                # Drop stale extractor offsets; marker normalization re-derives
+                # all ``[*n]`` markers from the regrouped text.
+                display = DisplayText(
+                    text=regroupeed,
+                    source_field=display.source_field,
+                    page_markers=[],
+                    style_spans=[],
+                )
             return _normalize_opinion_display(
-                parser.display_text(),
+                display,
                 infer_headings=(
                     not external_basic_html
-                    and re.search(r"<\s*pre\b", value, flags=re.IGNORECASE) is None
+                    and (not is_pre or regroupeed is not None)
                 ),
             )
         text = decode_cp1252_control_chars(value).strip()
+        regroupeed = regroup_flat_opinion_text(text)
+        if regroupeed is not None:
+            text = regroupeed
         return _normalize_opinion_display(DisplayText(text=text, source_field=field, page_markers=[]))
     return DisplayText(text="", source_field="", page_markers=[])
 
