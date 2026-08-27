@@ -112,6 +112,9 @@ elif [[ "$pi_agent_dir" == "~/"* ]]; then
 fi
 extension="${OPEN_LAW_LENS_WEB_ACCESS_EXTENSION:-$pi_agent_dir/npm/node_modules/pi-web-access/index.ts}"
 package_json="$(dirname "$extension")/package.json"
+bridge="$project_dir/.pi/extensions/open-law-lens-browser-recovery/index.ts"
+mcp_adapter_entry="$pi_agent_dir/npm/node_modules/pi-mcp-adapter/index.ts"
+computer_use_linux_js="$pi_agent_dir/npm/node_modules/@agent-sh/computer-use-linux/npm/bin/computer-use-linux.js"
 if [[ "$agent_mode" == "general" || "$agent_mode" == "appeal" ]]; then
   if [[ ! -f "$skill" ]]; then
     printf 'Legal researcher skill not found: %s\n' "$skill" >&2
@@ -124,6 +127,20 @@ if [[ "$agent_mode" == "general" || "$agent_mode" == "appeal" ]]; then
   fi
   if ! grep -Eq '"name"[[:space:]]*:[[:space:]]*"pi-web-access"' "$package_json"; then
     printf 'Expected the pi-web-access package in %s\n' "$package_json" >&2
+    exit 2
+  fi
+  if [[ ! -f "$bridge" ]]; then
+    printf 'Browser-recovery bridge not found: %s\n' "$bridge" >&2
+    exit 2
+  fi
+  if [[ ! -f "$mcp_adapter_entry" ]]; then
+    printf 'User-level pi-mcp-adapter package not found: %s\n' "$mcp_adapter_entry" >&2
+    printf 'Install it with: pi install npm:pi-mcp-adapter\n' >&2
+    exit 2
+  fi
+  if [[ ! -f "$computer_use_linux_js" ]]; then
+    printf 'User-level @agent-sh/computer-use-linux package not found: %s\n' "$computer_use_linux_js" >&2
+    printf 'Install it with: pi install npm:@agent-sh/computer-use-linux\n' >&2
     exit 2
   fi
 fi
@@ -166,7 +183,8 @@ if [[ -n "$pi_provider" ]]; then
 fi
 if [[ "$agent_mode" == "general" || "$agent_mode" == "appeal" ]]; then
   args+=(--extension "$extension")
-  tools+=",web_search"
+  args+=(--extension "$bridge")
+  tools+=",web_search,mcp,mcpScript,open_law_lens_authorize_scholar_window"
 fi
 args+=(--tools "$tools")
 

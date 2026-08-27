@@ -142,6 +142,66 @@ if the citation or text remains uncertain.
 Do not characterize a holding, treatment, quotation, or pinpoint from a search
 snippet alone.
 
+## Default-browser Scholar recovery
+
+Browser-based recovery is a last-resort safety net, available only in
+research-capable modes that load the browser-recovery bridge. It opens Google
+Scholar in the user's current default HTTPS browser (never a hardcoded
+browser, app ID, executable, or profile) and can import a qualifying official
+copy when every headless path has already failed.
+
+Invoke it only when **all** of these hold:
+
+- The question is on the mandatory case route and a relied-on published case
+  still lacks qualifying official reporter pagination.
+- You have already finished the deterministic cascade: Library/CourtListener,
+  California Courts slip text, direct Scholar HTTP, and the native Tavily pass.
+- You have an exact California official reporter citation (e.g.
+  `11 Cal.5th 614`) for that case.
+
+Follow this sequence once:
+
+1. Run `computer_use_linux_doctor` once and confirm readiness before the first
+   desktop action.
+2. Record `computer_use_linux_list_windows`, run
+   `open-law-lens open-scholar-browser "<citation>"`, then poll
+   `computer_use_linux_list_windows` again to identify either a newly created
+   default-browser window or an existing browser window whose active tab or
+   title changed to Scholar. Identify the window by its exact `window_id` and
+   title/URL evidence; do not target a browser by application ID.
+3. Inspect that exact window with `computer_use_linux_get_app_state` using its
+   `window_id` (no screenshot, a bounded `max_nodes`). Verify the address node
+   is on `scholar.google.com` and the content contains the requested citation
+   before authorizing.
+4. Authorize only after verification:
+   `open_law_lens_authorize_scholar_window` with the observed `window_id`,
+   title, and `scholar.google.com` URL.
+5. Use `mcpScript` to filter the accessibility tree in-process: isolate the
+   target frame and find the result block whose nearby text contains the exact
+   citation, then read its case-title link's `element_index`.
+6. Activate that link with `computer_use_linux_perform_action` using only the
+   `element_index` (no `action` or selector overrides), then re-observe and
+   require a Scholar opinion-page URL, the matching citation and case identity,
+   and no robot/CAPTCHA warning.
+7. To copy the full opinion: `computer_use_linux_press_key` with the authorized
+   `window_id`, `Ctrl+A`, re-observe, then `Ctrl+C`.
+8. Import and verify:
+   `open-law-lens import-scholar-clipboard --citation "<citation>" --source-url "<scholar_case_url>"`.
+   On success, rerun `open-law-lens extract-case "<citation>" --find "<term>"`
+   (or `extract-case`) so the answer uses the newly saved Library copy.
+9. Leave the browser on the imported opinion for transparency. Do not close,
+   rearrange, inspect, or act on unrelated browser windows.
+
+The bridge enforces safety: every mutating call consumes a freshness token, so
+re-observe with `get_app_state` between actions; only `Ctrl+A` and `Ctrl+C` are
+permitted keystrokes; coordinates, error-actions, typing, scrolling, dragging,
+and screenshots are all denied. If a CAPTCHA or robot check appears, stop and
+tell the user exactly which visible browser window needs attention; resume only
+after the user confirms and a fresh state check shows the opinion or search
+page. If the default browser does not expose a safe exact-result link action,
+ask the user to click the exact result manually rather than using coordinates.
+Never automate CAPTCHA, robot checks, login, or account interaction.
+
 ## Pre-answer legal-source audit
 
 Before writing the final answer, audit the title, subtitle, and body against

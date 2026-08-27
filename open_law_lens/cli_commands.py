@@ -67,6 +67,18 @@ CLI_COMMANDS: tuple[CliCommand, ...] = (
         example="uv run open-law-lens open-selected",
     ),
     CliCommand(
+        name="open-scholar-browser",
+        title="Open Scholar in Default Browser",
+        description="Open Google Scholar case law for a California official citation through the current default HTTPS browser.",
+        example='uv run open-law-lens open-scholar-browser "11 Cal.5th 614"',
+    ),
+    CliCommand(
+        name="import-scholar-clipboard",
+        title="Import Scholar Clipboard",
+        description="Validate and import an officially paginated Google Scholar opinion copied to the regular clipboard.",
+        example='uv run open-law-lens import-scholar-clipboard --citation "11 Cal.5th 614" --source-url "https://scholar.google.com/scholar_case?case=..."',
+    ),
+    CliCommand(
         name="commands",
         title="List CLI Commands",
         description="Print available Open Law Lens CLI commands and examples.",

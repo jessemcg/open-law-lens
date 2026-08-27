@@ -49,6 +49,35 @@ class AgentVteWrapperTests(unittest.TestCase):
         )
         return package
 
+    @staticmethod
+    def _install_browser_recovery(root: Path) -> None:
+        bridge = (
+            root
+            / "project"
+            / ".pi"
+            / "extensions"
+            / "open-law-lens-browser-recovery"
+            / "index.ts"
+        )
+        bridge.parent.mkdir(parents=True)
+        bridge.write_text("", encoding="utf-8")
+        adapter = root / "pi-agent" / "npm" / "node_modules" / "pi-mcp-adapter" / "index.ts"
+        adapter.parent.mkdir(parents=True)
+        adapter.write_text("", encoding="utf-8")
+        computer_use = (
+            root
+            / "pi-agent"
+            / "npm"
+            / "node_modules"
+            / "@agent-sh"
+            / "computer-use-linux"
+            / "npm"
+            / "bin"
+            / "computer-use-linux.js"
+        )
+        computer_use.parent.mkdir(parents=True)
+        computer_use.write_text("", encoding="utf-8")
+
     def _fake_pi(
         self,
         root: Path,
@@ -82,6 +111,7 @@ class AgentVteWrapperTests(unittest.TestCase):
         project, workspace, prompt = self._fixture(root)
         if mode in {"general", "appeal"}:
             self._install_web_access(root)
+            self._install_browser_recovery(root)
         pi, output = self._fake_pi(
             root,
             with_sibling_node=with_sibling_node,
@@ -126,7 +156,7 @@ class AgentVteWrapperTests(unittest.TestCase):
                 self.assertIn(flag, args)
             self.assertNotIn("--skill", args)
             self.assertFalse(any(item.startswith("/skill:legal-researcher") for item in args))
-            self.assertEqual(args.count("--extension"), 1)
+            self.assertEqual(args.count("--extension"), 2)
             self.assertNotIn("capture", stderr.lower())
             system_prompt_path = Path(args[args.index("--system-prompt") + 1])
             self.assertEqual(
@@ -136,9 +166,9 @@ class AgentVteWrapperTests(unittest.TestCase):
             system_prompt = system_prompt_path.read_text(encoding="utf-8")
             self.assertEqual(system_prompt.count("name: legal-researcher"), 1)
             self.assertIn("Open Law Lens legal knowledge work", system_prompt)
-            extension_index = args.index("--extension")
+            extension_values = [args[index + 1] for index, value in enumerate(args) if value == "--extension"]
             self.assertEqual(
-                args[extension_index + 1],
+                extension_values[0],
                 str(
                     root
                     / "pi-agent"
@@ -148,7 +178,21 @@ class AgentVteWrapperTests(unittest.TestCase):
                     / "index.ts"
                 ),
             )
-            self.assertIn("read,bash,grep,find,ls,web_search", args)
+            self.assertEqual(
+                extension_values[1],
+                str(
+                    root
+                    / "project"
+                    / ".pi"
+                    / "extensions"
+                    / "open-law-lens-browser-recovery"
+                    / "index.ts"
+                ),
+            )
+            self.assertIn(
+                "read,bash,grep,find,ls,web_search,mcp,mcpScript,open_law_lens_authorize_scholar_window",
+                args,
+            )
             self.assertNotIn("--thinking", args)
             self.assertEqual(args[-2], str(root / "workspace" / "pi-sessions"))
             self.assertEqual(args[-1], str(root / "workspace"))
@@ -211,7 +255,10 @@ class AgentVteWrapperTests(unittest.TestCase):
 
             self.assertEqual(args[0], str(root / "pi"))
             self.assertIn("--extension", args)
-            self.assertIn("read,bash,grep,find,ls,web_search", args)
+            self.assertIn(
+                "read,bash,grep,find,ls,web_search,mcp,mcpScript,open_law_lens_authorize_scholar_window",
+                args,
+            )
 
     def test_appeal_mode_preloads_legal_researcher_skill(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -316,7 +363,18 @@ class AgentVteWrapperTests(unittest.TestCase):
         )
 
         self.assertNotIn("packages", settings)
-        self.assertFalse((PROJECT_DIR / ".pi" / "extensions").exists())
+        extensions = PROJECT_DIR / ".pi" / "extensions"
+        vendored = {
+            "pi-web-access",
+            "pi-mcp-adapter",
+            "computer-use-linux",
+            "node_modules",
+        }
+        if extensions.exists():
+            names = {p.name for p in extensions.iterdir()}
+            self.assertTrue(names <= {"open-law-lens-browser-recovery"}, f"unexpected first-party extensions: {names - {'open-law-lens-browser-recovery'}}")
+            for vendored_name in vendored:
+                self.assertNotIn(vendored_name, names)
         system_prompt = (PROJECT_DIR / ".pi" / "SYSTEM.md").read_text(
             encoding="utf-8"
         )

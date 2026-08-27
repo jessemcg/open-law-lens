@@ -122,6 +122,15 @@ and `~/.pi/web-search.json` credentials as ordinary Pi sessions. The launcher
 also uses the Node runtime installed alongside Pi instead of the desktop
 session's system Node.
 
+Default-browser Google Scholar recovery additionally requires the user-level
+`pi-mcp-adapter` and `@agent-sh/computer-use-linux` packages (tested with
+`2.29.0` and `0.4.9`):
+
+```bash
+pi install npm:pi-mcp-adapter
+pi install npm:@agent-sh/computer-use-linux
+```
+
 The Settings window lists the models currently authorized in Pi and lets each
 user choose a separate model and reasoning effort for Query Law, Query Research
 Cache, Query Prior Briefs, and Assess Argument. These personal overrides are
@@ -465,6 +474,62 @@ source from the preserved URL—for example,
 `Source: Stanford Law School (scocal.stanford.edu)`—instead of presenting the
 site merely as “External web.” Unknown qualifying sites are identified by their
 hostname.
+
+## Default-Browser Google Scholar Recovery
+
+When a published California case still lacks qualifying official reporter
+pagination after the deterministic cascade above, research-capable Agent
+workflows can recover the opinion through Google Scholar in the **current
+default HTTPS browser**. This path never hardcodes Firefox, Chrome, an app ID,
+an executable, or a profile: it resolves the default handler through Gio at
+runtime, so changing the default browser is respected automatically.
+
+Two commands back this path:
+
+```bash
+uv run open-law-lens open-scholar-browser "11 Cal.5th 614"
+uv run open-law-lens import-scholar-clipboard \
+  --citation "11 Cal.5th 614" \
+  --source-url "https://scholar.google.com/scholar_case?case=..."
+```
+
+`open-scholar-browser` opens the case-law Scholar search in the default browser
+and reports the resolved handler name and desktop ID for observation only.
+`import-scholar-clipboard` reads only the regular clipboard (preferring
+`wl-paste`, falling back to `xclip`/`xsel`, capped at 8 MiB, never printing its
+contents), cleans browser/account chrome, requires an exact official-citation
+match and qualifying official pagination, and persists through the same
+validated Library path as other external imports with
+`source_provider: google_scholar` and `retrieval_mode: browser_clipboard`. On
+validation failure it exits nonzero without touching the Library or Research
+Cache.
+
+A confined first-party Pi extension enforces the safety boundary: only
+`doctor`, `list_windows`, `focused_window`, `get_app_state`, `perform_action`,
+and `press_key` are exposed, plus the `mcp` gateway, `mcpScript`, and the
+`open_law_lens_authorize_scholar_window` tool. Every mutating call requires an
+authorized, freshly observed Scholar window; only `Ctrl+A` and `Ctrl+C` are
+permitted keystrokes; screenshots, pointer clicks, typing, scrolling, dragging,
+coordinates, and unrelated servers are denied.
+
+Run the read-only readiness check once per computer before the first desktop
+recovery (do this on each machine after installation):
+
+```bash
+computer-use-linux doctor
+```
+
+If `can_build_accessibility_tree` or `can_query_windows` is `false`, run
+`computer-use-linux setup` (and `computer-use-linux setup-window-targeting` on
+GNOME Wayland, logging out and back in if prompted) and re-run `doctor`.
+
+Recovery opens a **visible** default-browser window and leaves the browser open
+on the imported opinion for transparency. If a CAPTCHA or robot check appears,
+the workflow pauses and asks you to complete the visible challenge rather than
+attempting to solve it. External research writes to an isolated disposable
+cache — under the private runtime workspace — so the next normal Open Law Lens
+launch still shows your unchanged Research Cache sidebar, while validated
+official opinions remain in the durable Library.
 
 ## Project Layout
 

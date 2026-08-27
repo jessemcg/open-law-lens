@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
+import re
 import subprocess
 import sys
-from typing import Any
+from typing import Any, Mapping
 
 from . import APP_ID
 from .agent_commands import agent_cli_command
@@ -23,6 +25,18 @@ from .launch_request import discard_open_authority_request, write_open_authority
 from .library import CaseLibrary, LibraryPruneCandidate, MissingCitationAudit
 from .prior_briefs import PriorBriefLibrary
 from .rules import CaliforniaRulesError
+from .scholar_browser import (
+    ScholarBrowserError,
+    ScholarBrowserLaunch,
+    build_scholar_case_search_url,
+    import_scholar_text,
+    launch_scholar_url,
+    read_regular_clipboard,
+    require_official_citation,
+    scholar_import_failure_json,
+    scholar_import_to_json,
+    scholar_launch_to_json,
+)
 from .slip_opinions import (
     DEFAULT_SLIP_OPINION_MAX_AGE_DAYS,
     SlipOpinionError,
@@ -32,6 +46,49 @@ from .statutes import LegInfoError
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 DBUS_ACTIVATE_TIMEOUT_SECONDS = 0.35
 DESKTOP_APP_ID = APP_ID
+
+# Commands that launch the real GTK application. These must keep using the
+# user's normal Research Cache, so they are excluded from Pi-hosted cache
+# isolation below.
+_GUI_COMMANDS = frozenset({"app", "open", "open-selected"})
+
+
+def _pi_hosted(environ: Mapping[str, str]) -> bool:
+    flag = environ.get("PI_CODING_AGENT", "").strip().casefold()
+    if flag in {"1", "true", "yes", "on"}:
+        return True
+    return bool(environ.get("PI_SESSION_ID", "").strip())
+
+
+def _sanitize_session_component(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", value.strip())
+    return cleaned.strip("_-;") or "session"
+
+
+def pi_cli_cache_isolation_path(
+    command: str,
+    environ: Mapping[str, str],
+    pid: int | None = None,
+) -> str | None:
+    """Return a private disposable cache path for Pi-hosted CLI commands.
+
+    Honors an already-set ``OPEN_LAW_LENS_CACHE_DIR``, skips GUI-launch
+    commands, and otherwise derives a mode-0700 path under
+    ``$XDG_RUNTIME_DIR/open-law-lens/pi-cache/<session>`` with a PID fallback.
+    Non-Pi use returns ``None`` so the project ``cache/`` default is retained.
+    """
+    if command in _GUI_COMMANDS:
+        return None
+    if environ.get("OPEN_LAW_LENS_CACHE_DIR", "").strip():
+        return None
+    if not _pi_hosted(environ):
+        return None
+    base = (
+        (environ.get("XDG_RUNTIME_DIR", "") or environ.get("TMPDIR", "") or "/tmp").strip()
+    )
+    session_id = environ.get("PI_SESSION_ID", "").strip() or str(pid if pid is not None else os.getpid())
+    component = _sanitize_session_component(session_id)
+    return str(Path(base) / "open-law-lens" / "pi-cache" / component)
 
 
 def _print_json(value: Any) -> None:
@@ -489,6 +546,67 @@ def _cmd_open_selected(_args: argparse.Namespace) -> int:
     return _open_authority_in_app(value)
 
 
+def _cmd_open_scholar_browser(args: argparse.Namespace) -> int:
+    citation = str(getattr(args, "citation", "") or "")
+    try:
+        normalized = require_official_citation(citation)
+        url = build_scholar_case_search_url(citation)
+        handler_name, handler_desktop_id = launch_scholar_url(url)
+    except ScholarBrowserError as exc:
+        _print_json(
+            {
+                "ok": False,
+                "citation": citation,
+                "scholar_url": "",
+                "handler_name": "",
+                "handler_desktop_id": "",
+                "error": str(exc),
+            }
+        )
+        return 1
+    _print_json(
+        scholar_launch_to_json(
+            ScholarBrowserLaunch(
+                citation=normalized,
+                scholar_url=url,
+                handler_name=handler_name,
+                handler_desktop_id=handler_desktop_id,
+            )
+        )
+    )
+    return 0
+
+
+def _cmd_import_scholar_clipboard(args: argparse.Namespace) -> int:
+    citation = str(getattr(args, "citation", "") or "")
+    source_url = str(getattr(args, "source_url", "") or "")
+    case_name = str(getattr(args, "case_name", "") or "")
+    cluster_id = str(getattr(args, "cluster_id", "") or "")
+    client = CourtListenerClient.default()
+    existing_cluster = None
+    try:
+        if cluster_id:
+            existing_cluster = client.fetch_url(
+                f"/api/rest/v4/clusters/{cluster_id}/",
+                kind="clusters",
+                refresh=False,
+            )
+        text = read_regular_clipboard()
+        imported = import_scholar_text(
+            client,
+            citation=citation,
+            source_url=source_url,
+            clipboard_text=text,
+            case_name=case_name,
+            existing_cluster=existing_cluster,
+        )
+    except (ScholarBrowserError, ValueError, CourtListenerError, RuntimeError) as exc:
+        _print_json(scholar_import_failure_json(citation, str(exc)))
+        return 1
+    _print_json(scholar_import_to_json(imported))
+    return 0
+
+
 def _cmd_lookup_statute(args: argparse.Namespace) -> int:
     client = CourtListenerClient.default()
     statute = client.lookup_statute(args.citation, refresh=args.refresh)
@@ -900,6 +1018,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     open_selected_parser.set_defaults(func=_cmd_open_selected)
 
+    open_scholar_parser = subparsers.add_parser(
+        "open-scholar-browser",
+        help="open Google Scholar case law in the default HTTPS browser",
+    )
+    open_scholar_parser.add_argument("citation", help="California official reporter citation")
+    open_scholar_parser.set_defaults(func=_cmd_open_scholar_browser)
+
+    import_scholar_parser = subparsers.add_parser(
+        "import-scholar-clipboard",
+        help="validate and import a copied Google Scholar opinion from the clipboard",
+    )
+    import_scholar_parser.add_argument(
+        "--citation", required=True, help="exact California official reporter citation"
+    )
+    import_scholar_parser.add_argument(
+        "--source-url",
+        required=True,
+        help="https scholar.google.com/scholar_case URL of the opinion",
+    )
+    import_scholar_parser.add_argument("--case-name", help="optional expected case name")
+    import_scholar_parser.add_argument(
+        "--cluster-id", help="optional existing CourtListener cluster identity"
+    )
+    import_scholar_parser.set_defaults(func=_cmd_import_scholar_clipboard)
+
     commands_parser = subparsers.add_parser("commands", help="list available CLI authority commands")
     commands_parser.set_defaults(func=_cmd_commands)
 
@@ -1034,8 +1177,23 @@ def main(argv: list[str] | None = None) -> int:
     if not hasattr(args, "func"):
         parser.print_help()
         return 2
+    previous_cache_dir = os.environ.get("OPEN_LAW_LENS_CACHE_DIR")
+    isolated = pi_cli_cache_isolation_path(getattr(args, "command", ""), os.environ)
+    if isolated:
+        try:
+            os.makedirs(isolated, mode=0o700, exist_ok=True)
+            os.chmod(isolated, 0o700)
+            os.environ["OPEN_LAW_LENS_CACHE_DIR"] = isolated
+        except OSError:
+            isolated = None
     try:
         return int(args.func(args))
     except (CourtListenerError, LegInfoError, CaliforniaRulesError, SlipOpinionError, ValueError, RuntimeError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
+    finally:
+        if isolated:
+            if previous_cache_dir is None:
+                os.environ.pop("OPEN_LAW_LENS_CACHE_DIR", None)
+            else:
+                os.environ["OPEN_LAW_LENS_CACHE_DIR"] = previous_cache_dir
