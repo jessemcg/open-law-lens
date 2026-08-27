@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 from dataclasses import dataclass
@@ -145,6 +146,26 @@ def request_from_query(
     )
 
 
+def resolve_uv_bin(environment: Mapping[str, str] | None = None) -> str:
+    """Resolve the ``uv`` executable for the job's launch tool.
+
+    Order matches the agent wrapper: validated explicit override, then PATH,
+    then the standard user-local install. Returns ``uv`` as a final fallback so
+    a missing binary surfaces as a launch error rather than an index error.
+    """
+    env = os.environ if environment is None else environment
+    override = str(env.get("OPEN_LAW_LENS_UV_BIN") or "").strip()
+    if override:
+        return override
+    discovered = shutil.which("uv")
+    if discovered:
+        return discovered
+    local_bin = Path.home() / ".local" / "bin" / "uv"
+    if local_bin.is_file():
+        return str(local_bin)
+    return "uv"
+
+
 def recovery_environment(
     *,
     runtime_dir: Path,
@@ -157,6 +178,7 @@ def recovery_environment(
     env[ENV_REQUEST_QUERY] = request.query
     env[ENV_RESULT_PATH] = str(runtime_dir / RESULT_FILENAME)
     env["OPEN_LAW_LENS_PROJECT_DIR"] = str(project_dir)
+    env["OPEN_LAW_LENS_UV_BIN"] = resolve_uv_bin(env)
     return env
 
 
@@ -194,6 +216,12 @@ result. Follow these rules exactly and do nothing else:
 """
 
 
+RECOVERY_USER_MESSAGE = "Perform the default-browser Google Scholar recovery and record the result."
+
+BRIDGE_EXTENSION_REL = Path(".pi/extensions/open-law-lens-browser-recovery/index.ts")
+JOB_EXTENSION_REL = Path(".pi/extensions/open-law-lens-scholar-recovery/index.ts")
+
+
 def recovery_pi_command(
     *,
     project_dir: Path,
@@ -216,16 +244,24 @@ def recovery_pi_command(
             "--no-prompt-templates",
             "--no-themes",
             "--no-context-files",
+            # Load only the shared safety bridge (mcp/mcpScript/authorize) and
+            # this OpenLawLens-only job extension. No ambient/global discovery.
+            "--extension",
+            str(project_dir / BRIDGE_EXTENSION_REL),
+            "--extension",
+            str(project_dir / JOB_EXTENSION_REL),
             "--tools",
             "mcp,mcpScript,open_law_lens_authorize_scholar_window,"
             "open_law_lens_launch_scholar_query,open_law_lens_complete_scholar_recovery",
+            "--system-prompt",
+            str(prompt_path),
         ]
     )
     if profile is not None:
         provider, model, thinking = profile
         if provider and model and thinking:
             args.extend(["--provider", provider, "--model", model, "--thinking", thinking])
-    args.append(str(prompt_path))
+    args.append(RECOVERY_USER_MESSAGE)
     return args
 
 

@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .cache import cluster_id_from_cluster
+from .case_titles import normalize_case_title
 from .external_import import (
     imported_case_name_from_text,
     normalize_official_citation,
@@ -85,9 +86,23 @@ def validate_scholar_source_url(url: str) -> str:
     return parsed._replace(fragment="").geturl()
 
 
-def build_scholar_case_search_url(citation: str) -> str:
-    normalized = require_official_citation(citation)
-    return build_scholar_search_url(normalized)
+def require_scholar_query(query: str) -> str:
+    clean = re.sub(r"\s+", " ", query or "").strip()
+    if not clean:
+        raise ScholarBrowserError("A Scholar search query is required.")
+    return clean
+
+
+def build_scholar_case_search_url(query: str) -> str:
+    """Return the case-law Scholar search URL for a nonempty case query.
+
+    A normalized California official citation is used when one is present;
+    otherwise the supplied case query is used verbatim. This supports both the
+    exact-citation and recent-slip identity recovery queries.
+    """
+    clean = require_scholar_query(query)
+    normalized = normalize_official_citation(clean)
+    return build_scholar_search_url(normalized or clean)
 
 
 def resolve_default_https_handler() -> tuple[str, str]:
@@ -246,6 +261,47 @@ def _provisional_cluster_for_quality(
     )
 
 
+def _identity_name(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", normalize_case_title(value).casefold()).strip()
+
+
+def _cluster_docket(cluster: dict[str, Any]) -> str:
+    direct = str(cluster.get("docket_number") or "").strip()
+    if direct:
+        return direct
+    docket = cluster.get("docket")
+    return str(docket.get("docket_number") or "").strip() if isinstance(docket, dict) else ""
+
+
+def _corroborate_identity(cluster: dict[str, Any], front: str) -> None:
+    """Require a matching normalized title plus docket or filing-year evidence."""
+    expected_name = _identity_name(str(cluster.get("case_name") or cluster.get("case_name_full") or ""))
+    found_name = _identity_name(imported_case_name_from_text(front))
+    if not expected_name or not found_name or expected_name != found_name:
+        raise ScholarBrowserError("Clipboard case name does not match the requested case.")
+    docket = _cluster_docket(cluster)
+    docket_match = bool(
+        docket and re.search(rf"(?<![A-Z0-9]){re.escape(docket)}(?![A-Z0-9])", front, re.IGNORECASE)
+    )
+    filed = str(cluster.get("date_filed") or "").strip()
+    year = filed[:4] if re.fullmatch(r"\d{4}.*", filed) else ""
+    date_match = bool(year and re.search(rf"\b{re.escape(year)}\b", front))
+    if not (docket_match or date_match):
+        raise ScholarBrowserError(
+            "Clipboard does not match the requested docket number or filing year."
+        )
+
+
+def _derived_identity_citation(cluster: dict[str, Any], front: str) -> str:
+    """Derive the official citation from copied Scholar text for an identity-only
+    recent slip, and corroborate the case identity before accepting it."""
+    citation = normalize_official_citation(front)
+    if not citation:
+        raise ScholarBrowserError("Clipboard text has no California official reporter citation.")
+    _corroborate_identity(cluster, front)
+    return citation
+
+
 def import_scholar_text(
     client: Any,
     *,
@@ -258,33 +314,43 @@ def import_scholar_text(
     """Validate and persist a copied Scholar opinion through the shared service.
 
     This is the single persistence path for default-browser Scholar recovery.
-    It validates the exact citation, cleans browser/account chrome, requires a
-    qualifying officially paginated opinion, and then persists via
-    ``persist_official_opinion``. On any validation failure it raises without
-    mutating the Library or Research Cache.
+    It supports either an exact expected official citation, or an identity-only
+    recent-slip query (empty ``citation`` plus an existing CourtListener
+    cluster) whose citation is derived from the copied text and corroborated by
+    matching title plus docket or filing year. It cleans browser/account
+    chrome, requires a qualifying officially paginated opinion, and then
+    persists via ``persist_official_opinion``. On any validation failure it
+    raises without mutating the Library or Research Cache.
     """
     if not clipboard_text or not clipboard_text.strip():
         raise ScholarBrowserError("Clipboard content was empty.")
 
-    normalized = require_official_citation(citation)
     clean_url = validate_scholar_source_url(source_url)
 
     cleaned = clean_imported_opinion_text(clipboard_text)
     if not cleaned:
         raise ScholarBrowserError("Clipboard content was empty after cleanup.")
 
-    # Require the document to match the requested citation, not merely to
-    # contain a similar one.
-    try:
-        validated = validated_import_official_citation(normalized, cleaned)
-    except ValueError as exc:
-        raise ScholarBrowserError(
-            "Clipboard text does not match the requested official citation."
-        ) from exc
-    if not validated or validated != normalized:
-        raise ScholarBrowserError(
-            "Clipboard text does not match the requested official citation."
-        )
+    if not citation.strip():
+        if existing_cluster is None or not cluster_id_from_cluster(existing_cluster):
+            raise ScholarBrowserError(
+                "An identity-only Scholar import requires an existing CourtListener cluster."
+            )
+        normalized = _derived_identity_citation(existing_cluster, cleaned)
+    else:
+        normalized = require_official_citation(citation)
+        # Require the document to match the requested citation, not merely to
+        # contain a similar one.
+        try:
+            validated = validated_import_official_citation(normalized, cleaned)
+        except ValueError as exc:
+            raise ScholarBrowserError(
+                "Clipboard text does not match the requested official citation."
+            ) from exc
+        if not validated or validated != normalized:
+            raise ScholarBrowserError(
+                "Clipboard text does not match the requested official citation."
+            )
 
     normalized_text = normalize_external_reporter_markers(cleaned, normalized)
 

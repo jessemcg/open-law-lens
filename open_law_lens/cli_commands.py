@@ -69,7 +69,7 @@ CLI_COMMANDS: tuple[CliCommand, ...] = (
     CliCommand(
         name="open-scholar-browser",
         title="Open Scholar in Default Browser",
-        description="Open Google Scholar case law for a California official citation through the current default HTTPS browser.",
+        description="Open Google Scholar case law for a California case citation or query through the current default HTTPS browser.",
         example='uv run open-law-lens open-scholar-browser "11 Cal.5th 614"',
     ),
     CliCommand(

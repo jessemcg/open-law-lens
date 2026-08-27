@@ -372,7 +372,7 @@ class AgentVteWrapperTests(unittest.TestCase):
         }
         if extensions.exists():
             names = {p.name for p in extensions.iterdir()}
-            self.assertTrue(names <= {"open-law-lens-browser-recovery"}, f"unexpected first-party extensions: {names - {'open-law-lens-browser-recovery'}}")
+            self.assertTrue(names <= {"open-law-lens-browser-recovery", "open-law-lens-scholar-recovery"}, f"unexpected first-party extensions: {names - {'open-law-lens-browser-recovery', 'open-law-lens-scholar-recovery'}}")
             for vendored_name in vendored:
                 self.assertNotIn(vendored_name, names)
         system_prompt = (PROJECT_DIR / ".pi" / "SYSTEM.md").read_text(

@@ -236,6 +236,56 @@ class ImportTests(unittest.TestCase):
             self.assertEqual(result.cluster_id, "6240402")
             self.assertTrue(result.eligible)
 
+    def test_identity_only_import_derives_citation_and_corroborates(self) -> None:
+        existing = {
+            "id": "6240402",
+            "case_name": "In re Caden C.",
+            "case_name_full": "In re Caden C.",
+            "date_filed": "2021-06-01",
+            "docket": {"docket_number": "H049921"},
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = _client(temp_dir)
+            result = import_scholar_text(
+                client,
+                citation="",
+                source_url=CADEN_CASE_URL,
+                clipboard_text=CADEN_OPINION,
+                existing_cluster=existing,
+            )
+            self.assertTrue(result.eligible)
+            self.assertEqual(result.official_citation, CADEN_CITATION)
+            self.assertEqual(result.cluster_id, "6240402")
+
+    def test_identity_only_import_requires_existing_cluster(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = _client(temp_dir)
+            with self.assertRaises(ScholarBrowserError):
+                import_scholar_text(
+                    client,
+                    citation="",
+                    source_url=CADEN_CASE_URL,
+                    clipboard_text=CADEN_OPINION,
+                )
+
+    def test_identity_only_import_rejects_mismatched_identity(self) -> None:
+        existing = {
+            "id": "6240402",
+            "case_name": "People v. Wrong",
+            "case_name_full": "People v. Wrong",
+            "date_filed": "1999-01-01",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = _client(temp_dir)
+            with self.assertRaises(ScholarBrowserError):
+                import_scholar_text(
+                    client,
+                    citation="",
+                    source_url=CADEN_CASE_URL,
+                    clipboard_text=CADEN_OPINION,
+                    existing_cluster=existing,
+                )
+
     def test_browser_and_account_chrome_is_cleaned(self) -> None:
         noisy = (
             "How cited\n"

@@ -32,11 +32,11 @@ from .scholar_browser import (
     import_scholar_text,
     launch_scholar_url,
     read_regular_clipboard,
-    require_official_citation,
     scholar_import_failure_json,
     scholar_import_to_json,
     scholar_launch_to_json,
 )
+from .external_import import normalize_official_citation
 from .slip_opinions import (
     DEFAULT_SLIP_OPINION_MAX_AGE_DAYS,
     SlipOpinionError,
@@ -547,16 +547,18 @@ def _cmd_open_selected(_args: argparse.Namespace) -> int:
 
 
 def _cmd_open_scholar_browser(args: argparse.Namespace) -> int:
-    citation = str(getattr(args, "citation", "") or "")
+    query = str(getattr(args, "citation", "") or "").strip()
+    clean_query = re.sub(r"\s+", " ", query)
     try:
-        normalized = require_official_citation(citation)
-        url = build_scholar_case_search_url(citation)
+        normalized = normalize_official_citation(clean_query)
+        url = build_scholar_case_search_url(clean_query)
         handler_name, handler_desktop_id = launch_scholar_url(url)
     except ScholarBrowserError as exc:
         _print_json(
             {
                 "ok": False,
-                "citation": citation,
+                "citation": "",
+                "query": clean_query,
                 "scholar_url": "",
                 "handler_name": "",
                 "handler_desktop_id": "",
@@ -1022,7 +1024,10 @@ def build_parser() -> argparse.ArgumentParser:
         "open-scholar-browser",
         help="open Google Scholar case law in the default HTTPS browser",
     )
-    open_scholar_parser.add_argument("citation", help="California official reporter citation")
+    open_scholar_parser.add_argument(
+        "citation",
+        help="California official reporter citation or a case query",
+    )
     open_scholar_parser.set_defaults(func=_cmd_open_scholar_browser)
 
     import_scholar_parser = subparsers.add_parser(
@@ -1030,7 +1035,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="validate and import a copied Google Scholar opinion from the clipboard",
     )
     import_scholar_parser.add_argument(
-        "--citation", required=True, help="exact California official reporter citation"
+        "--citation",
+        help="exact California official reporter citation; omit for an identity-only import with --cluster-id",
     )
     import_scholar_parser.add_argument(
         "--source-url",
