@@ -197,6 +197,16 @@ class ComputerUseMCPClientTests(unittest.TestCase):
         finally:
             client.close()
 
+    def test_response_byte_limit_resets_for_each_request(self) -> None:
+        client = self.make_client(max_response_bytes=4096)
+        client.start()
+        try:
+            client._response_bytes = client.max_response_bytes - 1
+            self.assertTrue(doctor_readiness(client.doctor()).ready)
+            self.assertLess(client._response_bytes, client.max_response_bytes)
+        finally:
+            client.close()
+
     def test_perform_action_and_press_key(self) -> None:
         client = self.make_client()
         client.start()

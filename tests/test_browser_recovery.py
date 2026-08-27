@@ -24,6 +24,7 @@ from open_law_lens.browser_recovery import (
     normalize_match_token,
     normalize_recovery_query,
     request_from_query,
+    scholar_search_url_matches,
     scope_frame_index,
     validate_recovery_result,
 )
@@ -165,6 +166,26 @@ class TreeScopeTests(unittest.TestCase):
             node(2, "combo box", name="example.com", text={"content": "https://example.com/"}, parent=1),
         ]
         self.assertIsNone(find_scholar_url(tree, tree[1:]))
+
+    def test_search_url_match_uses_decoded_query_not_parameter_order(self) -> None:
+        self.assertTrue(
+            scholar_search_url_matches(
+                "https://scholar.google.com/scholar?hl=en&q=55+Cal.App.5th+558&as_sdt=6%2C33",
+                "https://scholar.google.com/scholar?as_sdt=6%2C33&q=55%20Cal.App.5th%20558",
+            )
+        )
+        self.assertFalse(
+            scholar_search_url_matches(
+                "https://scholar.google.com/scholar?q=81+Cal.App.5th+309",
+                "https://scholar.google.com/scholar?q=55+Cal.App.5th+558",
+            )
+        )
+        self.assertFalse(
+            scholar_search_url_matches(
+                "https://scholar.google.com/scholar_case?case=1&q=55+Cal.App.5th+558",
+                "https://scholar.google.com/scholar?q=55+Cal.App.5th+558",
+            )
+        )
 
 
 class BarrierTests(unittest.TestCase):
@@ -394,6 +415,28 @@ class _FakeClient:
         ]
 
 
+class _InitiallyStaleClient(_FakeClient):
+    """Expose the previous opinion once before the launched search is ready."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.observations = 0
+
+    def get_app_state(
+        self, *, window_id: int, max_nodes: int, max_depth: int
+    ) -> dict[str, Any]:
+        if not self.navigated:
+            self.observations += 1
+            if self.observations == 1:
+                return {
+                    "accessibility_tree": self._opinion_tree(),
+                    "window_context": {"title": self.OPINION_TITLE},
+                }
+        return super().get_app_state(
+            window_id=window_id, max_nodes=max_nodes, max_depth=max_depth
+        )
+
+
 class TitleChangeStateMachineTests(unittest.TestCase):
     """Regression: navigating search -> opinion changes the title but must not
     abort the copy step."""
@@ -417,6 +460,27 @@ class TitleChangeStateMachineTests(unittest.TestCase):
 
         self.assertEqual(outcome.outcome, "copied")
         self.assertEqual(outcome.source_url, "https://scholar.google.com/scholar_case?case=123")
+        self.assertEqual(client.pressed, [("Ctrl+A", 7), ("Ctrl+C", 7)])
+
+    def test_reused_window_waits_past_stale_opinion_for_launched_search(self) -> None:
+        client = _InitiallyStaleClient()
+        request = ScholarRecoveryRequest(
+            query="81 Cal.App.5th 309",
+            expected_citation="81 Cal.App.5th 309",
+            case_name="In re Rylei S.",
+        )
+        job = ScholarRecoveryJob(request, client=client)
+
+        with mock.patch(
+            "open_law_lens.browser_recovery.RecoveryLock", return_value=_FakeLock()
+        ), mock.patch(
+            "open_law_lens.browser_recovery.launch_scholar_url",
+            return_value=("Firefox", "firefox.desktop"),
+        ):
+            outcome = job.run()
+
+        self.assertGreaterEqual(client.observations, 2)
+        self.assertEqual(outcome.outcome, "copied")
         self.assertEqual(client.pressed, [("Ctrl+A", 7), ("Ctrl+C", 7)])
 
 

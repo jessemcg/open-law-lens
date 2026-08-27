@@ -31,6 +31,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
+from urllib.parse import parse_qs, urlparse
 
 from .computer_use_mcp import (
     ComputerUseMCPClient,
@@ -341,6 +342,26 @@ def scope_frame_index(
     return None
 
 
+def scholar_search_url_matches(url: str, expected_url: str) -> bool:
+    """Return whether two Scholar search URLs carry the same query."""
+    try:
+        observed = urlparse(url)
+        expected = urlparse(expected_url)
+    except ValueError:
+        return False
+    if observed.scheme != "https" or expected.scheme != "https":
+        return False
+    if observed.hostname != SCHOLAR_NETLOC or expected.hostname != SCHOLAR_NETLOC:
+        return False
+    if observed.path.rstrip("/") != "/scholar" or expected.path.rstrip("/") != "/scholar":
+        return False
+    observed_query = parse_qs(observed.query).get("q", [""])[0]
+    expected_query = parse_qs(expected.query).get("q", [""])[0]
+    return bool(observed_query) and normalize_match_token(observed_query) == normalize_match_token(
+        expected_query
+    )
+
+
 def find_scholar_url(
     tree: Sequence[Mapping[str, Any]], scoped: Sequence[Mapping[str, Any]]
 ) -> str | None:
@@ -610,7 +631,15 @@ class ScholarRecoveryJob:
 
     # -- state 5: find target window --------------------------------------
 
-    def _find_target_window(self, prior: set[int]) -> tuple[int, str]:
+    def _find_target_window(
+        self, prior: set[int], expected_search_url: str
+    ) -> tuple[int, str]:
+        """Find the window whose scoped address bar has our exact search query.
+
+        The default browser may reuse an existing Scholar window or open a new
+        tab in an existing process. A Scholar-looking title alone can therefore
+        identify a stale page or the wrong Scholar window.
+        """
         deadline = time.monotonic() + self.page_deadline()
         while time.monotonic() < deadline:
             if self._is_cancelled() or self._deadline_exceeded():
@@ -619,19 +648,27 @@ class ScholarRecoveryJob:
             windows = payload.get("windows")
             if not isinstance(windows, list):
                 windows = []
-            for window in windows:
+            ordered = sorted(
+                windows,
+                key=lambda window: int(window.get("window_id") in prior),
+            )
+            for window in ordered:
                 window_id = window.get("window_id")
                 if not isinstance(window_id, int):
                     continue
                 title = str(window.get("title") or "")
-                if "scholar" in title.casefold() or "google scholar" in title.casefold():
-                    return int(window_id), title
-                # A retitled/new window from the default handler that is Scholar.
-                if int(window_id) not in prior and self._matches_handler(window):
-                    if "scholar" in title.casefold():
-                        return int(window_id), title
+                looks_like_scholar = "scholar" in title.casefold()
+                is_new_handler_window = window_id not in prior and self._matches_handler(window)
+                if not (looks_like_scholar or is_new_handler_window):
+                    continue
+                try:
+                    _tree, observed_title, observed_url = self._observe(window_id)
+                except ComputerUseMCPError:
+                    continue
+                if scholar_search_url_matches(observed_url, expected_search_url):
+                    return window_id, observed_title or title
             time.sleep(0.5)
-        raise BrowserRecoveryError("The Scholar window did not appear.")
+        raise BrowserRecoveryError("The Scholar search page did not appear.")
 
     def _matches_handler(self, window: Mapping[str, Any]) -> bool:
         identity = (
@@ -663,7 +700,17 @@ class ScholarRecoveryJob:
         context = payload.get("window_context")
         if isinstance(context, dict):
             title = str(context.get("title") or "")
-        url = find_scholar_url(tree, tree)
+        frame_index = scope_frame_index(tree, title)
+        scoped = (
+            [
+                node
+                for node in tree
+                if int(node.get("index")) in _descendant_set(tree, frame_index)
+            ]
+            if frame_index is not None
+            else []
+        )
+        url = find_scholar_url(tree, scoped)
         return list(tree), title, (url or "")
 
     # -- state 8: check barriers -------------------------------------------
@@ -691,31 +738,39 @@ class ScholarRecoveryJob:
 
             self._check_desktop()
             prior = self._snapshot_windows()
-            self._open_scholar()
+            search_url = self._open_scholar()
 
             self._report("Finding matching case")
-            window_id, title = self._find_target_window(prior)
+            window_id, title = self._find_target_window(prior, search_url)
             self._target_window_id = window_id
             self._target_title = title
 
-            tree, observed_title, url = self._observe(window_id)
-            frame_index = scope_frame_index(tree, observed_title or title)
-            if frame_index is None:
-                return self._outcome("not_found", "No matching Scholar frame was found.")
-            scoped = [
-                node
-                for node in tree
-                if int(node.get("index")) in _descendant_set(tree, frame_index)
-            ]
-
-            barrier = self._check_barriers(tree, scoped)
-            if barrier:
-                return self._outcome("blocked", f"Google Scholar showed {barrier}; leaving it visible.")
-
             expected_citation = self.request.expected_citation or self.request.query
             case_name = self.request.case_name
-
-            link = find_result_link(tree, scoped, expected_citation, case_name)
+            search_deadline = time.monotonic() + self.page_deadline()
+            link = None
+            while time.monotonic() < search_deadline:
+                if self._is_cancelled() or self._deadline_exceeded():
+                    return self._outcome("failed", "Scholar recovery timed out.")
+                tree, observed_title, url = self._observe(window_id)
+                frame_index = scope_frame_index(tree, observed_title or title)
+                if frame_index is None or not scholar_search_url_matches(url, search_url):
+                    time.sleep(0.5)
+                    continue
+                scoped = [
+                    node
+                    for node in tree
+                    if int(node.get("index")) in _descendant_set(tree, frame_index)
+                ]
+                barrier = self._check_barriers(tree, scoped)
+                if barrier == "missing page":
+                    return self._outcome("not_found", "Google Scholar returned no matching case.")
+                if barrier:
+                    return self._outcome("blocked", f"Google Scholar showed {barrier}; leaving it visible.")
+                link = find_result_link(tree, scoped, expected_citation, case_name)
+                if link is not None:
+                    break
+                time.sleep(0.5)
             if link is None:
                 return self._outcome("not_found", "No single corroborated Scholar result matched.")
 
@@ -732,7 +787,7 @@ class ScholarRecoveryJob:
                 if self._is_cancelled() or self._deadline_exceeded():
                     return self._outcome("failed", "Scholar recovery timed out.")
                 tree, observed_title, url = self._observe(window_id)
-                opinion_url = find_scholar_url(tree, tree)
+                opinion_url = url
                 if opinion_url and is_scholar_case_url(opinion_url):
                     frame_index = scope_frame_index(tree, observed_title or title)
                     if frame_index is None:
@@ -859,6 +914,7 @@ __all__ = [
     "normalize_recovery_query",
     "request_from_query",
     "run_scholar_recovery",
+    "scholar_search_url_matches",
     "scope_frame_index",
     "validate_recovery_result",
 ]

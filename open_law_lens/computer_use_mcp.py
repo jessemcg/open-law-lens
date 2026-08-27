@@ -554,6 +554,9 @@ class ComputerUseMCPClient:
 
     def _read_response(self, expected_id: int, *, timeout: float) -> dict[str, Any] | None:
         assert self.process is not None and self.process.stdout is not None
+        # The documented byte bound applies to each request, not cumulatively
+        # across a recovery job that must observe several browser states.
+        self._response_bytes = 0
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
@@ -585,7 +588,6 @@ class ComputerUseMCPClient:
                 continue
             if message.get("id") == expected_id:
                 if "result" in message:
-                    self._consume_response_bytes(line)
                     return message["result"]
                 if "error" in message:
                     error = message["error"]

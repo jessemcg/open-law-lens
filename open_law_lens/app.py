@@ -2081,6 +2081,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._browser_recovery_cluster_id = ""
         self._browser_recovery_case_name = ""
         self._browser_recovery_transient_notice = False
+        self._browser_recovery_can_view_current = True
         self._browser_recovery_cache_generation: int | None = None
         self._browser_recovery_cancel_requested = False
         self._browser_recovery_cancel_button: Gtk.Button | None = None
@@ -7156,20 +7157,21 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self,
         query: str,
         *,
-        expected_citation: str = "",
-        cluster_id: str = "",
-        case_name: str = "",
+        expected_citation: str | None = None,
+        cluster_id: str | None = None,
+        case_name: str | None = None,
         transient_notice: bool = False,
+        can_view_current: bool = True,
         cache_generation: int | None = None,
     ) -> None:
         clean_query = re.sub(r"\s+", " ", query or "").strip()
         if self._browser_recovery_running:
             return
-        if not expected_citation.strip():
+        if expected_citation is None:
             expected_citation = self._default_import_official_citation()
-        if not case_name.strip():
+        if case_name is None:
             case_name = self._default_import_case_name()
-        if not cluster_id.strip():
+        if cluster_id is None:
             cluster_id = cluster_id_from_cluster(self._reader_display_cluster or self._selected_cluster or {})
         if not clean_query and not expected_citation.strip():
             self._set_status("No search query available for browser recovery.")
@@ -7182,6 +7184,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._browser_recovery_cluster_id = cluster_id.strip()
         self._browser_recovery_case_name = case_name.strip()
         self._browser_recovery_transient_notice = transient_notice
+        self._browser_recovery_can_view_current = can_view_current
         self._browser_recovery_cache_generation = (
             self._research_cache_generation if cache_generation is None else cache_generation
         )
@@ -7271,7 +7274,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         )
         self._set_status(reason)
         if transient_notice:
-            self._show_official_pagination_not_found_notice(can_view_current=True)
+            self._show_official_pagination_not_found_notice(
+                can_view_current=getattr(self, "_browser_recovery_can_view_current", True)
+            )
         return False
 
     def _finish_browser_recovery_unexpected_error(self, message: str) -> bool:
@@ -7280,7 +7285,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_browser_recovery_cancel_visible(False)
         self._set_reader_busy(False)
         self._set_status(f"Scholar recovery failed: {message}")
-        self._show_official_pagination_not_found_notice(can_view_current=True)
+        self._show_official_pagination_not_found_notice(
+            can_view_current=getattr(self, "_browser_recovery_can_view_current", True)
+        )
         return False
 
     def _refresh_after_scholar_import(self, imported: Any) -> None:
@@ -8135,7 +8142,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.reader_buffer.set_text("")
         self._set_reader_busy(True, "Recovering official copy in browser...")
         self._set_status("CourtListener lookup unavailable. Recovering through Google Scholar...")
-        self._start_browser_recovery(citation, cache_generation=cache_generation)
+        self._start_browser_recovery(
+            citation,
+            expected_citation=normalize_official_citation(citation),
+            cluster_id="",
+            case_name="",
+            transient_notice=True,
+            can_view_current=False,
+            cache_generation=cache_generation,
+        )
         return False
 
     def _lookup_status_text(
@@ -8832,7 +8847,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 self.reader_buffer.set_text("")
                 self._set_reader_busy(True, "Recovering official copy in browser...")
                 self._set_status("No CourtListener match shown. Recovering through Google Scholar...")
-                self._start_browser_recovery(query, cache_generation=cache_generation)
+                self._start_browser_recovery(
+                    query,
+                    expected_citation=normalize_official_citation(query),
+                    cluster_id="",
+                    case_name="",
+                    transient_notice=True,
+                    can_view_current=False,
+                    cache_generation=cache_generation,
+                )
             else:
                 self._set_reader_busy(False)
                 self.reader_buffer.set_text(status)

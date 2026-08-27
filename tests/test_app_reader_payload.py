@@ -5450,7 +5450,7 @@ Opinion text.
                 self.sidebar_snapshots: list[list[str]] = []
                 self.statuses: list[str] = []
                 self.busy_messages: list[str] = []
-                self.recovery_queries: list[str] = []
+                self.recovery_calls: list[tuple[str, dict[str, object]]] = []
 
             def cached_clusters(self) -> list[dict[str, object]]:
                 return []
@@ -5475,8 +5475,7 @@ Opinion text.
                 query: str,
                 **kwargs: object,
             ) -> None:
-                del kwargs
-                self.recovery_queries.append(query)
+                self.recovery_calls.append((query, kwargs))
 
         window = DummyWindow()
 
@@ -5491,7 +5490,22 @@ Opinion text.
             "116 Cal.App.5th 53",
         )
 
-        self.assertEqual(window.recovery_queries, ["116 Cal.App.5th 53"])
+        self.assertEqual(
+            window.recovery_calls,
+            [
+                (
+                    "116 Cal.App.5th 53",
+                    {
+                        "expected_citation": "116 Cal.App.5th 53",
+                        "cluster_id": "",
+                        "case_name": "",
+                        "transient_notice": True,
+                        "can_view_current": False,
+                        "cache_generation": 0,
+                    },
+                )
+            ],
+        )
         self.assertEqual(window._pending_auto_scholar_cluster_id, "")
         self.assertEqual(window._pending_auto_scholar_query, "")
 
