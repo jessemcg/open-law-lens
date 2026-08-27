@@ -202,10 +202,6 @@ def resolve_computer_use_command(
     )
 
 
-def _validate_wait_argument(name: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
-    return dict(arguments or {})
-
-
 class ComputerUseMCPClient:
     """A single bounded stdio connection to the Computer Use MCP server."""
 

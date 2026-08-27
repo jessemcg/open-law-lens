@@ -36,7 +36,6 @@ from .computer_use_mcp import (
     ComputerUseMCPClient,
     ComputerUseMCPError,
     doctor_readiness,
-    scholar_identity_diagnostic,
 )
 from .scholar_browser import (
     SCHOLAR_NETLOC,
