@@ -24,8 +24,10 @@ from open_law_lens.browser_recovery import (
     normalize_match_token,
     normalize_recovery_query,
     request_from_query,
+    scholar_case_url_matches,
     scholar_search_url_matches,
     scope_frame_index,
+    scope_selected_document,
     validate_recovery_result,
 )
 
@@ -154,6 +156,29 @@ class TreeScopeTests(unittest.TestCase):
     def test_scope_frame_no_match(self) -> None:
         self.assertIsNone(scope_frame_index([], "Google Scholar"))
 
+    def test_selected_document_excludes_hidden_tab_content(self) -> None:
+        tree = [
+            node(0, "application", "Firefox"),
+            node(1, "frame", "Google Scholar", states=["showing", "visible"], parent=0),
+            node(2, "internal frame", parent=1),
+            node(3, "document web", "Hidden tab", states=["visible"], parent=2),
+            node(4, "static text", "Log in to an unrelated site", parent=3),
+            node(5, "internal frame", parent=1),
+            node(
+                6,
+                "document web",
+                "Google Scholar",
+                states=["focused", "showing", "visible"],
+                parent=5,
+            ),
+            node(7, "static text", "In re Y.W. 70 Cal.App.5th 542", parent=6),
+        ]
+
+        selected = scope_selected_document(tree, tree[1:])
+
+        self.assertEqual([item["index"] for item in selected], [6, 7])
+        self.assertIsNone(detect_barrier(tree, selected))
+
     def test_find_scholar_url(self) -> None:
         tree = scholar_search_tree()
         url = find_scholar_url(tree, tree[1:])
@@ -184,6 +209,20 @@ class TreeScopeTests(unittest.TestCase):
             scholar_search_url_matches(
                 "https://scholar.google.com/scholar_case?case=1&q=55+Cal.App.5th+558",
                 "https://scholar.google.com/scholar?q=55+Cal.App.5th+558",
+            )
+        )
+
+    def test_case_url_match_uses_stable_case_identifier(self) -> None:
+        self.assertTrue(
+            scholar_case_url_matches(
+                "https://scholar.google.com/scholar_case?q=x&case=123&hl=en",
+                "https://scholar.google.com/scholar_case?case=123&q=y",
+            )
+        )
+        self.assertFalse(
+            scholar_case_url_matches(
+                "https://scholar.google.com/scholar_case?case=123",
+                "https://scholar.google.com/scholar_case?case=456",
             )
         )
 
@@ -246,6 +285,28 @@ class ResultLinkTests(unittest.TestCase):
         self.assertIsNotNone(link)
         assert link is not None
         self.assertEqual(link["index"], 6)
+
+    def test_citation_only_uses_result_metadata_not_other_result_snippets(self) -> None:
+        tree = [
+            node(0, "application", "Firefox"),
+            node(1, "frame", "Google Scholar", states=["showing", "visible"], parent=0),
+            node(2, "panel", "page", parent=1),
+            node(3, "section", "results", parent=2),
+            node(4, "heading", "In re Y.W.", parent=3),
+            node(5, "link", "In re Y.W.", states=["showing", "visible"], parent=4),
+            node(6, "section", "70 Cal.App.5th 542, 285 Cal.Rptr.3d 498", parent=3),
+            node(7, "section", "The first result's snippet.", parent=3),
+            node(8, "heading", "In re Later Case", parent=3),
+            node(9, "link", "In re Later Case", states=["showing", "visible"], parent=8),
+            node(10, "section", "75 Cal.App.5th 500, 290 Cal.Rptr.3d 1", parent=3),
+            node(11, "section", "This snippet cites 70 Cal.App.5th 542.", parent=3),
+        ]
+
+        link = find_result_link(tree, tree[1:], "70 Cal.App.5th 542", "")
+
+        self.assertIsNotNone(link)
+        assert link is not None
+        self.assertEqual(link["index"], 5)
 
     def test_duplicate_candidates_rejected(self) -> None:
         tree = scholar_search_tree()
@@ -415,6 +476,20 @@ class _FakeClient:
         ]
 
 
+class _StaleOpinionContextTitleClient(_FakeClient):
+    """Keep app-state title stale after the opinion URL has loaded."""
+
+    def get_app_state(
+        self, *, window_id: int, max_nodes: int, max_depth: int
+    ) -> dict[str, Any]:
+        payload = super().get_app_state(
+            window_id=window_id, max_nodes=max_nodes, max_depth=max_depth
+        )
+        if self.navigated:
+            payload["window_context"] = {"title": self.SEARCH_TITLE}
+        return payload
+
+
 class _InitiallyStaleClient(_FakeClient):
     """Expose the previous opinion once before the launched search is ready."""
 
@@ -460,6 +535,26 @@ class TitleChangeStateMachineTests(unittest.TestCase):
 
         self.assertEqual(outcome.outcome, "copied")
         self.assertEqual(outcome.source_url, "https://scholar.google.com/scholar_case?case=123")
+        self.assertEqual(client.pressed, [("Ctrl+A", 7), ("Ctrl+C", 7)])
+
+    def test_copy_uses_case_url_when_opinion_context_title_lags(self) -> None:
+        client = _StaleOpinionContextTitleClient()
+        request = ScholarRecoveryRequest(
+            query="81 Cal.App.5th 309",
+            expected_citation="81 Cal.App.5th 309",
+            case_name="In re Rylei S.",
+        )
+        job = ScholarRecoveryJob(request, client=client)
+
+        with mock.patch(
+            "open_law_lens.browser_recovery.RecoveryLock", return_value=_FakeLock()
+        ), mock.patch(
+            "open_law_lens.browser_recovery.launch_scholar_url",
+            return_value=("Firefox", "firefox.desktop"),
+        ):
+            outcome = job.run()
+
+        self.assertEqual(outcome.outcome, "copied")
         self.assertEqual(client.pressed, [("Ctrl+A", 7), ("Ctrl+C", 7)])
 
     def test_reused_window_waits_past_stale_opinion_for_launched_search(self) -> None:
