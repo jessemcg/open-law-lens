@@ -690,6 +690,7 @@ class CaseLibrary:
         conn = sqlite3.connect(self.path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA busy_timeout = 10000")
         return conn
 
     @contextmanager
@@ -701,8 +702,40 @@ class CaseLibrary:
         finally:
             conn.close()
 
+    def _is_schema_current(self, conn: sqlite3.Connection) -> bool:
+        """Return True when the schema and every one-time migration are current.
+
+        Concurrent CLI processes all run ``ensure()`` at startup, and the
+        migration block is write-capable, so parallel startups used to collide
+        with ``sqlite3.OperationalError: database is locked``. This read-only
+        check lets an up-to-date library skip the writes entirely. Any new
+        migration must either bump ``SCHEMA_VERSION`` or introduce a fresh
+        marker key so this fast path opens again.
+        """
+        required_markers = (
+            TAVILY_OPINIONS_MIGRATED_KEY,
+            OFFICIAL_CITATION_ONLY_NORMALIZED_KEY,
+            CASE_TITLES_NORMALIZED_KEY,
+            REPORTER_ONLY_IMPORTED_NAMES_NORMALIZED_KEY,
+        )
+        try:
+            version_row = conn.execute(
+                "SELECT value FROM meta WHERE key = 'schema_version'"
+            ).fetchone()
+            if version_row is None or str(version_row["value"]) != SCHEMA_VERSION:
+                return False
+            marker_rows = conn.execute(
+                "SELECT key FROM meta WHERE key IN (?, ?, ?, ?)",
+                required_markers,
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return False
+        return len(marker_rows) == len(required_markers)
+
     def ensure(self) -> None:
         with self.connection() as conn:
+            if self._is_schema_current(conn):
+                return
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS meta (

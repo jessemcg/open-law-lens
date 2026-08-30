@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from open_law_lens.cache import JsonCache
-from open_law_lens.library import CaseLibrary, opinion_display_text
+from open_law_lens.library import SCHEMA_VERSION, CaseLibrary, opinion_display_text
 from open_law_lens.reader_highlights import ReaderHighlight
 
 
@@ -42,6 +42,14 @@ class LibraryTests(unittest.TestCase):
                     INSERT INTO rules(rule_id) VALUES ('CRC:8.11');
                     """
                 )
+                # A database that still contains legacy tables comes from an
+                # older schema version, so make the stored version stale to
+                # match that state; ensure()'s fast path skips all writes
+                # while the schema and every migration marker are current.
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
+                    (str(int(SCHEMA_VERSION) - 1),),
+                )
 
             library.ensure()
 
@@ -63,6 +71,45 @@ class LibraryTests(unittest.TestCase):
                 }
             )
             self.assertEqual(library.list_case_entries()[0]["cluster_id"], "42")
+
+    def test_ensure_skips_writes_when_schema_current(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            library = CaseLibrary(db_path)
+            library.ensure()
+
+            # Hold the database write lock from a second connection, the way
+            # a parallel CLI startup would. Readers stay allowed in rollback
+            # journal mode, so a fully-current ensure() must succeed without
+            # attempting any write; before the read-only fast path it raised
+            # sqlite3.OperationalError: database is locked.
+            lock_conn = sqlite3.connect(db_path)
+            try:
+                lock_conn.execute("BEGIN IMMEDIATE")
+                library.ensure()
+                lock_conn.execute("ROLLBACK")
+            finally:
+                lock_conn.close()
+
+    def test_ensure_reruns_migrations_when_schema_version_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "library.sqlite3"
+            library = CaseLibrary(db_path)
+            library.ensure()
+            with library.connection() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
+                    (str(int(SCHEMA_VERSION) - 1),),
+                )
+
+            library.ensure()
+
+            with library.connection() as conn:
+                row = conn.execute(
+                    "SELECT value FROM meta WHERE key = 'schema_version'"
+                ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(str(row["value"]), SCHEMA_VERSION)
 
     def test_upsert_cluster_and_lookup_alias(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

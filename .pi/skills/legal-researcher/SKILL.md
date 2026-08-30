@@ -19,6 +19,15 @@ uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync open-law-lens <command>
 The embedded launcher uses an already synchronized environment, so retain
 `--no-sync` in agent commands.
 
+## Transient library lock errors
+
+Every `open-law-lens` process opens the shared SQLite case library at startup.
+When the library schema is already current these startups are read-only, but a
+startup that runs a pending migration briefly holds the database write lock. If
+a command fails with `sqlite3.OperationalError: database is locked`, treat it
+as transient: retry that one command by itself once before concluding the
+library is unavailable.
+
 ## Research workflow
 
 1. Identify the jurisdiction, issue, procedural posture, and requested output.
