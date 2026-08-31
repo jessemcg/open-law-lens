@@ -21,9 +21,11 @@ from open_law_lens.browser_recovery import (
     find_result_link,
     find_scholar_url,
     is_scholar_case_url,
+    node_name,
     normalize_match_token,
     normalize_recovery_query,
     request_from_query,
+    result_block_text,
     scholar_case_url_matches,
     scholar_search_url_matches,
     scope_frame_index,
@@ -617,6 +619,560 @@ class TitleChangeStateMachineTests(unittest.TestCase):
         self.assertGreaterEqual(client.observations, 2)
         self.assertEqual(outcome.outcome, "copied")
         self.assertEqual(client.pressed, [("Ctrl+A", 7), ("Ctrl+C", 7)])
+
+
+class _FakeTime:
+    """A monotonic clock that advances only when the job sleeps."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += max(float(seconds), 0.0)
+
+
+class _UnconfirmedResultClient(_FakeClient):
+    """The title matches but the result metadata carries another citation."""
+
+    @staticmethod
+    def _search_tree() -> list[dict[str, Any]]:
+        tree = _FakeClient._search_tree()
+        for item in tree:
+            if (item.get("role") or "").casefold() == "static text":
+                item["name"] = "99 Cal.App.5th 999"
+        return tree
+
+
+class _NoResultStructureClient(_FakeClient):
+    """The search page loads but exposes no result blocks at all."""
+
+    @staticmethod
+    def _search_tree() -> list[dict[str, Any]]:
+        return [
+            node(0, "application", "Firefox"),
+            node(1, "frame", "Google Scholar", states=["showing", "visible"], parent=0),
+            node(
+                2,
+                "combo box",
+                text={"content": "https://scholar.google.com/scholar?q=81+Cal.App.5th+309"},
+                parent=1,
+            ),
+            node(3, "panel", "page", parent=1),
+            node(4, "static text", "Results area is still rendering", parent=3),
+        ]
+
+
+class _BarrierSearchClient(_FakeClient):
+    """The search page is an unusual-traffic barrier."""
+
+    @staticmethod
+    def _search_tree() -> list[dict[str, Any]]:
+        tree = _FakeClient._search_tree()
+        tree.append(
+            node(
+                8,
+                "static text",
+                "Our systems have detected unusual traffic from your computer network.",
+                parent=3,
+            )
+        )
+        return tree
+
+
+class _CitationlessOpinionClient(_FakeClient):
+    """The opened opinion names the case but never shows the citation."""
+
+    @staticmethod
+    def _opinion_tree() -> list[dict[str, Any]]:
+        tree = _FakeClient._opinion_tree()
+        for item in tree:
+            if (item.get("role") or "").casefold() == "static text":
+                item["name"] = "SOME OPINION"
+        return tree
+
+
+class CorroborationStateMachineTests(unittest.TestCase):
+    """No click until title and citation match; no copy without both identities."""
+
+    def _run(self, client: _FakeClient, case_name: str = "In re Rylei S.") -> Any:
+        request = ScholarRecoveryRequest(
+            query="81 Cal.App.5th 309",
+            expected_citation="81 Cal.App.5th 309",
+            case_name=case_name,
+        )
+        job = ScholarRecoveryJob(request, client=client)
+        fake_time = _FakeTime()
+        with mock.patch("open_law_lens.browser_recovery.time", fake_time), mock.patch(
+            "open_law_lens.browser_recovery.RecoveryLock", return_value=_FakeLock()
+        ), mock.patch(
+            "open_law_lens.browser_recovery.launch_scholar_url",
+            return_value=("Firefox", "firefox.desktop"),
+        ):
+            return job.run()
+
+    def test_no_click_when_result_is_not_corroborated(self) -> None:
+        client = _UnconfirmedResultClient()
+        outcome = self._run(client)
+        self.assertEqual(outcome.outcome, "not_found")
+        self.assertEqual(outcome.message, "No single corroborated Scholar result matched.")
+        self.assertFalse(client.navigated)
+        self.assertEqual(client.pressed, [])
+
+    def test_parse_failure_reason_when_no_result_structure_loads(self) -> None:
+        client = _NoResultStructureClient()
+        outcome = self._run(client)
+        self.assertEqual(outcome.outcome, "not_found")
+        self.assertEqual(
+            outcome.message,
+            "The Scholar page loaded but showed no parseable result structure.",
+        )
+        self.assertFalse(client.navigated)
+        self.assertEqual(client.pressed, [])
+
+    def test_barrier_page_blocks_without_interaction(self) -> None:
+        client = _BarrierSearchClient()
+        outcome = self._run(client)
+        self.assertEqual(outcome.outcome, "blocked")
+        self.assertIn("unusual traffic", outcome.message)
+        self.assertFalse(client.navigated)
+        self.assertEqual(client.pressed, [])
+
+    def test_no_copy_when_opinion_lacks_the_citation(self) -> None:
+        client = _CitationlessOpinionClient()
+        outcome = self._run(client)
+        self.assertEqual(outcome.outcome, "not_found")
+        self.assertEqual(outcome.message, "The opened opinion did not match the expected case.")
+        self.assertTrue(client.navigated)
+        self.assertEqual(client.pressed, [])
+
+
+def firefox_scholar_search_tree(
+    query: str,
+    results: list[dict[str, Any]],
+    *,
+    selected_tab: str = "",
+) -> list[dict[str, Any]]:
+    """A reduced Firefox-style Scholar search-results tree.
+
+    The topology mirrors the real Firefox AT-SPI capture: one frame holding a
+    page-tab list whose selected tab names the results page, a visible
+    ``document web`` under a showing internal frame, and a results container
+    where each result is a heading (its title link is a child appearing later
+    in index order) followed by a sibling reporter-metadata ``section``, an
+    ellipsis-prefixed snippet ``section``, and a link container. The search
+    box below the results echoes the query.
+
+    ``results`` entries: ``{"title", "metadata", "snippet", "cited_by"}``;
+    when ``metadata`` is a tuple it is rendered nested inside a sibling
+    container instead of as a direct sibling of the heading.
+    """
+    tab_title = selected_tab or f"{query} - Google Scholar"
+    url = f"https://scholar.google.com/scholar?hl=en&as_sdt=6,33&q={query.replace(' ', '+')}"
+    nodes: list[dict[str, Any]] = [
+        node(0, "application", "Firefox"),
+        node(1, "frame", tab_title, states=["showing", "visible"], parent=0),
+        node(2, "tool bar", "Browser tabs", states=["showing", "visible"], parent=1),
+        node(3, "page tab list", states=["showing", "visible"], parent=2),
+        node(4, "page tab", tab_title, states=["selected", "showing", "visible"], parent=3),
+        node(5, "panel", states=["showing", "visible"], parent=1),
+        node(
+            6,
+            "combo box",
+            name="Search with DuckDuckGo or enter address",
+            text={"content": url},
+            states=["showing", "visible"],
+            parent=5,
+        ),
+        node(7, "panel", states=["showing", "visible"], parent=1),
+        node(8, "scroll pane", states=["showing", "visible"], parent=7),
+        node(9, "internal frame", states=["showing", "visible"], parent=8),
+        node(
+            10,
+            "document web",
+            tab_title,
+            states=["focused", "showing", "visible"],
+            parent=9,
+        ),
+        node(11, "section", states=["showing", "visible"], parent=10),
+    ]
+    next_index = 12
+    results_root = next_index
+    nodes.append(node(next_index, "section", states=["showing", "visible"], parent=11))
+    next_index += 1
+    headings: list[tuple[int, dict[str, Any]]] = []
+    link_containers: list[tuple[int, dict[str, Any]]] = []
+    for result in results:
+        heading_index = next_index
+        nodes.append(
+            node(next_index, "heading", result["title"], states=["showing", "visible"], parent=results_root)
+        )
+        headings.append((heading_index, result))
+        next_index += 1
+        metadata = result["metadata"]
+        if isinstance(metadata, tuple):
+            container_index = next_index
+            nodes.append(
+                node(next_index, "section", text={"content": "\ufeff\ufeff"}, states=["showing", "visible"], parent=results_root)
+            )
+            next_index += 1
+            nodes.append(
+                node(next_index, "section", metadata[0], states=["showing", "visible"], parent=container_index)
+            )
+            next_index += 1
+        else:
+            nodes.append(
+                node(next_index, "section", metadata, states=["showing", "visible"], parent=results_root)
+            )
+            next_index += 1
+        nodes.append(
+            node(next_index, "section", result.get("snippet", "…"), states=["showing", "visible"], parent=results_root)
+        )
+        next_index += 1
+        container_index = next_index
+        nodes.append(
+            node(next_index, "section", text={"content": "\ufeff\ufeff"}, states=["showing", "visible"], parent=results_root)
+        )
+        link_containers.append((container_index, result))
+        next_index += 1
+    # Deeper nodes (children) appear after the results, mirroring the capture.
+    title_links: list[tuple[int, dict[str, Any]]] = []
+    for heading_index, result in headings:
+        title_links.append((next_index, result))
+        nodes.append(
+            node(next_index, "link", result["title"], states=["showing", "visible"], parent=heading_index)
+        )
+        next_index += 1
+    for container_index, result in link_containers:
+        cited = str(result.get("cited_by", "Cited by 1"))
+        nodes.append(
+            node(next_index, "link", cited, states=["showing", "visible"], parent=container_index)
+        )
+        next_index += 1
+    # The search box echoes the query and must never corroborate a result.
+    nodes.append(node(next_index, "section", states=["showing", "visible"], parent=11))
+    next_index += 1
+    nodes.append(
+        node(next_index, "entry", f"Search {query}", states=["showing", "visible"], parent=next_index - 1)
+    )
+    return nodes
+
+
+def firefox_sh_results() -> list[dict[str, Any]]:
+    return [
+        {
+            "title": "In re SH",
+            "metadata": "82 Cal. App. 5th 166, 298 Cal. Rptr. 3d 253 - Cal: Court of Appeal, 1st Appellate Dist., 1st Div. 2022 - Google Scholar",
+            "snippet": "… App.4th at p. 1282; contra, Nicole K., supra, 146 Cal.App.4th at p. 785.",
+            "cited_by": "Cited by 132",
+        },
+        {
+            "title": "In re Dominick D.",
+            "metadata": "82 Cal. App. 5th 560, 298 Cal. Rptr. 3d 897 - Cal: Court of Appeal, 4th Dist. 2022 - Google Scholar",
+            "snippet": "… (In re SH (2022) 82 Cal.App.5th 166, 177-180.)",
+            "cited_by": "Cited by 147",
+        },
+    ]
+
+
+def firefox_tr_results() -> list[dict[str, Any]]:
+    return [
+        {
+            "title": "In re TR",
+            "metadata": ("87 Cal. App. 5th 1140, 303 Cal. Rptr. 3d 559 - Cal: Court of Appeal, 4th Dist., 2nd Div. 2023 - Google Scholar",),
+            "snippet": "… (In re SH (2022) 82 Cal.App.5th 166, 179.)",
+            "cited_by": "Cited by 48",
+        },
+        {
+            "title": "In re Baby Girl M.",
+            "metadata": "83 Cal. App. 5th 635, 299 Cal. Rptr. 3d 826 - Cal: Court of Appeal, 2nd Dist. 2022 - Google Scholar",
+            "snippet": "… (In re TR (2023) 87 Cal.App.5th 1140, 1148.)",
+            "cited_by": "Cited by 64",
+        },
+    ]
+
+
+def _scoped_search(tree: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    from open_law_lens.browser_recovery import _descendant_set
+
+    frame = scope_frame_index(tree, node_name(tree[1]))
+    assert frame is not None
+    scoped_frame = [n for n in tree if int(n["index"]) in _descendant_set(tree, frame)]
+    return scope_selected_document(tree, scoped_frame)
+
+
+class FirefoxResultLinkTests(unittest.TestCase):
+    """Regressions for the reported In re S.H. / In re T.R. recoveries.
+
+    The fixtures reduce the real Firefox accessibility capture to public case
+    identities: Scholar renders ``In re S.H.`` as ``In re SH`` (initials lose
+    punctuation) and spaces the reporter as ``Cal. App. 5th``.
+    """
+
+    def test_in_re_sh_resolves_exactly_one_link(self) -> None:
+        tree = firefox_scholar_search_tree("82 Cal.App.5th 166", firefox_sh_results())
+        scoped = _scoped_search(tree)
+        link = find_result_link(tree, scoped, "82 Cal.App.5th 166", "In re S.H.")
+        self.assertIsNotNone(link)
+        assert link is not None
+        self.assertEqual(node_name(link), "In re SH")
+
+    def test_in_re_sh_citation_only_resolves_exactly_one_link(self) -> None:
+        tree = firefox_scholar_search_tree("82 Cal.App.5th 166", firefox_sh_results())
+        scoped = _scoped_search(tree)
+        link = find_result_link(tree, scoped, "82 Cal.App.5th 166", "")
+        self.assertIsNotNone(link)
+        assert link is not None
+        self.assertEqual(node_name(link), "In re SH")
+
+    def test_in_re_tr_resolves_exactly_one_link_with_nested_metadata(self) -> None:
+        tree = firefox_scholar_search_tree("87 Cal.App.5th 1140", firefox_tr_results())
+        scoped = _scoped_search(tree)
+        link = find_result_link(tree, scoped, "87 Cal.App.5th 1140", "In re T.R.")
+        self.assertIsNotNone(link)
+        assert link is not None
+        self.assertEqual(node_name(link), "In re TR")
+
+    def test_in_re_tr_citation_only_resolves_exactly_one_link(self) -> None:
+        tree = firefox_scholar_search_tree("87 Cal.App.5th 1140", firefox_tr_results())
+        scoped = _scoped_search(tree)
+        link = find_result_link(tree, scoped, "87 Cal.App.5th 1140", "")
+        self.assertIsNotNone(link)
+        assert link is not None
+        self.assertEqual(node_name(link), "In re TR")
+
+    def test_snippet_quoting_target_citation_creates_no_ambiguity(self) -> None:
+        # In re Baby Girl M.'s snippet quotes the T.R. citation; only the
+        # result whose own metadata carries the citation may match.
+        tree = firefox_scholar_search_tree("87 Cal.App.5th 1140", firefox_tr_results())
+        scoped = _scoped_search(tree)
+        link = find_result_link(tree, scoped, "87 Cal.App.5th 1140", "")
+        assert link is not None
+        self.assertEqual(node_name(link), "In re TR")
+
+    def test_search_box_echo_never_corroborates_last_result(self) -> None:
+        # The entry echoing the query lives outside the result container, so
+        # the last result must not become a citation-only candidate through it.
+        tree = firefox_scholar_search_tree(
+            "82 Cal.App.5th 166",
+            [{"title": "Unrelated Case", "metadata": "1 Cal. App. 5th 1 - Google Scholar"}],
+        )
+        scoped = _scoped_search(tree)
+        self.assertIsNone(find_result_link(tree, scoped, "82 Cal.App.5th 166", ""))
+
+    def test_wrong_citation_rejected(self) -> None:
+        tree = firefox_scholar_search_tree("82 Cal.App.5th 166", firefox_sh_results())
+        scoped = _scoped_search(tree)
+        self.assertIsNone(find_result_link(tree, scoped, "83 Cal.App.5th 635", "In re S.H."))
+
+    def test_wrong_title_rejected(self) -> None:
+        tree = firefox_scholar_search_tree("82 Cal.App.5th 166", firefox_sh_results())
+        scoped = _scoped_search(tree)
+        self.assertIsNone(find_result_link(tree, scoped, "82 Cal.App.5th 166", "In re Wrong"))
+
+    def test_duplicate_candidates_rejected(self) -> None:
+        results = firefox_sh_results() + [dict(firefox_sh_results()[0])]
+        tree = firefox_scholar_search_tree("82 Cal.App.5th 166", results)
+        scoped = _scoped_search(tree)
+        self.assertIsNone(find_result_link(tree, scoped, "82 Cal.App.5th 166", "In re S.H."))
+
+
+class ResultBlockTextTests(unittest.TestCase):
+    def _heading(self, tree: list[dict[str, Any]]) -> dict[str, Any]:
+        return next(n for n in tree if (n.get("role") or "").casefold() == "heading")
+
+    def test_direct_sibling_metadata_included(self) -> None:
+        tree = firefox_scholar_search_tree("82 Cal.App.5th 166", firefox_sh_results())
+        scoped = _scoped_search(tree)
+        heading = self._heading(tree)
+        text = result_block_text(tree, {int(n["index"]) for n in scoped}, heading)
+        self.assertIn(normalize_match_token("82 Cal. App. 5th 166"), normalize_match_token(text))
+        self.assertNotIn("Nicole K.", text)
+
+    def test_nested_metadata_included(self) -> None:
+        tree = firefox_scholar_search_tree("87 Cal.App.5th 1140", firefox_tr_results())
+        scoped = _scoped_search(tree)
+        heading = self._heading(tree)
+        text = result_block_text(tree, {int(n["index"]) for n in scoped}, heading)
+        self.assertIn(normalize_match_token("87 Cal. App. 5th 1140"), normalize_match_token(text))
+
+    def test_ellipsis_snippet_excluded(self) -> None:
+        tree = firefox_scholar_search_tree("82 Cal.App.5th 166", firefox_sh_results())
+        scoped = _scoped_search(tree)
+        heading = self._heading(tree)
+        text = result_block_text(tree, {int(n["index"]) for n in scoped}, heading)
+        self.assertNotIn("146 Cal.App.4th", text)
+
+
+class FirefoxBarrierTests(unittest.TestCase):
+    """Regressions: opinion prose must not read as a missing page."""
+
+    def test_opinion_prose_containing_no_results_is_not_a_barrier(self) -> None:
+        tree = [
+            node(0, "application", "Firefox"),
+            node(1, "frame", "In re SH - Google Scholar", states=["showing", "visible"], parent=0),
+            node(2, "document web", "In re SH", states=["focused", "showing", "visible"], parent=1),
+            node(
+                3,
+                "paragraph",
+                text={"content": (
+                    "He missed a scheduled paternity test and, as of the time of the "
+                    "disposition hearing, there were no results indicating whether he "
+                    "was the biological father. He is not a party to this appeal."
+                )},
+                parent=2,
+            ),
+        ]
+        self.assertIsNone(detect_barrier(tree, tree[2:]))
+
+    def test_short_standalone_no_results_notice_is_missing_page(self) -> None:
+        tree = [
+            node(0, "application", "Firefox"),
+            node(1, "frame", "Google Scholar", parent=0),
+            node(2, "static text", "No results found for '82 Cal.App.5th 1660'", parent=1),
+        ]
+        self.assertEqual(detect_barrier(tree, tree[1:]), "missing page")
+
+    def test_short_did_not_match_any_notice_is_missing_page(self) -> None:
+        tree = [
+            node(0, "application", "Firefox"),
+            node(1, "frame", "Google Scholar", parent=0),
+            node(
+                2,
+                "static text",
+                "Your search - 82 Cal.App.5th 1660 - did not match any articles.",
+                parent=1,
+            ),
+        ]
+        self.assertEqual(detect_barrier(tree, tree[1:]), "missing page")
+
+    def test_short_page_not_found_is_missing_page(self) -> None:
+        tree = [
+            node(0, "application", "Firefox"),
+            node(1, "frame", "Google Scholar", parent=0),
+            node(2, "heading", "Page not found", parent=1),
+        ]
+        self.assertEqual(detect_barrier(tree, tree[1:]), "missing page")
+
+
+class FirefoxTabScopingTests(unittest.TestCase):
+    """Regressions: the wrong tab's document must never be inspected."""
+
+    @staticmethod
+    def _multitab_tree() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        tree = [
+            node(0, "application", "Firefox"),
+            node(1, "frame", "In re TR - Google Scholar", states=["showing", "visible"], parent=0),
+            node(2, "tool bar", "Browser tabs", states=["showing", "visible"], parent=1),
+            node(3, "page tab list", states=["showing", "visible"], parent=2),
+            node(4, "page tab", "In re SH - Google Scholar", states=["showing", "visible"], parent=3),
+            node(5, "page tab", "In re TR - Google Scholar", states=["selected", "showing", "visible"], parent=3),
+            node(6, "panel", states=["showing", "visible"], parent=1),
+            node(
+                7,
+                "combo box",
+                text={"content": "scholar.google.com/scholar_case?case=6771804449855125536"},
+                states=["showing", "visible"],
+                parent=6,
+            ),
+            node(8, "scroll pane", states=["visible"], parent=1),
+            node(9, "internal frame", states=["visible"], parent=8),
+            node(10, "document web", "In re SH - Google Scholar", states=["showing", "visible"], parent=9),
+            node(
+                11,
+                "paragraph",
+                text={"content": (
+                    "He missed a scheduled paternity test and, as of the time of the "
+                    "disposition hearing, there were no results indicating whether he "
+                    "was the biological father."
+                )},
+                parent=10,
+            ),
+            node(12, "scroll pane", states=["showing", "visible"], parent=1),
+            node(13, "internal frame", states=["showing", "visible"], parent=12),
+            node(
+                14,
+                "document web",
+                "In re TR - Google Scholar",
+                # Deliberately missing focused/showing: the transient state that
+                # let the hidden S.H. tab poison the real T.R. recovery.
+                states=["visible"],
+                parent=13,
+            ),
+            node(15, "heading", "In re TR, 87 Cal. App. 5th 1140", parent=14),
+        ]
+        scoped_frame = tree[1:]
+        return tree, scoped_frame
+
+    def test_selected_page_tab_beats_stale_showing_document(self) -> None:
+        tree, scoped_frame = self._multitab_tree()
+        scoped = scope_selected_document(tree, scoped_frame)
+        indexes = {int(n["index"]) for n in scoped}
+        self.assertIn(14, indexes)
+        self.assertIn(15, indexes)
+        self.assertNotIn(11, indexes)
+        self.assertIsNone(detect_barrier(tree, scoped))
+
+    def test_hidden_tab_prose_cannot_block_visible_opinion(self) -> None:
+        tree, scoped_frame = self._multitab_tree()
+        scoped = scope_selected_document(tree, scoped_frame)
+        # The S.H. paragraph (11) contains "no results" but is out of scope.
+        self.assertIsNone(detect_barrier(tree, scoped))
+
+    def test_duplicate_named_tabs_pick_the_showing_tab_not_the_focused_one(self) -> None:
+        # Real Firefox regression: launching the same search twice left the
+        # old tab's document "focused" (with no showing ancestor) while the
+        # new selected tab's document was "showing". The displayed tab must
+        # win even though both tabs carry the same title.
+        tree = [
+            node(0, "application", "Firefox"),
+            node(1, "frame", "82 Cal.App.5th 166 - Google Scholar", states=["showing", "visible"], parent=0),
+            node(2, "tool bar", "Browser tabs", states=["showing", "visible"], parent=1),
+            node(3, "page tab list", states=["showing", "visible"], parent=2),
+            node(4, "page tab", "82 Cal.App.5th 166 - Google Scholar", states=["showing", "visible"], parent=3),
+            node(
+                5,
+                "page tab",
+                "82 Cal.App.5th 166 - Google Scholar",
+                states=["selected", "showing", "visible"],
+                parent=3,
+            ),
+            node(6, "panel", states=["showing", "visible"], parent=1),
+            node(
+                7,
+                "combo box",
+                text={"content": "scholar.google.com/scholar?hl=en&as_sdt=6,33&q=82+Cal.App.5th+166"},
+                states=["showing", "visible"],
+                parent=6,
+            ),
+            node(8, "scroll pane", states=["visible"], parent=1),
+            node(9, "internal frame", states=["visible"], parent=8),
+            node(
+                10,
+                "document web",
+                "82 Cal.App.5th 166 - Google Scholar",
+                states=["focused", "visible"],
+                parent=9,
+            ),
+            node(11, "section", text={"content": "\ufeff\ufeff"}, states=["visible"], parent=10),
+            node(12, "scroll pane", states=["showing", "visible"], parent=1),
+            node(13, "internal frame", states=["showing", "visible"], parent=12),
+            node(
+                14,
+                "document web",
+                "82 Cal.App.5th 166 - Google Scholar",
+                states=["showing", "visible"],
+                parent=13,
+            ),
+            node(15, "section", states=["showing", "visible"], parent=14),
+        ]
+        scoped = scope_selected_document(tree, tree[1:])
+        indexes = {int(n["index"]) for n in scoped}
+        self.assertIn(14, indexes)
+        self.assertIn(15, indexes)
+        self.assertNotIn(11, indexes)
 
 
 if __name__ == "__main__":

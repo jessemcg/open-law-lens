@@ -384,6 +384,84 @@ class ComputerUseResolutionTests(unittest.TestCase):
         with self.assertRaises(ComputerUseMCPError):
             resolve_computer_use_command(env)
 
+    @staticmethod
+    def _fake_install(root: Path, version: str) -> Path:
+        """Create a fake @agent-sh/computer-use-linux package install."""
+        package = root / "npm" / "node_modules" / "@agent-sh" / "computer-use-linux"
+        bin_dir = package / "npm" / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        wrapper = bin_dir / "computer-use-linux.js"
+        wrapper.write_text("#!/bin/sh\n", encoding="utf-8")
+        wrapper.chmod(0o755)
+        (package / "package.json").write_text(
+            json.dumps({"name": "@agent-sh/computer-use-linux", "version": version}),
+            encoding="utf-8",
+        )
+        return wrapper
+
+    def test_newer_wrapper_beats_stale_path_package(self) -> None:
+        # Regression: the pi-node global on PATH was @agent-sh/computer-use-linux
+        # 0.4.5, whose get_app_state silently stops at 500 nodes and hides
+        # Scholar result links in multi-tab Firefox windows. The newer 0.5.0
+        # wrapper installed under the Pi agent directory must win.
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="cu-resolve-") as tmp:
+            tmp_path = Path(tmp)
+            path_install = self._fake_install(tmp_path / "path-pkg", "0.4.5")
+            path_bin = tmp_path / "path-bin"
+            path_bin.mkdir()
+            path_link = path_bin / "computer-use-linux"
+            path_link.symlink_to(path_install)
+            agent_wrapper = self._fake_install(tmp_path / "agent", "0.5.0")
+            env = {
+                "PATH": str(path_bin) + os.pathsep + os.environ.get("PATH", ""),
+                "PI_CODING_AGENT_DIR": str(tmp_path / "agent"),
+                "HOME": str(tmp_path / "home"),
+            }
+            resolved = resolve_computer_use_command(env)
+            self.assertEqual(str(agent_wrapper), resolved[-1])
+
+    def test_newer_path_package_beats_older_wrapper(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="cu-resolve-") as tmp:
+            tmp_path = Path(tmp)
+            path_install = self._fake_install(tmp_path / "path-pkg", "0.6.0")
+            path_bin = tmp_path / "path-bin"
+            path_bin.mkdir()
+            path_link = path_bin / "computer-use-linux"
+            path_link.symlink_to(path_install)
+            self._fake_install(tmp_path / "agent", "0.5.0")
+            env = {
+                "PATH": str(path_bin) + os.pathsep + os.environ.get("PATH", ""),
+                "PI_CODING_AGENT_DIR": str(tmp_path / "agent"),
+                "HOME": str(tmp_path / "home"),
+            }
+            resolved = resolve_computer_use_command(env)
+            self.assertEqual(str(path_link.resolve()), str(Path(resolved[-1]).resolve()))
+
+    def test_unversioned_path_binary_is_respected(self) -> None:
+        # A custom PATH binary whose package version cannot be established is
+        # never overridden by an installed wrapper.
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="cu-resolve-") as tmp:
+            tmp_path = Path(tmp)
+            path_bin = tmp_path / "path-bin"
+            path_bin.mkdir()
+            custom = path_bin / "computer-use-linux"
+            custom.write_text("#!/bin/sh\n", encoding="utf-8")
+            custom.chmod(0o755)
+            self._fake_install(tmp_path / "agent", "0.5.0")
+            env = {
+                "PATH": str(path_bin) + os.pathsep + os.environ.get("PATH", ""),
+                "PI_CODING_AGENT_DIR": str(tmp_path / "agent"),
+                "HOME": str(tmp_path / "home"),
+            }
+            resolved = resolve_computer_use_command(env)
+            self.assertEqual([str(custom)], resolved)
+
 
 class ScholarIdentityDiagnosticTests(unittest.TestCase):
     def test_strips_query_strings(self) -> None:

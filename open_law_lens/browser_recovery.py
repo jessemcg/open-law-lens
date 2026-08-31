@@ -71,6 +71,20 @@ _BARRIER_PATTERNS: tuple[tuple[str, ...], ...] = (
     ("your choice", "consent", "before you continue"),
 )
 
+# A genuine Scholar "no results"/"not found" notice is a short standalone
+# element. Loaded opinions routinely contain the same words inside ordinary
+# prose (e.g. "there were no results indicating whether he was the biological
+# father"), so a whole-page substring match would misclassify a successfully
+# opened opinion as a missing page. Missing-page detection therefore only
+# fires on short standalone nodes.
+_MISSING_PAGE_NODE_MAX_CHARS = 240
+_MISSING_PAGE_PREFIX_PATTERNS = ("no results", "page not found")
+_MISSING_PAGE_CONTAINED_PATTERNS = (
+    "did not match any",
+    "no articles found",
+    "no results were found",
+)
+
 
 class BrowserRecoveryError(RuntimeError):
     """Base error for default-browser Scholar recovery."""
@@ -353,24 +367,72 @@ def scope_selected_document(
     Firefox exposes every tab in a window under one frame. Hidden tabs can
     contain unrelated results, login text, or barriers, so frame-only scoping
     is insufficient even when the numeric window and address bar are exact.
+    During search -> opinion navigation the address bar can also update before
+    the new tab's document gains its AT-SPI ``showing``/``focused`` states, and
+    Firefox can leave a background tab's document ``focused``. Selection
+    therefore prefers the document under a showing internal-frame/scroll-pane
+    ancestor (the actually displayed tab), then correlates the single selected
+    ``page tab``'s title with the candidate document's title, then focus and
+    the ``showing`` state itself.
     """
     frame_indexes = {int(node.get("index")) for node in scoped_frame}
+    by_index: dict[int, Mapping[str, Any]] = {
+        int(node.get("index")): node for node in tree
+    }
     candidates = [
         node
         for node in scoped_frame
         if node_role(node) == "document web"
         and int(node.get("index")) in frame_indexes
-        and node_is_visible(node)
+        and "visible" in (node.get("states") or [])
     ]
     if not candidates:
         return list(scoped_frame)
-    candidates.sort(
-        key=lambda node: (
-            "focused" not in (node.get("states") or []),
+
+    selected_tabs = [
+        node
+        for node in scoped_frame
+        if node_role(node) == "page tab"
+        and "selected" in (node.get("states") or [])
+        and node_name(node)
+    ]
+    tab_norm = (
+        normalize_match_token(node_name(selected_tabs[0]))
+        if len(selected_tabs) == 1
+        else ""
+    )
+
+    def _ancestor_chain_showing(node: Mapping[str, Any]) -> bool:
+        current = node
+        for _ in range(64):
+            pid = current.get("parent_index")
+            try:
+                parent = by_index[int(pid)]
+            except (KeyError, TypeError, ValueError):
+                return False
+            if node_role(parent) not in ("internal frame", "scroll pane"):
+                return False
+            if "showing" in (parent.get("states") or []):
+                return True
+            current = parent
+        return False
+
+    def rank(node: Mapping[str, Any]) -> tuple[Any, ...]:
+        name_norm = normalize_match_token(node_name(node))
+        tab_match = bool(tab_norm) and (
+            tab_norm == name_norm or tab_norm in name_norm or name_norm in tab_norm
+        )
+        states = node.get("states") or []
+        return (
+            0 if _ancestor_chain_showing(node) else 1,
+            0 if tab_match else 1,
+            0 if "focused" in states else 1,
+            0 if "showing" in states else 1,
             int(node.get("depth") or 0),
             int(node.get("index")),
         )
-    )
+
+    candidates.sort(key=rank)
     document_index = int(candidates[0].get("index"))
     content_indexes = _descendant_set(tree, document_index)
     return [node for node in scoped_frame if int(node.get("index")) in content_indexes]
@@ -447,16 +509,114 @@ def find_scholar_url(
 def detect_barrier(
     tree: Sequence[Mapping[str, Any]], scoped: Sequence[Mapping[str, Any]]
 ) -> str | None:
-    """Return a barrier reason if the scoped page is blocked, else ``None``."""
+    """Return a barrier reason if the scoped page is blocked, else ``None``.
+
+    Interaction barriers (CAPTCHA, robot checks, login, consent) are matched
+    as substrings of the scoped page because stopping early is always safe. A
+    "missing page" verdict, by contrast, is only derived from short standalone
+    notice elements so ordinary opinion prose containing phrases like "no
+    results" can never masquerade as a missing page.
+    """
     text = " ".join(node_full_text(node) for node in scoped).casefold()
     for patterns in _BARRIER_PATTERNS:
         for pattern in patterns:
             if pattern in text:
                 return pattern
-    absent = ("page not found", "no results", "did not match any")
-    if any(word in text for word in absent):
-        return "missing page"
+    for node in scoped:
+        notice = re.sub(r"\s+", " ", node_full_text(node)).strip()
+        if not notice or len(notice) > _MISSING_PAGE_NODE_MAX_CHARS:
+            continue
+        lowered = notice.casefold()
+        if any(lowered.startswith(p) for p in _MISSING_PAGE_PREFIX_PATTERNS):
+            return "missing page"
+        if any(p in lowered for p in _MISSING_PAGE_CONTAINED_PATTERNS):
+            return "missing page"
     return None
+
+
+_RESULT_BLOCK_MAX_SCANNED = 160
+_RESULT_BLOCK_MAX_TEXT_NODES = 2
+_RESULT_BLOCK_MAX_CHARS = 400
+
+
+def result_block_text(
+    tree: Sequence[Mapping[str, Any]],
+    scoped_indexes: set[int],
+    heading: Mapping[str, Any],
+) -> str:
+    """Return the bounded corroboration text for one Scholar result.
+
+    Starting at a result-title heading, this collects the heading text plus up
+    to two short meaningful text nodes that live inside the result container
+    (the heading's parent) or the heading itself, walking the tree in index
+    order and always stopping at the next heading. This covers the reporter
+    metadata whether AT-SPI exposes it as a direct sibling of the heading or
+    nested inside a sibling container, while text in another result's snippet,
+    the page footer, or the search box (which echoes the query) can never
+    corroborate the candidate. Snippet-style text beginning with an ellipsis
+    is excluded because later results routinely quote the target citation.
+    """
+    by_index: dict[int, Mapping[str, Any]] = {
+        int(node.get("index")): node for node in tree
+    }
+    heading_index = int(heading.get("index"))
+    try:
+        position = next(
+            i for i, node in enumerate(tree) if int(node.get("index")) == heading_index
+        )
+    except StopIteration:
+        return node_full_text(heading)
+
+    allowed_roots = {heading_index}
+    try:
+        block_root = int(heading.get("parent_index"))
+    except (TypeError, ValueError):
+        block_root = None
+    if block_root is not None:
+        allowed_roots.add(block_root)
+
+    def within_block(node: Mapping[str, Any]) -> bool:
+        current = int(node.get("index"))
+        for _ in range(64):
+            if current in allowed_roots:
+                return True
+            holder = by_index.get(current)
+            if holder is None:
+                return False
+            try:
+                current = int(holder.get("parent_index"))
+            except (TypeError, ValueError):
+                return False
+        return False
+
+    parts = [node_full_text(heading)]
+    collected_chars = len(parts[0])
+    additional = 0
+    scanned = 0
+    for node in tree[position + 1 :]:
+        scanned += 1
+        if scanned > _RESULT_BLOCK_MAX_SCANNED:
+            break
+        if int(node.get("index")) not in scoped_indexes:
+            continue
+        if node_role(node) == "heading":
+            break
+        if not within_block(node):
+            continue
+        text = re.sub(r"\s+", " ", node_full_text(node)).strip()
+        if not text or text.startswith(("…", "...")):
+            continue
+        if not re.search(r"[a-z0-9]", text.casefold()):
+            continue
+        parts.append(text)
+        additional += 1
+        collected_chars += len(text)
+        if (
+            additional >= _RESULT_BLOCK_MAX_TEXT_NODES
+            or collected_chars >= _RESULT_BLOCK_MAX_CHARS
+        ):
+            break
+    return " ".join(part for part in parts if part)
 
 
 def find_result_link(
@@ -468,14 +628,20 @@ def find_result_link(
     """Return the single corroborated visible result link, or ``None``.
 
     When a trustworthy case name is supplied, the link must match the name and
-    its containing block must also corroborate the expected citation. When only
-    a citation is known, a citation-only fallback is permitted but duplicate
-    candidates are rejected (never a guess).
+    its result block must also corroborate the expected citation. When only a
+    citation is known, a citation-only fallback is permitted, but duplicate
+    candidates are rejected (never a guess) in both modes.
     """
     by_index: dict[int, Mapping[str, Any]] = {
         int(n.get("index")): n for n in tree
     }
     scoped_indexes = {int(n.get("index")) for n in scoped}
+
+    citation_norm = normalize_match_token(expected_citation)
+    case_norm = normalize_match_token(case_name)
+    if not citation_norm:
+        # A name-only match is never sufficient to click a result.
+        return None
 
     def heading_for_link(link: Mapping[str, Any]) -> Mapping[str, Any] | None:
         """Walk up from a result link to its containing heading."""
@@ -493,45 +659,6 @@ def find_result_link(
             current = parent
         return None
 
-    def result_identity_text(heading: Mapping[str, Any]) -> str:
-        """Return only a result heading and its direct metadata siblings.
-
-        In Firefox's real Scholar tree, every result heading shares one parent;
-        the citation metadata and snippet are following siblings. Using the
-        common parent as the result block therefore merges every result and
-        lets citations in later snippets create false matches. Stop at the next
-        sibling heading and use the heading plus its first metadata sibling—the
-        line where Scholar renders this result's own reporter citation.
-        """
-        parent_index = heading.get("parent_index")
-        try:
-            heading_position = next(
-                position
-                for position, node in enumerate(tree)
-                if int(node.get("index")) == int(heading.get("index"))
-            )
-        except (StopIteration, TypeError, ValueError):
-            return node_full_text(heading)
-
-        parts = [node_full_text(heading)]
-        metadata_found = False
-        for node in tree[heading_position + 1 :]:
-            if int(node.get("index")) not in scoped_indexes:
-                continue
-            if node.get("parent_index") != parent_index:
-                continue
-            if node_role(node) == "heading":
-                break
-            text = node_full_text(node)
-            if text:
-                parts.append(text)
-                metadata_found = True
-                break
-        return " ".join(parts) if metadata_found else node_full_text(heading)
-
-    citation_norm = normalize_match_token(expected_citation)
-    case_norm = normalize_match_token(case_name)
-
     visible_links = [
         node
         for node in scoped
@@ -541,29 +668,20 @@ def find_result_link(
     ]
 
     candidates: list[Mapping[str, Any]] = []
-
-    # Pass 1: name + citation corroboration.
-    if case_norm:
-        for link in visible_links:
+    for link in visible_links:
+        heading = heading_for_link(link)
+        if heading is None:
+            continue
+        block_norm = normalize_match_token(
+            result_block_text(tree, scoped_indexes, heading)
+        )
+        if citation_norm not in block_norm:
+            continue
+        if case_norm:
             link_norm = normalize_match_token(node_name(link))
             if not (case_norm in link_norm or link_norm in case_norm):
                 continue
-            heading = heading_for_link(link)
-            if heading is None:
-                continue
-            if citation_norm and citation_norm in normalize_match_token(
-                result_identity_text(heading)
-            ):
-                candidates.append(link)
-
-    # Pass 2: citation-only fallback (only when no trustworthy case name).
-    if not candidates and citation_norm and not case_norm:
-        for link in visible_links:
-            heading = heading_for_link(link)
-            if heading is None:
-                continue
-            if citation_norm in normalize_match_token(result_identity_text(heading)):
-                candidates.append(link)
+        candidates.append(link)
 
     # Deduplicate by index and reject ambiguity.
     unique: dict[int, Mapping[str, Any]] = {}
@@ -821,6 +939,8 @@ class ScholarRecoveryJob:
             case_name = self.request.case_name
             search_deadline = time.monotonic() + self.page_deadline()
             link = None
+            saw_search_page = False
+            saw_result_structure = False
             while time.monotonic() < search_deadline:
                 if self._is_cancelled() or self._deadline_exceeded():
                     return self._outcome("failed", "Scholar recovery timed out.")
@@ -829,6 +949,7 @@ class ScholarRecoveryJob:
                 if frame_index is None or not scholar_search_url_matches(url, search_url):
                     time.sleep(0.5)
                     continue
+                saw_search_page = True
                 scoped_frame = [
                     node
                     for node in tree
@@ -840,11 +961,25 @@ class ScholarRecoveryJob:
                     return self._outcome("not_found", "Google Scholar returned no matching case.")
                 if barrier:
                     return self._outcome("blocked", f"Google Scholar showed {barrier}; leaving it visible.")
+                if any(
+                    node_role(node) == "heading" and node_name(node)
+                    for node in scoped
+                ):
+                    saw_result_structure = True
                 link = find_result_link(tree, scoped, expected_citation, case_name)
                 if link is not None:
                     break
                 time.sleep(0.5)
             if link is None:
+                if not saw_search_page:
+                    return self._outcome(
+                        "not_found", "The Scholar search results page did not load."
+                    )
+                if not saw_result_structure:
+                    return self._outcome(
+                        "not_found",
+                        "The Scholar page loaded but showed no parseable result structure.",
+                    )
                 return self._outcome("not_found", "No single corroborated Scholar result matched.")
 
             self._report("Opening opinion")
@@ -856,34 +991,55 @@ class ScholarRecoveryJob:
             # Revalidate the opinion page on the same numeric window/frame.
             deadline = time.monotonic() + self.page_deadline()
             opinion_url = ""
+            saw_opinion_url = False
+            identity_confirmed = False
             while time.monotonic() < deadline:
                 if self._is_cancelled() or self._deadline_exceeded():
                     return self._outcome("failed", "Scholar recovery timed out.")
                 tree, observed_title, url = self._observe(window_id)
                 opinion_url = url
-                if opinion_url and is_scholar_case_url(opinion_url):
-                    frame_index = scope_frame_index(tree, observed_title or title)
-                    if frame_index is None:
-                        return self._outcome("not_found", "No matching Scholar opinion frame was found.")
-                    scoped_frame = [
-                        node
-                        for node in tree
-                        if int(node.get("index")) in _descendant_set(tree, frame_index)
-                    ]
-                    scoped = scope_selected_document(tree, scoped_frame)
-                    barrier = self._check_barriers(tree, scoped)
-                    if barrier:
-                        return self._outcome("blocked", f"Google Scholar showed {barrier}; leaving it visible.")
+                if not (opinion_url and is_scholar_case_url(opinion_url)):
+                    time.sleep(0.5)
+                    continue
+                saw_opinion_url = True
+                frame_index = scope_frame_index(tree, observed_title or title)
+                if frame_index is None:
+                    time.sleep(0.5)
+                    continue
+                scoped_frame = [
+                    node
+                    for node in tree
+                    if int(node.get("index")) in _descendant_set(tree, frame_index)
+                ]
+                scoped = scope_selected_document(tree, scoped_frame)
+                barrier = self._check_barriers(tree, scoped)
+                if barrier == "missing page":
+                    return self._outcome(
+                        "not_found", "The Scholar opinion page was not found."
+                    )
+                if barrier:
+                    return self._outcome("blocked", f"Google Scholar showed {barrier}; leaving it visible.")
+                # The opened opinion must identify the expected case by both its
+                # name and its official citation before anything is selected.
+                # A transiently mis-scoped tab simply retries until the
+                # selected tab's document settles.
+                identity_text = normalize_match_token(observed_title) + normalize_match_token(
+                    _tree_text(scoped)
+                )
+                case_norm = normalize_match_token(case_name)
+                citation_norm = normalize_match_token(expected_citation)
+                if (not case_norm or case_norm in identity_text) and (
+                    not citation_norm or citation_norm in identity_text
+                ):
+                    identity_confirmed = True
                     break
                 time.sleep(0.5)
-            else:
+            if not identity_confirmed:
+                if saw_opinion_url:
+                    return self._outcome(
+                        "not_found", "The opened opinion did not match the expected case."
+                    )
                 return self._outcome("failed", "The Scholar opinion page did not load.")
-
-            # Verify the opinion identifies the expected case.
-            if case_name and normalize_match_token(case_name) not in normalize_match_token(
-                observed_title
-            ) + normalize_match_token(_tree_text(scoped)):
-                return self._outcome("not_found", "The opened opinion did not match the expected case.")
 
             self._report("Copying opinion")
             # The compositor title can update before get_app_state's context
@@ -994,6 +1150,7 @@ __all__ = [
     "normalize_match_token",
     "normalize_recovery_query",
     "request_from_query",
+    "result_block_text",
     "run_scholar_recovery",
     "scholar_case_url_matches",
     "scholar_search_url_matches",

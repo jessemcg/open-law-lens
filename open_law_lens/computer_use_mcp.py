@@ -90,7 +90,12 @@ DEFAULT_CALL_SECONDS = 30.0
 DEFAULT_PAGE_DEADLINE_SECONDS = 120.0
 DEFAULT_JOB_DEADLINE_SECONDS = 300.0
 
-DEFAULT_MAX_ACCESSIBILITY_NODES = 1000
+# A single Firefox window can carry several Scholar tabs (each exposing its
+# full page in the AT-SPI tree), so the node budget must cover the selected
+# tab's deepest result links even when stale tabs inflate the tree. The 0.5.0
+# server honors the requested budget; 2000 leaves headroom beyond the ~1100
+# nodes observed with six tabs while staying far under the response cap.
+DEFAULT_MAX_ACCESSIBILITY_NODES = 2000
 DEFAULT_MAX_TREE_DEPTH = 14
 
 _JSONRPC_VERSION = "2.0"
@@ -170,6 +175,41 @@ def _installed_wrapper_candidates(environment: Mapping[str, str]) -> list[Path]:
     return candidates
 
 
+def _computer_use_package_version(
+    command: list[str],
+) -> tuple[int, int, int] | None:
+    """Return the best-effort version of an installed server candidate.
+
+    Reads the ``@agent-sh/computer-use-linux`` ``package.json`` beside the
+    candidate executable. ``None`` means the version could not be established
+    (for example a custom binary on ``PATH``), in which case the candidate is
+    always respected as-is.
+    """
+    if not command:
+        return None
+    try:
+        path = Path(command[-1]).expanduser().resolve()
+    except OSError:
+        return None
+    for base in (path.parent, *list(path.parents)[:4]):
+        manifest = base / "package.json"
+        if not manifest.is_file():
+            continue
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if str(data.get("name") or "") != "@agent-sh/computer-use-linux":
+            continue
+        parts = str(data.get("version") or "").split(".")
+        try:
+            major, minor, patch = (int(part) for part in parts[:3])
+        except ValueError:
+            return None
+        return (major, minor, patch)
+    return None
+
+
 def resolve_computer_use_command(
     environment: Mapping[str, str] | None = None,
 ) -> list[str]:
@@ -179,6 +219,13 @@ def resolve_computer_use_command(
     ``computer-use-linux`` on ``PATH``, then the installed
     ``@agent-sh/computer-use-linux`` wrapper under ``PI_CODING_AGENT_DIR`` or
     ``~/.pi/agent`` using a compatible Node executable when required.
+
+    When the ``PATH`` candidate is itself an older install of the same
+    ``@agent-sh/computer-use-linux`` package, a strictly newer installed
+    wrapper is preferred instead: server releases have fixed accessibility
+    capture caps (0.4.5 silently stops at 500 nodes, which hides Scholar
+    result links in multi-tab Firefox windows). A ``PATH`` candidate whose
+    version cannot be established is always respected verbatim.
     """
     env = os.environ if environment is None else environment
     override = str(env.get("OPEN_LAW_LENS_COMPUTER_USE_BIN") or "").strip()
@@ -194,21 +241,40 @@ def resolve_computer_use_command(
             )
         return [str(candidate)]
 
+    def wrapper_commands() -> list[list[str]]:
+        commands: list[list[str]] = []
+        for wrapper in _installed_wrapper_candidates(env):
+            node = _node_executable(env)
+            commands.append([node, str(wrapper)] if node else [str(wrapper)])
+        return commands
+
     discovered = _which("computer-use-linux", env)
-    if discovered:
-        return [discovered]
+    path_command = [discovered] if discovered else None
+    wrappers = wrapper_commands()
 
-    for wrapper in _installed_wrapper_candidates(env):
-        node = _node_executable(env)
-        if node:
-            return [node, str(wrapper)]
-        return [str(wrapper)]
+    if path_command is None:
+        if not wrappers:
+            raise ComputerUseMCPError(
+                "Linux Computer Use was not found. Set OPEN_LAW_LENS_COMPUTER_USE_BIN, "
+                "install `computer-use-linux` on PATH, or install "
+                "@agent-sh/computer-use-linux under ~/.pi/agent."
+            )
+        best = wrappers[0]
+        best_version = _computer_use_package_version(best)
+        for wrapper in wrappers[1:]:
+            version = _computer_use_package_version(wrapper)
+            if version is not None and (best_version is None or version > best_version):
+                best = wrapper
+                best_version = version
+        return best
 
-    raise ComputerUseMCPError(
-        "Linux Computer Use was not found. Set OPEN_LAW_LENS_COMPUTER_USE_BIN, "
-        "install `computer-use-linux` on PATH, or install "
-        "@agent-sh/computer-use-linux under ~/.pi/agent."
-    )
+    path_version = _computer_use_package_version(path_command)
+    if path_version is not None:
+        for wrapper in wrappers:
+            wrapper_version = _computer_use_package_version(wrapper)
+            if wrapper_version is not None and wrapper_version > path_version:
+                return wrapper
+    return path_command
 
 
 class ComputerUseMCPClient:
