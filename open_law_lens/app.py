@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
+import shlex
 import signal
 import shutil
 import sqlite3
@@ -4948,15 +4950,38 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         command = agent_cli_command(
             f"published-citing-cases --cluster-id {cluster_id} --limit 10 --json"
         )
+        target_title = cluster_short_title(cluster)
+
+        def exact_phrase_search_command(query_text: str) -> str:
+            phrase = json.dumps(query_text.strip(), ensure_ascii=False)
+            return agent_cli_command(f"case-search {shlex.quote(phrase)} --limit 10")
+
+        citation_search_command = exact_phrase_search_command(target_citation)
+        case_name_search_command = exact_phrase_search_command(target_title)
+        compact_extract_command = agent_cli_command(
+            'extract-case --cluster-id <cluster_id> --find "<term>" --find "<term>"'
+        )
+        recover_official_extract_command = agent_cli_command(
+            "extract-case --cluster-id <cluster_id> --recover-official --timeout 120"
+            ' --find "<term>"'
+        )
+        full_extract_command = agent_cli_command(
+            "extract-case --cluster-id <cluster_id>"
+        )
         config = load_config()
         return self._format_agent_prompt(
             config.later_treatment_agent_prompt_template,
             DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
             {
-                "target_title": cluster_short_title(cluster),
+                "target_title": target_title,
                 "target_citation": target_citation,
                 "cluster_id": cluster_id,
                 "published_citing_cases_command": command,
+                "citation_search_command": citation_search_command,
+                "case_name_search_command": case_name_search_command,
+                "compact_extract_command": compact_extract_command,
+                "recover_official_extract_command": recover_official_extract_command,
+                "full_extract_command": full_extract_command,
             },
         )
 

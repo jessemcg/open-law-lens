@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 import tempfile
 import unittest
 from importlib import resources
@@ -6414,17 +6415,95 @@ Opinion text.
             'uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync '
             "open-law-lens "
         )
+        # One citation-graph command.
+        self.assertEqual(prompt.count("published-citing-cases"), 1)
         self.assertIn(
             f"{prefix}published-citing-cases --cluster-id 42 --limit 10 --json",
             prompt,
         )
-        self.assertIn(f"{prefix}extract-case --cluster-id <cluster_id>", prompt)
-        self.assertIn("confined default-browser Google Scholar recovery", prompt)
-        self.assertIn("Never use generic web search as an official-copy fallback", prompt)
-        self.assertIn("citation remains uncertain", prompt)
-        self.assertIn("use normal legal prose for case names and citations", prompt)
-        self.assertIn("agreed with it, distinguished it, limited it", prompt)
+        # Two exact-phrase CourtListener searches, workspace-safe and without
+        # the unsupported `--json` flag.
+        self.assertIn(f'{prefix}case-search \'"10 Cal.App.5th 25"\' --limit 10', prompt)
+        self.assertIn(f'{prefix}case-search \'"Target Case"\' --limit 10', prompt)
+        self.assertNotIn("case-search --json", prompt)
+        self.assertEqual(prompt.count("case-search"), 2)
+        # Extraction templates: compact baselines, one recovery-enabled form
+        # with the 120-second timeout, and no second recovery path.
+        self.assertIn(
+            f'{prefix}extract-case --cluster-id <cluster_id> --find "<term>" --find "<term>"',
+            prompt,
+        )
+        self.assertIn(
+            f"{prefix}extract-case --cluster-id <cluster_id> --recover-official"
+            ' --timeout 120 --find "<term>"',
+            prompt,
+        )
+        self.assertIn(
+            f"{prefix}extract-case --cluster-id <cluster_id>\n",
+            prompt,
+        )
+        self.assertEqual(prompt.count("--recover-official"), 1)
+        self.assertEqual(prompt.count("--timeout 120"), 1)
+        # Bounded preference, prohibitions, and linked fallback requirements.
+        self.assertIn("Three to five cases is a ceiling and a preference, not a quota", prompt)
+        self.assertIn("use fewer when only fewer can be verified", prompt)
+        self.assertIn("Never use generic web search, Pi `web_search`", prompt)
+        self.assertIn("never manually call `extract-slip-opinion` or `lookup-citation`", prompt)
+        self.assertIn("Never orchestrate Scholar or any browser step yourself", prompt)
+        self.assertIn("link the case name or citation to the `source_url`", prompt)
         self.assertIn("Target official citation: 10 Cal.App.5th 25", prompt)
+        self.assertIn("agreed with it, distinguished it, limited it", prompt)
+        self.assertIn("use normal legal prose for case names and citations", prompt)
+
+    def test_later_treatment_agent_prompt_quotes_punctuated_titles(self) -> None:
+        class DummyWindow:
+            def _format_agent_prompt(
+                self,
+                template: str,
+                fallback: str,
+                values: dict[str, object],
+            ) -> str:
+                return OpenLawLensWindow._format_agent_prompt(  # type: ignore[arg-type]
+                    self,
+                    template,
+                    fallback,
+                    values,
+                )
+
+        window = DummyWindow()
+        with patch("open_law_lens.app.load_config", return_value=AppConfig()):
+            prompt = OpenLawLensWindow._compose_later_treatment_agent_prompt(  # type: ignore[arg-type]
+                window,
+                {
+                    "id": 7,
+                    "case_name_short": "O'Brien-Fitzgerald, L.P. v. State",
+                    "citations": [{"volume": "88", "reporter": "Cal.App.5th", "page": "112"}],
+                },
+                "7",
+                "88 Cal.App.5th 1093",
+            )
+
+        # Exact-phrase commands stay shell-safe around the apostrophe and
+        # comma, with the phrase wrapped in double quotes for CourtListener.
+        self.assertIn(
+            'case-search \'"88 Cal.App.5th 1093"\' --limit 10',
+            prompt,
+        )
+        quoted_case_name = shlex.quote(
+            '"O\'Brien-Fitzgerald, L.P. v. State"'
+        )
+        self.assertIn(
+            f"case-search {quoted_case_name} --limit 10",
+            prompt,
+        )
+        # Each single-quoted argument must remain a balanced shell word whose
+        # payload is the double-quoted exact phrase.
+        for line in prompt.splitlines():
+            if "case-search" in line:
+                tokens = shlex.split(line)
+                command_index = tokens.index("case-search")
+                query = tokens[command_index + 1]
+                self.assertTrue(query.startswith('"') and query.endswith('"'))
 
     def test_reader_clipboard_button_tracks_selection_mode(self) -> None:
         class DummyButton:

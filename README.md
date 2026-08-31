@@ -54,7 +54,8 @@ Or save it in the app menu under Settings. The Settings path writes a local
 - Durable SQLite library at `library/open_law_lens.sqlite3` for saved authority
   data, display text, and reporter page-marker metadata.
 - Disposable JSON API cache under `cache/`.
-- Subsequent-treatment agent workflow using Open Law Lens CLI citation-graph leads.
+- Bounded subsequent-treatment agent workflow using Open Law Lens CLI citation-graph
+  leads, two exact CourtListener searches, and one-attempt official-copy recovery.
 - CourtListener-first baseline with a single confined default-browser Google
   Scholar recovery for official reporter text and pagination gaps.
 - Reader links for cited cases, statutes, and rules.
@@ -298,6 +299,22 @@ web search is separate from the confined default-browser Scholar official-copy
 recovery described below, and is never used to retrieve an official reporter
 copy. Research Cache and Prior Brief runs load no skill and no web extension
 and remain closed-corpus workflows.
+
+Subsequent Treatment is hard-bounded. The runtime prompt supplies one
+`published-citing-cases` command, at most two exact-phrase `case-search`
+commands (official citation first, then case name), and ready-made
+`extract-case` templates, and the prompt and preloaded skill forbid retrying
+network timeouts, paginating, broadening queries, using semantic search, or
+falling back to generic web search, manual `extract-slip-opinion`/`lookup-citation`
+calls, Scholar orchestration, or alternate opinion sites. Three to five
+verified later cases is a ceiling and a preference — fewer verified cases plus
+a disclosed coverage caveat are preferable to open-ended searching. Compact
+`extract-case --find` baselines run in parallel; each unpaginated selected
+case gets exactly one sequential `--recover-official --timeout 120` extraction
+that performs Open Law Lens's own single Scholar attempt. Unsuccessful Scholar
+recovery yields the linked CourtListener/slip baseline with a disclosed
+pagination limitation — never another source search — and unsupported
+treatment characterizations are omitted rather than inferred.
 
 The wrapper also resolves `uv` deterministically before launching Pi. It uses
 the validated `OPEN_LAW_LENS_UV_BIN` override, then `uv` on `PATH`, then

@@ -324,11 +324,21 @@ Question:
         ):
             self.assertNotIn("uv run open-law-lens", prompt)
             self.assertNotIn("uv run --no-sync open-law-lens", prompt)
-        for prompt in (
-            DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE,
-            DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
+        self.assertIn(AGENT_CLI_COMMAND_PREFIX, DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE)
+        # The later-treatment default receives app-generated commands through
+        # placeholders; it must not hand-write any CLI syntax itself.
+        for placeholder in (
+            "{published_citing_cases_command}",
+            "{citation_search_command}",
+            "{case_name_search_command}",
+            "{compact_extract_command}",
+            "{recover_official_extract_command}",
+            "{full_extract_command}",
         ):
-            self.assertIn(AGENT_CLI_COMMAND_PREFIX, prompt)
+            self.assertIn(placeholder, DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE)
+        self.assertNotIn("case-search", DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE)
+        self.assertNotIn("extract-case", DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE)
+        self.assertNotIn("published-citing-cases", DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE)
         # Appeal research routing lives solely in the preloaded Legal Researcher
         # skill; the runtime prompt must not duplicate CLI commands.
         self.assertNotIn(
@@ -919,6 +929,147 @@ Rating: Strong, Medium, Weak, or Frivolous"""
                 load_config(path).later_treatment_agent_prompt_template,
                 "Custom later {cluster_id}",
             )
+
+    def test_default_later_treatment_prompt_is_bounded(self) -> None:
+        prompt = DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE
+        # Fixed discovery ceiling: one graph command, at most two searches.
+        self.assertIn("exactly once", prompt)
+        self.assertIn("at most these two non-paginated CourtListener searches", prompt)
+        self.assertIn("Only if still needed, one exact case-name search", prompt)
+        self.assertIn("{published_citing_cases_command}", prompt)
+        self.assertIn("{citation_search_command}", prompt)
+        self.assertIn("{case_name_search_command}", prompt)
+        self.assertIn("{compact_extract_command}", prompt)
+        self.assertIn("{recover_official_extract_command}", prompt)
+        self.assertIn("{full_extract_command}", prompt)
+        self.assertIn("stop and report that subsequent-treatment coverage is limited", prompt)
+        # Recovery contract: parallel compact baselines, one sequential
+        # recovery-enabled extraction per case, one full extraction, no
+        # second recovery, and a linked unpaginated fallback.
+        self.assertIn("Issue compact baseline extractions", prompt)
+        self.assertIn("exactly one sequential recovery-enabled extraction", prompt)
+        self.assertIn("single Scholar attempt", prompt)
+        self.assertIn("Never run a second recovery attempt for the same case", prompt)
+        self.assertIn("one ordinary full extraction", prompt)
+        self.assertIn("official_pagination", prompt)
+        self.assertIn("source_url", prompt)
+        self.assertIn("Three to five cases is a ceiling and a preference, not a quota", prompt)
+        self.assertIn("use fewer when only fewer can be verified", prompt)
+        self.assertIn("disclose incomplete CourtListener coverage", prompt)
+        self.assertIn("link the case name or citation to the `source_url`", prompt)
+        self.assertIn("When no source URL was returned, say so", prompt)
+        self.assertIn("Omit any treatment characterization the extracted text does not support", prompt)
+        self.assertIn("Rely on the best citation returned by the bounded sources", prompt)
+        self.assertIn("State plainly when a citation remains uncertain", prompt)
+        # No generic-web, manual Scholar, alternate-site, or manual slip
+        # fallback is permitted anywhere in the mode.
+        self.assertIn("Never use generic web search, Pi `web_search`", prompt)
+        self.assertIn("never manually call `extract-slip-opinion` or `lookup-citation`", prompt)
+        self.assertIn("Never orchestrate Scholar or any browser step yourself", prompt)
+        self.assertIn("alternate opinion sites", prompt)
+        self.assertIn("Never use unpublished cases as controlling treatment", prompt)
+        self.assertNotIn("Codex web search", prompt)
+        self.assertNotIn("as a fallback to verify or fill in", prompt)
+        # Commands arrive as app-supplied placeholders; no hand-written syntax.
+        self.assertNotIn("case-search", prompt)
+        self.assertNotIn("--json", prompt)
+
+    def test_stale_later_treatment_prompts_migrate_to_new_default(self) -> None:
+        superseded_default = (
+            (
+            """
+You are the Open Law Lens Subsequent Treatment Agent.
+
+Analyze how subsequent published California cases treated the currently viewed case. Use Open Law Lens CLI commands for CourtListener-backed discovery and extraction, but use judgment about which commands and searches will best answer the treatment question.
+
+Target case: {target_title}
+Target official citation: {target_citation}
+CourtListener cluster id: {cluster_id}
+
+Start with this Open Law Lens citing-cases command when the cluster id is accepted:
+{published_citing_cases_command}
+
+If that command fails, returns no useful leads, or the cluster id appears to be a local external id, recover with targeted Open Law Lens case searches using the target case name, official citation, and distinctive citation phrases. Treat search results as leads only.
+
+Choose only the most significant published subsequent cases, usually 3 to 5 when that many exist. Before relying on any selected case, extract it with:
+$OLL extract-case --cluster-id <cluster_id>
+
+Rely first on enhanced `extract-case`, which supplies the CourtListener/slip baseline. If a relied-on published case is still unpaginated, perform one confined default-browser Google Scholar recovery; on no result or no qualifying markers, rely on the baseline with a disclosed pagination limitation. Never use generic web search as an official-copy fallback. State when a citation remains uncertain.
+
+For each selected subsequent case, explain how it used the target case: agreed with it, distinguished it, limited it, extended it to a different fact pattern, criticized it, or used it in another identifiable way. If a citation lead exists but extracted or verified text does not support a treatment characterization, say that plainly.
+
+Prefer California Supreme Court and published California Court of Appeal decisions. Do not use unpublished cases as controlling treatment. Keep the answer concise and include the official citation for each later case. In the final answer, use normal legal prose for case names and citations; reserve backticks for CLI commands, file paths, and other literal technical text.
+            """
+        ).replace(
+                "$OLL", AGENT_CLI_COMMAND_PREFIX
+            )
+        )
+        stale_local = (
+            (
+            """
+You are the Open Law Lens Subsequent Treatment Agent.
+
+Analyze how subsequent published California cases treated the currently viewed case. Use Open Law Lens CLI commands for CourtListener-backed discovery and extraction, but use judgment about which commands and searches will best answer the treatment question.
+
+Target case: {target_title}
+Target official citation: {target_citation}
+CourtListener cluster id: {cluster_id}
+
+Start with this Open Law Lens citing-cases command when the cluster id is accepted:
+{published_citing_cases_command}
+
+If that command fails, returns no useful leads, or the cluster id appears to be a local external id, recover with targeted Open Law Lens case searches using the target case name, official citation, and distinctive citation phrases. Treat search results as leads only.
+
+Choose only the most significant published subsequent cases, usually 3 to 5 when that many exist. Before relying on any selected case, extract it with:
+uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync open-law-lens extract-case --cluster-id <cluster_id>
+
+If CourtListener extraction lacks an official reporter citation or official text for a selected subsequent case, use Google Scholar, California Courts, or Codex web search only as a fallback to verify or fill in that citation/text. State when a citation remains uncertain.
+
+For each selected subsequent case, explain how it used the target case: agreed with it, distinguished it, limited it, extended it to a different fact pattern, criticized it, or used it in another identifiable way. If a citation lead exists but extracted or verified text does not support a treatment characterization, say that plainly.
+
+Do not use unpublished cases as controlling treatment. Keep the answer concise and include the official citation for each later case.
+            """
+        )
+        )
+        for legacy in (superseded_default, stale_local):
+            with tempfile.TemporaryDirectory() as temp_dir:
+                path = Path(temp_dir) / "config.json"
+                path.write_text(
+                    json.dumps(
+                        {
+                            "subsequent_treatment_agent_prompt_template": legacy,
+                            "courtlistener_token": "token-value",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                config = load_config(path)
+                self.assertEqual(
+                    config.later_treatment_agent_prompt_template,
+                    DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
+                )
+                self.assertEqual(config.courtlistener_token, "token-value")
+
+    def test_saved_default_later_treatment_prompt_round_trips(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            save_config(
+                AppConfig(
+                    courtlistener_token="token-value",
+                    later_treatment_agent_prompt_template=(
+                        DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE
+                    ),
+                    reader_font_size_pt=13,
+                ),
+                path,
+            )
+            config = load_config(path)
+            self.assertEqual(
+                config.later_treatment_agent_prompt_template,
+                DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
+            )
+            self.assertEqual(config.courtlistener_token, "token-value")
+            self.assertEqual(config.reader_font_size_pt, 13)
 
     def test_legacy_later_treatment_prompt_key_is_preserved(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

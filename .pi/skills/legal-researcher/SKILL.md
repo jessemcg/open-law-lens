@@ -141,10 +141,44 @@ before finalizing:
    the answer to the extracted enactment. Never state the unsupported judicial
    proposition or silently present the answer as complete.
 
-For subsequent-treatment work, begin with the supplied citing-cases command.
-Recover with focused case searches using the target name, official citation,
-and distinctive citation phrases. Describe only supported treatment, such as
-followed, distinguished, limited, extended, or criticized.
+For subsequent-treatment work, follow the Subsequent Treatment ceiling below.
+Describe only supported treatment, such as followed, distinguished, limited,
+extended, or criticized.
+
+### Subsequent Treatment mode ceiling
+
+Subsequent Treatment runs are discovery-bounded. The runtime prompt supplies
+the exact commands; use them and stop when the bounds are reached:
+
+- Run the supplied `published-citing-cases` command exactly once. If it fails,
+  returns no useful leads, or the cluster id is a local `external-*` id, do not
+  retry the graph.
+- Run at most two non-paginated `case-search` searches, using the supplied
+  exact official-citation phrase search and, only if still needed, the exact
+  case-name search. Never retry network timeouts, paginate with `--next`,
+  broaden or rewrite queries, use `--semantic`, or run additional searches. The
+  one-time transient SQLite `database is locked` retry above remains allowed.
+- Never use `web_search` in Subsequent Treatment mode — not for discovery, not
+  for citation or metadata gaps, and not as an official-copy fallback.
+- Three to five verified cases is a ceiling and a preference, not a quota. Use
+  fewer when only fewer can be verified and disclose incomplete coverage.
+- Extract selected cases with the supplied compact `extract-case --find`
+  commands in parallel in the same tool round; check `official_pagination`,
+  `source_url`, and `warnings`. For each unpaginated selected case, run exactly
+  one sequential recovery-enabled extraction (`--recover-official --timeout
+  120`) and let the command perform its single Scholar attempt. Never call
+  `extract-slip-opinion`, `lookup-citation`, Scholar, browser tools, alternate
+  opinion sites, or `web_search` yourself for pagination, metadata, or copies.
+- If a recovery returns no qualifying copy, is blocked, times out, or fails
+  validation, rely on the best unpaginated baseline the extraction returned,
+  disclose the missing official pagination, and link the case name or citation
+  to the returned `source_url`; if no URL was returned, say so.
+- Omit any treatment characterization the extracted text does not support, and
+  omit a case whose lead cannot be verified through bounded sources.
+
+This mode-specific ceiling supersedes the general discovery allowance in step 5
+for Subsequent Treatment runs; the global verification floor and the
+official-copy recovery contract still apply.
 
 ## Web-search fallback
 
@@ -152,9 +186,11 @@ Use Pi's `web_search` only for open-ended, unresolved verification that is not
 official-copy recovery, such as investigating delayed reporter metadata or a
 conflicting identity record. Never use `web_search` to retrieve an official
 reporter copy, to repeat the default-browser Scholar recovery, or as a fallback
-opinion-discovery service. Tavily, direct HTTP Scholar, alternate opinion
-sites, and generic web search are never acceptable sources for an official
-copy.
+opinion-discovery service. In Subsequent Treatment mode, never use `web_search`
+at all — not for later-case discovery, not for citation, reporter metadata, or
+link gaps, and not for official-copy recovery. Tavily, direct HTTP Scholar,
+alternate opinion sites, and generic web search are never acceptable sources
+for an official copy.
 
 Make narrow searches combining the exact case name, docket number, filed date,
 and reporter series such as `Cal.5th` or `Cal.App.5th`. Search results remain
