@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import shlex
 import tempfile
 import unittest
@@ -147,6 +149,8 @@ class AppReaderPayloadTests(unittest.TestCase):
             _agent_output_header=output_header,
             _agent_subview_strip=subview_strip,
             _agent_save_answer_button=DummyWidget(),
+            _agent_copy_trace_button=DummyWidget(),
+            _agent_session_log_path=None,
             _agent_answer_scroller=DummyWidget(),
             _agent_session_widget=session_widget,
             _agent_subview_name="session",
@@ -340,6 +344,238 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertFalse(window._agent_failure_visible)
         self.assertEqual(window.sync_count, 1)
         self.assertEqual(window.status, "Embedded agent session ended.")
+
+    def _make_trace_sync_window(
+        self,
+        session_log: object = None,
+        **extra: object,
+    ) -> tuple[SimpleNamespace, SimpleNamespace]:
+        class TraceWidget:
+            def __init__(self) -> None:
+                self.visible = False
+                self.sensitive = False
+                self.icon_name = ""
+                self.tooltip = ""
+                self.size_request = (0, 0)
+
+            def set_visible(self, visible: bool) -> None:
+                self.visible = visible
+
+            def set_sensitive(self, sensitive: bool) -> None:
+                self.sensitive = sensitive
+
+            def set_icon_name(self, icon_name: str) -> None:
+                self.icon_name = icon_name
+
+            def set_tooltip_text(self, tooltip: str) -> None:
+                self.tooltip = tooltip
+
+            def set_size_request(self, width: int, height: int) -> None:
+                self.size_request = (width, height)
+
+        copy_trace_button = TraceWidget()
+        window = SimpleNamespace(
+            _agent_active=False,
+            _agent_failure_visible=False,
+            _agent_last_answer_text="",
+            _agent_search_output_visible=False,
+            _agent_output_collapsed=False,
+            _agent_output_toggle_button=TraceWidget(),
+            _agent_output_header=TraceWidget(),
+            _agent_subview_strip=TraceWidget(),
+            _agent_save_answer_button=TraceWidget(),
+            _agent_copy_trace_button=copy_trace_button,
+            _agent_session_log_path=session_log,
+            _agent_answer_scroller=TraceWidget(),
+            _agent_session_widget=TraceWidget(),
+            _agent_subview_name="session",
+            _agent_panel_height=240,
+            _update_agent_panel_height=lambda **_kwargs: None,
+        )
+        for key, value in extra.items():
+            setattr(window, key, value)
+        return window, copy_trace_button
+
+    def test_copy_trace_button_sensitivity_follows_session_discovery(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            session_log = Path(temp_dir) / "session.jsonl"
+            session_log.write_text(
+                '{"type":"session","cwd":"' + str(temp_dir) + '"}\n',
+                encoding="utf-8",
+            )
+
+            window, button = self._make_trace_sync_window()
+            OpenLawLensWindow._sync_agent_subviews(window)  # type: ignore[arg-type]
+            self.assertFalse(button.sensitive)
+
+            window, button = self._make_trace_sync_window(session_log)
+            OpenLawLensWindow._sync_agent_subviews(window)  # type: ignore[arg-type]
+            self.assertTrue(button.sensitive)
+
+            window, button = self._make_trace_sync_window(
+                Path(temp_dir) / "not-there.jsonl"
+            )
+            OpenLawLensWindow._sync_agent_subviews(window)  # type: ignore[arg-type]
+            self.assertFalse(button.sensitive)
+
+    def test_poll_agent_answer_enables_copy_trace_for_failed_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace"
+            session_log = workspace / "pi-sessions" / "session.jsonl"
+            session_log.parent.mkdir(parents=True)
+            session_log.write_text(
+                json.dumps({"type": "session", "cwd": str(workspace)}) + "\n"
+                + json.dumps(
+                    {
+                        "type": "message",
+                        "message": {
+                            "role": "assistant",
+                            "stopReason": "toolUse",
+                            "content": [{"type": "text", "text": "working"}],
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            window, button = self._make_trace_sync_window(
+                _agent_workspace_path=workspace,
+                _agent_answer_poll_id=7,
+            )
+            window._sync_agent_subviews = (  # type: ignore[method-assign]
+                lambda: OpenLawLensWindow._sync_agent_subviews(window)
+            )
+
+            result = OpenLawLensWindow._poll_agent_answer(window)  # type: ignore[arg-type]
+
+            self.assertFalse(result)
+            self.assertIsNone(window._agent_answer_poll_id)
+            self.assertEqual(window._agent_session_log_path, session_log)
+            self.assertTrue(button.sensitive)
+
+    def _make_copy_trace_window(
+        self,
+        workspace: Path,
+        session_log: Path,
+    ) -> SimpleNamespace:
+        window, _button = self._make_trace_sync_window(
+            session_log,
+            _agent_workspace_path=workspace,
+        )
+        statuses: list[str] = []
+        window._sync_agent_subviews = lambda: None  # type: ignore[method-assign]
+        window._set_status = (  # type: ignore[method-assign]
+            lambda status: statuses.append(status)
+        )
+        window.statuses = statuses
+        return window
+
+    def test_copy_trace_click_snapshots_then_copies_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace"
+            session_log = workspace / "pi-sessions" / "session.jsonl"
+            session_log.parent.mkdir(parents=True)
+            payload = (
+                json.dumps({"type": "session", "cwd": str(workspace)}) + "\n"
+                + json.dumps({"type": "message", "done": True}) + "\n"
+            )
+            session_log.write_text(payload, encoding="utf-8")
+            destination = Path(temp_dir) / "exported/latest_trace.jsonl"
+            window = self._make_copy_trace_window(workspace, session_log)
+            clipboard = MagicMock()
+            display = MagicMock()
+            display.get_clipboard.return_value = clipboard
+
+            with (
+                patch.dict(
+                    os.environ, {"OPEN_LAW_LENS_TRACE_PATH": str(destination)}
+                ),
+                patch("open_law_lens.app.Gdk") as gdk_mock,
+            ):
+                gdk_mock.Display.get_default.return_value = display
+                OpenLawLensWindow._on_agent_copy_trace_clicked(  # type: ignore[arg-type]
+                    window, object()
+                )
+
+            self.assertEqual(destination.read_text(encoding="utf-8"), payload)
+            self.assertEqual(clipboard.set.call_count, 1)
+            prompt = clipboard.set.call_args.args[0]
+            self.assertIn(str(destination), prompt)
+            self.assertIn("diagnostic evidence", prompt)
+            self.assertTrue(
+                any(str(destination) in status for status in window.statuses)
+            )
+
+    def test_copy_trace_click_snapshot_failure_preserves_clipboard(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace"
+            session_log = workspace / "pi-sessions" / "session.jsonl"
+            session_log.parent.mkdir(parents=True)
+            # The header matches the workspace, but the second complete record is
+            # malformed, so the snapshot must abort before touching the clipboard.
+            session_log.write_text(
+                json.dumps({"type": "session", "cwd": str(workspace)}) + "\n"
+                + "not json at all\n",
+                encoding="utf-8",
+            )
+            destination = Path(temp_dir) / "exported/latest_trace.jsonl"
+            destination.parent.mkdir(parents=True)
+            destination.write_text("previous trace\n", encoding="utf-8")
+            window = self._make_copy_trace_window(workspace, session_log)
+            clipboard = MagicMock()
+            display = MagicMock()
+            display.get_clipboard.return_value = clipboard
+
+            with (
+                patch.dict(
+                    os.environ, {"OPEN_LAW_LENS_TRACE_PATH": str(destination)}
+                ),
+                patch("open_law_lens.app.Gdk") as gdk_mock,
+            ):
+                gdk_mock.Display.get_default.return_value = display
+                OpenLawLensWindow._on_agent_copy_trace_clicked(  # type: ignore[arg-type]
+                    window, object()
+                )
+
+            self.assertEqual(
+                destination.read_text(encoding="utf-8"), "previous trace\n"
+            )
+            self.assertEqual(clipboard.set.call_count, 0)
+            self.assertTrue(
+                any("Copy Trace failed" in status for status in window.statuses)
+            )
+
+    def test_copy_trace_click_clipboard_failure_keeps_saved_trace(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace"
+            session_log = workspace / "pi-sessions" / "session.jsonl"
+            session_log.parent.mkdir(parents=True)
+            payload = (
+                json.dumps({"type": "session", "cwd": str(workspace)}) + "\n"
+            )
+            session_log.write_text(payload, encoding="utf-8")
+            destination = Path(temp_dir) / "exported/latest_trace.jsonl"
+            window = self._make_copy_trace_window(workspace, session_log)
+
+            with (
+                patch.dict(
+                    os.environ, {"OPEN_LAW_LENS_TRACE_PATH": str(destination)}
+                ),
+                patch("open_law_lens.app.Gdk") as gdk_mock,
+            ):
+                gdk_mock.Display.get_default.return_value = None
+                OpenLawLensWindow._on_agent_copy_trace_clicked(  # type: ignore[arg-type]
+                    window, object()
+                )
+
+            self.assertEqual(destination.read_text(encoding="utf-8"), payload)
+            self.assertTrue(
+                any(
+                    "clipboard was unavailable" in status and str(destination) in status
+                    for status in window.statuses
+                )
+            )
 
     def test_reader_source_provider_uses_dim_header_label(self) -> None:
         class DummyLabel:

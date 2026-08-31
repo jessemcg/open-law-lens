@@ -366,6 +366,46 @@ jumps directly to that section of the reader. It is independently scrollable
 so the Research Cache remains available below it. Headings and subheadings are
 rendered in bold in the SOCF reader.
 
+### Copy Trace
+
+The **Copy Trace** button in the Agent output header exports the current
+embedded Agent session for diagnostic review. It becomes available as soon as
+the run's Pi session JSONL is discovered — including for failed runs — and a
+click snapshots the session through the latest complete JSONL record, so it
+can be used while a session is still active and clicked again later to pick up
+newer records.
+
+The snapshot is written to private per-user XDG state and atomically replaces
+the previous one, so only a single latest snapshot is retained:
+
+```text
+$XDG_STATE_HOME/open-law-lens/traces/latest_trace.jsonl
+```
+
+falling back to `~/.local/state/open-law-lens/traces/latest_trace.jsonl` when
+`XDG_STATE_HOME` is unset. Set `OPEN_LAW_LENS_TRACE_PATH` to an absolute file
+path to publish the snapshot somewhere else, such as synchronized storage; a
+relative value is rejected. The destination directory is created with `0700`
+permissions and the snapshot file is `0600`. If a snapshot cannot be validated
+or written, the previous trace and the clipboard are left untouched.
+
+After publishing the snapshot, Copy Trace places a ready-to-paste review
+prompt on the clipboard. That prompt asks a fresh Pi coding session to treat
+the JSONL as diagnostic evidence — not as a conversation to resume — and to
+compare the run with the current Open Law Lens code and prompts, separate
+model reasoning errors from prompt/workflow/tool/infrastructure failures, and
+recommend concrete, generalizable improvements.
+
+The trace is the **full persisted Pi session JSONL**: user prompts, assistant
+thinking blocks when the provider supplies them, tool calls and results, final
+answers, model metadata, costs, and errors. It can contain confidential case
+material, so it stays in private local state by default — never in the
+repository, Research Cache, library, configuration, or logs — and it is not
+redacted, because redaction could remove the evidence needed to diagnose a
+failure. Reviewing the trace as a file is intentionally different from
+resuming or forking the Pi session: Open Law Lens never launches or forks Pi
+from the snapshot.
+
 ## Assess Legal Question
 
 The Assess Legal Question workflow produces a neutral, decision-oriented

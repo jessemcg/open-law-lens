@@ -5,9 +5,11 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from open_law_lens.agent import (
     CaseTextSource,
+    TraceSnapshotError,
     pi_session_log_matches_cwd,
     export_selected_authorities,
     export_selected_cases,
@@ -15,8 +17,11 @@ from open_law_lens.agent import (
     extract_quoted_phrases,
     find_latest_pi_session_log_for_cwd,
     quote_match_spans,
+    reasoning_trace_path,
     resolve_quote_target,
     resolved_agent_quote_spans,
+    snapshot_pi_session_jsonl,
+    trace_review_clipboard_text,
 )
 from open_law_lens.library import DisplayText
 
@@ -516,6 +521,187 @@ class AgentTests(unittest.TestCase):
             answer_text = Path(export.text_sources[0].text_path).read_text(encoding="utf-8")
             self.assertIn("Source type: saved agent answer, not legal authority", answer_text)
             self.assertIn("The removal issue is strong.", answer_text)
+
+
+class TraceWorkflowTests(unittest.TestCase):
+    def test_reasoning_trace_path_uses_xdg_state_home(self) -> None:
+        path = reasoning_trace_path({"XDG_STATE_HOME": "/xdg-state"})
+
+        self.assertEqual(
+            path,
+            Path("/xdg-state/open-law-lens/traces/latest_trace.jsonl"),
+        )
+
+    def test_reasoning_trace_path_falls_back_to_local_state(self) -> None:
+        path = reasoning_trace_path({})
+
+        self.assertEqual(
+            path,
+            Path.home() / ".local/state/open-law-lens/traces/latest_trace.jsonl",
+        )
+
+    def test_reasoning_trace_path_override_must_be_absolute(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            patch.dict(
+                os.environ,
+                {"HOME": temp_dir, "OPEN_LAW_LENS_TRACE_PATH": "~/traces/x.jsonl"},
+            ),
+        ):
+            path = reasoning_trace_path()
+
+        self.assertEqual(path, Path(temp_dir) / "traces/x.jsonl")
+        self.assertTrue(path.is_absolute())
+
+        with self.assertRaises(ValueError):
+            reasoning_trace_path({"OPEN_LAW_LENS_TRACE_PATH": "traces/x.jsonl"})
+        with self.assertRaises(ValueError):
+            reasoning_trace_path({"XDG_STATE_HOME": "relative/state"})
+
+    def test_snapshot_copies_complete_records_byte_for_byte(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "session.jsonl"
+            payload = (
+                b'{"type":"session","cwd":"/workspace"}\n'
+                b'{"type":"message","message":{"role":"assistant"}}\n'
+                b'{"type":"error","detail":"boom"}\n'
+            )
+            source.write_bytes(payload)
+            destination = Path(temp_dir) / "state/open-law-lens/traces/latest_trace.jsonl"
+
+            result = snapshot_pi_session_jsonl(source, destination)
+
+            self.assertEqual(result, destination)
+            self.assertEqual(destination.read_bytes(), payload)
+            first = json.loads(destination.read_text(encoding="utf-8").splitlines()[0])
+            self.assertEqual(first["type"], "session")
+
+    def test_snapshot_omits_incomplete_trailing_record(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "session.jsonl"
+            source.write_bytes(
+                b'{"type":"session","cwd":"/workspace"}\n'
+                b'{"type":"message","done":true}\n'
+                b'{"type":"message","partial":'  # no trailing newline
+            )
+            destination = Path(temp_dir) / "traces/latest_trace.jsonl"
+
+            snapshot_pi_session_jsonl(source, destination)
+
+            lines = destination.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 2)
+            self.assertEqual(json.loads(lines[1]), {"type": "message", "done": True})
+
+    def test_snapshot_keeps_complete_trailing_record_without_newline(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "session.jsonl"
+            source.write_bytes(
+                b'{"type":"session","cwd":"/workspace"}\n'
+                b'{"type":"message","done":true}'  # complete JSON, no newline
+            )
+            destination = Path(temp_dir) / "traces/latest_trace.jsonl"
+
+            snapshot_pi_session_jsonl(source, destination)
+
+            lines = destination.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 2)
+            self.assertEqual(json.loads(lines[1]), {"type": "message", "done": True})
+
+    def test_snapshot_rejects_invalid_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            destination = Path(temp_dir) / "traces/latest_trace.jsonl"
+
+            malformed = Path(temp_dir) / "malformed.jsonl"
+            malformed.write_bytes(
+                b'{"type":"session","cwd":"/workspace"}\n'
+                b'this is not json\n'
+            )
+            with self.assertRaises(TraceSnapshotError):
+                snapshot_pi_session_jsonl(malformed, destination)
+
+            no_header = Path(temp_dir) / "no_header.jsonl"
+            no_header.write_bytes(b'{"type":"message","message":{}}\n')
+            with self.assertRaises(TraceSnapshotError):
+                snapshot_pi_session_jsonl(no_header, destination)
+
+            empty = Path(temp_dir) / "empty.jsonl"
+            empty.write_bytes(b"")
+            with self.assertRaises(TraceSnapshotError):
+                snapshot_pi_session_jsonl(empty, destination)
+
+            with self.assertRaises(TraceSnapshotError):
+                snapshot_pi_session_jsonl(Path(temp_dir) / "missing.jsonl", destination)
+
+            self.assertFalse(destination.exists())
+
+    def test_snapshot_preserves_previous_destination_on_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous = b'{"type":"session","cwd":"/old"}\n'
+            destination = Path(temp_dir) / "traces/latest_trace.jsonl"
+            destination.parent.mkdir(parents=True)
+            destination.write_bytes(previous)
+            source = Path(temp_dir) / "malformed.jsonl"
+            source.write_bytes(
+                b'{"type":"session","cwd":"/workspace"}\n'
+                b'not json at all\n'
+            )
+
+            with self.assertRaises(TraceSnapshotError):
+                snapshot_pi_session_jsonl(source, destination)
+
+            self.assertEqual(destination.read_bytes(), previous)
+            self.assertEqual(
+                [entry.name for entry in destination.parent.iterdir()],
+                ["latest_trace.jsonl"],
+            )
+
+    def test_snapshot_replaces_atomically_with_private_permissions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "session.jsonl"
+            source.write_bytes(b'{"type":"session","cwd":"/one"}\n')
+            destination = Path(temp_dir) / "state/open-law-lens/traces/latest_trace.jsonl"
+
+            snapshot_pi_session_jsonl(source, destination)
+
+            self.assertEqual(
+                destination.read_bytes(), b'{"type":"session","cwd":"/one"}\n'
+            )
+            self.assertEqual(oct(destination.stat().st_mode & 0o777), "0o600")
+            traces_dir = destination.parent
+            self.assertEqual(oct(traces_dir.stat().st_mode & 0o777), "0o700")
+            self.assertEqual(
+                oct(traces_dir.parent.stat().st_mode & 0o777), "0o700"
+            )
+            self.assertEqual(
+                sorted(entry.name for entry in traces_dir.iterdir()),
+                ["latest_trace.jsonl"],
+            )
+
+            source.write_bytes(b'{"type":"session","cwd":"/two"}\n')
+            snapshot_pi_session_jsonl(source, destination)
+
+            self.assertEqual(
+                destination.read_bytes(), b'{"type":"session","cwd":"/two"}\n'
+            )
+            self.assertEqual(
+                sorted(entry.name for entry in traces_dir.iterdir()),
+                ["latest_trace.jsonl"],
+            )
+
+    def test_trace_review_prompt_is_diagnostic_not_resumption(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "traces/latest_trace.jsonl"
+
+            prompt = trace_review_clipboard_text(path)
+
+        self.assertIn(str(path), prompt)
+        self.assertIn("diagnostic evidence", prompt)
+        self.assertIn("Do not resume", prompt)
+        self.assertIn("chunks", prompt)
+        self.assertIn("Open Law Lens code, prompts", prompt)
+        self.assertIn("model reasoning errors", prompt)
+        self.assertIn("confidential", prompt)
+        self.assertIn("generalizable improvements", prompt)
 
 
 if __name__ == "__main__":
