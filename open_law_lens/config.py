@@ -112,6 +112,12 @@ LEGACY_APPEAL_ISSUE_AGENT_PROMPT_SHA256ES = (
     # Default that still referred to the removed Tavily/direct-HTTP Scholar
     # official-copy cascade.
     "cb07bcae20bd7e440cf1bb061f2abba0fa8b7a58fe008d1c7edc17739a78b2ab",
+    # Immediately preceding tracked default, framed as advocacy with a
+    # Strong/Medium/Weak/Frivolous rating line.
+    "a6826775cff0c970339ba4153aa1cf72f15904b9047032f3beee7f3ecd2adec8",
+    # Older stored local prompt with generic Scholar/web-search guidance and an
+    # argument-strength rating, predating the routed research workflow.
+    "dee4354a0630d199daf29e40ead8fb1d3dc44feb4ae248309b4adfc3b9bddc3b",
 )
 LEGACY_LATER_TREATMENT_AGENT_PROMPT_SHA256ES = (
     "e73fc8abadd94b2affb966c126dfb0c2416e0fc86c1994baa486b01deb5d1834",
@@ -166,12 +172,78 @@ Prior brief database snapshot:
 Indexed brief count: {brief_count}""".replace("$OLL", AGENT_CLI_COMMAND_PREFIX)
 
 DEFAULT_APPEAL_ISSUE_PRESETS: tuple[str, ...] = (
-    "Substantial evidence does not support the challenged finding.",
-    "The trial court abused its discretion in making the challenged order.",
-    "The trial court applied the wrong legal standard.",
-    "The appellant was denied due process, notice, or a meaningful opportunity to be heard.",
-    "The error was prejudicial and not harmless under the applicable appellate standard.",
+    "Did substantial evidence support the challenged finding?",
+    "Did the trial court abuse its discretion in making the challenged order?",
+    "Did the trial court apply the correct legal standard?",
+    "Did the proceedings afford the appellant due process, including adequate notice and a meaningful opportunity to be heard?",
+    "If error occurred, was it prejudicial under the applicable appellate standard?",
 )
+
+# Exact legacy preset statements that upgrade to the neutral legal-question
+# wording. Matching is per entry and exact, so genuine custom entries are
+# preserved and list order and labels are untouched.
+LEGACY_APPEAL_ISSUE_PRESET_REPLACEMENTS: dict[str, str] = {
+    # Generic tracked defaults through this release.
+    "Substantial evidence does not support the challenged finding.": (
+        "Did substantial evidence support the challenged finding?"
+    ),
+    "The trial court abused its discretion in making the challenged order.": (
+        "Did the trial court abuse its discretion in making the challenged order?"
+    ),
+    "The trial court applied the wrong legal standard.": (
+        "Did the trial court apply the correct legal standard?"
+    ),
+    "The appellant was denied due process, notice, or a meaningful opportunity to be heard.": (
+        "Did the proceedings afford the appellant due process, including adequate "
+        "notice and a meaningful opportunity to be heard?"
+    ),
+    "The error was prejudicial and not harmless under the applicable appellate standard.": (
+        "If error occurred, was it prejudicial under the applicable appellate standard?"
+    ),
+    # Dependency-specific local presets with embedded outcome-anchoring case
+    # citations removed; statutory references stay to define the question.
+    "Substantial evidence did not support the order asserting dependency jurisdiction over the child[ren] under Welfare and Institutions Code section 300.": (
+        "Did substantial evidence support the juvenile court's exercise of "
+        "dependency jurisdiction over the child or children under Welfare and "
+        "Institutions Code section 300?"
+    ),
+    "Substantial evidence did not support the order removing the child[ren] from parental custody under Welfare and Institutions Code section 361, subdivision (c)(1).": (
+        "Did substantial evidence support the juvenile court's order removing the "
+        "child or children from parental custody under Welfare and Institutions "
+        "Code section 361, subdivision (c)(1)?"
+    ),
+    "The juvenile court abused its discretion in finding that the child welfare agency conducted an adequate Cal-ICWA inquiry. (Welf. & Inst. Code, § 224.2; In re Dezi C. (2024) 16 Cal.5th 1112, 1141.)": (
+        "Did the juvenile court abuse its discretion in finding that the child "
+        "welfare agency conducted an adequate Cal-ICWA inquiry under Welfare and "
+        "Institutions Code section 224.2?"
+    ),
+    "The juvenile court erred in failing to apply the beneficial relationship exception. (Welf. & Inst. Code, § 366.26, subd. (c)(1)(B)(i); In re Caden C. (2021) 11 Cal.5th 614, 636.)": (
+        "Did the juvenile court err in finding that the beneficial relationship "
+        "exception to termination of parental rights did not apply under Welfare "
+        "and Institutions Code section 366.26, subdivision (c)(1)(B)(i)?"
+    ),
+    "Clear and convincing evidence did not support a finding that the child was likely to be adopted within a reasonable time. (Welf. & Inst. Code, § 366.26, subd. (c)(1); In re Sarah M. (1994) 22 Cal.App.4th 1642, 1649.)": (
+        "Did clear and convincing evidence support the juvenile court's finding "
+        "that the child was likely to be adopted within a reasonable time under "
+        "Welfare and Institutions Code section 366.26, subdivision (c)(1)?"
+    ),
+    "The juvenile court erred in denying the parent's section 388 petition after an evidentiary hearing. (Welf. & Inst. Code, § 388, subd. (a)(1); In re J.M. (2020) 50 Cal.App.5th 833, 846.)": (
+        "Did the juvenile court err in denying the parent's Welfare and "
+        "Institutions Code section 388 petition after an evidentiary hearing?"
+    ),
+    "The juvenile court erred in summarily denying the parent's section 388 petition without an evidentiary hearing. (Welf. & Inst. Code, § 388, subd. (a)(1); In re Edward H. (1996) 43 Cal.App.4th 584, 593.)": (
+        "Did the juvenile court err in summarily denying the parent's Welfare and "
+        "Institutions Code section 388 petition without an evidentiary hearing?"
+    ),
+    "The juvenile court erred in failing to grant the request for replacement counsel under People v. Marsden. (In re Z.N. (2010) 181 Cal.App.4th 282, 294.)": (
+        "Did the juvenile court err in denying the request for replacement counsel "
+        "under People v. Marsden?"
+    ),
+    "The juvenile court abused its discretion in denying the request to continue the matter. (Welf. & Inst. Code, § 352, subd. (a); In re Giovanni F. (2010) 184 Cal.App.4th 594, 605.)": (
+        "Did the juvenile court abuse its discretion in denying the request to "
+        "continue the matter under Welfare and Institutions Code section 352?"
+    ),
+}
 DEFAULT_APPEAL_ISSUE_LABELS: tuple[str, ...] = (
     "Substantial evidence",
     "Abuse of discretion",
@@ -180,9 +252,9 @@ DEFAULT_APPEAL_ISSUE_LABELS: tuple[str, ...] = (
     "Prejudice",
 )
 
-DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens Appeal Issue Assessment Agent.
+DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens Legal Question Assessment Agent.
 
-Assess one possible California appellate argument against the user's fact pattern. Use Open Law Lens CLI commands tied directly to CourtListener APIs for legal authority and legal research.
+Prepare an objective California appellate assessment of the legal question below, in the manner of a bench memorandum written for an appellate court deciding that question. You are not an advocate for any party. Do not presume an answer from the wording of the question, and do not treat the question's phrasing as indicating the outcome.
 
 Read the extracted fact-pattern text first:
 {fact_pattern_path}
@@ -199,21 +271,31 @@ Record citation format for final answers:
 
 Treat the supplied fact pattern as the complete factual record for this assessment. Base the factual analysis only on facts it contains. Do not speculate that unprovided facts or a more complete record could alter the assessment, and do not add a generic record-completeness caveat. If the supplied text is internally ambiguous, contradictory, or lacks a usable record citation, identify that specific issue only where it affects the analysis.
 
-Argument to assess:
+Legal question to decide:
 {issue}
 
-Research California law with Open Law Lens CLI commands. Extract the current controlling enactment first with `$OLL extract-statute "<citation>"` and `$OLL extract-rule "<citation>"`. For a known material case, direct-extract it with `$OLL extract-case "<official citation or case name>"`, using `--find "<term>"` for a narrow bounded proposition. Use `$OLL extract-case --cluster-id <cluster_id>` only when citation or name extraction fails. Run a focused `$OLL case-search "<query>" --limit 5` only when no reliable citation or case name is known, then extract the best published result. Treat search results as leads only.
+Research current California law by following the Legal Researcher workflow preloaded into this workspace, including its command routing, authority-verification rules, and official-copy recovery. Do not restate or duplicate that workflow here. Disclose any concrete verification gap rather than inventing support, and lower confidence accordingly when a material gap remains.
 
-For a recent published California slip opinion or any published case still missing Cal.5th or Cal.App.5th reporter markers, `extract-case` supplies the Library/CourtListener/slip baseline text. If a relied-on case remains unpaginated, perform one confined default-browser Google Scholar recovery and import the official copy; on no result or no qualifying markers, stop and rely on the baseline with a disclosed pagination limitation. Never fall back to Tavily, direct HTTP Scholar, alternate opinion sites, or generic web search for an official copy.
+If the question embeds an issue-specific focus or instruction, address it expressly. For example, when a Cal-ICWA inquiry question asks about the significance of no one claiming ancestry with a particular tribe, analyze that point directly rather than answering the inquiry question only in general.
 
-Confine research to California state law unless the argument explicitly requires federal law. Prefer published California Supreme Court and California Court of Appeal authority. Use unpublished cases only for context, not as controlling authority.
+Write the assessment as a concise bench memorandum. After the system-required title and subtitle, structure the answer with these sections:
+- Question Presented
+- Short Answer
+- Governing Law/Standard of Review
+- Analysis
+- Conclusion
 
-Analyze preservation, standard of review, factual support, governing law, prejudice, and likely respondent arguments based on the supplied complete fact pattern.
+Apply the law neutrally to the supplied facts, and address the strongest material reasoning supporting each possible answer, including the reasoning that does not favor the premise implicit in the question. Address preservation, prejudice, harmless error, and remedy where they are legally material to the question, not as a mechanical checklist.
 
-In the final answer, use normal legal prose for case names, statutes, rules, and citations. Reserve backticks for CLI commands, file paths, and other literal technical text.
+Answer the question directly, even when the answer is adverse to the position a party might have advanced. If a binary answer is not supportable on the law and record, state the best available disposition and the material uncertainty that prevents a binary answer.
 
-End with a rating line exactly in this form:
-Rating: Strong, Medium, Weak, or Frivolous""".replace("$OLL", AGENT_CLI_COMMAND_PREFIX)
+In the final answer, use normal legal prose for case names, statutes, rules, and citations.
+
+End the answer with these two lines exactly in this form:
+Conclusion: <direct answer to the legal question>
+Confidence: <High, Medium, or Low> — <brief basis tied to the law and record>
+
+Calibrate Confidence to the stated conclusion only; it is not argument strength, a party's likelihood of success, or generic model certainty. High: controlling law and the material record strongly point in the same direction, with no meaningful unresolved conflict. Medium: one conclusion is better supported, but a substantial counterargument, factual ambiguity, or authority tension remains. Low: the issue is close or unsettled, or a material source or record ambiguity prevents a firm conclusion."""
 
 DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens Subsequent Treatment Agent.
 
@@ -297,7 +379,13 @@ def normalize_appeal_issue_presets(value: Any) -> list[str]:
     presets: list[str] = []
     seen: set[str] = set()
     for item in value:
-        text = str(item or "").strip()
+        text = str(item or "")
+        replacement = LEGACY_APPEAL_ISSUE_PRESET_REPLACEMENTS.get(
+            text
+        ) or LEGACY_APPEAL_ISSUE_PRESET_REPLACEMENTS.get(text.strip())
+        if replacement is not None:
+            text = replacement
+        text = text.strip()
         key = text.casefold()
         if text and key not in seen:
             presets.append(text)

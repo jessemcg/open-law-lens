@@ -63,9 +63,9 @@ Or save it in the app menu under Settings. The Settings path writes a local
   reader navigation through matches.
 - Selected-text launcher through `open-law-lens open-selected`.
 - Embedded Pi-only Agent workflow for legal research questions, selected-cache
-  questions, and appellate issue assessment.
-- Appeal issue assessment from a current-case SOCF or another ODT/PDF fact
-  pattern, with configurable issue presets and custom claims.
+  questions, and neutral legal question assessment.
+- Assess Legal Question from a current-case SOCF or another ODT/PDF fact
+  pattern, with configurable legal question presets and custom questions.
 
 ## Requirements
 
@@ -135,7 +135,7 @@ computer-use-linux doctor
 
 The Settings window lists the models currently authorized in Pi and lets each
 user choose a separate model and reasoning effort for Query Law, Query Research
-Cache, Query Prior Briefs, and Assess Argument. These personal overrides are
+Cache, Query Prior Briefs, and Assess Legal Question. These personal overrides are
 stored in the ignored local `config.json` and apply to newly launched sessions.
 Choosing **Use Pi defaults** leaves that workflow on Pi's merged user and
 project defaults. Pi credentials remain in the user's home Pi configuration,
@@ -257,10 +257,10 @@ There are four main agent workflows:
 - Prior Briefs: ask a closed-corpus question across the indexed ODT prior-brief
   archive. This remains separate from Research Cache questions and does not use
   web search.
-- Appeal Issue Assessment: assess a proposed appellate claim against an ODT or
+- Assess Legal Question: assess a neutral legal question against an ODT or
   PDF fact pattern. The app extracts the fact pattern into a temporary
   workspace, launches Pi in Appeal mode, and directs it to research
-  California law through Open Law Lens CLI commands.
+  California law through the preloaded Legal Researcher workflow.
 
 The separate **Search Briefs** scope performs a local, non-LLM exact-phrase
 search. It opens matching briefs newest-first in the main reader without adding
@@ -269,16 +269,16 @@ and `Ctrl+Shift+G` to move forward and backward through occurrences across
 matching briefs.
 
 Agent runtime settings, including the four per-query Pi model/reasoning
-profiles, prompt templates, appeal issue presets, and fact-pattern source, are
-available in the app Settings window. Subsequent Treatment uses the Query Law
+profiles, prompt templates, appeal legal questions, and fact-pattern source,
+are available in the app Settings window. Subsequent Treatment uses the Query Law
 profile. **Search Briefs** is local and does not launch Pi.
 
-Law, Subsequent Treatment, and Appeal runs are research-capable. The launcher
-preloads the tracked legal-researcher skill into the disposable workspace's
-system prompt once (instead of passing `--skill` and spending a model turn
-reading the file), keeps `--no-skills` so no other skills load, and loads the
-user-level `pi-web-access` extension. Agents route by source through an
-explicit gate in that skill. There is a narrow enactment-only exception,
+Law, Subsequent Treatment, and Assess Legal Question runs are research-capable.
+The launcher preloads the tracked legal-researcher skill into the disposable
+workspace's system prompt once (instead of passing `--skill` and spending a
+model turn reading the file), keeps `--no-skills` so no other skills load, and
+loads the user-level `pi-web-access` extension. Agents route by source through
+an explicit gate in that skill. There is a narrow enactment-only exception,
 reserved for requests that remain entirely textual (current statutory or rule
 text, a citation, or an effective date) with no further definition or
 consequence; everything else takes the mandatory enactment-plus-case route.
@@ -325,7 +325,7 @@ The pinned Current Case section is separate from Research Set contents and
 cannot be removed by clearing the Research Cache. Its first row displays the
 same normalized SOCF text supplied to the agent in the main reader. The SOCF
 context checkmark starts off for each case and remembers that case's choice
-across app launches. Appeal Issue Assessment always includes its selected fact
+across app launches. Assess Legal Question always includes its selected fact
 pattern, regardless of this ordinary-question checkmark.
 
 Open Law Lens also searches the selected case directory recursively for
@@ -349,13 +349,30 @@ jumps directly to that section of the reader. It is independently scrollable
 so the Research Cache remains available below it. Headings and subheadings are
 rendered in bold in the SOCF reader.
 
-## Appeal Issue Assessment
+## Assess Legal Question
 
-The Appeal Issue Assessment workflow is for quickly testing possible appellate
-claims against a fact pattern. It is available from the visible **Assess
-Argument…** menu in the Research composer heading. The menu includes assessment
-actions for configured argument presets, a custom assessment action, and a
-shortcut to edit the appeal argument settings.
+The Assess Legal Question workflow produces a neutral, decision-oriented
+California appellate assessment of a supplied legal question — similar to a
+bench memorandum written for the appellate court — rather than advocacy for
+either side. It is available from the visible **Assess Legal Question…** menu
+in the Research composer heading. The menu includes assessment actions for
+configured legal question presets, a custom assessment action, and a shortcut
+to edit the appeal legal question settings.
+
+Presets and custom entries are neutral legal questions, not claims or
+arguments. The nine built-in dependency presets are questions such as "Did
+substantial evidence support the challenged finding?" and "Did the juvenile
+court abuse its discretion in finding that the child welfare agency conducted
+an adequate Cal-ICWA inquiry under Welfare and Institutions Code section
+224.2?". The custom action accepts a multi-sentence question plus any
+issue-specific focus, for example:
+
+```text
+Did the juvenile court abuse its discretion in finding that the child welfare
+agency conducted an adequate Cal-ICWA inquiry under Welfare and Institutions
+Code section 224.2? Address expressly the significance of the fact that no one
+claims ancestry with a particular tribe.
+```
 
 By default, Open Law Lens tries to use the SOCF ODT for the currently selected
 case. The Settings window can point the workflow at a different fact-pattern
@@ -364,22 +381,39 @@ ODT or PDF. ODT files are read directly; PDF extraction uses the system
 
 When an assessment starts, the app copies the source fact pattern into a
 temporary agent workspace, writes an extracted text file, and launches Pi in
-the embedded terminal. The default assessment prompt asks Pi to analyze
-preservation, standard of review, factual support, governing law, prejudice,
-and likely respondent arguments. It treats every selected fact pattern as the
-complete factual record and prohibits speculation about a more complete record
-or a generic record-completeness caveat. A concrete ambiguity, contradiction,
-or missing record citation in the supplied text may still be addressed where
-it affects the analysis. The prompt also requires a final rating line:
+the embedded terminal. The default assessment prompt asks Pi to act as an
+objective California appellate court deciding the supplied legal question, not
+as an advocate for either side, and not to presume an answer from the
+question's wording. It treats the selected fact pattern as the complete
+factual record and prohibits speculation about a more complete record or a
+generic record-completeness caveat. A concrete ambiguity, contradiction, or
+missing record citation in the supplied text may still be addressed where it
+affects the analysis. The answer follows a concise bench-memorandum structure
+(Question Presented, Short Answer, Governing Law/Standard of Review, Analysis,
+Conclusion) and applies the law neutrally, addressing the strongest material
+reasoning supporting each possible answer. Preservation, prejudice, harmless
+error, and remedy are addressed when legally material, not as a mechanical
+checklist. The answer always ends with a direct conclusion and a calibrated
+confidence line:
 
 ```text
-Rating: Strong, Medium, Weak, or Frivolous
+Conclusion: <direct answer to the legal question>
+Confidence: <High, Medium, or Low> — <brief basis tied to the law and record>
 ```
 
-The workflow is intentionally research-oriented. Pi is directed to use
-Open Law Lens CLI commands such as `extract-statute`, `extract-rule`,
-`extract-case` (including `extract-case --find` for narrow propositions),
-and focused `case-search` before relying on authority.
+Confidence describes confidence in the stated conclusion — not argument
+strength or a party's likelihood of success. High means controlling law and
+the material record strongly point the same way with no meaningful unresolved
+conflict; Medium means one conclusion is better supported but a substantial
+counterargument, factual ambiguity, or authority tension remains; Low means
+the issue is close or unsettled, or a material source or record ambiguity
+prevents a firm conclusion.
+
+The workflow is intentionally research-oriented. Pi follows the preloaded
+Legal Researcher workflow, which directs Open Law Lens CLI commands such as
+`extract-statute`, `extract-rule`, `extract-case` (including
+`extract-case --find` for narrow propositions), and focused `case-search`
+before relying on authority, with Scholar official-copy recovery when needed.
 
 Open Law Lens does not override Pi's thinking level per prompt. Pi's normal
 project or global default applies to every agent workflow.

@@ -2526,7 +2526,7 @@ class AppReaderPayloadTests(unittest.TestCase):
         )
         self.assertNotIn("OPEN_LAW_LENS_PI_THINKING", env)
 
-    def test_appeal_issue_prompt_includes_argument_fact_pattern_and_cli_guidance(self) -> None:
+    def test_appeal_issue_prompt_includes_legal_question_fact_pattern_and_contract(self) -> None:
         class DummyWindow:
             def _format_agent_prompt(
                 self,
@@ -2551,24 +2551,27 @@ class AppReaderPayloadTests(unittest.TestCase):
 
         prompt = OpenLawLensWindow._compose_appeal_issue_agent_prompt(  # type: ignore[arg-type]
             window,
-            "The court applied the wrong standard.",
+            "Did the juvenile court abuse its discretion in finding that the child "
+            "welfare agency conducted an adequate Cal-ICWA inquiry under Welfare "
+            "and Institutions Code section 224.2? No one claims ancestry with any "
+            "particular tribe; address the significance of that fact.",
             export,
         )
 
-        self.assertIn("The court applied the wrong standard.", prompt)
-        self.assertIn("Argument to assess:", prompt)
+        self.assertIn(
+            "Did the juvenile court abuse its discretion in finding that the child "
+            "welfare agency conducted an adequate Cal-ICWA inquiry under Welfare "
+            "and Institutions Code section 224.2? No one claims ancestry with any "
+            "particular tribe; address the significance of that fact.",
+            prompt,
+        )
+        self.assertIn("Legal question to decide:", prompt)
+        self.assertNotIn("Argument to assess:", prompt)
         self.assertNotIn("Issue to assess:", prompt)
         self.assertIn("/tmp/workspace/fact_pattern/facts_extracted.txt", prompt)
-        self.assertIn(
-            'uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync '
-            "open-law-lens case-search",
-            prompt,
-        )
-        self.assertIn(
-            'extract-case "<official citation or case name>"` first',
-            prompt,
-        )
-        self.assertIn("extract-case --cluster-id <cluster_id>` only", prompt)
+        self.assertNotIn("case-search", prompt)
+        self.assertNotIn("extract-case", prompt)
+        self.assertNotIn("Scholar", prompt)
         self.assertIn("Record citation format for final answers:", prompt)
         self.assertIn("Do not cite local paths", prompt)
         self.assertIn("(RT 6, 34; CT 140, 190.)", prompt)
@@ -2584,13 +2587,13 @@ class AppReaderPayloadTests(unittest.TestCase):
             "identify that specific issue only where it affects the analysis",
             prompt,
         )
-        self.assertNotIn(
-            "missing record facts that could change the assessment",
+        self.assertIn("use normal legal prose for case names", prompt)
+        self.assertIn("Conclusion: <direct answer to the legal question>", prompt)
+        self.assertIn(
+            "Confidence: <High, Medium, or Low> — <brief basis tied to the law and record>",
             prompt,
         )
-        self.assertIn("use normal legal prose for case names", prompt)
-        self.assertIn("Reserve backticks for CLI commands", prompt)
-        self.assertIn("Rating: Strong, Medium, Weak, or Frivolous", prompt)
+        self.assertNotIn("Rating: Strong, Medium, Weak, or Frivolous", prompt)
         self.assertNotIn("Use Frivolous only when", prompt)
 
     def test_appeal_issue_start_requires_embedded_terminal(self) -> None:
@@ -2666,7 +2669,7 @@ class AppReaderPayloadTests(unittest.TestCase):
                 )
 
         self.assertTrue(result)
-        self.assertEqual(window.statuses, ["Preparing appeal issue assessment..."])
+        self.assertEqual(window.statuses, ["Preparing legal question assessment..."])
         self.assertEqual(
             DummyThread.created[0][1],
             ("Issue", Path("/tmp/facts.odt"), Path("/tmp/appeal-workspace")),
@@ -2713,7 +2716,7 @@ class AppReaderPayloadTests(unittest.TestCase):
             appeal_issue_menu_label("\n  First issue line.  \nSecond line."),
             "First issue line.",
         )
-        self.assertEqual(appeal_issue_menu_label("", max_length=12), "Untitled argument")
+        self.assertEqual(appeal_issue_menu_label("", max_length=12), "Untitled legal question")
         self.assertEqual(
             appeal_issue_menu_label("This issue description is too long", max_length=18),
             "This issue desc...",
@@ -2742,8 +2745,8 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertIsInstance(icon, Gtk.Image)
         self.assertEqual(icon.get_icon_name(), "cafe-symbolic")
         self.assertIsInstance(label, Gtk.Label)
-        self.assertEqual(label.get_text(), "Assess Argument…")
-        self.assertEqual(button.get_tooltip_text(), "Assess Argument")
+        self.assertEqual(label.get_text(), "Assess Legal Question…")
+        self.assertEqual(button.get_tooltip_text(), "Assess Legal Question")
         self.assertTrue(icon_ref.is_file())
 
     def test_appeal_issue_menu_includes_custom_argument_action(self) -> None:
@@ -2802,9 +2805,9 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(
             labels(popover),
             [
-                "Assess custom argument...",
+                "Assess custom legal question…",
                 "Short one",
-                "Edit appeal arguments...",
+                "Edit legal questions…",
             ],
         )
         self.assertEqual(button_label_xaligns(popover), [0.0, 0.0, 0.0])
@@ -2909,7 +2912,7 @@ class AppReaderPayloadTests(unittest.TestCase):
         )
 
         self.assertFalse(result)
-        self.assertEqual(window.statuses, ["Enter an argument to assess."])
+        self.assertEqual(window.statuses, ["Enter a legal question to assess."])
 
     def test_custom_appeal_issue_reports_missing_fact_pattern(self) -> None:
         class DummyWindow:

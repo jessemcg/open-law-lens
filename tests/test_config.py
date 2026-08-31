@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
@@ -15,6 +16,7 @@ from open_law_lens.config import (
     DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
     DEFAULT_APPEAL_ISSUE_LABELS,
     DEFAULT_APPEAL_ISSUE_PRESETS,
+    LEGACY_APPEAL_ISSUE_AGENT_PROMPT_SHA256ES,
     DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE,
     DEFAULT_CASE_AGENT_PROMPT_TEMPLATE,
     DEFAULT_BARE_STATUTE_LAW_CODE,
@@ -324,10 +326,19 @@ Question:
             self.assertNotIn("uv run --no-sync open-law-lens", prompt)
         for prompt in (
             DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE,
-            DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
             DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
         ):
             self.assertIn(AGENT_CLI_COMMAND_PREFIX, prompt)
+        # Appeal research routing lives solely in the preloaded Legal Researcher
+        # skill; the runtime prompt must not duplicate CLI commands.
+        self.assertNotIn(
+            AGENT_CLI_COMMAND_PREFIX,
+            DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
+        )
+        self.assertNotIn("case-search", DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE)
+        self.assertNotIn("extract-case", DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE)
+        self.assertNotIn("extract-statute", DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE)
+        self.assertNotIn("Scholar", DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE)
 
     def test_custom_general_prompt_is_preserved(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -544,14 +555,15 @@ Selected case count: {case_count}"""
                 DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
             )
             self.assertIn("Record citation format", config.appeal_issue_agent_prompt_template)
-            self.assertIn("Argument to assess", config.appeal_issue_agent_prompt_template)
-            self.assertIn("official citation or case name", config.appeal_issue_agent_prompt_template)
-            self.assertIn(
-                "recent published California slip opinion",
+            self.assertIn("Legal question to decide", config.appeal_issue_agent_prompt_template)
+            self.assertIn("Conclusion:", config.appeal_issue_agent_prompt_template)
+            self.assertIn("Confidence:", config.appeal_issue_agent_prompt_template)
+            self.assertNotIn("Argument to assess", config.appeal_issue_agent_prompt_template)
+            self.assertNotIn("Issue to assess", config.appeal_issue_agent_prompt_template)
+            self.assertNotIn(
+                "Rating: Strong, Medium, Weak, or Frivolous",
                 config.appeal_issue_agent_prompt_template,
             )
-            self.assertIn("normal legal prose", config.appeal_issue_agent_prompt_template)
-            self.assertNotIn("Issue to assess", config.appeal_issue_agent_prompt_template)
 
     def test_prior_default_appeal_prompt_migrates_to_recent_slip_guidance(self) -> None:
         previous_default = """You are the Open Law Lens Appeal Issue Assessment Agent.
@@ -598,48 +610,53 @@ Rating: Strong, Medium, Weak, or Frivolous"""
                 DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
             )
             self.assertIn(
+                "Treat the supplied fact pattern as the complete factual record",
+                config.appeal_issue_agent_prompt_template,
+            )
+            self.assertNotIn(
                 "recent published California slip opinion",
                 config.appeal_issue_agent_prompt_template,
             )
-            self.assertIn("Cal.App.5th", config.appeal_issue_agent_prompt_template)
+            self.assertNotIn("Scholar", config.appeal_issue_agent_prompt_template)
 
-    def test_previous_appeal_prompt_migrates_to_complete_record_guidance(self) -> None:
-        complete_record_guidance = (
-            "Treat the supplied fact pattern as the complete factual record for this "
-            "assessment. Base the factual analysis only on facts it contains. Do not "
-            "speculate that unprovided facts or a more complete record could alter the "
-            "assessment, and do not add a generic record-completeness caveat. If the "
-            "supplied text is internally ambiguous, contradictory, or lacks a usable "
-            "record citation, identify that specific issue only where it affects the "
-            "analysis."
-        )
-        previous_default = DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE.replace(
-            f"\n\n{complete_record_guidance}",
-            "",
-        ).replace(
-            (
-                "Analyze preservation, standard of review, factual support, governing "
-                "law, prejudice, and likely respondent arguments based on the supplied "
-                "complete fact pattern."
-            ),
-            (
-                "Analyze preservation, standard of review, factual support, governing "
-                "law, prejudice, likely respondent arguments, and missing record facts "
-                "that could change the assessment."
-            ),
-        ).replace(
-            AGENT_CLI_COMMAND_PREFIX,
-            "uv run open-law-lens",
-        )
-        self.assertNotEqual(
-            previous_default,
-            DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
-        )
-        self.assertIn(
-            "missing record facts that could change the assessment",
-            previous_default,
-        )
-        self.assertNotIn("complete factual record", previous_default)
+    def test_immediately_preceding_appeal_prompt_migrates_to_new_default(self) -> None:
+        previous_default = """You are the Open Law Lens Appeal Issue Assessment Agent.
+
+Assess one possible California appellate argument against the user's fact pattern. Use Open Law Lens CLI commands tied directly to CourtListener APIs for legal authority and legal research.
+
+Read the extracted fact-pattern text first:
+{fact_pattern_path}
+
+Original fact-pattern file:
+{fact_pattern_source_path}
+
+Record citation format for final answers:
+- Cite factual claims using record citations from the fact-pattern text, the way an appellate lawyer would, such as `(CT 335-343.)`, `(RT 6, 34; CT 140, 190.)`, or `(RT 22-34; CRT 17-22; CT 295-301.)`.
+- Do not cite local paths, extracted-text filenames, raw file pages, or line numbers in the final answer. Use those only as internal search leads.
+- Put record citations in the same sentence or paragraph as the factual claim they support.
+- Combine multiple record citations into one parenthetical only when they support the same point.
+- If the fact-pattern text does not include a usable record citation for an important fact, say that the citation is missing or uncertain instead of inventing one.
+
+Treat the supplied fact pattern as the complete factual record for this assessment. Base the factual analysis only on facts it contains. Do not speculate that unprovided facts or a more complete record could alter the assessment, and do not add a generic record-completeness caveat. If the supplied text is internally ambiguous, contradictory, or lacks a usable record citation, identify that specific issue only where it affects the analysis.
+
+Argument to assess:
+{issue}
+
+Research California law with Open Law Lens CLI commands. Extract the current controlling enactment first with `$OLL extract-statute "<citation>"` and `$OLL extract-rule "<citation>"`. For a known material case, direct-extract it with `$OLL extract-case "<official citation or case name>"`, using `--find "<term>"` for a narrow bounded proposition. Use `$OLL extract-case --cluster-id <cluster_id>` only when citation or name extraction fails. Run a focused `$OLL case-search "<query>" --limit 5` only when no reliable citation or case name is known, then extract the best published result. Treat search results as leads only.
+
+For a recent published California slip opinion or any published case still missing Cal.5th or Cal.App.5th reporter markers, `extract-case` supplies the Library/CourtListener/slip baseline text. If a relied-on case remains unpaginated, perform one confined default-browser Google Scholar recovery and import the official copy; on no result or no qualifying markers, stop and rely on the baseline with a disclosed pagination limitation. Never fall back to Tavily, direct HTTP Scholar, alternate opinion sites, or generic web search for an official copy.
+
+Confine research to California state law unless the argument explicitly requires federal law. Prefer published California Supreme Court and California Court of Appeal authority. Use unpublished cases only for context, not as controlling authority.
+
+Analyze preservation, standard of review, factual support, governing law, prejudice, and likely respondent arguments based on the supplied complete fact pattern.
+
+In the final answer, use normal legal prose for case names, statutes, rules, and citations. Reserve backticks for CLI commands, file paths, and other literal technical text.
+
+End with a rating line exactly in this form:
+Rating: Strong, Medium, Weak, or Frivolous""".replace("$OLL", AGENT_CLI_COMMAND_PREFIX)
+        prompt_hash = hashlib.sha256(previous_default.strip().encode()).hexdigest()
+        self.assertIn(prompt_hash, LEGACY_APPEAL_ISSUE_AGENT_PROMPT_SHA256ES)
+        self.assertNotEqual(previous_default, DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE)
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "config.json"
             path.write_text(
@@ -657,14 +674,223 @@ Rating: Strong, Medium, Weak, or Frivolous"""
             "complete factual record",
             config.appeal_issue_agent_prompt_template,
         )
-        self.assertIn(
-            "do not add a generic record-completeness caveat",
-            config.appeal_issue_agent_prompt_template,
-        )
+        self.assertIn("Legal question to decide", config.appeal_issue_agent_prompt_template)
+        self.assertNotIn("Argument to assess", config.appeal_issue_agent_prompt_template)
         self.assertNotIn(
-            "missing record facts that could change the assessment",
+            "Rating: Strong, Medium, Weak, or Frivolous",
             config.appeal_issue_agent_prompt_template,
         )
+
+    def test_local_legacy_appeal_prompt_migrates_to_new_default(self) -> None:
+        legacy_prompt = """You are the Open Law Lens Appeal Issue Assessment Agent.
+
+Assess one possible California appellate argument against the user's fact pattern. Use Open Law Lens CLI commands tied directly to CourtListener APIs for legal authority and legal research.
+
+Read the extracted fact-pattern text first:
+{fact_pattern_path}
+
+Original fact-pattern file:
+{fact_pattern_source_path}
+
+Record citation format for final answers:
+- Cite factual claims using record citations from the fact-pattern text, the way an appellate lawyer would, such as `(CT 335-343.)`, `(RT 6, 34; CT 140, 190.)`, or `(RT 22-34; CRT 17-22; CT 295-301.)`.
+- Do not cite local paths, extracted-text filenames, raw file pages, or line numbers in the final answer. Use those only as internal search leads.
+- Put record citations in the same sentence or paragraph as the factual claim they support.
+- Combine multiple record citations into one parenthetical only when they support the same point.
+- If the fact-pattern text does not include a usable record citation for an important fact, say that the citation is missing or uncertain instead of inventing one.
+
+Treat the supplied fact pattern as the complete factual record for this assessment. Base the factual analysis only on facts it contains. Do not speculate that unprovided facts or a more complete record could alter the assessment, and do not add a generic record-completeness caveat. If the supplied text is internally ambiguous, contradictory, or lacks a usable record citation, identify that specific issue only where it affects the analysis.
+
+Argument to assess:
+{issue}
+
+Research California law with Open Law Lens CLI commands. For case-law discovery, start with `uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync open-law-lens case-search "<query>"`. Treat search results as leads only. When a promising search result has an official citation or recognizable case name, try `uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync open-law-lens extract-case "<official citation or case name>"` first so saved durable-library text can be reused. Use `uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync open-law-lens extract-case --cluster-id <cluster_id>` only when citation/name extraction fails or no reliable citation/name is available. Use `uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync open-law-lens extract-statute "<citation>"` and `uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync open-law-lens extract-rule "<citation>"` when statutes or rules matter.
+
+For a recent published California slip opinion with no official reporter citation, a placeholder like `___ Cal.App.5th ___`, or only a docket number, run targeted Google Scholar or web searches using the case name, docket number, filed date, and `Cal.App.5th`. If an official citation is found, retry `uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync open-law-lens extract-case "<official citation>"` and rely on the extracted text, source, warnings, and reporter markers.
+
+Confine research to California state law unless the argument explicitly requires federal law. Prefer published California Supreme Court and California Court of Appeal authority. Use unpublished cases only for context, not as controlling authority.
+
+Analyze preservation, standard of review, factual support, governing law, prejudice, and likely respondent arguments based on the supplied complete fact pattern.
+
+In the final answer, use normal legal prose for case names, statutes, rules, and citations. Reserve backticks for CLI commands, file paths, and other literal technical text.
+
+End with a rating line exactly in this form:
+Rating: Strong, Medium, Weak, or Frivolous"""
+        prompt_hash = hashlib.sha256(legacy_prompt.strip().encode()).hexdigest()
+        self.assertIn(prompt_hash, LEGACY_APPEAL_ISSUE_AGENT_PROMPT_SHA256ES)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text(
+                json.dumps({"appeal_issue_agent_prompt_template": legacy_prompt}),
+                encoding="utf-8",
+            )
+
+            config = load_config(path)
+
+        self.assertEqual(
+            config.appeal_issue_agent_prompt_template,
+            DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
+        )
+        self.assertIn("Legal question to decide", config.appeal_issue_agent_prompt_template)
+        self.assertNotIn("Scholar", config.appeal_issue_agent_prompt_template)
+
+    def test_new_default_appeal_prompt_is_neutral_legal_question_assessment(self) -> None:
+        prompt = DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
+
+        self.assertIn("objective California appellate assessment", prompt)
+        self.assertIn("bench memorandum", prompt)
+        self.assertIn("not an advocate for any party", prompt)
+        self.assertIn("Do not presume an answer from the wording of the question", prompt)
+        self.assertIn("Legal question to decide:\n{issue}", prompt)
+        self.assertIn("Legal Researcher workflow preloaded", prompt)
+        self.assertIn("Question Presented", prompt)
+        self.assertIn("Short Answer", prompt)
+        self.assertIn("Governing Law/Standard of Review", prompt)
+        self.assertIn("strongest material reasoning supporting each possible answer", prompt)
+        self.assertIn(
+            "address it expressly", prompt,
+        )
+        self.assertIn("ancestry with a particular tribe", prompt)
+        self.assertIn(
+            "End the answer with these two lines exactly in this form:", prompt,
+        )
+        self.assertIn(
+            "Conclusion: <direct answer to the legal question>", prompt,
+        )
+        self.assertIn(
+            "Confidence: <High, Medium, or Low> — <brief basis tied to the law and record>",
+            prompt,
+        )
+        self.assertIn("High: controlling law", prompt)
+        self.assertIn("Medium: one conclusion is better supported", prompt)
+        self.assertIn("Low: the issue is close or unsettled", prompt)
+        self.assertIn("complete factual record", prompt)
+        self.assertIn("do not add a generic record-completeness caveat", prompt)
+        self.assertIn("{fact_pattern_path}", prompt)
+        self.assertIn("{fact_pattern_source_path}", prompt)
+        self.assertIn("normal legal prose for case names", prompt)
+        self.assertNotIn("Argument to assess", prompt)
+        self.assertNotIn("Rating: Strong, Medium, Weak, or Frivolous", prompt)
+        self.assertNotIn("Scholar", prompt)
+        self.assertNotIn("web search", prompt)
+
+    def test_default_appeal_issue_presets_are_neutral_questions(self) -> None:
+        for preset in DEFAULT_APPEAL_ISSUE_PRESETS:
+            self.assertTrue(preset.endswith("?"), preset)
+            self.assertNotIn("In re ", preset)
+            self.assertNotIn("Cal.5th", preset)
+            self.assertNotIn("Cal.App.4th", preset)
+            self.assertNotIn("Cal.App.5th", preset)
+
+        self.assertEqual(
+            list(DEFAULT_APPEAL_ISSUE_PRESETS),
+            [
+                "Did substantial evidence support the challenged finding?",
+                "Did the trial court abuse its discretion in making the challenged order?",
+                "Did the trial court apply the correct legal standard?",
+                "Did the proceedings afford the appellant due process, including "
+                "adequate notice and a meaningful opportunity to be heard?",
+                "If error occurred, was it prejudicial under the applicable appellate standard?",
+            ],
+        )
+
+    def test_generic_default_appeal_issue_presets_map_to_questions(self) -> None:
+        legacy_defaults = [
+            "Substantial evidence does not support the challenged finding.",
+            "The trial court abused its discretion in making the challenged order.",
+            "The trial court applied the wrong legal standard.",
+            "The appellant was denied due process, notice, or a meaningful opportunity to be heard.",
+            "The error was prejudicial and not harmless under the applicable appellate standard.",
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "appeal_issue_presets": legacy_defaults,
+                        "appeal_issue_labels": list(DEFAULT_APPEAL_ISSUE_LABELS),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(path)
+
+        self.assertEqual(config.appeal_issue_presets, list(DEFAULT_APPEAL_ISSUE_PRESETS))
+        self.assertEqual(config.appeal_issue_labels, list(DEFAULT_APPEAL_ISSUE_LABELS))
+
+    def test_dependency_appeal_issue_presets_map_exactly_preserving_order(self) -> None:
+        legacy_presets = [
+            "Substantial evidence did not support the order asserting dependency jurisdiction over the child[ren] under Welfare and Institutions Code section 300.",
+            "Substantial evidence did not support the order removing the child[ren] from parental custody under Welfare and Institutions Code section 361, subdivision (c)(1).",
+            "The juvenile court abused its discretion in finding that the child welfare agency conducted an adequate Cal-ICWA inquiry. (Welf. & Inst. Code, § 224.2; In re Dezi C. (2024) 16 Cal.5th 1112, 1141.)",
+            "The juvenile court erred in failing to apply the beneficial relationship exception. (Welf. & Inst. Code, § 366.26, subd. (c)(1)(B)(i); In re Caden C. (2021) 11 Cal.5th 614, 636.)",
+            "Clear and convincing evidence did not support a finding that the child was likely to be adopted within a reasonable time. (Welf. & Inst. Code, § 366.26, subd. (c)(1); In re Sarah M. (1994) 22 Cal.App.4th 1642, 1649.)",
+            "The juvenile court erred in denying the parent's section 388 petition after an evidentiary hearing. (Welf. & Inst. Code, § 388, subd. (a)(1); In re J.M. (2020) 50 Cal.App.5th 833, 846.)",
+            "The juvenile court erred in summarily denying the parent's section 388 petition without an evidentiary hearing. (Welf. & Inst. Code, § 388, subd. (a)(1); In re Edward H. (1996) 43 Cal.App.4th 584, 593.)",
+            "The juvenile court erred in failing to grant the request for replacement counsel under People v. Marsden. (In re Z.N. (2010) 181 Cal.App.4th 282, 294.)",
+            "The juvenile court abused its discretion in denying the request to continue the matter. (Welf. & Inst. Code, § 352, subd. (a); In re Giovanni F. (2010) 184 Cal.App.4th 594, 605.)",
+        ]
+        legacy_labels = [
+            "Suff. of Evid. for Jurisdiction",
+            "Suff. of Evid. for Removal",
+            "Cal-ICWA Inquiry",
+            "Beneficial Relationship Exception",
+            "Adoptability",
+            "Denial of Section 388 Petition",
+            "Summary Denial of Section 388 Petition",
+            "Marsden Error",
+            "Denial of Continuance Request",
+        ]
+        expected_questions = [
+            "Did substantial evidence support the juvenile court's exercise of dependency jurisdiction over the child or children under Welfare and Institutions Code section 300?",
+            "Did substantial evidence support the juvenile court's order removing the child or children from parental custody under Welfare and Institutions Code section 361, subdivision (c)(1)?",
+            "Did the juvenile court abuse its discretion in finding that the child welfare agency conducted an adequate Cal-ICWA inquiry under Welfare and Institutions Code section 224.2?",
+            "Did the juvenile court err in finding that the beneficial relationship exception to termination of parental rights did not apply under Welfare and Institutions Code section 366.26, subdivision (c)(1)(B)(i)?",
+            "Did clear and convincing evidence support the juvenile court's finding that the child was likely to be adopted within a reasonable time under Welfare and Institutions Code section 366.26, subdivision (c)(1)?",
+            "Did the juvenile court err in denying the parent's Welfare and Institutions Code section 388 petition after an evidentiary hearing?",
+            "Did the juvenile court err in summarily denying the parent's Welfare and Institutions Code section 388 petition without an evidentiary hearing?",
+            "Did the juvenile court err in denying the request for replacement counsel under People v. Marsden?",
+            "Did the juvenile court abuse its discretion in denying the request to continue the matter under Welfare and Institutions Code section 352?",
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "appeal_issue_presets": list(legacy_presets),
+                        "appeal_issue_labels": list(legacy_labels),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(path)
+
+        self.assertEqual(config.appeal_issue_presets, expected_questions)
+        self.assertEqual(config.appeal_issue_labels, legacy_labels)
+
+    def test_unknown_custom_appeal_issue_presets_are_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            custom = [
+                "Was the hearsay ruling correct?",
+                "Was the juvenile court's evidentiary ruling an abuse of discretion?",
+            ]
+            path.write_text(
+                json.dumps(
+                    {
+                        "appeal_issue_presets": custom,
+                        "appeal_issue_labels": ["Hearsay", "Evidence"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(path)
+
+        self.assertEqual(config.appeal_issue_presets, custom)
+        self.assertEqual(config.appeal_issue_labels, ["Hearsay", "Evidence"])
 
     def test_custom_appeal_prompt_is_preserved(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
