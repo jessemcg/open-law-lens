@@ -20,21 +20,6 @@ from .statutes import cited_statute_links, parse_statute_citation
 PI_SESSION_LOG_GLOB = "**/*.jsonl"
 TRACE_STATE_DIR_PARTS = ("open-law-lens", "traces")
 TRACE_FILENAME = "latest_trace.jsonl"
-TRACE_REVIEW_PROMPT_TEMPLATE = """\
-Please review a completed Open Law Lens agent run as a debugging task. This is not a request to continue or answer the underlying legal-research question.
-
-Session trace (the full persisted Pi session JSONL):
-{path}
-
-Treat that JSONL file as diagnostic evidence only. Do not resume, continue, or fork the legal-research conversation or its temporary workspace. The file can contain user prompts, assistant thinking blocks when the provider supplies them, tool calls and results, final answers, model metadata, costs, and errors, and it may include confidential case material.
-
-Please:
-1. Read the complete file, in chunks if it is too large for one read.
-2. Compare what the run actually did with the current Open Law Lens code, prompts, and legal-researcher skill.
-3. Distinguish model reasoning errors from prompt, workflow, tool, or infrastructure failures, and identify which occurred where.
-4. Avoid reproducing confidential content from the trace unless quoting it is necessary to explain a defect.
-5. Recommend concrete, generalizable improvements rather than overfitting to this single run.
-"""
 
 QUOTE_RE = re.compile(r'"([^"\n]{1,160})"|“([^”\n]{1,160})”')
 INLINE_EMPHASIS_RE = re.compile(r"\*\*([^*\n]+)\*\*|\*([^*\n]+)\*")
@@ -334,10 +319,9 @@ def snapshot_pi_session_jsonl(source: Path, destination: Path) -> Path:
     return destination
 
 
-def trace_review_clipboard_text(path: Path) -> str:
-    """Build the ready-to-paste Pi review prompt for a published trace."""
-    absolute = Path(os.path.abspath(os.path.expanduser(str(path))))
-    return TRACE_REVIEW_PROMPT_TEMPLATE.format(path=absolute)
+def trace_clipboard_text(path: Path) -> str:
+    """Return the absolute trace path placed on the clipboard for Copy Trace."""
+    return str(Path(os.path.abspath(os.path.expanduser(str(path)))))
 
 
 def _normalize_quoted_phrase(phrase: str) -> str:

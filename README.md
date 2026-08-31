@@ -389,12 +389,10 @@ relative value is rejected. The destination directory is created with `0700`
 permissions and the snapshot file is `0600`. If a snapshot cannot be validated
 or written, the previous trace and the clipboard are left untouched.
 
-After publishing the snapshot, Copy Trace places a ready-to-paste review
-prompt on the clipboard. That prompt asks a fresh Pi coding session to treat
-the JSONL as diagnostic evidence — not as a conversation to resume — and to
-compare the run with the current Open Law Lens code and prompts, separate
-model reasoning errors from prompt/workflow/tool/infrastructure failures, and
-recommend concrete, generalizable improvements.
+After publishing the snapshot, Copy Trace places the snapshot's absolute
+path on the clipboard — nothing else. Paste that path into a fresh Pi coding
+session and compose your own review request; the trace is meant as
+diagnostic evidence to review, not a conversation to resume.
 
 The trace is the **full persisted Pi session JSONL**: user prompts, assistant
 thinking blocks when the provider supplies them, tool calls and results, final

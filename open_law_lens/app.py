@@ -46,7 +46,7 @@ from .agent import (
     reasoning_trace_path,
     resolved_agent_quote_spans,
     snapshot_pi_session_jsonl,
-    trace_review_clipboard_text,
+    trace_clipboard_text,
 )
 from .agent_commands import agent_cli_command
 from .authority_resolver import first_authority_candidate
@@ -3626,7 +3626,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_copy_trace_button = Gtk.Button(label="Copy Trace")
         self._agent_copy_trace_button.add_css_class("flat")
         self._agent_copy_trace_button.set_tooltip_text(
-            "Refresh the latest full Agent session trace and copy a Pi review prompt "
+            "Refresh the latest full Agent session trace and copy its path "
             "for pasting into a new Pi session"
         )
         self._agent_copy_trace_button.set_sensitive(False)
@@ -10125,15 +10125,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 f"Copy Trace failed; previous trace preserved: {error}"
             )
             return
-        prompt = trace_review_clipboard_text(destination)
         display = Gdk.Display.get_default()
         if display is None:
             self._set_status(
                 f"Agent trace saved to {destination}, but the clipboard was unavailable."
             )
             return
-        display.get_clipboard().set(prompt)
-        self._set_status(f"Copied Agent trace review prompt. Trace: {destination}")
+        display.get_clipboard().set(trace_clipboard_text(destination))
+        self._set_status(f"Copied Agent trace path. Trace: {destination}")
 
     def _render_markdown_text(
         self,

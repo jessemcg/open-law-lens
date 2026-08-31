@@ -21,7 +21,7 @@ from open_law_lens.agent import (
     resolve_quote_target,
     resolved_agent_quote_spans,
     snapshot_pi_session_jsonl,
-    trace_review_clipboard_text,
+    trace_clipboard_text,
 )
 from open_law_lens.library import DisplayText
 
@@ -688,20 +688,16 @@ class TraceWorkflowTests(unittest.TestCase):
                 ["latest_trace.jsonl"],
             )
 
-    def test_trace_review_prompt_is_diagnostic_not_resumption(self) -> None:
+    def test_trace_clipboard_text_is_path_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "traces/latest_trace.jsonl"
 
-            prompt = trace_review_clipboard_text(path)
+            text = trace_clipboard_text(path)
 
-        self.assertIn(str(path), prompt)
-        self.assertIn("diagnostic evidence", prompt)
-        self.assertIn("Do not resume", prompt)
-        self.assertIn("chunks", prompt)
-        self.assertIn("Open Law Lens code, prompts", prompt)
-        self.assertIn("model reasoning errors", prompt)
-        self.assertIn("confidential", prompt)
-        self.assertIn("generalizable improvements", prompt)
+        self.assertEqual(text, str(path))
+        self.assertNotIn("\n", text)
+        self.assertNotIn("review", text.casefold())
+        self.assertNotIn("diagnostic", text.casefold())
 
 
 if __name__ == "__main__":

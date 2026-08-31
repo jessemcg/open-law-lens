@@ -471,7 +471,7 @@ class AppReaderPayloadTests(unittest.TestCase):
         window.statuses = statuses
         return window
 
-    def test_copy_trace_click_snapshots_then_copies_prompt(self) -> None:
+    def test_copy_trace_click_snapshots_then_copies_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir) / "workspace"
             session_log = workspace / "pi-sessions" / "session.jsonl"
@@ -500,9 +500,9 @@ class AppReaderPayloadTests(unittest.TestCase):
 
             self.assertEqual(destination.read_text(encoding="utf-8"), payload)
             self.assertEqual(clipboard.set.call_count, 1)
-            prompt = clipboard.set.call_args.args[0]
-            self.assertIn(str(destination), prompt)
-            self.assertIn("diagnostic evidence", prompt)
+            copied = clipboard.set.call_args.args[0]
+            self.assertEqual(copied, str(destination))
+            self.assertNotIn("diagnostic", copied.casefold())
             self.assertTrue(
                 any(str(destination) in status for status in window.statuses)
             )
