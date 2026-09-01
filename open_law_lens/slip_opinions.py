@@ -133,6 +133,35 @@ def normalize_case_number(value: str) -> str:
     return match.group(1).upper() if match else ""
 
 
+def case_numbers_from_url_values(values: Any) -> tuple[str, ...]:
+    r"""Extract validated California appellate case numbers from URL-like strings.
+
+    Only string values are inspected, and only ``[A-Z]\d{6}`` tokens are
+    accepted, so opinion text and unrelated metadata can never contribute a
+    candidate. Callers must pass URL-like field values only (for example a
+    raw opinion's ``download_url``); this helper never scans or logs opinion
+    text.
+    """
+    found: set[str] = set()
+    if isinstance(values, (str, bytes)) or not hasattr(values, "__iter__"):
+        values = [values]
+    for value in values:
+        if not isinstance(value, str) or not value:
+            continue
+        for match in CASE_NUMBER_RE.finditer(value):
+            case_number = normalize_case_number(match.group(0))
+            if case_number:
+                found.add(case_number)
+    return tuple(sorted(found))
+
+
+def case_number_from_url_values(values: Any) -> str:
+    """Return the single California case number shared by every candidate in
+    *values*, or ``""`` when none is found or the candidates disagree."""
+    discovered = case_numbers_from_url_values(values)
+    return discovered[0] if len(discovered) == 1 else ""
+
+
 def case_number_from_cluster(cluster: dict[str, Any]) -> str:
     candidates: list[object] = [
         cluster.get("docket_number"),

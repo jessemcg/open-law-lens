@@ -19,6 +19,7 @@ from open_law_lens.browser_recovery import (
     ScholarRecoveryRequest,
     detect_barrier,
     find_result_link,
+    find_result_matches,
     find_scholar_url,
     is_scholar_case_url,
     node_name,
@@ -1276,6 +1277,139 @@ class CitationlessResultLinkTests(unittest.TestCase):
         self.assertIsNone(find_result_link(tree, scoped, "", "In re T.R.", docket_number="B299242"))
 
 
+class InReECFirefoxRegressionTests(unittest.TestCase):
+    """Reproduce the live In re E.C. recovery page.
+
+    Scholar returned two visible results with the same normalized title and
+    year: California ``85 Cal.App.5th 123`` (correct) and Ohio ``2022 Ohio
+    1223``. Only the California result's own primary metadata may qualify.
+    """
+
+    CAL_METADATA = (
+        "85 Cal. App. 5th 123 - Cal: Court of Appeal, 2nd Appellate Dist. "
+        "2022 - Google Scholar"
+    )
+
+    @staticmethod
+    def _results(extra_california: bool = False) -> list[dict[str, Any]]:
+        results = [
+            {
+                "title": "In re EC",
+                "metadata": InReECFirefoxRegressionTests.CAL_METADATA,
+                "snippet": "… The mother argues the juvenile court erred.",
+                "cited_by": "Cited by 2",
+            }
+        ]
+        if extra_california:
+            results.append(
+                {
+                    "title": "In re EC",
+                    "metadata": "86 Cal. App. 5th 200 - Cal: Court of Appeal 2022 - Google Scholar",
+                    "snippet": "… unrelated.",
+                }
+            )
+        results.append(
+            {
+                "title": "In re E.C.",
+                "metadata": "2022 Ohio 1223 - Ohio: Court of Appeals 2022 - Google Scholar",
+                # The Ohio result's snippet cites a California case; a snippet
+                # can never qualify its own result.
+                "snippet": "… citing In re B.M., 146 Cal.App.4th at p. 785.",
+            }
+        )
+        return results
+
+    @staticmethod
+    def _scoped(
+        results: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        tree = firefox_scholar_search_tree('"In re E.C." F084030', results)
+        return tree, _scoped_search(tree)
+
+    def test_california_result_selected_over_same_title_ohio_result(self) -> None:
+        tree, scoped = self._scoped(self._results())
+        matches = find_result_matches(
+            tree, scoped, "", "In re E.C.", docket_number="F084030", filing_year="2022"
+        )
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(node_name(matches[0].link), "In re EC")
+        self.assertEqual(matches[0].official_citation, "85 Cal.App.5th 123")
+        link = find_result_link(
+            tree, scoped, "", "In re E.C.", docket_number="F084030", filing_year="2022"
+        )
+        self.assertIsNotNone(link)
+        assert link is not None
+        self.assertEqual(node_name(link), "In re EC")
+
+    def test_ohio_snippet_citing_california_case_cannot_qualify(self) -> None:
+        tree, scoped = self._scoped(self._results())
+        # The Ohio result shares the exact normalized title and year; only a
+        # California official citation in its own primary metadata could
+        # qualify it, and its snippet's California citation is out of bounds.
+        self.assertIsNone(
+            find_result_link(tree, scoped, "", "In re E.C.", docket_number="F084030")
+        )
+        self.assertIsNone(find_result_link(tree, scoped, "146 Cal.App.4th 785", ""))
+
+    def test_two_qualifying_california_results_rejected(self) -> None:
+        tree, scoped = self._scoped(self._results(extra_california=True))
+        self.assertIsNone(
+            find_result_link(tree, scoped, "", "In re E.C.", docket_number="F084030")
+        )
+
+    def test_docket_constrained_result_without_docket_in_metadata_qualifies_on_year(
+        self,
+    ) -> None:
+        # The real E.C. result omits the docket from its metadata; the unique
+        # exact-title result qualifies on its California citation plus year.
+        results = [
+            {
+                "title": "In re EC",
+                "metadata": "85 Cal. App. 5th 123 - Cal: Court of Appeal 2022 - Google Scholar",
+                "snippet": "… The mother argues the juvenile court erred.",
+            },
+            {
+                "title": "In re E.C.",
+                "metadata": "2022 Ohio 1223 - Ohio: Court of Appeals 2022 - Google Scholar",
+                "snippet": "… citing a 85 Cal.App.5th 123 passage.",
+            },
+        ]
+        tree, scoped = self._scoped(results)
+        link = find_result_link(
+            tree, scoped, "", "In re E.C.", docket_number="F084030", filing_year="2022"
+        )
+        self.assertIsNotNone(link)
+        assert link is not None
+        self.assertEqual(node_name(link), "In re EC")
+
+    def test_metadata_exposing_different_case_number_rejected(self) -> None:
+        results = [
+            {
+                "title": "In re EC",
+                # The metadata exposes some other case number: even with the
+                # right title, citation, and year, the docket-constrained
+                # candidate is rejected.
+                "metadata": "No. B123456 85 Cal. App. 5th 123 - Cal: Court of Appeal 2022 - Google Scholar",
+            }
+        ]
+        tree, scoped = self._scoped(results)
+        self.assertIsNone(
+            find_result_link(
+                tree, scoped, "", "In re E.C.", docket_number="F084030", filing_year="2022"
+            )
+        )
+
+    def test_discovered_citation_is_85_cal_app_5th_123(self) -> None:
+        tree, scoped = self._scoped(self._results())
+        matches = find_result_matches(
+            tree, scoped, "", "In re E.C.", docket_number="F084030", filing_year="2022"
+        )
+        self.assertEqual(len(matches), 1)
+        assert matches
+        self.assertEqual(matches[0].official_citation, "85 Cal.App.5th 123")
+        self.assertEqual(matches[0].to_json()["official_citation"], "85 Cal.App.5th 123")
+
+
 class ValidatedFilingYearTests(unittest.TestCase):
     def test_valid_four_digit_year(self) -> None:
         self.assertEqual(validated_filing_year("2022"), "2022")
@@ -1320,7 +1454,8 @@ class OpinionIdentityTests(unittest.TestCase):
                 docket_number="B299242",
                 filing_year="",
                 observed_title="In re S.H. - Google Scholar",
-                page_text="No. B299242 IN THE COURT OF APPEAL",
+                page_text="In re S.H. No. B299242 82 Cal.App.5th 166 (2022) OPINION",
+                official_citation="82 Cal.App.5th 166",
             )
         )
 
@@ -1332,7 +1467,50 @@ class OpinionIdentityTests(unittest.TestCase):
                 docket_number="",
                 filing_year="2022",
                 observed_title="In re S.H. - Google Scholar",
-                page_text="Filed 5/31/2022 OPINION",
+                page_text="Filed 5/31/2022 82 Cal.App.5th 166 OPINION",
+                official_citation="82 Cal.App.5th 166",
+            )
+        )
+
+    def test_citationless_rejects_missing_selected_citation(self) -> None:
+        # The citation discovered in the selected result's primary metadata
+        # must also appear on the opened opinion before anything is copied.
+        self.assertFalse(
+            opinion_identity_confirmed(
+                expected_citation="",
+                case_name="In re S.H.",
+                docket_number="B299242",
+                filing_year="",
+                observed_title="In re S.H. - Google Scholar",
+                page_text="No. B299242 IN THE COURT OF APPEAL",
+                official_citation="82 Cal.App.5th 166",
+            )
+        )
+        # No selected citation at all fails closed even when the docket shows.
+        self.assertFalse(
+            opinion_identity_confirmed(
+                expected_citation="",
+                case_name="In re S.H.",
+                docket_number="B299242",
+                filing_year="",
+                observed_title="In re S.H. - Google Scholar",
+                page_text="No. B299242 IN THE COURT OF APPEAL",
+                official_citation="",
+            )
+        )
+
+    def test_citationless_rejects_discovered_citation_mismatch(self) -> None:
+        # The opened page must carry the citation selected from the result
+        # metadata, not merely some other official citation.
+        self.assertFalse(
+            opinion_identity_confirmed(
+                expected_citation="",
+                case_name="In re E.C.",
+                docket_number="F084030",
+                filing_year="2022",
+                observed_title="In re E.C. - Google Scholar",
+                page_text="No. F084030 86 Cal.App.5th 999 (2022) OPINION",
+                official_citation="85 Cal.App.5th 123",
             )
         )
 
@@ -1464,6 +1642,135 @@ class CitationlessStateMachineTests(unittest.TestCase):
         outcome = self._run(client)
         self.assertEqual(outcome.outcome, "not_found")
         self.assertEqual(client.pressed, [])
+
+
+
+class InReECStateMachineTests(unittest.TestCase):
+    """Docket-constrained E.C. recovery: copy only the corroborated opinion."""
+
+    EC_QUERY = '"In re E.C." F084030'
+    OPINION_TEXT = "In re E.C. No. F084030 85 Cal.App.5th 123 (2022) OPINION"
+
+    class _Client(_FakeClient):
+        SEARCH_TITLE = "Google Scholar"
+        OPINION_TITLE = "In re E.C. - Google Scholar"
+
+        @staticmethod
+        def _search_tree() -> list[dict[str, Any]]:
+            return firefox_scholar_search_tree(
+                '"In re E.C." F084030',
+                [
+                    {
+                        "title": "In re EC",
+                        "metadata": (
+                            "85 Cal. App. 5th 123 - Cal: Court of Appeal, "
+                            "2nd Appellate Dist. 2022 - Google Scholar"
+                        ),
+                        "snippet": "… The mother argues the juvenile court erred.",
+                        "cited_by": "Cited by 2",
+                    },
+                    {
+                        "title": "In re E.C.",
+                        "metadata": "2022 Ohio 1223 - Ohio: Court of Appeals 2022 - Google Scholar",
+                        "snippet": "… citing In re B.M., 146 Cal.App.4th at p. 785.",
+                    },
+                ],
+            )
+
+        @staticmethod
+        def _opinion_tree() -> list[dict[str, Any]]:
+            return [
+                node(0, "application", "Firefox"),
+                node(
+                    1,
+                    "frame",
+                    "In re E.C. - Google Scholar",
+                    states=["showing", "visible"],
+                    parent=0,
+                ),
+                node(
+                    2,
+                    "combo box",
+                    text={"content": "https://scholar.google.com/scholar_case?case=8509982"},
+                    parent=1,
+                ),
+                node(3, "panel", "page", parent=1),
+                node(
+                    4,
+                    "static text",
+                    "In re E.C. No. F084030 85 Cal.App.5th 123 (2022) OPINION",
+                    parent=3,
+                ),
+            ]
+
+    def _run(self, client: Any) -> Any:
+        request = ScholarRecoveryRequest(
+            query=self.EC_QUERY,
+            expected_citation="",
+            case_name="In re E.C.",
+            filing_year="2022",
+            docket_number="F084030",
+        )
+        job = ScholarRecoveryJob(request, client=client)
+        with mock.patch(
+            "open_law_lens.browser_recovery.time", _FakeTime()
+        ), mock.patch(
+            "open_law_lens.browser_recovery.RecoveryLock", return_value=_FakeLock()
+        ), mock.patch(
+            "open_law_lens.browser_recovery.launch_scholar_url",
+            return_value=("Firefox", "firefox.desktop"),
+        ):
+            return job.run()
+
+    def test_ec_docket_constrained_recovery_copies_california_result(self) -> None:
+        client = self._Client()
+        outcome = self._run(client)
+        self.assertEqual(outcome.outcome, "copied")
+        self.assertEqual(
+            outcome.source_url, "https://scholar.google.com/scholar_case?case=8509982"
+        )
+        self.assertEqual(outcome.official_citation, "85 Cal.App.5th 123")
+        # Exactly one semantic action plus targeted copy keys; nothing else.
+        self.assertEqual(client.pressed, [("Ctrl+A", 7), ("Ctrl+C", 7)])
+        self.assertTrue(client.navigated)
+
+    def test_opened_opinion_confirms_when_docket_sits_beyond_the_front_matter(
+        self,
+    ) -> None:
+        # Live In re E.C. page: the docket link renders beyond the bounded
+        # front-matter window, so title + discovered citation + filing year
+        # confirm the identity and the docket is enforced at clipboard import.
+        class _OmittedDocketClient(self._Client):
+            @staticmethod
+            def _opinion_tree() -> list[dict[str, Any]]:
+                tree = self._Client._opinion_tree()
+                for item in tree:
+                    if (item.get("role") or "").casefold() == "static text":
+                        item["name"] = "In re E.C. 85 Cal.App.5th 123 (2022) OPINION"
+                return tree
+
+        client = _OmittedDocketClient()
+        outcome = self._run(client)
+        self.assertEqual(outcome.outcome, "copied")
+        self.assertEqual(client.pressed, [("Ctrl+A", 7), ("Ctrl+C", 7)])
+
+    def test_opened_opinion_with_different_citation_is_rejected(self) -> None:
+        class _WrongCitationClient(self._Client):
+            @staticmethod
+            def _opinion_tree() -> list[dict[str, Any]]:
+                tree = self._Client._opinion_tree()
+                for item in tree:
+                    if (item.get("role") or "").casefold() == "static text":
+                        item["name"] = (
+                            "In re E.C. No. F084030 86 Cal.App.5th 999 (2022) OPINION"
+                        )
+                return tree
+
+        client = _WrongCitationClient()
+        outcome = self._run(client)
+        self.assertEqual(outcome.outcome, "not_found")
+        self.assertEqual(client.pressed, [])
+
 
 
 if __name__ == "__main__":

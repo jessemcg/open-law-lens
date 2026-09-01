@@ -11,6 +11,8 @@ from open_law_lens.cache import JsonCache
 from open_law_lens.slip_opinions import (
     SlipOpinionError,
     case_number_from_cluster,
+    case_number_from_url_values,
+    case_numbers_from_url_values,
     fetch_slip_opinion,
     is_recent_published_california_case,
     slip_metadata_from_text,
@@ -44,6 +46,41 @@ class SlipOpinionTests(unittest.TestCase):
         }
 
         self.assertEqual(case_number_from_cluster(cluster), "A173218")
+
+    def test_case_numbers_from_url_values_extracts_case_numbers(self) -> None:
+        values = [
+            "https://www.courts.ca.gov/opinions/documents/F084030.PDF",
+            "https://www.courts.ca.gov/opinions/documents/F084030a.PDF",
+        ]
+        self.assertEqual(case_numbers_from_url_values(values), ("F084030",))
+
+    def test_case_number_from_url_values_requires_unique_candidate(self) -> None:
+        self.assertEqual(
+            case_number_from_url_values(
+                [
+                    "https://www.courts.ca.gov/opinions/documents/F084030.PDF",
+                    "https://www.courts.ca.gov/opinions/documents/B123456.PDF",
+                ]
+            ),
+            "",
+        )
+        self.assertEqual(case_number_from_url_values([]), "")
+        self.assertEqual(case_number_from_url_values([42, None]), "")
+
+    def test_case_number_from_url_values_derives_ec_docket(self) -> None:
+        # The live In re E.C. CourtListener opinion URL carries the case number.
+        self.assertEqual(
+            case_number_from_url_values(
+                [
+                    "https://www.courts.ca.gov/opinions/documents/F084030.PDF",
+                    "https://www.courts.ca.gov/opinions/documents/F084030.PDF?query=1",
+                ]
+            ),
+            "F084030",
+        )
+
+    def test_case_numbers_from_url_values_ignores_non_strings(self) -> None:
+        self.assertEqual(case_numbers_from_url_values([None, 42, ""]), ())
 
     def test_recent_published_california_case_requires_status_court_and_age(self) -> None:
         cluster = {

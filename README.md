@@ -618,14 +618,28 @@ known, the Scholar search and the opened-opinion corroboration use that exact
 citation, unchanged. When no official citation is known (for example a recent
 slip opinion), the free-form query is never treated as a citation: recovery
 requires the exact normalized case name plus a docket/case number (preferred)
-or a filing year, builds the search as the quoted exact case name plus that
-discriminator, and clicks only a single result whose own result block carries
-both the exact title and the selected discriminator. The opened opinion is
-revalidated against the same identity before anything is copied, and missing
+or a filing year, and builds exactly one search as the quoted exact case name
+plus that discriminator. Before the search, a California appellate case
+number is enriched from trusted cluster fields and from URL-like fields of the
+already-fetched raw opinion metadata (for example `F084030` from a
+court's `download_url`); opinion text is never scanned, and enrichment
+failure degrades to the filing-year path without a second search. The
+selected result must be unique and corroborated from its own primary
+reporter/court metadata — never from a snippet, the search box, or another
+result: for citation-less recovery that metadata must parse as an official
+California reporter citation (which excludes same-title same-year results
+from other states, such as an `In re E.C.` Ohio decision), and must carry the
+docket or, when the metadata omits the docket, the filing year. Two
+qualifying results are never resolved by guessing. The opened opinion is then
+revalidated against the same identity from bounded front-matter text — exact
+normalized title, the official citation selected from the result metadata,
+and the docket when the identity carries one, otherwise the filing year — and
+the import validator requires the copied opinion's derived citation to equal
+the selected citation before any Library or Research Cache write. Missing
 identity data returns `not_found` without opening a browser at all. The
-existing import validator remains the final gate and derives the reporter
-citation from the copied opinion; missing identity, ambiguity, mismatch, or
-failed validation performs no Library or Research Cache write.
+existing import validator remains the final gate; missing identity,
+ambiguity, mismatch, or failed validation performs no Library or Research
+Cache write.
 
 Run the read-only readiness check once per computer before the first desktop
 recovery (do this on each machine after installation):

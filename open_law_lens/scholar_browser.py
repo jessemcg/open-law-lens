@@ -273,13 +273,15 @@ def _cluster_docket(cluster: dict[str, Any]) -> str:
     return str(docket.get("docket_number") or "").strip() if isinstance(docket, dict) else ""
 
 
-def _corroborate_identity(cluster: dict[str, Any], front: str) -> None:
+def _corroborate_identity(
+    cluster: dict[str, Any], front: str, docket_number: str = ""
+) -> None:
     """Require a matching normalized title plus docket or filing-year evidence."""
     expected_name = _identity_name(str(cluster.get("case_name") or cluster.get("case_name_full") or ""))
     found_name = _identity_name(imported_case_name_from_text(front))
     if not expected_name or not found_name or expected_name != found_name:
         raise ScholarBrowserError("Clipboard case name does not match the requested case.")
-    docket = _cluster_docket(cluster)
+    docket = _cluster_docket(cluster) or re.sub(r"\s+", " ", docket_number or "").strip()
     docket_match = bool(
         docket and re.search(rf"(?<![A-Z0-9]){re.escape(docket)}(?![A-Z0-9])", front, re.IGNORECASE)
     )
@@ -292,13 +294,29 @@ def _corroborate_identity(cluster: dict[str, Any], front: str) -> None:
         )
 
 
-def _derived_identity_citation(cluster: dict[str, Any], front: str) -> str:
+def _derived_identity_citation(
+    cluster: dict[str, Any], front: str, discovered_citation: str = "", docket_number: str = ""
+) -> str:
     """Derive the official citation from copied Scholar text for an identity-only
-    recent slip, and corroborate the case identity before accepting it."""
+    recent slip, and corroborate the case identity before accepting it.
+
+    When the deterministic recovery selected a result whose primary metadata
+    carried an official citation, the copied opinion's derived citation must
+    equal that selected citation — a clipboard naming a different reporter
+    citation is rejected before any Library or Research Cache write. The
+    enriched docket (when one was derived from already-fetched metadata) is
+    corroborated against the copied text even when the CourtListener cluster
+    itself carries no docket number."""
     citation = normalize_official_citation(front)
     if not citation:
         raise ScholarBrowserError("Clipboard text has no California official reporter citation.")
-    _corroborate_identity(cluster, front)
+    _corroborate_identity(cluster, front, docket_number)
+    discovered = normalize_official_citation(discovered_citation or "")
+    if discovered and citation != discovered:
+        raise ScholarBrowserError(
+            "Clipboard text does not match the official citation selected from "
+            "the Scholar result."
+        )
     return citation
 
 
@@ -310,6 +328,8 @@ def import_scholar_text(
     clipboard_text: str,
     case_name: str = "",
     existing_cluster: dict[str, Any] | None = None,
+    discovered_citation: str = "",
+    docket_number: str = "",
 ) -> ScholarClipboardImport:
     """Validate and persist a copied Scholar opinion through the shared service.
 
@@ -317,10 +337,14 @@ def import_scholar_text(
     It supports either an exact expected official citation, or an identity-only
     recent-slip query (empty ``citation`` plus an existing CourtListener
     cluster) whose citation is derived from the copied text and corroborated by
-    matching title plus docket or filing year. It cleans browser/account
-    chrome, requires a qualifying officially paginated opinion, and then
-    persists via ``persist_official_opinion``. On any validation failure it
-    raises without mutating the Library or Research Cache.
+    matching title plus docket or filing year. When the browser recovery
+    selected a result whose primary metadata carried an official citation
+    (``discovered_citation``), the copied opinion's derived citation must equal
+    it, and the supplied ``docket_number`` (the citation-less identity derived
+    from already-fetched metadata) is corroborated against the copied text. It cleans browser/account chrome, requires a qualifying officially
+    paginated opinion, and then persists via ``persist_official_opinion``. On
+    any validation failure it raises without mutating the Library or Research
+    Cache.
     """
     if not clipboard_text or not clipboard_text.strip():
         raise ScholarBrowserError("Clipboard content was empty.")
@@ -336,7 +360,9 @@ def import_scholar_text(
             raise ScholarBrowserError(
                 "An identity-only Scholar import requires an existing CourtListener cluster."
             )
-        normalized = _derived_identity_citation(existing_cluster, cleaned)
+        normalized = _derived_identity_citation(
+            existing_cluster, cleaned, discovered_citation, docket_number
+        )
     else:
         normalized = require_official_citation(citation)
         # Require the document to match the requested citation, not merely to
@@ -350,6 +376,12 @@ def import_scholar_text(
         if not validated or validated != normalized:
             raise ScholarBrowserError(
                 "Clipboard text does not match the requested official citation."
+            )
+        discovered = normalize_official_citation(discovered_citation or "")
+        if discovered and discovered != normalized:
+            raise ScholarBrowserError(
+                "Clipboard text does not match the citation selected from the "
+                "Scholar result."
             )
 
     normalized_text = normalize_external_reporter_markers(cleaned, normalized)

@@ -2,7 +2,10 @@
 
 This module owns the full high-level flow:
 
-    baseline identity/request
+    baseline identity/request (citation-less identity is first enriched from
+      already-fetched metadata: a California appellate case number from
+      trusted fields or URL-like raw opinion metadata is preferred over the
+      filing year)
       -> deterministic browser recovery (browser_recovery)
       -> regular clipboard read (scholar_browser)
       -> existing Scholar cleanup + identity validation + pagination validation
@@ -46,6 +49,7 @@ from .scholar_browser import (
     import_scholar_text,
     read_regular_clipboard,
 )
+from .slip_opinions import case_number_from_cluster, case_number_from_url_values
 
 # Outcome values a caller can branch on.
 OUTCOME_IMPORTED = "imported"
@@ -87,6 +91,67 @@ class ScholarRecoveryServiceResult:
         if self.authority is not None and hasattr(self.authority, "to_json"):
             value["authority"] = self.authority.to_json()
         return value
+
+
+def _cluster_url_field_values(cluster: Mapping[str, Any]) -> list[str]:
+    """Collect URL-like string values from trusted cluster fields only.
+
+    Opinion text is never scanned or logged; only URL-shaped fields (for
+    example a raw opinion's ``download_url``) are inspected.
+    """
+    values: list[str] = []
+    for key, value in cluster.items():
+        if "url" not in str(key).casefold():
+            continue
+        if isinstance(value, str):
+            values.append(value)
+        elif isinstance(value, list):
+            values.extend(item for item in value if isinstance(item, str))
+    return values
+
+
+def _cluster_recovery_docket(client: Any, cluster: Mapping[str, Any] | None) -> str:
+    """Derive the California appellate case number for citation-less identity.
+
+    A trusted direct/nested docket number is preferred. When absent, only
+    URL-like fields of the already-fetched raw opinion metadata — especially
+    ``download_url`` — are inspected for a California case number (for
+    example ``F084030``). A derived number is accepted only when every
+    discovered candidate normalizes to one value; otherwise the caller falls
+    back to the validated filing year. Metadata-enrichment failure degrades
+    to the year path and never triggers a second Scholar search.
+    """
+    if not isinstance(cluster, Mapping):
+        return ""
+    direct = _cluster_docket_number(cluster)
+    if direct:
+        return direct
+    candidates: list[str] = []
+    trusted = case_number_from_cluster(dict(cluster))
+    if trusted:
+        candidates.append(trusted)
+    url_values = _cluster_url_field_values(cluster)
+    try:
+        opinions = client.fetch_cluster_opinions(
+            cluster,
+            refresh=False,
+            persist_to_library=False,
+            populate_research_cache=False,
+        )
+    except Exception:
+        opinions = []
+    if isinstance(opinions, list):
+        for opinion in opinions:
+            if isinstance(opinion, Mapping):
+                url_values.extend(_cluster_url_field_values(opinion))
+    derived = case_number_from_url_values(url_values)
+    candidates.append(derived)
+    # Accept a derived case number only when every discovered candidate
+    # normalizes to one value; otherwise fall back to the filing year.
+    agreed = {candidate for candidate in candidates if candidate}
+    if len(agreed) == 1:
+        return next(iter(agreed))
+    return ""
 
 
 def _cluster_filing_year(cluster: Mapping[str, Any] | None) -> str:
@@ -191,6 +256,16 @@ def recover_official_copy(
     filing_year = filing_year or _cluster_filing_year(existing_cluster)
     docket_number = docket_number or _cluster_docket_number(existing_cluster)
     case_name = case_name.strip() or _cluster_case_name(existing_cluster)
+    if not citation.strip():
+        # Enrich citation-less identity from already-fetched metadata before
+        # the identity gate: a California appellate case number discovered
+        # from trusted fields or URL-like raw opinion metadata (for example
+        # ``F084030`` from a ``download_url``) is preferred over the filing
+        # year. Enrichment failure degrades to the existing year path without
+        # aborting the baseline or triggering a second Scholar search.
+        docket_number = docket_number or _cluster_recovery_docket(
+            client, existing_cluster
+        )
     if not citation.strip() and not _citationless_identity_ready(
         case_name=case_name, filing_year=filing_year, docket_number=docket_number
     ):
@@ -258,6 +333,12 @@ def recover_official_copy(
             clipboard_text=clipboard_text,
             case_name=case_name,
             existing_cluster=existing_cluster,
+            # The copied opinion's derived citation must equal the official
+            # citation discovered in the selected result's primary metadata,
+            # and the citation-less identity (including the enriched docket)
+            # is corroborated against the copied text before persistence.
+            discovered_citation=recovery.official_citation,
+            docket_number=docket_number,
         )
     except (ScholarBrowserError, ValueError, RuntimeError) as exc:
         return ScholarRecoveryServiceResult(

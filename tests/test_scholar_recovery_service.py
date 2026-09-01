@@ -195,6 +195,155 @@ class ServiceTests(unittest.TestCase):
         self.assertNotIn("clipboard", str(payload))
 
 
+class DocketEnrichmentTests(unittest.TestCase):
+    """Citation-less identity enrichment from already-fetched metadata.
+
+    Regression for In re E.C. (cluster 8509982): the cluster carries no docket
+    number, but the raw opinion's ``download_url`` exposes the California
+    appellate case number F084030.
+    """
+
+    EC_CLUSTER = {
+        "id": "8509982",
+        "case_name": "In re E.C.",
+        "date_filed": "2022-11-14",
+    }
+
+    def _recover(self, client: Any, **kwargs: Any) -> Any:
+        with mock.patch(
+            "open_law_lens.scholar_recovery_service.run_scholar_recovery",
+            return_value=ScholarRecoveryOutcome(1, "not_found", "q", "", "no match"),
+        ) as run_recovery:
+            result = recover_official_copy(client, citation="", **kwargs)
+        return result, run_recovery
+
+    def test_case_number_derived_from_download_url(self) -> None:
+        client = mock.Mock()
+        client.fetch_cluster_opinions.return_value = [
+            {
+                "id": "9",
+                "download_url": (
+                    "https://www.courts.ca.gov/opinions/documents/F084030.PDF"
+                ),
+            }
+        ]
+        result, run_recovery = self._recover(
+            client, query="ignored", existing_cluster=dict(self.EC_CLUSTER)
+        )
+        request = run_recovery.call_args.args[0]
+        self.assertEqual(request.docket_number, "F084030")
+        self.assertEqual(request.query, '"In re E.C." F084030')
+        # The filing year is retained even when the docket is preferred,
+        # because Scholar result metadata often shows the year but not the
+        # docket.
+        self.assertEqual(request.filing_year, "2022")
+        client.fetch_cluster_opinions.assert_called_once_with(
+            dict(self.EC_CLUSTER),
+            refresh=False,
+            persist_to_library=False,
+            populate_research_cache=False,
+        )
+
+    def test_explicit_docket_is_never_overridden(self) -> None:
+        client = mock.Mock()
+        result, run_recovery = self._recover(
+            client,
+            query="ignored",
+            case_name="In re S.H.",
+            docket_number="B299242",
+            existing_cluster=dict(self.EC_CLUSTER),
+        )
+        client.fetch_cluster_opinions.assert_not_called()
+        request = run_recovery.call_args.args[0]
+        self.assertEqual(request.docket_number, "B299242")
+        self.assertEqual(request.query, '"In re S.H." B299242')
+
+    def test_ambiguous_url_candidates_fall_back_to_year(self) -> None:
+        client = mock.Mock()
+        client.fetch_cluster_opinions.return_value = [
+            {"download_url": "https://www.courts.ca.gov/opinions/documents/F084030.PDF"},
+            {"download_url": "https://www.courts.ca.gov/opinions/documents/B123456.PDF"},
+        ]
+        result, run_recovery = self._recover(
+            client, query="q", existing_cluster=dict(self.EC_CLUSTER)
+        )
+        request = run_recovery.call_args.args[0]
+        # Ambiguous metadata candidates never beat the validated filing year.
+        self.assertEqual(request.docket_number, "")
+        self.assertEqual(request.query, '"In re E.C." 2022')
+
+    def test_enrichment_failure_degrades_to_year_path(self) -> None:
+        client = mock.Mock()
+        client.fetch_cluster_opinions.side_effect = RuntimeError("offline")
+        result, run_recovery = self._recover(
+            client, query="q", existing_cluster=dict(self.EC_CLUSTER)
+        )
+        self.assertEqual(result.outcome, OUTCOME_NOT_FOUND)
+        request = run_recovery.call_args.args[0]
+        self.assertEqual(request.docket_number, "")
+        self.assertEqual(request.query, '"In re E.C." 2022')
+
+    def test_ambiguous_opinion_urls_degrade_to_year(self) -> None:
+        client = mock.Mock()
+        client.fetch_cluster_opinions.return_value = [
+            {"download_url": "https://www.courts.ca.gov/opinions/documents/F084030.PDF"},
+            {"download_url": "https://www.courts.ca.gov/opinions/documents/B123456.PDF"},
+        ]
+        result, run_recovery = self._recover(
+            client, query="q", existing_cluster=dict(self.EC_CLUSTER)
+        )
+        request = run_recovery.call_args.args[0]
+        self.assertEqual(request.docket_number, "")
+        self.assertEqual(request.query, '"In re E.C." 2022')
+
+    def test_opinion_text_is_never_scanned_for_docket(self) -> None:
+        # Only URL-like fields are inspected; a plain-text field carrying the
+        # case number must never contribute a candidate.
+        client = mock.Mock()
+        client.fetch_cluster_opinions.return_value = [
+            {"plain_text": "No. F084030 IN THE COURT OF APPEAL"}
+        ]
+        result, _ = self._recover(
+            client, query="q", existing_cluster=dict(self.EC_CLUSTER)
+        )
+        self.assertEqual(result.outcome, OUTCOME_NOT_FOUND)
+
+    def test_discovered_official_citation_reaches_the_import(self) -> None:
+        client = mock.Mock()
+        with mock.patch(
+            "open_law_lens.scholar_recovery_service.run_scholar_recovery",
+            return_value=ScholarRecoveryOutcome(
+                1,
+                "copied",
+                '"In re E.C." F084030',
+                "https://scholar.google.com/scholar_case?case=8509982",
+                "Copied.",
+                "85 Cal.App.5th 123",
+            ),
+        ), mock.patch(
+            "open_law_lens.scholar_recovery_service.read_regular_clipboard",
+            return_value="opinion text",
+        ), mock.patch(
+            "open_law_lens.scholar_recovery_service.import_scholar_text",
+            return_value=imported_result(),
+        ) as importer, mock.patch(
+            "open_law_lens.scholar_recovery_service._re_extract_authority",
+            return_value=None,
+        ):
+            result = recover_official_copy(
+                client,
+                query="anything",
+                citation="",
+                case_name="In re E.C.",
+                filing_year="2022",
+                docket_number="F084030",
+            )
+        self.assertEqual(result.outcome, OUTCOME_IMPORTED)
+        self.assertEqual(
+            importer.call_args.kwargs["discovered_citation"], "85 Cal.App.5th 123"
+        )
+
+
 class CitationlessRequestTests(unittest.TestCase):
     """Citation-less identity flows through the request and fails closed."""
 

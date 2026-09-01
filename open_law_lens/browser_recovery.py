@@ -12,7 +12,9 @@ The job is deliberately small and side-effect constrained:
   every Open Law Lens and Current Case TUI process.
 * It checks desktop readiness, snapshots existing windows, opens Scholar with
   the current default HTTPS handler, scopes the exact target frame and tab, and
-  matches exactly one corroborated result.
+  matches exactly one qualifying result selected from that result's own
+  primary reporter/court metadata (never a snippet, the search box, or another
+  result).
 * It only ever performs a targeted ``perform_action`` (semantic element index)
   and targeted ``Ctrl+A`` / ``Ctrl+C`` key presses with an exact numeric
   ``window_id``, revalidating window/frame/title/URL around every mutation.
@@ -41,6 +43,7 @@ from .computer_use_mcp import (
     ComputerUseMCPError,
     doctor_readiness,
 )
+from .external_import import normalize_official_citation
 from .scholar_browser import (
     SCHOLAR_NETLOC,
     build_scholar_case_search_url,
@@ -121,6 +124,10 @@ class ScholarRecoveryOutcome:
     query: str
     source_url: str
     message: str
+    # Backward-compatible optional field (result version stays 1): the official
+    # California reporter citation discovered from the selected result's own
+    # primary metadata. Old callers/tests may omit it; it defaults to empty.
+    official_citation: str = ""
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -129,6 +136,7 @@ class ScholarRecoveryOutcome:
             "query": self.query,
             "source_url": self.source_url,
             "message": self.message,
+            "official_citation": self.official_citation,
         }
 
 
@@ -156,17 +164,22 @@ def validate_recovery_result(payload: Any) -> ScholarRecoveryOutcome | None:
     query = normalize_recovery_query(str(payload.get("query") or ""))
     source_url = str(payload.get("source_url") or "").strip()
     message = re.sub(r"\s+", " ", str(payload.get("message") or "")).strip()
+    official_citation = normalize_official_citation(
+        str(payload.get("official_citation") or "")
+    )
     if outcome == "copied":
         if not source_url or not is_scholar_case_url(source_url):
             return None
     else:
         source_url = ""
+        official_citation = ""
     return ScholarRecoveryOutcome(
         version=RESULT_VERSION,
         outcome=outcome,
         query=query,
         source_url=source_url,
         message=message,
+        official_citation=official_citation,
     )
 
 
@@ -264,6 +277,30 @@ class RecoveryLock:
 # ---------------------------------------------------------------------------
 # Pure accessibility-tree helpers (unit-testable with synthetic trees)
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ScholarResultMatch:
+    """One qualifying Scholar search result.
+
+    ``link`` is the semantic title link to activate; ``heading_text`` and
+    ``primary_metadata`` hold the result's own heading and reporter/court
+    metadata text; ``official_citation`` is the official California reporter
+    citation discovered in that primary metadata — never from a snippet, the
+    search box, or another result.
+    """
+
+    link: Mapping[str, Any]
+    heading_text: str
+    primary_metadata: str
+    official_citation: str
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "heading_text": self.heading_text,
+            "primary_metadata": self.primary_metadata,
+            "official_citation": self.official_citation,
+        }
 
 
 def normalize_match_token(value: str) -> str:
@@ -547,12 +584,28 @@ _RESULT_BLOCK_MAX_TEXT_NODES = 2
 _RESULT_BLOCK_MAX_CHARS = 400
 
 
-def result_block_text(
+@dataclass(frozen=True)
+class ScholarResultText:
+    """The bounded text zones of one Scholar search result.
+
+    ``heading`` is the result title, ``primary_metadata`` is the result's own
+    reporter/court metadata line, and ``snippet`` is ellipsis-prefixed quoted
+    text. Only the first two may ever corroborate a candidate; a snippet can
+    quote the target citation while describing a different case, so it is
+    tracked separately and never matched against.
+    """
+
+    heading: str
+    primary_metadata: str
+    snippet: str
+
+
+def split_result_block(
     tree: Sequence[Mapping[str, Any]],
     scoped_indexes: set[int],
     heading: Mapping[str, Any],
-) -> str:
-    """Return the bounded corroboration text for one Scholar result.
+) -> ScholarResultText:
+    """Separate one Scholar result's heading, primary metadata, and snippet.
 
     Starting at a result-title heading, this collects the heading text plus up
     to two short meaningful text nodes that live inside the result container
@@ -561,8 +614,9 @@ def result_block_text(
     metadata whether AT-SPI exposes it as a direct sibling of the heading or
     nested inside a sibling container, while text in another result's snippet,
     the page footer, or the search box (which echoes the query) can never
-    corroborate the candidate. Snippet-style text beginning with an ellipsis
-    is excluded because later results routinely quote the target citation.
+    corroborate the candidate. Text beginning with an ellipsis is classified
+    as the snippet and is returned separately; it can never corroborate a
+    candidate.
     """
     by_index: dict[int, Mapping[str, Any]] = {
         int(node.get("index")): node for node in tree
@@ -573,7 +627,9 @@ def result_block_text(
             i for i, node in enumerate(tree) if int(node.get("index")) == heading_index
         )
     except StopIteration:
-        return node_full_text(heading)
+        return ScholarResultText(
+            heading=node_full_text(heading), primary_metadata="", snippet=""
+        )
 
     allowed_roots = {heading_index}
     try:
@@ -597,10 +653,13 @@ def result_block_text(
                 return False
         return False
 
-    parts = [node_full_text(heading)]
-    collected_chars = len(parts[0])
+    heading_text = node_full_text(heading)
+    metadata_parts: list[str] = []
+    snippet_parts: list[str] = []
+    collected_chars = len(heading_text)
     additional = 0
     scanned = 0
+    snippet_chars = 0
     for node in tree[position + 1 :]:
         scanned += 1
         if scanned > _RESULT_BLOCK_MAX_SCANNED:
@@ -613,10 +672,15 @@ def result_block_text(
             continue
         text = re.sub(r"\s+", " ", node_full_text(node)).strip()
         if not text or text.startswith(("…", "...")):
+            if text:
+                snippet_parts.append(text)
+                snippet_chars += len(text)
+                if snippet_chars >= _RESULT_BLOCK_MAX_CHARS:
+                    break
             continue
         if not re.search(r"[a-z0-9]", text.casefold()):
             continue
-        parts.append(text)
+        metadata_parts.append(text)
         additional += 1
         collected_chars += len(text)
         if (
@@ -624,10 +688,59 @@ def result_block_text(
             or collected_chars >= _RESULT_BLOCK_MAX_CHARS
         ):
             break
-    return " ".join(part for part in parts if part)
+    return ScholarResultText(
+        heading=heading_text,
+        primary_metadata=" ".join(metadata_parts),
+        snippet=" ".join(snippet_parts),
+    )
 
 
-def find_result_link(
+def result_block_text(
+    tree: Sequence[Mapping[str, Any]],
+    scoped_indexes: set[int],
+    heading: Mapping[str, Any],
+) -> str:
+    """Return the bounded heading-plus-primary-metadata text for one result.
+
+    Snippet-style text is excluded; see :func:`split_result_block` for the
+    full zone separation.
+    """
+    text = split_result_block(tree, scoped_indexes, heading)
+    return f"{text.heading} {text.primary_metadata}".strip()
+
+
+def _metadata_docket_confirmed(docket_number: str, primary_metadata: str) -> bool:
+    """Whether the result's primary metadata exposes the expected docket."""
+    if not docket_number:
+        return False
+    return bool(
+        re.search(
+            rf"(?<![A-Za-z0-9]){re.escape(docket_number)}(?![A-Za-z0-9])",
+            primary_metadata,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _metadata_docket_conflicts(docket_number: str, primary_metadata: str) -> bool:
+    """Whether the primary metadata exposes some other California case number."""
+    if not re.search(r"\b[A-Z]\d{6}\b", primary_metadata):
+        return False
+    return not re.search(
+        rf"(?<![A-Za-z0-9]){re.escape(docket_number)}(?![A-Za-z0-9])",
+        primary_metadata,
+        re.IGNORECASE,
+    )
+
+
+def _discovered_citation(expected_citation: str, primary_metadata: str) -> str:
+    """Prefer the parsed official citation from the primary metadata; keep the
+    explicit expected citation when the metadata does not parse."""
+    derived = normalize_official_citation(primary_metadata)
+    return derived or normalize_official_citation(expected_citation)
+
+
+def find_result_matches(
     tree: Sequence[Mapping[str, Any]],
     scoped: Sequence[Mapping[str, Any]],
     expected_citation: str,
@@ -635,19 +748,22 @@ def find_result_link(
     *,
     docket_number: str = "",
     filing_year: str = "",
-) -> Mapping[str, Any] | None:
-    """Return the single corroborated visible result link, or ``None``.
+) -> list[ScholarResultMatch]:
+    """Return every qualifying visible result link, in tree order.
 
     When an expected official citation is known, the link must match the name
-    and its result block must also corroborate the citation. When only a
-    citation is known, a citation-only fallback is permitted, but duplicate
-    candidates are rejected (never a guess) in both modes.
+    and its result's primary metadata must carry exactly that citation. When
+    only a citation is known, a citation-only fallback is permitted, but the
+    caller must still reject multiple candidates (never a guess) in both
+    modes.
 
     Citation-less recovery never treats the free-form search query as a
     citation. It requires a trustworthy case name plus a discriminator — the
-    docket number when available, otherwise the filing year — and only
-    matches exactly one result block that carries both. Title alone is never
-    enough to click a result.
+    docket number when available, otherwise the filing year — and matches only
+    results whose primary metadata carries an official California reporter
+    citation plus that discriminator. Title alone is never enough to click a
+    result, and a snippet, the search box, or another result can never
+    corroborate a candidate.
     """
     by_index: dict[int, Mapping[str, Any]] = {
         int(n.get("index")): n for n in tree
@@ -657,13 +773,14 @@ def find_result_link(
     citation_norm = normalize_match_token(expected_citation)
     case_norm = normalize_match_token(case_name)
     docket_norm = normalize_match_token(docket_number)
+    docket_raw = re.sub(r"\s+", " ", docket_number or "").strip()
     year = validated_filing_year(filing_year)
     if not citation_norm:
         # Citation-less identity: an exact case name plus at least one
         # discriminator (docket or filing year) is required. A name-only
         # match is never sufficient to click a result.
         if not case_norm or not (docket_norm or year):
-            return None
+            return []
 
     def heading_for_link(link: Mapping[str, Any]) -> Mapping[str, Any] | None:
         """Walk up from a result link to its containing heading."""
@@ -689,42 +806,65 @@ def find_result_link(
         and node_name(node)
     ]
 
-    candidates: list[Mapping[str, Any]] = []
+    matches: list[ScholarResultMatch] = []
     for link in visible_links:
         heading = heading_for_link(link)
         if heading is None:
             continue
-        block = result_block_text(tree, scoped_indexes, heading)
-        block_norm = normalize_match_token(block)
+        text = split_result_block(tree, scoped_indexes, heading)
+        primary_raw = f"{text.heading} {text.primary_metadata}"
         if citation_norm:
-            if citation_norm not in block_norm:
+            derived = normalize_official_citation(text.primary_metadata)
+            if derived:
+                if normalize_match_token(derived) != citation_norm:
+                    continue
+            elif citation_norm not in normalize_match_token(primary_raw):
                 continue
             if case_norm:
                 link_norm = normalize_match_token(node_name(link))
                 if not (case_norm in link_norm or link_norm in case_norm):
                     continue
+            discovered = _discovered_citation(expected_citation, derived)
         else:
             # Citation-less identity: the link must carry the exact case name
             # (punctuation-only differences such as ``S.H.`` versus ``SH``
-            # normalize away) and its block must corroborate the docket or the
-            # filing year. Partial-title matches are rejected.
+            # normalize away), the primary metadata must parse as an official
+            # California reporter citation, and the docket — or, when the
+            # metadata omits it, the filing year — must corroborate. Snippets
+            # and other results can never corroborate a candidate.
             if normalize_match_token(node_name(link)) != case_norm:
                 continue
-            if docket_norm:
-                if docket_norm not in block_norm:
-                    continue
-            elif year and not re.search(rf"(?<![0-9]){year}(?![0-9])", block):
+            discovered = normalize_official_citation(primary_raw)
+            if not discovered:
                 continue
-        candidates.append(link)
+            docket_ok = _metadata_docket_confirmed(docket_raw, primary_raw)
+            year_in_metadata = _year_in_metadata(primary_raw, year)
+            if docket_norm:
+                # A docket-constrained result whose metadata omits the docket
+                # may still qualify on title + citation + year, but only when
+                # the metadata exposes no different case number.
+                if not docket_ok and not (
+                    year_in_metadata
+                    and not _metadata_docket_conflicts(docket_raw, primary_raw)
+                ):
+                    continue
+            elif not year_in_metadata:
+                continue
+        matches.append(
+            ScholarResultMatch(
+                link=link,
+                heading_text=text.heading,
+                primary_metadata=text.primary_metadata,
+                official_citation=discovered,
+            )
+        )
 
-    # Deduplicate by index and reject ambiguity.
-    unique: dict[int, Mapping[str, Any]] = {}
-    for link in candidates:
-        unique[int(link.get("index"))] = link
-
-    if len(unique) == 1:
-        return next(iter(unique.values()))
-    return None
+    # Deduplicate by link index; the caller decides whether one match is
+    # unique enough to click.
+    unique: dict[int, ScholarResultMatch] = {}
+    for match in matches:
+        unique[int(match.link.get("index"))] = match
+    return list(unique.values())
 
 
 # ---------------------------------------------------------------------------
@@ -785,7 +925,13 @@ class ScholarRecoveryJob:
     def _deadline_exceeded(self) -> bool:
         return self._elapsed() > self.timeout
 
-    def _outcome(self, outcome: str, message: str, source_url: str = "") -> ScholarRecoveryOutcome:
+    def _outcome(
+        self,
+        outcome: str,
+        message: str,
+        source_url: str = "",
+        official_citation: str = "",
+    ) -> ScholarRecoveryOutcome:
         self._final_outcome = outcome
         return ScholarRecoveryOutcome(
             version=RESULT_VERSION,
@@ -793,6 +939,7 @@ class ScholarRecoveryJob:
             query=self.request.query,
             source_url=source_url,
             message=(message or ""),
+            official_citation=normalize_official_citation(official_citation),
         )
 
     # -- state 1: acquire lock ---------------------------------------------
@@ -972,9 +1119,10 @@ class ScholarRecoveryJob:
             expected_citation = self.request.expected_citation
             case_name = self.request.case_name
             search_deadline = time.monotonic() + self.page_deadline()
-            link = None
+            match: ScholarResultMatch | None = None
             saw_search_page = False
             saw_result_structure = False
+            multiple_qualifying = False
             while time.monotonic() < search_deadline:
                 if self._is_cancelled() or self._deadline_exceeded():
                     return self._outcome("failed", "Scholar recovery timed out.")
@@ -1000,7 +1148,7 @@ class ScholarRecoveryJob:
                     for node in scoped
                 ):
                     saw_result_structure = True
-                link = find_result_link(
+                matches = find_result_matches(
                     tree,
                     scoped,
                     expected_citation,
@@ -1008,10 +1156,14 @@ class ScholarRecoveryJob:
                     docket_number=self.request.docket_number,
                     filing_year=self.request.filing_year,
                 )
-                if link is not None:
+                if len(matches) == 1:
+                    match = matches[0]
+                    break
+                if len(matches) > 1:
+                    multiple_qualifying = True
                     break
                 time.sleep(0.5)
-            if link is None:
+            if match is None:
                 if not saw_search_page:
                     return self._outcome(
                         "not_found", "The Scholar search results page did not load."
@@ -1021,11 +1173,22 @@ class ScholarRecoveryJob:
                         "not_found",
                         "The Scholar page loaded but showed no parseable result structure.",
                     )
+                if multiple_qualifying:
+                    return self._outcome(
+                        "not_found",
+                        "Multiple qualifying Scholar results matched; recovery stopped "
+                        "without selecting one.",
+                    )
+                if not expected_citation.strip():
+                    return self._outcome(
+                        "not_found",
+                        "No exact-title California reporter result matched the recovery identity.",
+                    )
                 return self._outcome("not_found", "No single corroborated Scholar result matched.")
 
             self._report("Opening opinion")
             try:
-                self.client.perform_action(element_index=int(link.get("index")))
+                self.client.perform_action(element_index=int(match.link.get("index")))
             except ComputerUseMCPError as exc:
                 return self._outcome("failed", "Opening the Scholar result failed: " + str(exc))
 
@@ -1062,16 +1225,19 @@ class ScholarRecoveryJob:
                     return self._outcome("blocked", f"Google Scholar showed {barrier}; leaving it visible.")
                 # The opened opinion must identify the expected case before
                 # anything is copied: by name plus official citation when one
-                # is known, or by case name plus docket/filing-year evidence
-                # for citation-less recovery. A transiently mis-scoped tab
-                # simply retries until the selected tab's document settles.
+                # is known, or by case name plus the citation discovered from
+                # the selected result plus docket/filing-year evidence for
+                # citation-less recovery. Only bounded front-matter text is
+                # inspected. A transiently mis-scoped tab simply retries until
+                # the selected tab's document settles.
                 if opinion_identity_confirmed(
                     expected_citation=expected_citation,
                     case_name=case_name,
                     docket_number=self.request.docket_number,
                     filing_year=self.request.filing_year,
                     observed_title=observed_title,
-                    page_text=_tree_text(scoped),
+                    page_text=front_matter_text(scoped),
+                    official_citation="" if expected_citation else match.official_citation,
                 ):
                     identity_confirmed = True
                     break
@@ -1097,7 +1263,12 @@ class ScholarRecoveryJob:
 
             self.client.press_key(key="Ctrl+C", window_id=window_id)
 
-            return self._outcome("copied", "Copied the Scholar opinion.", source_url=opinion_url)
+            return self._outcome(
+                "copied",
+                "Copied the Scholar opinion.",
+                source_url=opinion_url,
+                official_citation=match.official_citation,
+            )
         except RecoveryBusyError:
             return self._outcome("failed", "Another Scholar recovery is already running.")
         except (BrowserRecoveryError, ComputerUseMCPError, OSError) as exc:
@@ -1150,6 +1321,34 @@ def _tree_text(tree: Sequence[Mapping[str, Any]]) -> str:
     return " ".join(node_full_text(node) for node in tree)
 
 
+_FRONT_MATTER_NODE_LIMIT = 48
+_FRONT_MATTER_MAX_CHARS = 600
+
+
+def front_matter_text(tree: Sequence[Mapping[str, Any]]) -> str:
+    """Return bounded front-matter identity text from a scoped page.
+
+    Opinion identity is corroborated from the front matter only — the first
+    short run of meaningful nodes (title, reporter line, docket, filing date)
+    — so deep opinion body text can never influence, or be exposed by, the
+    validation. The text is used for matching only and is never logged.
+    """
+    parts: list[str] = []
+    collected = 0
+    for node in tree:
+        text = re.sub(r"\s+", " ", node_full_text(node)).strip()
+        if not text:
+            continue
+        parts.append(text)
+        collected += len(text)
+        if (
+            len(parts) >= _FRONT_MATTER_NODE_LIMIT
+            or collected >= _FRONT_MATTER_MAX_CHARS
+        ):
+            break
+    return " ".join(parts)
+
+
 def validated_filing_year(value: str) -> str:
     """Return the value when it is exactly four digits, else an empty string."""
     return value if re.fullmatch(r"\d{4}", value or "") else ""
@@ -1163,15 +1362,30 @@ def opinion_identity_confirmed(
     filing_year: str,
     observed_title: str,
     page_text: str,
+    official_citation: str = "",
 ) -> bool:
     """Corroborate an opened opinion against the explicit recovery identity.
 
     With a known citation, both the case name (when supplied) and the exact
     normalized citation must appear — the historical behavior. For
     citation-less recovery the free-form query is never treated as a
-    citation: the opened page must instead identify the exact case name plus
-    the docket number or the filing year. With no usable discriminator the
-    identity can never be confirmed (fail closed).
+    citation: the opened page must instead identify the exact case name, the
+    official citation that was discovered in the selected result's primary
+    metadata, and the docket number or (when the identity carries no docket)
+    the filing year. With no usable identity the match can never be confirmed
+    (fail closed).
+    """
+    """Corroborate an opened opinion against the explicit recovery identity.
+
+    With a known citation, both the case name (when supplied) and the exact
+    normalized citation must appear — the historical behavior. For
+    citation-less recovery the free-form query is never treated as a
+    citation: the bounded front-matter text must identify the exact case
+    name, the official citation discovered in the selected result's primary
+    metadata, and the docket number when the page exposes it, or the filing
+    year otherwise (real Scholar pages often show the year but render the
+    docket beyond the bounded front matter). With no usable identity the
+    match can never be confirmed (fail closed).
     """
     identity_norm = normalize_match_token(observed_title) + normalize_match_token(page_text)
     raw_identity = f"{observed_title} {page_text}"
@@ -1181,6 +1395,11 @@ def opinion_identity_confirmed(
     citation_norm = normalize_match_token(expected_citation)
     if citation_norm:
         return citation_norm in identity_norm
+    selected_norm = normalize_match_token(official_citation)
+    if not selected_norm or selected_norm not in identity_norm:
+        # Citation-less recovery requires the citation selected from the
+        # result's primary metadata to be confirmed on the opened page.
+        return False
     docket_norm = normalize_match_token(docket_number)
     if docket_norm and docket_norm in identity_norm:
         return True
@@ -1188,6 +1407,38 @@ def opinion_identity_confirmed(
     if year and re.search(rf"(?<![0-9]){year}(?![0-9])", raw_identity):
         return True
     return False
+
+
+def _year_in_metadata(primary_metadata: str, year: str) -> bool:
+    """Whether the validated four-digit year appears in raw metadata text."""
+    if not year:
+        return False
+    return bool(re.search(rf"(?<![0-9]){year}(?![0-9])", primary_metadata))
+
+
+def find_result_link(
+    tree: Sequence[Mapping[str, Any]],
+    scoped: Sequence[Mapping[str, Any]],
+    expected_citation: str,
+    case_name: str,
+    *,
+    docket_number: str = "",
+    filing_year: str = "",
+) -> Mapping[str, Any] | None:
+    """Backward-compatible wrapper around :func:`find_result_matches`.
+
+    Returns the single qualifying result's semantic link, or ``None`` when no
+    result — or more than one — qualifies.
+    """
+    matches = find_result_matches(
+        tree,
+        scoped,
+        expected_citation,
+        case_name,
+        docket_number=docket_number,
+        filing_year=filing_year,
+    )
+    return matches[0].link if len(matches) == 1 else None
 
 
 def run_scholar_recovery(
@@ -1224,6 +1475,7 @@ __all__ = [
     "ScholarRecoveryRequest",
     "detect_barrier",
     "find_result_link",
+    "find_result_matches",
     "find_scholar_url",
     "is_scholar_case_url",
     "node_full_text",

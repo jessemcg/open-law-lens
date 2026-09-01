@@ -130,6 +130,87 @@ class ClipboardTests(unittest.TestCase):
                 read_regular_clipboard()
 
 
+class DiscoveredCitationImportTests(unittest.TestCase):
+    """The copied opinion must carry the citation selected from the result."""
+
+    def test_exact_citation_import_rejects_mismatched_discovered_citation(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = _client(temp_dir)
+            with self.assertRaises(ScholarBrowserError):
+                import_scholar_text(
+                    client,
+                    citation=CADEN_CITATION,
+                    source_url=CADEN_CASE_URL,
+                    clipboard_text=CADEN_OPINION,
+                    case_name="In re Caden C.",
+                    discovered_citation="12 Cal.5th 700",
+                )
+            # No Library or Research Cache write on a selection mismatch.
+            self.assertEqual(client.library.list_case_entries(), [])
+
+    def test_exact_mode_accepts_matching_discovered_citation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = _client(temp_dir)
+            result = import_scholar_text(
+                client,
+                citation=CADEN_CITATION,
+                source_url=CADEN_CASE_URL,
+                clipboard_text=CADEN_OPINION,
+                case_name="In re Caden C.",
+                discovered_citation="11 Cal.5th 614",
+            )
+            self.assertTrue(result.eligible)
+            self.assertEqual(result.official_citation, CADEN_CITATION)
+
+    def test_identity_only_import_rejects_mismatched_discovered_citation(
+        self,
+    ) -> None:
+        existing = {
+            "id": "8509982",
+            "case_name": "In re E.C.",
+            "case_name_full": "In re E.C.",
+            "date_filed": "2022-11-14",
+            "docket": {"docket_number": "F084030"},
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = _client(temp_dir)
+            with self.assertRaises(ScholarBrowserError):
+                import_scholar_text(
+                    client,
+                    citation="",
+                    source_url=CADEN_CASE_URL,
+                    clipboard_text=CADEN_OPINION,
+                    existing_cluster=existing,
+                    discovered_citation="86 Cal.App.5th 999",
+                )
+            self.assertEqual(client.library.list_case_entries(), [])
+
+    def test_identity_only_import_requires_discovered_citation_match(self) -> None:
+        existing = {
+            "id": "6240402",
+            "case_name": "In re Caden C.",
+            "case_name_full": "In re Caden C.",
+            "date_filed": "2021-06-01",
+            "docket": {"docket_number": "H049921"},
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = _client(temp_dir)
+            # The selected result's metadata carried 85 Cal.App.5th 123 but the
+            # copied opinion derives 11 Cal.5th 614: reject before persistence.
+            with self.assertRaises(ScholarBrowserError):
+                import_scholar_text(
+                    client,
+                    citation="",
+                    source_url=CADEN_CASE_URL,
+                    clipboard_text=CADEN_OPINION,
+                    existing_cluster=existing,
+                    discovered_citation="12 Cal.5th 614",
+                )
+            self.assertEqual(client.library.list_case_entries(), [])
+
+
 class ImportTests(unittest.TestCase):
     def test_wrong_citation_is_rejected_without_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
