@@ -12,6 +12,8 @@ from open_law_lens.agent_commands import AGENT_CLI_COMMAND_PREFIX
 from open_law_lens.config import (
     AGENT_PROFILE_LAW,
     AGENT_PROFILE_PRIOR_BRIEFS,
+    AGENT_PROFILE_SUBSEQUENT_TREATMENT,
+    AGENT_RUNTIME_PROFILES_VERSION,
     AppConfig,
     DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
     DEFAULT_APPEAL_ISSUE_LABELS,
@@ -87,6 +89,11 @@ class ConfigTests(unittest.TestCase):
                             model="accounts/fireworks/routers/glm-fast",
                             thinking="low",
                         ),
+                        AGENT_PROFILE_SUBSEQUENT_TREATMENT: PiAgentProfile(
+                            provider="google",
+                            model="gemini-3.6-flash",
+                            thinking="high",
+                        ),
                     },
                     reader_font_size_pt=14,
                     reader_font_family="Caladea",
@@ -117,6 +124,14 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(
                 config.agent_runtime_profiles[AGENT_PROFILE_PRIOR_BRIEFS].thinking,
                 "low",
+            )
+            self.assertEqual(
+                config.agent_runtime_profiles[AGENT_PROFILE_SUBSEQUENT_TREATMENT],
+                PiAgentProfile(
+                    provider="google",
+                    model="gemini-3.6-flash",
+                    thinking="high",
+                ),
             )
             self.assertEqual(config.reader_font_size_pt, 14)
             self.assertEqual(config.reader_font_family, "Caladea")
@@ -162,6 +177,10 @@ class ConfigTests(unittest.TestCase):
                                 "provider": "fireworks",
                                 "thinking": "low",
                             },
+                            AGENT_PROFILE_SUBSEQUENT_TREATMENT: {
+                                "provider": "google",
+                                "model": "gemini-3.6-flash",
+                            },
                             "unknown": {
                                 "provider": "test",
                                 "model": "test",
@@ -174,6 +193,172 @@ class ConfigTests(unittest.TestCase):
             )
 
             self.assertEqual(load_config(path).agent_runtime_profiles, {})
+
+    def test_invalid_subsequent_treatment_profile_falls_back_to_pi_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "agent_runtime_profiles": {
+                            AGENT_PROFILE_LAW: {
+                                "provider": "openai-codex",
+                                "model": "gpt-5.6-sol",
+                                "thinking": "max",
+                            },
+                            AGENT_PROFILE_SUBSEQUENT_TREATMENT: {
+                                "provider": "google",
+                                "model": "gemini-3.6-flash",
+                                "thinking": "turbo",
+                            },
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            profiles = load_config(path).agent_runtime_profiles
+            self.assertEqual(
+                profiles.get(AGENT_PROFILE_LAW),
+                PiAgentProfile(
+                    provider="openai-codex",
+                    model="gpt-5.6-sol",
+                    thinking="max",
+                ),
+            )
+            self.assertNotIn(AGENT_PROFILE_SUBSEQUENT_TREATMENT, profiles)
+
+    def test_legacy_law_profile_clones_into_subsequent_treatment(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "agent_runtime_profiles": {
+                            AGENT_PROFILE_LAW: {
+                                "provider": "openai-codex",
+                                "model": "gpt-5.6-sol",
+                                "thinking": "max",
+                            },
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            profiles = load_config(path).agent_runtime_profiles
+            self.assertEqual(
+                profiles.get(AGENT_PROFILE_SUBSEQUENT_TREATMENT),
+                PiAgentProfile(
+                    provider="openai-codex",
+                    model="gpt-5.6-sol",
+                    thinking="max",
+                ),
+            )
+
+            # Migration stays in memory until the next ordinary save.
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertNotIn("agent_runtime_profiles_version", saved)
+
+            save_config(AppConfig(agent_runtime_profiles=profiles), path)
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                saved.get("agent_runtime_profiles_version"),
+                AGENT_RUNTIME_PROFILES_VERSION,
+            )
+            self.assertIn(AGENT_PROFILE_SUBSEQUENT_TREATMENT, saved["agent_runtime_profiles"])
+
+    def test_legacy_config_without_law_profile_leaves_subsequent_treatment_on_defaults(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "agent_runtime_profiles": {
+                            AGENT_PROFILE_PRIOR_BRIEFS: {
+                                "provider": "fireworks",
+                                "model": "accounts/fireworks/routers/glm-fast",
+                                "thinking": "low",
+                            },
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            profiles = load_config(path).agent_runtime_profiles
+            self.assertIn(AGENT_PROFILE_PRIOR_BRIEFS, profiles)
+            self.assertNotIn(AGENT_PROFILE_SUBSEQUENT_TREATMENT, profiles)
+
+    def test_preexisting_subsequent_treatment_profile_is_not_overwritten(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            subsequent = PiAgentProfile(
+                provider="google",
+                model="gemini-3.6-flash",
+                thinking="low",
+            )
+            path.write_text(
+                json.dumps(
+                    {
+                        "agent_runtime_profiles": {
+                            AGENT_PROFILE_LAW: {
+                                "provider": "openai-codex",
+                                "model": "gpt-5.6-sol",
+                                "thinking": "max",
+                            },
+                            AGENT_PROFILE_SUBSEQUENT_TREATMENT: {
+                                "provider": subsequent.provider,
+                                "model": subsequent.model,
+                                "thinking": subsequent.thinking,
+                            },
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                load_config(path).agent_runtime_profiles[
+                    AGENT_PROFILE_SUBSEQUENT_TREATMENT
+                ],
+                subsequent,
+            )
+
+    def test_version2_absent_subsequent_treatment_is_intentional_pi_defaults(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            save_config(
+                AppConfig(
+                    agent_runtime_profiles={
+                        AGENT_PROFILE_LAW: PiAgentProfile(
+                            provider="openai-codex",
+                            model="gpt-5.6-sol",
+                            thinking="max",
+                        ),
+                    }
+                ),
+                path,
+            )
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                saved["agent_runtime_profiles_version"],
+                AGENT_RUNTIME_PROFILES_VERSION,
+            )
+            self.assertNotIn(
+                AGENT_PROFILE_SUBSEQUENT_TREATMENT,
+                saved["agent_runtime_profiles"],
+            )
+
+            # Reloading must not re-clone Query Law into Subsequent Treatment.
+            self.assertNotIn(
+                AGENT_PROFILE_SUBSEQUENT_TREATMENT,
+                load_config(path).agent_runtime_profiles,
+            )
 
     def test_legacy_general_prompt_migrates_to_new_default(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -285,10 +285,13 @@ them to the Research Cache. Use `Ctrl+S` to activate this mode, then `Ctrl+G`
 and `Ctrl+Shift+G` to move forward and backward through occurrences across
 matching briefs.
 
-Agent runtime settings, including the four per-query Pi model/reasoning
+Agent runtime settings, including the five per-query Pi model/reasoning
 profiles, prompt templates, appeal legal questions, and fact-pattern source,
-are available in the app Settings window. Subsequent Treatment uses the Query Law
-profile. **Search Briefs** is local and does not launch Pi.
+are available in the app Settings window. Subsequent Treatment has its own
+profile, independent of the Query Law profile. Each profile override is stored
+locally in the ignored `config.json` file, affects newly launched sessions,
+and can independently be set to **Use Pi defaults**. **Search Briefs** is
+local and does not launch Pi.
 
 Law, Subsequent Treatment, and Assess Legal Question runs are research-capable.
 The launcher preloads the tracked legal-researcher skill into the disposable

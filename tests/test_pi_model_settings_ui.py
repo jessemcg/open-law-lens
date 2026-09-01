@@ -4,10 +4,11 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from open_law_lens.app import SettingsWindow
+from open_law_lens.app import AGENT_PROFILE_TITLES, SettingsWindow
 from open_law_lens.config import (
     AGENT_PROFILE_KEYS,
     AGENT_PROFILE_LAW,
+    AGENT_PROFILE_SUBSEQUENT_TREATMENT,
     PiAgentProfile,
 )
 from open_law_lens.pi_runtime import PiModel, PiRuntimeCatalog
@@ -90,6 +91,14 @@ def model_window(
 
 
 class PiModelSettingsUiTests(unittest.TestCase):
+    def test_settings_renders_five_independent_profile_groups(self) -> None:
+        self.assertEqual(len(AGENT_PROFILE_KEYS), 5)
+        self.assertIn(AGENT_PROFILE_SUBSEQUENT_TREATMENT, AGENT_PROFILE_KEYS)
+        self.assertEqual(
+            AGENT_PROFILE_TITLES[AGENT_PROFILE_SUBSEQUENT_TREATMENT],
+            "Subsequent Treatment",
+        )
+
     def setUp(self) -> None:
         self.sol = PiModel(
             provider="openai-codex",

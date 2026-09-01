@@ -94,6 +94,7 @@ from .config import (
     AGENT_PROFILE_LAW,
     AGENT_PROFILE_PRIOR_BRIEFS,
     AGENT_PROFILE_RESEARCH_CACHE,
+    AGENT_PROFILE_SUBSEQUENT_TREATMENT,
     AppConfig,
     BARE_STATUTE_LAW_CODE_OPTIONS,
     DEFAULT_APPEAL_ISSUE_PRESETS,
@@ -281,6 +282,7 @@ AGENT_PROFILE_TITLES = {
     AGENT_PROFILE_RESEARCH_CACHE: "Query Research Cache",
     AGENT_PROFILE_PRIOR_BRIEFS: "Query Prior Briefs",
     AGENT_PROFILE_ASSESS_ARGUMENT: "Assess Legal Question",
+    AGENT_PROFILE_SUBSEQUENT_TREATMENT: "Subsequent Treatment",
 }
 PI_MODEL_DROPDOWN_WIDTH_CHARS = 64
 PI_MODEL_DROPDOWN_MAX_WIDTH_CHARS = 80
@@ -366,11 +368,21 @@ def appeal_issue_menu_label(issue: str, label: str = "", max_length: int = 72) -
 def agent_profile_for_mode(
     config: AppConfig,
     mode: str,
+    profile_key: str | None = None,
 ) -> PiAgentProfile | None:
-    profile_key = AGENT_PROFILE_BY_MODE.get(mode)
-    if profile_key is None:
+    """Resolve the launch profile, honoring an explicit workflow profile key.
+
+    Mode-based lookup stays the default so ordinary Law, Research Cache,
+    Prior Briefs, and Assess Legal Question launches are unchanged. The
+    Subsequent Treatment launch passes its own profile key because it runs in
+    the research-capable ``general`` mode while using a separate profile.
+    """
+    if profile_key is not None:
+        return config.agent_runtime_profiles.get(profile_key)
+    mode_profile_key = AGENT_PROFILE_BY_MODE.get(mode)
+    if mode_profile_key is None:
         return None
-    return config.agent_runtime_profiles.get(profile_key)
+    return config.agent_runtime_profiles.get(mode_profile_key)
 
 
 def build_agent_launch_env(
@@ -4957,6 +4969,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             prompt_path,
             workspace,
             AGENT_MODE_GENERAL,
+            profile_key=AGENT_PROFILE_SUBSEQUENT_TREATMENT,
         )
 
     def _compose_later_treatment_agent_prompt(
@@ -9938,6 +9951,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         workspace: Path,
         mode: str,
         success_status: str = "Started embedded Pi agent.",
+        profile_key: str | None = None,
     ) -> None:
         self._stop_agent()
         self._stop_agent_answer_polling()
@@ -9948,7 +9962,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._set_status(f"Agent wrapper not found: {AGENT_WRAPPER}")
             return
         env = os.environ.copy()
-        profile = agent_profile_for_mode(load_config(), mode)
+        profile = agent_profile_for_mode(load_config(), mode, profile_key)
         env.update(
             build_agent_launch_env(
                 self.client,

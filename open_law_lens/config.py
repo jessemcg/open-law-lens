@@ -24,6 +24,7 @@ CONFIG_KEY_LEGACY_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE = "later_treatment_agent
 CONFIG_KEY_APPEAL_ISSUE_PRESETS = "appeal_issue_presets"
 CONFIG_KEY_APPEAL_ISSUE_LABELS = "appeal_issue_labels"
 CONFIG_KEY_AGENT_RUNTIME_PROFILES = "agent_runtime_profiles"
+CONFIG_KEY_AGENT_RUNTIME_PROFILES_VERSION = "agent_runtime_profiles_version"
 CONFIG_KEY_READER_FONT_SIZE_PT = "reader_font_size_pt"
 CONFIG_KEY_READER_FONT_FAMILY = "reader_font_family"
 CONFIG_KEY_DEFAULT_BARE_STATUTE_LAW_CODE = "default_bare_statute_law_code"
@@ -32,12 +33,19 @@ AGENT_PROFILE_LAW = "law"
 AGENT_PROFILE_RESEARCH_CACHE = "research_cache"
 AGENT_PROFILE_PRIOR_BRIEFS = "prior_briefs"
 AGENT_PROFILE_ASSESS_ARGUMENT = "assess_argument"
+AGENT_PROFILE_SUBSEQUENT_TREATMENT = "subsequent_treatment"
 AGENT_PROFILE_KEYS: tuple[str, ...] = (
     AGENT_PROFILE_LAW,
     AGENT_PROFILE_RESEARCH_CACHE,
     AGENT_PROFILE_PRIOR_BRIEFS,
     AGENT_PROFILE_ASSESS_ARGUMENT,
+    AGENT_PROFILE_SUBSEQUENT_TREATMENT,
 )
+# Version 2 introduced the independent Subsequent Treatment profile. Legacy
+# configs (version absent or 1) have it cloned once from the Query Law profile
+# when loading; version 2 or newer treats an absent entry as an intentional
+# Use Pi defaults selection.
+AGENT_RUNTIME_PROFILES_VERSION = 2
 PI_THINKING_LEVELS: tuple[str, ...] = (
     "off",
     "minimal",
@@ -453,6 +461,48 @@ def normalize_agent_runtime_profiles(value: Any) -> dict[str, PiAgentProfile]:
     return profiles
 
 
+def stored_agent_runtime_profiles_version(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 1
+
+
+def migrate_agent_runtime_profiles(
+    profiles: dict[str, PiAgentProfile],
+    raw_profiles: Any,
+    schema_version: int = 1,
+) -> dict[str, PiAgentProfile]:
+    """Apply one-time profile-schema migrations (version 1 -> 2).
+
+    Legacy configurations (schema version below 2) never stored a Subsequent
+    Treatment profile because that workflow reused the Query Law profile.
+    Clone the valid Query Law profile into the new key so existing installs
+    keep their configured model and reasoning effort. A preexisting (even
+    invalid) raw entry means the configuration already knew about the key and
+    must not be overwritten. Version 2 or newer with an absent entry is an
+    intentional Use Pi defaults selection and is left untouched.
+    """
+    if schema_version >= AGENT_RUNTIME_PROFILES_VERSION:
+        return profiles
+    if AGENT_PROFILE_SUBSEQUENT_TREATMENT in profiles:
+        return profiles
+    if isinstance(raw_profiles, dict) and (
+        AGENT_PROFILE_SUBSEQUENT_TREATMENT in raw_profiles
+    ):
+        return profiles
+    law_profile = profiles.get(AGENT_PROFILE_LAW)
+    if law_profile is None:
+        return profiles
+    migrated = dict(profiles)
+    migrated[AGENT_PROFILE_SUBSEQUENT_TREATMENT] = PiAgentProfile(
+        provider=law_profile.provider,
+        model=law_profile.model,
+        thinking=law_profile.thinking,
+    )
+    return migrated
+
+
 def reader_font_css(font_family: str) -> str:
     normalized = normalize_reader_font_family(font_family)
     for name, css in READER_FONT_FAMILY_OPTIONS:
@@ -557,8 +607,12 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
             raw.get(CONFIG_KEY_APPEAL_ISSUE_LABELS),
             appeal_issue_presets,
         ),
-        agent_runtime_profiles=normalize_agent_runtime_profiles(
-            raw.get(CONFIG_KEY_AGENT_RUNTIME_PROFILES)
+        agent_runtime_profiles=migrate_agent_runtime_profiles(
+            normalize_agent_runtime_profiles(raw.get(CONFIG_KEY_AGENT_RUNTIME_PROFILES)),
+            raw.get(CONFIG_KEY_AGENT_RUNTIME_PROFILES),
+            stored_agent_runtime_profiles_version(
+                raw.get(CONFIG_KEY_AGENT_RUNTIME_PROFILES_VERSION)
+            ),
         ),
         reader_font_size_pt=coerce_reader_font_size(raw.get(CONFIG_KEY_READER_FONT_SIZE_PT)),
         reader_font_family=normalize_reader_font_family(raw.get(CONFIG_KEY_READER_FONT_FAMILY)),
@@ -608,6 +662,7 @@ def save_config(config: AppConfig, path: Path = CONFIG_PATH) -> None:
             appeal_issue_labels,
             appeal_issue_presets,
         ),
+        CONFIG_KEY_AGENT_RUNTIME_PROFILES_VERSION: AGENT_RUNTIME_PROFILES_VERSION,
         CONFIG_KEY_AGENT_RUNTIME_PROFILES: {
             key: {
                 "provider": profile.provider,

@@ -54,6 +54,7 @@ from open_law_lens.config import (
     AGENT_PROFILE_LAW,
     AGENT_PROFILE_PRIOR_BRIEFS,
     AGENT_PROFILE_RESEARCH_CACHE,
+    AGENT_PROFILE_SUBSEQUENT_TREATMENT,
     AppConfig,
     PiAgentProfile,
 )
@@ -83,7 +84,7 @@ class AppReaderPayloadTests(unittest.TestCase):
             ["<Control>s"],
         )
 
-    def test_agent_modes_map_to_the_four_runtime_profiles(self) -> None:
+    def test_agent_modes_map_to_the_five_runtime_profiles(self) -> None:
         self.assertEqual(AGENT_PROFILE_BY_MODE["general"], AGENT_PROFILE_LAW)
         self.assertEqual(
             AGENT_PROFILE_BY_MODE["case"],
@@ -106,10 +107,49 @@ class AppReaderPayloadTests(unittest.TestCase):
             )
             for key in AGENT_PROFILE_BY_MODE.values()
         }
+        profiles[AGENT_PROFILE_SUBSEQUENT_TREATMENT] = PiAgentProfile(
+            provider="test",
+            model="subsequent-model",
+            thinking="high",
+        )
         config = AppConfig(agent_runtime_profiles=profiles)
         for mode, key in AGENT_PROFILE_BY_MODE.items():
             self.assertEqual(agent_profile_for_mode(config, mode), profiles[key])
         self.assertIsNone(agent_profile_for_mode(config, "brief_search"))
+
+    def test_subsequent_treatment_profile_overrides_general_mode_mapping(self) -> None:
+        config = AppConfig(
+            agent_runtime_profiles={
+                AGENT_PROFILE_LAW: PiAgentProfile(
+                    provider="test",
+                    model="law-model",
+                    thinking="low",
+                ),
+                AGENT_PROFILE_SUBSEQUENT_TREATMENT: PiAgentProfile(
+                    provider="test",
+                    model="subsequent-model",
+                    thinking="high",
+                ),
+            }
+        )
+
+        self.assertEqual(
+            agent_profile_for_mode(config, AGENT_MODE_GENERAL),
+            config.agent_runtime_profiles[AGENT_PROFILE_LAW],
+        )
+        self.assertEqual(
+            agent_profile_for_mode(
+                config,
+                AGENT_MODE_GENERAL,
+                AGENT_PROFILE_SUBSEQUENT_TREATMENT,
+            ),
+            config.agent_runtime_profiles[AGENT_PROFILE_SUBSEQUENT_TREATMENT],
+        )
+        self.assertIsNone(
+            agent_profile_for_mode(
+                AppConfig(), AGENT_MODE_GENERAL, AGENT_PROFILE_SUBSEQUENT_TREATMENT
+            )
+        )
 
     def test_agent_failure_keeps_session_output_visible(self) -> None:
         class DummyWidget:
@@ -1888,6 +1928,27 @@ class AppReaderPayloadTests(unittest.TestCase):
             "accounts/fireworks/routers/glm-fast",
         )
         self.assertEqual(env["OPEN_LAW_LENS_PI_THINKING"], "low")
+
+    def test_agent_launch_env_includes_subsequent_treatment_profile(self) -> None:
+        class DummyClient:
+            library = None
+
+        env = build_agent_launch_env(
+            DummyClient(),  # type: ignore[arg-type]
+            Path("/tmp/prompt.txt"),
+            Path("/tmp/workspace"),
+            AGENT_MODE_GENERAL,
+            PiAgentProfile(
+                provider="google",
+                model="gemini-3.6-flash",
+                thinking="high",
+            ),
+        )
+
+        self.assertEqual(env["OPEN_LAW_LENS_AGENT_MODE"], "general")
+        self.assertEqual(env["OPEN_LAW_LENS_PI_PROVIDER"], "google")
+        self.assertEqual(env["OPEN_LAW_LENS_PI_MODEL"], "gemini-3.6-flash")
+        self.assertEqual(env["OPEN_LAW_LENS_PI_THINKING"], "high")
 
     def test_case_agent_prompt_adds_current_case_context_to_custom_prompt(self) -> None:
         class DummyWindow:
@@ -6887,8 +6948,10 @@ Opinion text.
                 prompt_path: Path,
                 workspace: Path,
                 mode: str,
+                success_status: str = "Started embedded Pi agent.",
+                profile_key: str | None = None,
             ) -> None:
-                self.launches.append((prompt_path, workspace, mode))
+                self.launches.append((prompt_path, workspace, mode, profile_key))
 
         window = DummyWindow()
 
@@ -6905,7 +6968,14 @@ Opinion text.
         self.assertEqual(window._agent_mode, "general")
         self.assertEqual(
             window.launches,
-            [(Path("/tmp/later-prompt.txt"), Path("/tmp/later-workspace"), "general")],
+            [
+                (
+                    Path("/tmp/later-prompt.txt"),
+                    Path("/tmp/later-workspace"),
+                    "general",
+                    AGENT_PROFILE_SUBSEQUENT_TREATMENT,
+                )
+            ],
         )
 
     def test_case_clipboard_text_strips_reader_page_markers(self) -> None:
