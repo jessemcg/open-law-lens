@@ -24,6 +24,7 @@ from open_law_lens.browser_recovery import (
     node_name,
     normalize_match_token,
     normalize_recovery_query,
+    opinion_identity_confirmed,
     request_from_query,
     result_block_text,
     scholar_case_url_matches,
@@ -31,6 +32,7 @@ from open_law_lens.browser_recovery import (
     scope_frame_index,
     scope_selected_document,
     validate_recovery_result,
+    validated_filing_year,
 )
 
 
@@ -1173,6 +1175,295 @@ class FirefoxTabScopingTests(unittest.TestCase):
         self.assertIn(14, indexes)
         self.assertIn(15, indexes)
         self.assertNotIn(11, indexes)
+
+
+class CitationlessResultLinkTests(unittest.TestCase):
+    """Citation-less selection: exact title plus docket/year, never the query."""
+
+    @staticmethod
+    def _scoped(results: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        tree = firefox_scholar_search_tree('"In re S.H." B299242', results)
+        return tree, _scoped_search(tree)
+
+    def _sh_results(self, metadata: str = "No. B299242 82 Cal. App. 5th 166 - Cal: Court of Appeal 2022 - Google Scholar") -> list[dict[str, Any]]:
+        return [
+            {
+                "title": "In re SH",
+                "metadata": metadata,
+                "snippet": "… App.4th at p. 1282; contra, Nicole K., supra, 146 Cal.App.4th at p. 785.",
+                "cited_by": "Cited by 132",
+            },
+            {
+                "title": "In re Dominick D.",
+                "metadata": "82 Cal. App. 5th 560, 298 Cal. Rptr. 3d 897 - Cal: Court of Appeal 2022 - Google Scholar",
+                "snippet": "… (In re SH (2022) 82 Cal.App.5th 166, 177-180.)",
+                "cited_by": "Cited by 147",
+            },
+        ]
+
+    def test_exact_title_with_filing_year_matches(self) -> None:
+        tree, scoped = self._scoped(self._sh_results())
+        link = find_result_link(tree, scoped, "", "In re S.H.", filing_year="2022")
+        self.assertIsNotNone(link)
+        assert link is not None
+        self.assertEqual(node_name(link), "In re SH")
+
+    def test_docket_preferred_matching(self) -> None:
+        tree, scoped = self._scoped(self._sh_results())
+        link = find_result_link(
+            tree, scoped, "", "In re S.H.", docket_number="B299242", filing_year="2022"
+        )
+        self.assertIsNotNone(link)
+        assert link is not None
+        self.assertEqual(node_name(link), "In re SH")
+
+    def test_punctuation_only_title_difference_matches(self) -> None:
+        # Scholar renders ``In re S.H.`` as ``In re SH``; only punctuation
+        # differs, so the exact normalized titles are equal.
+        tree, scoped = self._scoped(self._sh_results())
+        link = find_result_link(tree, scoped, "", "In re S.H.", docket_number="B299242")
+        self.assertIsNotNone(link)
+
+    def test_wrong_year_rejected(self) -> None:
+        tree, scoped = self._scoped(self._sh_results())
+        self.assertIsNone(find_result_link(tree, scoped, "", "In re S.H.", filing_year="2021"))
+
+    def test_wrong_docket_rejected(self) -> None:
+        tree, scoped = self._scoped(self._sh_results())
+        self.assertIsNone(find_result_link(tree, scoped, "", "In re S.H.", docket_number="B999999"))
+
+    def test_docket_must_be_in_the_results_own_block(self) -> None:
+        # Only the second result's snippet quotes the docket; the first result
+        # (whose own block lacks it) must never be selected.
+        results = [
+            {"title": "In re SH", "metadata": "82 Cal. App. 5th 166 - Google Scholar"},
+            {"title": "In re Later Case", "metadata": "99 Cal. App. 5th 100 - Google Scholar", "snippet": "… citing In re S.H., No. B299242."},
+        ]
+        tree, scoped = self._scoped(results)
+        self.assertIsNone(find_result_link(tree, scoped, "", "In re S.H.", docket_number="B299242"))
+
+    def test_partial_title_rejected(self) -> None:
+        tree, scoped = self._scoped(self._sh_results())
+        self.assertIsNone(find_result_link(tree, scoped, "", "In re S", docket_number="B299242"))
+
+    def test_duplicate_results_rejected(self) -> None:
+        results = self._sh_results() + [dict(self._sh_results()[0])]
+        tree, scoped = self._scoped(results)
+        self.assertIsNone(find_result_link(tree, scoped, "", "In re S.H.", docket_number="B299242"))
+
+    def test_missing_discriminator_rejected(self) -> None:
+        tree, scoped = self._scoped(self._sh_results())
+        self.assertIsNone(find_result_link(tree, scoped, "", "In re S.H."))
+
+    def test_free_form_query_is_never_a_citation(self) -> None:
+        # With no expected citation the query text alone can never act as one:
+        # a query-shaped "citation" plus the title still fails when the block
+        # carries no discriminator the request supplied.
+        tree, scoped = self._scoped(self._sh_results())
+        self.assertIsNone(find_result_link(tree, scoped, "", ""))
+        link = find_result_link(tree, scoped, '"In re S.H." B299242', "")
+        self.assertIsNone(link)
+
+    def test_exact_citation_behavior_unchanged(self) -> None:
+        tree, scoped = self._scoped(firefox_sh_results())
+        link = find_result_link(tree, scoped, "82 Cal.App.5th 166", "In re S.H.")
+        self.assertIsNotNone(link)
+        assert link is not None
+        self.assertEqual(node_name(link), "In re SH")
+
+    def test_wrong_title_with_docket_rejected(self) -> None:
+        tree, scoped = self._scoped(self._sh_results())
+        self.assertIsNone(find_result_link(tree, scoped, "", "In re T.R.", docket_number="B299242"))
+
+
+class ValidatedFilingYearTests(unittest.TestCase):
+    def test_valid_four_digit_year(self) -> None:
+        self.assertEqual(validated_filing_year("2022"), "2022")
+
+    def test_invalid_values_are_empty(self) -> None:
+        for bad in ("", "202", "20222", "20a2", " 2022", None):
+            self.assertEqual(validated_filing_year(bad), "")
+
+
+class OpinionIdentityTests(unittest.TestCase):
+    """The opened opinion must revalidate against the explicit identity."""
+
+    def test_citation_known_confirms_name_plus_citation(self) -> None:
+        self.assertTrue(
+            opinion_identity_confirmed(
+                expected_citation="82 Cal.App.5th 166",
+                case_name="In re S.H.",
+                docket_number="",
+                filing_year="",
+                observed_title="In re S.H. - Google Scholar",
+                page_text="82 Cal.App.5th 166 (2022) OPINION",
+            )
+        )
+
+    def test_citation_known_missing_citation_rejected(self) -> None:
+        self.assertFalse(
+            opinion_identity_confirmed(
+                expected_citation="82 Cal.App.5th 166",
+                case_name="In re S.H.",
+                docket_number="",
+                filing_year="",
+                observed_title="In re S.H. - Google Scholar",
+                page_text="OPINION with no citation",
+            )
+        )
+
+    def test_citationless_confirms_with_docket(self) -> None:
+        self.assertTrue(
+            opinion_identity_confirmed(
+                expected_citation="",
+                case_name="In re S.H.",
+                docket_number="B299242",
+                filing_year="",
+                observed_title="In re S.H. - Google Scholar",
+                page_text="No. B299242 IN THE COURT OF APPEAL",
+            )
+        )
+
+    def test_citationless_confirms_with_filing_year(self) -> None:
+        self.assertTrue(
+            opinion_identity_confirmed(
+                expected_citation="",
+                case_name="In re S.H.",
+                docket_number="",
+                filing_year="2022",
+                observed_title="In re S.H. - Google Scholar",
+                page_text="Filed 5/31/2022 OPINION",
+            )
+        )
+
+    def test_citationless_rejects_wrong_year_and_missing_discriminator(self) -> None:
+        self.assertFalse(
+            opinion_identity_confirmed(
+                expected_citation="",
+                case_name="In re S.H.",
+                docket_number="",
+                filing_year="2021",
+                observed_title="In re S.H. - Google Scholar",
+                page_text="Filed 5/31/2022",
+            )
+        )
+        # Without any discriminator the identity can never be confirmed.
+        self.assertFalse(
+            opinion_identity_confirmed(
+                expected_citation="",
+                case_name="In re S.H.",
+                docket_number="",
+                filing_year="",
+                observed_title="In re S.H. - Google Scholar",
+                page_text="In re S.H. OPINION",
+            )
+        )
+
+    def test_citationless_never_treats_query_as_citation(self) -> None:
+        # The free-form query text is not a citation: only the explicit
+        # docket/year identity can confirm the page.
+        self.assertFalse(
+            opinion_identity_confirmed(
+                expected_citation="",
+                case_name="In re S.H.",
+                docket_number="",
+                filing_year="",
+                observed_title='"In re S.H." B299242 - Google Scholar',
+                page_text="In re S.H. No. B299242 OPINION",
+            )
+        )
+
+    def test_citationless_rejects_mismatched_title(self) -> None:
+        self.assertFalse(
+            opinion_identity_confirmed(
+                expected_citation="",
+                case_name="In re S.H.",
+                docket_number="B299242",
+                filing_year="",
+                observed_title="In re T.R. - Google Scholar",
+                page_text="No. B299242 OPINION",
+            )
+        )
+
+
+class CitationlessStateMachineTests(unittest.TestCase):
+    """The state machine copies only when title plus docket/year corroborate."""
+
+    OPINION_TEXT = "In re S.H. No. B299242 82 Cal.App.5th 166 (2022) OPINION"
+
+    class _Client(_FakeClient):
+        SEARCH_TITLE = "Google Scholar"
+        OPINION_TITLE = "In re S.H. - Google Scholar"
+
+        @staticmethod
+        def _search_tree() -> list[dict[str, Any]]:
+            return [
+                node(0, "application", "Firefox"),
+                node(1, "frame", "Google Scholar", states=["showing", "visible"], parent=0),
+                node(
+                    2,
+                    "combo box",
+                    text={"content": 'https://scholar.google.com/scholar?hl=en&q="In+re+S.H."+B299242'},
+                    parent=1,
+                ),
+                node(3, "panel", "page", parent=1),
+                node(4, "group", "result-block", parent=3),
+                node(5, "heading", "In re SH", parent=4),
+                node(6, "link", "In re SH", states=["showing", "visible"], parent=5),
+                node(7, "static text", "No. B299242 82 Cal. App. 5th 166 - 2022", parent=4),
+            ]
+
+        @staticmethod
+        def _opinion_tree() -> list[dict[str, Any]]:
+            return [
+                node(0, "application", "Firefox"),
+                node(1, "frame", "In re S.H. - Google Scholar", states=["showing", "visible"], parent=0),
+                node(
+                    2,
+                    "combo box",
+                    text={"content": "https://scholar.google.com/scholar_case?case=999"},
+                    parent=1,
+                ),
+                node(3, "panel", "page", parent=1),
+                node(
+                    4,
+                    "static text",
+                    "In re S.H. No. B299242 82 Cal.App.5th 166 (2022) OPINION",
+                    parent=3,
+                ),
+            ]
+
+    def _run(self, client: Any) -> Any:
+        request = ScholarRecoveryRequest(
+            query='"In re S.H." B299242',
+            expected_citation="",
+            case_name="In re S.H.",
+            filing_year="",
+            docket_number="B299242",
+        )
+        job = ScholarRecoveryJob(request, client=client)
+        with mock.patch("open_law_lens.browser_recovery.time", _FakeTime()), mock.patch(
+            "open_law_lens.browser_recovery.RecoveryLock", return_value=_FakeLock()
+        ), mock.patch(
+            "open_law_lens.browser_recovery.launch_scholar_url",
+            return_value=("Firefox", "firefox.desktop"),
+        ):
+            return job.run()
+
+    def test_citationless_recovery_copies_confirmed_opinion(self) -> None:
+        client = self._Client()
+        outcome = self._run(client)
+        self.assertEqual(outcome.outcome, "copied")
+        self.assertEqual(outcome.source_url, "https://scholar.google.com/scholar_case?case=999")
+        # The query was never treated as a citation; only Ctrl+A/Ctrl+C ran.
+        self.assertEqual(client.pressed, [("Ctrl+A", 7), ("Ctrl+C", 7)])
+
+    def test_citationless_opinion_without_identity_never_copies(self) -> None:
+        client = self._Client()
+        client._opinion_tree = staticmethod(_FakeClient._opinion_tree)  # no docket/year
+        outcome = self._run(client)
+        self.assertEqual(outcome.outcome, "not_found")
+        self.assertEqual(client.pressed, [])
 
 
 if __name__ == "__main__":

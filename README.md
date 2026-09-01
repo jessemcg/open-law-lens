@@ -214,6 +214,22 @@ uv run open-law-lens extract-case "13 Cal.4th 952" --find "presumed father" --fi
 `--find` is mutually exclusive with `--text`. Passing no `--find` keeps the
 ordinary full-JSON `extract-case` output unchanged.
 
+Uncited `--cluster-id` extraction reconciles against the durable Library before
+any fallback. When the requested CourtListener cluster is unpaginated, Open Law
+Lens first checks for one unambiguous, officially paginated durable Library
+case that is the same opinion stored under a different cluster identity (for
+example a validated Scholar import). Reconciliation uses the exact official
+citation when the incoming cluster carries one, or otherwise an exact
+normalized case title plus an equal filing year; conflicting years, differing
+titles, missing years, duplicate candidates, or copies without qualifying
+reporter markers reject the match rather than guess. A successful
+reconciliation returns `source: "Library"`, keeps the requested cluster ID in
+`resolved_input` and the durable case ID in `identifier`, reports the durable
+case's citation, text, marker count, and stored provenance URL, suppresses any
+Scholar recovery suggestion, and is a read-time alias decision only — stored
+IDs are never merged, reparented, or rewritten. `--refresh` bypasses
+reconciliation and follows the requested CourtListener cluster directly.
+
 Maintenance and inspection commands:
 
 ```bash
@@ -311,10 +327,13 @@ verified later cases is a ceiling and a preference — fewer verified cases plus
 a disclosed coverage caveat are preferable to open-ended searching. Compact
 `extract-case --find` baselines run in parallel; each unpaginated selected
 case gets exactly one sequential `--recover-official --timeout 120` extraction
-that performs Open Law Lens's own single Scholar attempt. Unsuccessful Scholar
-recovery yields the linked CourtListener/slip baseline with a disclosed
-pagination limitation — never another source search — and unsupported
-treatment characterizations are omitted rather than inferred.
+that performs Open Law Lens's own single Scholar attempt. An unpaginated
+selected case that reconciles against a durable official copy (see
+Official-Copy Source Order below) is returned immediately from the Library and
+never launches Scholar. Unsuccessful Scholar recovery yields the linked
+CourtListener/slip baseline with a disclosed pagination limitation — never
+another source search — and unsupported treatment characterizations are
+omitted rather than inferred.
 
 The wrapper also resolves `uv` deterministically before launching Pi. It uses
 the validated `OPEN_LAW_LENS_UV_BIN` override, then `uv` on `PATH`, then
@@ -518,6 +537,23 @@ with warnings. Native Tavily discovery and direct-HTTP Scholar search were
 removed; the only non-baseline official-copy path is the deterministic
 default-browser Scholar recovery described below.
 
+Before any recovery is attempted, an unpaginated CourtListener cluster is
+reconciled against the durable Library: one unambiguous, officially paginated
+stored case may serve as the official copy under the CourtListener identity.
+Reconciliation matches the exact normalized official citation when the
+incoming cluster carries one, and otherwise requires an exact normalized
+canonical case title plus an equal four-digit filing year on both records.
+Missing or conflicting years, differing titles, stored copies without
+qualifying reporter page markers, and multiple surviving candidates all reject
+the match, and the bounded fallback continues unchanged. A successful
+reconciliation is reported with `source: "Library"`, `official_pagination:
+true`, the durable identifier, and the stored Scholar provenance URL when one
+exists, and it suppresses `--recover-official` entirely — no recovery lock, no
+browser, no progress output. Reconciliation is a read-time alias decision
+between existing records: it never merges, reparents, or rewrites stored
+cluster IDs, and a future successful recovery for a genuinely unmatched case
+still persists under that CourtListener identity.
+
 A saved Scholar opinion records `source_provider: "google_scholar"` and
 `retrieval_mode: "browser_clipboard"`, preserves its original `source_url`, and
 becomes the preferred combined opinion of its CourtListener cluster when one
@@ -576,6 +612,20 @@ client exposes only `doctor`, `list_windows`, `get_app_state`, `perform_action`,
 and `press_key`; screenshots, pointer coordinates, clicks, typing, scrolling,
 dragging, setup operations, and every key other than `Ctrl+A`/`Ctrl+C` are
 denied.
+
+Recovery queries carry an explicit identity. When the official citation is
+known, the Scholar search and the opened-opinion corroboration use that exact
+citation, unchanged. When no official citation is known (for example a recent
+slip opinion), the free-form query is never treated as a citation: recovery
+requires the exact normalized case name plus a docket/case number (preferred)
+or a filing year, builds the search as the quoted exact case name plus that
+discriminator, and clicks only a single result whose own result block carries
+both the exact title and the selected discriminator. The opened opinion is
+revalidated against the same identity before anything is copied, and missing
+identity data returns `not_found` without opening a browser at all. The
+existing import validator remains the final gate and derives the reporter
+citation from the copied opinion; missing identity, ambiguity, mismatch, or
+failed validation performs no Library or Research Cache write.
 
 Run the read-only readiness check once per computer before the first desktop
 recovery (do this on each machine after installation):

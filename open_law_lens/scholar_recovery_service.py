@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Mapping
 
 from .browser_recovery import (
     DEFAULT_TIMEOUT_SECONDS,
@@ -35,8 +35,10 @@ from .browser_recovery import (
     ProgressCallback,
     ScholarRecoveryOutcome,
     ScholarRecoveryRequest,
+    normalize_recovery_query,
     request_from_query,
     run_scholar_recovery,
+    validated_filing_year,
 )
 from .scholar_browser import (
     ScholarBrowserError,
@@ -87,19 +89,77 @@ class ScholarRecoveryServiceResult:
         return value
 
 
+def _cluster_filing_year(cluster: Mapping[str, Any] | None) -> str:
+    """Extract the validated four-digit filing year from a cluster."""
+    if not isinstance(cluster, Mapping):
+        return ""
+    filed = str(cluster.get("date_filed") or "").strip()
+    return validated_filing_year(filed[:4])
+
+
+def _cluster_docket_number(cluster: Mapping[str, Any] | None) -> str:
+    """Conservatively extract the docket/case number from direct and nested
+    cluster fields. No additional docket endpoint is fetched."""
+    if not isinstance(cluster, Mapping):
+        return ""
+    direct = str(cluster.get("docket_number") or "").strip()
+    if direct:
+        return direct
+    docket = cluster.get("docket")
+    if isinstance(docket, Mapping):
+        return str(docket.get("docket_number") or "").strip()
+    return ""
+
+
+def _cluster_case_name(cluster: Mapping[str, Any] | None) -> str:
+    if not isinstance(cluster, Mapping):
+        return ""
+    return str(cluster.get("case_name") or cluster.get("case_name_full") or "").strip()
+
+
 def _recover_request(
     *,
     query: str,
     citation: str = "",
     cluster_id: str = "",
     case_name: str = "",
+    filing_year: str = "",
+    docket_number: str = "",
 ) -> ScholarRecoveryRequest:
+    if citation.strip():
+        return request_from_query(
+            query,
+            expected_citation=citation,
+            cluster_id=cluster_id,
+            case_name=case_name,
+        )
+    # Citation-less recovery: the free-form search query is never substituted
+    # into ``expected_citation`` and never stands in for the case name. The
+    # Scholar search is built from the exact quoted case name plus the
+    # strongest available discriminator (docket first, otherwise filing year).
+    name = normalize_recovery_query(case_name)
+    discriminator = docket_number.strip() or validated_filing_year(filing_year)
     return request_from_query(
-        query,
-        expected_citation=citation,
+        f'"{name}" {discriminator}'.strip(),
+        expected_citation="",
         cluster_id=cluster_id,
         case_name=case_name,
+        filing_year=filing_year.strip(),
+        docket_number=docket_number,
     )
+
+
+def _citationless_identity_ready(
+    *,
+    case_name: str,
+    filing_year: str,
+    docket_number: str,
+) -> bool:
+    """Citation-less recovery requires an exact case name plus a docket/case
+    number or a validated filing year; anything less fails closed."""
+    if not normalize_recovery_query(case_name):
+        return False
+    return bool(docket_number.strip() or validated_filing_year(filing_year))
 
 
 def recover_official_copy(
@@ -109,6 +169,8 @@ def recover_official_copy(
     citation: str = "",
     cluster_id: str = "",
     case_name: str = "",
+    filing_year: str = "",
+    docket_number: str = "",
     existing_cluster: dict[str, Any] | None = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     progress: ProgressCallback | None = None,
@@ -119,13 +181,41 @@ def recover_official_copy(
     Returns a typed result; on ``not_found`` / ``blocked`` / ``failed`` / ``busy``
     the baseline is untouched, and on a copied-but-invalid opinion the baseline
     is preserved with ``rejected``.
+
+    For citation-less recovery (empty ``citation``) the explicit identity
+    fields (exact case name plus docket number, otherwise filing year) drive
+    both the Scholar search and the corroboration; when not supplied directly
+    they are derived from ``existing_cluster``.
     """
     started_at = time.monotonic()
+    filing_year = filing_year or _cluster_filing_year(existing_cluster)
+    docket_number = docket_number or _cluster_docket_number(existing_cluster)
+    case_name = case_name.strip() or _cluster_case_name(existing_cluster)
+    if not citation.strip() and not _citationless_identity_ready(
+        case_name=case_name, filing_year=filing_year, docket_number=docket_number
+    ):
+        # Missing citation-less identity fails closed before the browser state
+        # machine runs: no recovery lock is acquired and no browser is opened.
+        recovery = ScholarRecoveryOutcome(
+            version=1,
+            outcome="not_found",
+            query=normalize_recovery_query(query),
+            source_url="",
+            message=(
+                "Citation-less recovery requires an exact case name plus a "
+                "docket number or filing year."
+            ),
+        )
+        return ScholarRecoveryServiceResult(
+            outcome=OUTCOME_NOT_FOUND, recovery=recovery, reason=recovery.message
+        )
     request = _recover_request(
         query=query,
         citation=citation,
         cluster_id=cluster_id,
         case_name=case_name,
+        filing_year=filing_year,
+        docket_number=docket_number,
     )
     recovery = run_scholar_recovery(
         request,

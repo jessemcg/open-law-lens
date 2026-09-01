@@ -100,6 +100,8 @@ class ScholarRecoveryRequest:
     expected_citation: str = ""
     cluster_id: str = ""
     case_name: str = ""
+    filing_year: str = ""
+    docket_number: str = ""
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -107,6 +109,8 @@ class ScholarRecoveryRequest:
             "expected_citation": self.expected_citation,
             "cluster_id": self.cluster_id,
             "case_name": self.case_name,
+            "filing_year": self.filing_year,
+            "docket_number": self.docket_number,
         }
 
 
@@ -172,6 +176,8 @@ def request_from_query(
     expected_citation: str = "",
     cluster_id: str = "",
     case_name: str = "",
+    filing_year: str = "",
+    docket_number: str = "",
 ) -> ScholarRecoveryRequest:
     clean_query = normalize_recovery_query(query)
     if not clean_query:
@@ -181,6 +187,8 @@ def request_from_query(
         expected_citation=re.sub(r"\s+", " ", expected_citation or "").strip(),
         cluster_id=str(cluster_id or "").strip(),
         case_name=re.sub(r"\s+", " ", case_name or "").strip(),
+        filing_year=re.sub(r"\s+", "", filing_year or ""),
+        docket_number=re.sub(r"\s+", " ", docket_number or "").strip(),
     )
 
 
@@ -624,13 +632,22 @@ def find_result_link(
     scoped: Sequence[Mapping[str, Any]],
     expected_citation: str,
     case_name: str,
+    *,
+    docket_number: str = "",
+    filing_year: str = "",
 ) -> Mapping[str, Any] | None:
     """Return the single corroborated visible result link, or ``None``.
 
-    When a trustworthy case name is supplied, the link must match the name and
-    its result block must also corroborate the expected citation. When only a
+    When an expected official citation is known, the link must match the name
+    and its result block must also corroborate the citation. When only a
     citation is known, a citation-only fallback is permitted, but duplicate
     candidates are rejected (never a guess) in both modes.
+
+    Citation-less recovery never treats the free-form search query as a
+    citation. It requires a trustworthy case name plus a discriminator — the
+    docket number when available, otherwise the filing year — and only
+    matches exactly one result block that carries both. Title alone is never
+    enough to click a result.
     """
     by_index: dict[int, Mapping[str, Any]] = {
         int(n.get("index")): n for n in tree
@@ -639,9 +656,14 @@ def find_result_link(
 
     citation_norm = normalize_match_token(expected_citation)
     case_norm = normalize_match_token(case_name)
+    docket_norm = normalize_match_token(docket_number)
+    year = validated_filing_year(filing_year)
     if not citation_norm:
-        # A name-only match is never sufficient to click a result.
-        return None
+        # Citation-less identity: an exact case name plus at least one
+        # discriminator (docket or filing year) is required. A name-only
+        # match is never sufficient to click a result.
+        if not case_norm or not (docket_norm or year):
+            return None
 
     def heading_for_link(link: Mapping[str, Any]) -> Mapping[str, Any] | None:
         """Walk up from a result link to its containing heading."""
@@ -672,14 +694,26 @@ def find_result_link(
         heading = heading_for_link(link)
         if heading is None:
             continue
-        block_norm = normalize_match_token(
-            result_block_text(tree, scoped_indexes, heading)
-        )
-        if citation_norm not in block_norm:
-            continue
-        if case_norm:
-            link_norm = normalize_match_token(node_name(link))
-            if not (case_norm in link_norm or link_norm in case_norm):
+        block = result_block_text(tree, scoped_indexes, heading)
+        block_norm = normalize_match_token(block)
+        if citation_norm:
+            if citation_norm not in block_norm:
+                continue
+            if case_norm:
+                link_norm = normalize_match_token(node_name(link))
+                if not (case_norm in link_norm or link_norm in case_norm):
+                    continue
+        else:
+            # Citation-less identity: the link must carry the exact case name
+            # (punctuation-only differences such as ``S.H.`` versus ``SH``
+            # normalize away) and its block must corroborate the docket or the
+            # filing year. Partial-title matches are rejected.
+            if normalize_match_token(node_name(link)) != case_norm:
+                continue
+            if docket_norm:
+                if docket_norm not in block_norm:
+                    continue
+            elif year and not re.search(rf"(?<![0-9]){year}(?![0-9])", block):
                 continue
         candidates.append(link)
 
@@ -935,7 +969,7 @@ class ScholarRecoveryJob:
             self._target_window_id = window_id
             self._target_title = title
 
-            expected_citation = self.request.expected_citation or self.request.query
+            expected_citation = self.request.expected_citation
             case_name = self.request.case_name
             search_deadline = time.monotonic() + self.page_deadline()
             link = None
@@ -966,7 +1000,14 @@ class ScholarRecoveryJob:
                     for node in scoped
                 ):
                     saw_result_structure = True
-                link = find_result_link(tree, scoped, expected_citation, case_name)
+                link = find_result_link(
+                    tree,
+                    scoped,
+                    expected_citation,
+                    case_name,
+                    docket_number=self.request.docket_number,
+                    filing_year=self.request.filing_year,
+                )
                 if link is not None:
                     break
                 time.sleep(0.5)
@@ -1019,17 +1060,18 @@ class ScholarRecoveryJob:
                     )
                 if barrier:
                     return self._outcome("blocked", f"Google Scholar showed {barrier}; leaving it visible.")
-                # The opened opinion must identify the expected case by both its
-                # name and its official citation before anything is selected.
-                # A transiently mis-scoped tab simply retries until the
-                # selected tab's document settles.
-                identity_text = normalize_match_token(observed_title) + normalize_match_token(
-                    _tree_text(scoped)
-                )
-                case_norm = normalize_match_token(case_name)
-                citation_norm = normalize_match_token(expected_citation)
-                if (not case_norm or case_norm in identity_text) and (
-                    not citation_norm or citation_norm in identity_text
+                # The opened opinion must identify the expected case before
+                # anything is copied: by name plus official citation when one
+                # is known, or by case name plus docket/filing-year evidence
+                # for citation-less recovery. A transiently mis-scoped tab
+                # simply retries until the selected tab's document settles.
+                if opinion_identity_confirmed(
+                    expected_citation=expected_citation,
+                    case_name=case_name,
+                    docket_number=self.request.docket_number,
+                    filing_year=self.request.filing_year,
+                    observed_title=observed_title,
+                    page_text=_tree_text(scoped),
                 ):
                     identity_confirmed = True
                     break
@@ -1108,6 +1150,46 @@ def _tree_text(tree: Sequence[Mapping[str, Any]]) -> str:
     return " ".join(node_full_text(node) for node in tree)
 
 
+def validated_filing_year(value: str) -> str:
+    """Return the value when it is exactly four digits, else an empty string."""
+    return value if re.fullmatch(r"\d{4}", value or "") else ""
+
+
+def opinion_identity_confirmed(
+    *,
+    expected_citation: str,
+    case_name: str,
+    docket_number: str,
+    filing_year: str,
+    observed_title: str,
+    page_text: str,
+) -> bool:
+    """Corroborate an opened opinion against the explicit recovery identity.
+
+    With a known citation, both the case name (when supplied) and the exact
+    normalized citation must appear — the historical behavior. For
+    citation-less recovery the free-form query is never treated as a
+    citation: the opened page must instead identify the exact case name plus
+    the docket number or the filing year. With no usable discriminator the
+    identity can never be confirmed (fail closed).
+    """
+    identity_norm = normalize_match_token(observed_title) + normalize_match_token(page_text)
+    raw_identity = f"{observed_title} {page_text}"
+    case_norm = normalize_match_token(case_name)
+    if case_norm and case_norm not in identity_norm:
+        return False
+    citation_norm = normalize_match_token(expected_citation)
+    if citation_norm:
+        return citation_norm in identity_norm
+    docket_norm = normalize_match_token(docket_number)
+    if docket_norm and docket_norm in identity_norm:
+        return True
+    year = validated_filing_year(filing_year)
+    if year and re.search(rf"(?<![0-9]){year}(?![0-9])", raw_identity):
+        return True
+    return False
+
+
 def run_scholar_recovery(
     request: ScholarRecoveryRequest,
     *,
@@ -1156,5 +1238,6 @@ __all__ = [
     "scholar_search_url_matches",
     "scope_frame_index",
     "scope_selected_document",
+    "validated_filing_year",
     "validate_recovery_result",
 ]

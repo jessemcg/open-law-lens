@@ -7,6 +7,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import MagicMock, patch
 
 from open_law_lens.agent_commands import AGENT_CLI_COMMAND_PREFIX
+from open_law_lens.authority_resolver import AuthorityResult
 from open_law_lens.cli import PROJECT_DIR, _activate_open_authority, build_parser, main
 from open_law_lens.cli_commands import CLI_COMMANDS, build_cli_commands_text
 
@@ -398,6 +399,125 @@ class CliCommandTests(unittest.TestCase):
 
         command = run.call_args.args[0]
         self.assertIn("[<'In re O\\'Brien \\\\\\\\ test'>]", command)
+
+
+class RecoverOfficialTests(unittest.TestCase):
+    """--recover-official is a provable no-op after durable reconciliation."""
+
+    @staticmethod
+    def _reconciled_result() -> AuthorityResult:
+        return AuthorityResult(
+            ok=True,
+            authority_type="case",
+            input="7856391",
+            resolved_input="7856391",
+            source="Library",
+            title="In re S.H.",
+            citation="82 Cal.App.5th 166",
+            identifier="external-863c24eb9e52f74a",
+            source_url="https://scholar.google.com/scholar_case?case=863c24eb9e52f74a",
+            text="82 Cal.App.5th 166 (2022) OPINION [*170] As In re I.F. held, the presumption applies.",
+            warnings=[],
+            error="",
+            official_pagination=True,
+            pagination_marker_count=11,
+        )
+
+    @staticmethod
+    def _unpaginated_result() -> AuthorityResult:
+        return AuthorityResult(
+            ok=True,
+            authority_type="case",
+            input="7856391",
+            resolved_input="7856391",
+            source="CourtListener API",
+            title="In re S.H.",
+            citation="",
+            identifier="7856391",
+            source_url="",
+            text="Uncited CourtListener text.",
+            warnings=["No official reporter copy was found; a default-browser Google Scholar "
+                      "recovery is the next step."],
+            error="",
+            official_pagination=False,
+            pagination_marker_count=0,
+        )
+
+    def test_reconciled_result_recovers_nothing(self) -> None:
+        result = self._reconciled_result()
+        output, errors = StringIO(), StringIO()
+        with (
+            patch("open_law_lens.cli.extract_case_by_cluster_id", return_value=result),
+            patch("open_law_lens.cli.recover_official_copy") as recover,
+            patch("open_law_lens.cli.CourtListenerClient.default") as default_client,
+            redirect_stdout(output),
+            redirect_stderr(errors),
+        ):
+            status = main([
+                "extract-case", "--cluster-id", "7856391", "--recover-official",
+            ])
+
+        self.assertEqual(status, 0)
+        # A reconciled result is already officially paginated: recovery is a
+        # complete no-op — no service call, no client, no lock, no browser, and
+        # no recovery progress.
+        recover.assert_not_called()
+        default_client.assert_not_called()
+        self.assertEqual(errors.getvalue(), "")
+        payload = json.loads(output.getvalue())
+        self.assertTrue(payload["official_pagination"])
+        self.assertEqual(payload["identifier"], "external-863c24eb9e52f74a")
+        self.assertFalse(any("Scholar recovery" in w for w in payload["warnings"]))
+
+    def test_reconciled_result_still_formats_bounded_find_passages(self) -> None:
+        result = self._reconciled_result()
+        output, errors = StringIO(), StringIO()
+        with (
+            patch("open_law_lens.cli.extract_case_by_cluster_id", return_value=result),
+            patch("open_law_lens.cli.recover_official_copy") as recover,
+            redirect_stdout(output),
+            redirect_stderr(errors),
+        ):
+            status = main([
+                "extract-case", "--cluster-id", "7856391", "--recover-official",
+                "--find", "In re I.F.",
+            ])
+
+        self.assertEqual(status, 0)
+        recover.assert_not_called()
+        payload = json.loads(output.getvalue())
+        self.assertNotIn("text", payload)
+        self.assertEqual(payload["match_count"], 1)
+        self.assertIn("In re I.F.", payload["passages"][0]["text"])
+
+    def test_unmatched_unpaginated_baseline_recovers_exactly_once(self) -> None:
+        result = self._unpaginated_result()
+        service = MagicMock()
+        service.ok = False
+        service.outcome = "not_found"
+        service.reason = "No single corroborated Scholar result matched."
+        output, errors = StringIO(), StringIO()
+        with (
+            patch("open_law_lens.cli.extract_case_by_cluster_id", return_value=result),
+            patch("open_law_lens.cli.CourtListenerClient.default") as default_client,
+            patch(
+                "open_law_lens.cli.recover_official_copy", return_value=service
+            ) as recover,
+            redirect_stdout(output),
+            redirect_stderr(errors),
+        ):
+            status = main([
+                "extract-case", "--cluster-id", "7856391", "--recover-official",
+            ])
+
+        # The unpaginated baseline remains a usable result, so the command
+        # still reports success while appending the recovery warning.
+        self.assertEqual(status, 0)
+        recover.assert_called_once()
+        # The fallback warning is appended exactly once to the baseline.
+        payload = json.loads(output.getvalue())
+        recovery_warnings = [w for w in payload["warnings"] if w.startswith("Scholar recovery:")]
+        self.assertEqual(len(recovery_warnings), 1)
 
 
 if __name__ == "__main__":

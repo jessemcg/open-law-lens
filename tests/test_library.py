@@ -1902,5 +1902,310 @@ class LibraryTests(unittest.TestCase):
             self.assertEqual(display.text[display.page_markers[0].start_offset:display.page_markers[0].end_offset], "[*913]")
 
 
+def _sh_opinion_text(markers=(170, 171, 172)) -> str:
+    """Public S.H.-style fixture: title, year, and reporter markers."""
+    paragraphs = [
+        "82 Cal.App.5th 166 (2022)",
+        "In re S.H., a Person Coming Under the Juvenile Court Law.",
+    ]
+    for page in markers:
+        paragraphs.append(f"[*{page}] Reasoning on page {page} continues here.")
+    return "\n\n".join(paragraphs)
+
+
+class DurableCaseMatchTests(unittest.TestCase):
+    """Conservative cross-cluster durable-case reconciliation.
+
+    A CourtListener cluster stored under one identity (for example the uncited
+    search cluster 7856391) must reconcile to the durable, officially
+    paginated In re S.H. copy under its imported ``external-`` identity only
+    on exact citation or exact title/year evidence — and never mutate the
+    library while doing it.
+    """
+
+    DURABLE_ID = "external-863c24eb9e52f74a"
+    SH_SOURCE_URL = "https://scholar.google.com/scholar_case?case=863c24eb9e52f74a"
+
+    @staticmethod
+    def _library(temp_dir: str) -> CaseLibrary:
+        library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+        library.ensure()
+        return library
+
+    @staticmethod
+    def _durable_cluster(
+        *,
+        cluster_id: str = "external-863c24eb9e52f74a",
+        case_name: str = "In re S.H.",
+        date_filed: str = "2022",
+        citation: str = "82 Cal.App.5th 166",
+        source_url: str = "",
+    ) -> dict[str, object]:
+        return {
+            "id": cluster_id,
+            "case_name": case_name,
+            "case_name_short": case_name,
+            "case_name_full": case_name,
+            "date_filed": date_filed,
+            "official_citation": citation,
+            "citations": [{"volume": "82", "reporter": "Cal.App.5th", "page": "166"}],
+            "source_url": source_url,
+        }
+
+    @staticmethod
+    def _incoming_sh_cluster(**overrides: object) -> dict[str, object]:
+        cluster: dict[str, object] = {
+            "id": 7856391,
+            "case_name": "In re S.H., a Person Coming Under the Juvenile Court Law.",
+            "date_filed": "2022-05-31",
+            "citations": [],
+        }
+        cluster.update(overrides)
+        return cluster
+
+    def _store_sh_case(
+        self,
+        library: CaseLibrary,
+        *,
+        cluster: dict[str, object] | None = None,
+        opinion_text: str | None = None,
+        opinion_id: str = "official-import-external-sh-1",
+    ) -> None:
+        durable = cluster if cluster is not None else self._durable_cluster()
+        library.upsert_cluster(dict(durable))  # type: ignore[arg-type]
+        library.upsert_opinion(
+            {
+                "id": opinion_id,
+                "cluster_id": str(durable["id"]),  # type: ignore[arg-type]
+                "plain_text": (
+                    opinion_text
+                    if opinion_text is not None
+                    else _sh_opinion_text()
+                ),
+                "source_url": str(
+                    durable.get("source_url") or ""
+                ),
+            },
+            cluster=dict(durable),  # type: ignore[arg-type]
+        )
+
+    def test_uncited_cluster_matches_by_exact_title_and_year(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = self._library(temp_dir)
+            self._store_sh_case(library)
+
+            match = library.find_official_durable_match(
+                self._incoming_sh_cluster()
+            )
+
+            self.assertIsNotNone(match)
+            assert match is not None
+            self.assertEqual(match.cluster_id, self.DURABLE_ID)
+            self.assertEqual(match.title, "In re S.H.")
+            self.assertEqual(match.official_citation, "82 Cal.App.5th 166")
+            self.assertIn("In re S.H.", match.text)
+            self.assertEqual(match.marker_count, 3)
+
+    def test_exact_official_citation_takes_priority(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = self._library(temp_dir)
+            self._store_sh_case(library)
+            cited = self._incoming_sh_cluster(
+                case_name="A Completely Different Caption",
+                citations=[{"volume": "82", "reporter": "Cal.App.5th", "page": "166"}],
+            )
+
+            match = library.find_official_durable_match(cited)
+
+            self.assertIsNotNone(match)
+            assert match is not None
+            self.assertEqual(match.cluster_id, self.DURABLE_ID)
+
+    def test_wrong_year_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = self._library(temp_dir)
+            self._store_sh_case(library)
+
+            self.assertIsNone(
+                library.find_official_durable_match(
+                    self._incoming_sh_cluster(date_filed="2021-05-31")
+                )
+            )
+
+    def test_missing_incoming_year_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = self._library(temp_dir)
+            self._store_sh_case(library)
+
+            self.assertIsNone(
+                library.find_official_durable_match(
+                    self._incoming_sh_cluster(date_filed="")
+                )
+            )
+
+    def test_missing_stored_year_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = self._library(temp_dir)
+            self._store_sh_case(
+                library,
+                cluster=self._durable_cluster(date_filed=""),
+            )
+
+            self.assertIsNone(
+                library.find_official_durable_match(self._incoming_sh_cluster())
+            )
+
+    def test_conflicting_years_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = self._library(temp_dir)
+            self._store_sh_case(
+                library,
+                cluster=self._durable_cluster(date_filed="2019"),
+            )
+
+            self.assertIsNone(
+                library.find_official_durable_match(self._incoming_sh_cluster())
+            )
+
+    def test_title_mismatch_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = self._library(temp_dir)
+            self._store_sh_case(library)
+
+            self.assertIsNone(
+                library.find_official_durable_match(
+                    self._incoming_sh_cluster(case_name="In re S.G.")
+                )
+            )
+
+    def test_ineligible_marker_count_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = self._library(temp_dir)
+            self._store_sh_case(
+                library,
+                opinion_text=(
+                    "82 Cal.App.5th 166 (2022)\n\n"
+                    "In re S.H., a Person Coming Under the Juvenile Court Law.\n\n"
+                    "Reasoning without any embedded reporter markers."
+                ),
+            )
+
+            self.assertIsNone(
+                library.find_official_durable_match(self._incoming_sh_cluster())
+            )
+
+    def test_duplicate_eligible_candidates_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = self._library(temp_dir)
+            self._store_sh_case(library)
+            self._store_sh_case(
+                library,
+                cluster=self._durable_cluster(cluster_id="external-9999aaaabbbbcccc"),
+                opinion_text=_sh_opinion_text(markers=(170, 171, 173)),
+                opinion_id="official-import-external-sh-2",
+            )
+
+            self.assertIsNone(
+                library.find_official_durable_match(self._incoming_sh_cluster())
+            )
+
+    def test_opinion_source_url_wins_over_cluster_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = self._library(temp_dir)
+            # Imported Scholar opinion attached to a CourtListener-style
+            # cluster that itself carries no stored source_url.
+            self._store_sh_case(
+                library,
+                cluster=self._durable_cluster(
+                    cluster_id="7856391",
+                    source_url="",
+                ),
+            )
+            with library.connection() as conn:
+                opinion_row = conn.execute(
+                    "SELECT opinion_id FROM opinions WHERE cluster_id = ?",
+                    ("7856391",),
+                ).fetchone()
+                assert opinion_row is not None
+                opinion = json.loads(
+                    str(
+                        conn.execute(
+                            "SELECT opinion_json FROM opinions WHERE opinion_id = ?",
+                            (str(opinion_row["opinion_id"]),),
+                        ).fetchone()["opinion_json"]
+                    )
+                )
+                opinion["source_url"] = self.SH_SOURCE_URL
+                conn.execute(
+                    "UPDATE opinions SET opinion_json = ? WHERE opinion_id = ?",
+                    (
+                        json.dumps(opinion),
+                        str(opinion_row["opinion_id"]),
+                    ),
+                )
+
+            match = library.find_official_durable_match(self._incoming_sh_cluster())
+
+            self.assertIsNotNone(match)
+            assert match is not None
+            self.assertEqual(match.source_url, self.SH_SOURCE_URL)
+
+    def test_reconciliation_is_completely_read_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = self._library(temp_dir)
+            self._store_sh_case(
+                library,
+                cluster=self._durable_cluster(
+                    source_url=self.SH_SOURCE_URL,
+                ),
+            )
+
+            def _snapshot() -> dict[str, object]:
+                with library.connection() as conn:
+                    cases = conn.execute(
+                        "SELECT cluster_id, last_accessed, opinion_ids_json FROM cases"
+                    ).fetchall()
+                    opinions = conn.execute(
+                        "SELECT opinion_id, last_accessed FROM opinions"
+                    ).fetchall()
+                    meta = conn.execute("SELECT key, value FROM meta ORDER BY key").fetchall()
+                return {
+                    "cases": [(str(r["cluster_id"]), str(r["last_accessed"]), str(r["opinion_ids_json"])) for r in cases],
+                    "opinions": [(str(r["opinion_id"]), str(r["last_accessed"])) for r in opinions],
+                    "meta": [(str(r["key"]), str(r["value"])) for r in meta],
+                }
+
+            before = _snapshot()
+            for _ in range(2):
+                match = library.find_official_durable_match(self._incoming_sh_cluster())
+                self.assertIsNotNone(match)
+            after = _snapshot()
+
+            self.assertEqual(before, after)
+            # Schema version and every one-time migration marker untouched.
+            self.assertIn(("schema_version", SCHEMA_VERSION), after["meta"])
+
+    def test_missing_years_never_title_match(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = self._library(temp_dir)
+            self._store_sh_case(library, cluster=self._durable_cluster(date_filed=""))
+            self.assertIsNone(
+                library.find_official_durable_match(self._incoming_sh_cluster())
+            )
+
+    def test_citation_alias_requires_exact_parts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library = self._library(temp_dir)
+            self._store_sh_case(library)
+
+            self.assertIsNone(
+                library.find_official_durable_match(
+                    self._incoming_sh_cluster(
+                        citations=[{"volume": "83", "reporter": "Cal.App.5th", "page": "166"}]
+                    )
+                )
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

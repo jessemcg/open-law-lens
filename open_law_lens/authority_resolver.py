@@ -25,6 +25,7 @@ from .client import (
 )
 from .config import concordance_file_path
 from .external_import import imported_case_name_from_text, normalize_official_citation
+from .library import DurableCaseMatch
 from .quality import official_pagination_quality
 from .rules import parse_rule_citation
 from .statutes import parse_statute_citation
@@ -261,6 +262,15 @@ def extract_case_by_cluster_id(
     )
     source = client.last_resource_source or "CourtListener API"
     title = cluster_short_title(cluster)
+    if not refresh:
+        durable = _reconcile_durable_case(cluster, client)
+        if durable is not None:
+            return _result_from_durable_match(
+                durable,
+                requested_id=clean_cluster_id,
+                original_input=title,
+                warnings=[],
+            )
     return _extract_case_from_cluster(
         cluster,
         resolved=clean_cluster_id,
@@ -269,6 +279,42 @@ def extract_case_by_cluster_id(
         client=client,
         original_input=title,
         warnings=[],
+    )
+
+
+def _result_from_durable_match(
+    match: DurableCaseMatch,
+    *,
+    requested_id: str,
+    original_input: str,
+    warnings: list[str],
+) -> AuthorityResult:
+    return AuthorityResult(
+        ok=bool(match.text),
+        authority_type="case",
+        input=original_input,
+        resolved_input=requested_id,
+        source="Library",
+        title=cluster_short_title(match.cluster),
+        citation=match.official_citation,
+        identifier=match.cluster_id,
+        source_url=match.source_url or _cluster_source_url(match.cluster),
+        text=match.text,
+        warnings=warnings,
+        error="" if match.text else "Durable case has no opinion text.",
+        official_pagination=True,
+        pagination_marker_count=match.marker_count,
+    )
+
+
+def _cluster_source_url(cluster: dict[str, Any]) -> str:
+    """Best provenance URL for a cluster, recognizing stored imported
+    ``source_url`` values in addition to CourtListener's own fields."""
+    return str(
+        cluster.get("absolute_url")
+        or cluster.get("resource_uri")
+        or cluster.get("source_url")
+        or ""
     )
 
 
@@ -299,7 +345,7 @@ def _extract_case_from_cluster(
             ok=bool(text), authority_type="case", input=original_input,
             resolved_input=resolved, source=source, title=cluster_short_title(cluster),
             citation=citation, identifier=cluster_id_from_cluster(cluster),
-            source_url=str(cluster.get("absolute_url") or cluster.get("resource_uri") or ""),
+            source_url=_cluster_source_url(cluster),
             text=text, warnings=warnings,
             error="" if text else "No opinion text found for first matching cluster.",
             official_pagination=True, pagination_marker_count=quality.marker_count,
@@ -311,7 +357,7 @@ def _extract_case_from_cluster(
             ok=bool(text), authority_type="case", input=original_input,
             resolved_input=resolved, source=source, title=cluster_short_title(cluster),
             citation=citation, identifier=cluster_id_from_cluster(cluster),
-            source_url=str(cluster.get("absolute_url") or cluster.get("resource_uri") or ""),
+            source_url=_cluster_source_url(cluster),
             text=text, warnings=warnings, error="" if text else "No opinion text found for first matching cluster.",
         )
     best_text = text
@@ -331,7 +377,7 @@ def _extract_case_from_cluster(
             ok=bool(best_text), authority_type="case", input=original_input,
             resolved_input=resolved, source=best_source, title=cluster_short_title(cluster),
             citation=citation, identifier=cluster_id_from_cluster(cluster),
-            source_url=str(cluster.get("absolute_url") or cluster.get("resource_uri") or ""),
+            source_url=_cluster_source_url(cluster),
             text=best_text, warnings=warnings,
             error="" if best_text else "No opinion text found after official-copy fallbacks.",
             official_pagination=False, pagination_marker_count=0,
@@ -345,7 +391,7 @@ def _extract_case_from_cluster(
         ok=bool(best_text), authority_type="case", input=original_input,
         resolved_input=resolved, source=best_source, title=cluster_short_title(cluster),
         citation=citation, identifier=cluster_id_from_cluster(cluster),
-        source_url=str(cluster.get("absolute_url") or cluster.get("resource_uri") or ""),
+        source_url=_cluster_source_url(cluster),
         text=best_text, warnings=warnings,
         error="" if best_text else "No opinion text found after official-copy fallbacks.",
         official_pagination=False, pagination_marker_count=0,
@@ -355,6 +401,23 @@ def _extract_case_from_cluster(
 def is_known_unpublished(cluster: dict[str, Any]) -> bool:
     status = str(cluster.get("precedential_status") or cluster.get("status") or "").casefold()
     return status in {"unpublished", "non-precedential", "nonprecedential", "errata"}
+
+
+def _reconcile_durable_case(
+    cluster: dict[str, Any],
+    client: CourtListenerClient,
+) -> DurableCaseMatch | None:
+    """Consult the durable library for an unambiguous, officially paginated
+    case stored under a different cluster identity. Callers decide when
+    reconciliation is allowed (refresh=False, unpaginated baseline)."""
+    library = getattr(client, "library", None)
+    if library is None:
+        return None
+    finder = getattr(library, "find_official_durable_match", None)
+    if not callable(finder):
+        return None
+    match = finder(cluster)
+    return match if isinstance(match, DurableCaseMatch) else None
 
 
 def read_selected_text_from_os() -> tuple[str, str]:

@@ -13,11 +13,13 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .cache import JsonCache, cluster_id_from_cluster, normalize_citation, resource_id_from_url
-from .case_titles import cluster_short_title_value
+from .case_titles import cluster_short_title_value, normalize_case_title
 from .citation_model import (
     canonicalize_cluster_citations,
     canonicalize_lookup_result,
     official_citation_from_cluster,
+    official_citation_from_parts,
+    official_citation_parts_from_cluster,
     official_citation_parts_from_text,
 )
 from .external_import import repair_reporter_only_imported_cluster
@@ -170,6 +172,20 @@ def _case_number_from_cluster_payload(cluster: dict[str, Any]) -> str:
         if match:
             return match.group(1).upper()
     return ""
+
+
+@dataclass(frozen=True)
+class DurableCaseMatch:
+    """A durable, officially paginated library case that conservatively
+    reconciles an incoming CourtListener cluster under another identity."""
+
+    cluster_id: str
+    title: str
+    official_citation: str
+    cluster: dict[str, Any]
+    text: str
+    marker_count: int
+    source_url: str
 
 
 @dataclass(frozen=True)
@@ -461,6 +477,18 @@ def _page_marker_label(value: str) -> str:
     label = label.lstrip("*").strip()
     label = re.sub(r"(?i)^page\s+", "", label).strip()
     return label
+
+
+def _reconciliation_title_key(title: str) -> str:
+    """Canonical normalized title key used by durable-case reconciliation."""
+    return re.sub(r"\s+", " ", normalize_case_title(title or "").strip()).casefold()
+
+
+def _reconcile_filing_year(cluster: dict[str, Any]) -> str:
+    value = cluster.get("date_filed")
+    if isinstance(value, str) and len(value) >= 4 and value[:4].isdigit():
+        return value[:4]
+    return ""
 
 
 def _research_set_normalized_name(name: str) -> str:
@@ -1459,6 +1487,213 @@ class CaseLibrary:
             if cluster is not None:
                 clusters.append(cluster)
         return clusters
+
+    # -----------------------------------------------------------------------
+    # Conservative cross-cluster durable-case reconciliation
+    #
+    # A CourtListener cluster can exist under one identity (for example an
+    # uncited search cluster) while the durable library already holds a
+    # validated, officially paginated copy of the same opinion under another
+    # cluster ID (for example an imported ``external-`` case). Reconciliation
+    # is a conservative read-time alias decision: it never fuzzy-matches
+    # titles, never touches the network, never reparents stored opinions, and
+    # rejects rather than guesses whenever identity is ambiguous.
+    # -----------------------------------------------------------------------
+
+    def find_official_durable_match(
+        self,
+        cluster: dict[str, Any],
+    ) -> DurableCaseMatch | None:
+        """Return the durable, officially paginated library case matching an
+        incoming CourtListener cluster, or ``None`` when identity is ambiguous.
+
+        Matching rules, in priority order:
+
+        1. An official California citation on the incoming cluster resolves
+           that exact normalized citation through the stored aliases.
+        2. Otherwise an exact normalized canonical case title plus a matching
+           filing year must survive against exactly one eligible durable
+           candidate (official California citation plus qualifying reporter
+           page markers).
+
+        Titles that differ, years that conflict or are missing on either
+        record, stored copies without qualifying reporter markers, and
+        multiple surviving candidates all reject the match rather than guess.
+        Matching is a read-time alias decision: it never merges or reparents
+        stored records, never fuzzy-matches titles, never touches the network,
+        never persists anything, and leaves every ``last_accessed`` timestamp,
+        the schema version, and every one-time migration marker unchanged.
+        """
+        if not isinstance(cluster, dict):
+            return None
+        incoming_parts = official_citation_parts_from_cluster(cluster)
+        if incoming_parts is not None:
+            return self._reconcile_by_official_citation(
+                official_citation_from_parts(incoming_parts)
+            )
+        return self._reconcile_by_title_and_year(cluster)
+
+    def _read_stored_case_rows(self) -> list[tuple[str, dict[str, Any], list[str]]]:
+        """Read every stored cluster and its attached opinion IDs with direct
+        ``SELECT`` statements only, so reconciliation never updates case or
+        opinion ``last_accessed`` timestamps."""
+        with self.connection() as conn:
+            rows = conn.execute(
+                "SELECT cluster_id, cluster_json, opinion_ids_json FROM cases"
+            ).fetchall()
+        parsed: list[tuple[str, dict[str, Any], list[str]]] = []
+        for row in rows:
+            try:
+                stored = _json_loads(str(row["cluster_json"]))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(stored, dict):
+                continue
+            opinion_data = _json_loads(str(row["opinion_ids_json"]))
+            opinion_ids = (
+                [str(value).strip() for value in opinion_data if str(value).strip()]
+                if isinstance(opinion_data, list)
+                else []
+            )
+            parsed.append((str(row["cluster_id"]), stored, opinion_ids))
+        return parsed
+
+    def _durable_match_evidence(
+        self,
+        cluster_id: str,
+        opinion_ids: list[str],
+    ) -> tuple[list[DisplayText], str]:
+        """Load the candidate's own opinion displays without writing.
+
+        Only opinions whose stored ``cluster_id`` equals ``cluster_id`` are
+        loaded, so a stale ``opinion_ids_json`` reference can never borrow
+        another cluster's text. Reads use direct ``SELECT`` statements and the
+        read-only ``read_opinion_display`` helper; no access timestamp is
+        touched.
+        """
+        if not opinion_ids:
+            return [], ""
+        placeholders = ",".join("?" for _ in opinion_ids)
+        with self.connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT opinion_id, opinion_json FROM opinions
+                WHERE cluster_id = ? AND opinion_id IN ({placeholders})
+                """,
+                (cluster_id, *opinion_ids),
+            ).fetchall()
+        opinion_json_by_id = {
+            str(row["opinion_id"]): str(row["opinion_json"]) for row in rows
+        }
+        displays: list[DisplayText] = []
+        source_url = ""
+        for opinion_id in opinion_ids:
+            if opinion_id not in opinion_json_by_id:
+                continue
+            display = self.read_opinion_display(opinion_id)
+            if display is None or not display.text:
+                continue
+            displays.append(display)
+            if not source_url:
+                try:
+                    opinion = _json_loads(opinion_json_by_id[opinion_id])
+                except json.JSONDecodeError:
+                    opinion = None
+                if isinstance(opinion, dict):
+                    source_url = str(opinion.get("source_url") or "").strip()
+        return displays, source_url
+
+    def _eligible_durable_match(
+        self,
+        cluster: dict[str, Any],
+        opinion_ids: list[str],
+    ) -> DurableCaseMatch | None:
+        """Return the durable match for one stored cluster only when its stored
+        opinions carry qualifying official reporter pagination."""
+        from .quality import official_pagination_quality
+
+        cluster_id = cluster_id_from_cluster(cluster)
+        if not cluster_id or not official_citation_from_cluster(cluster):
+            return None
+        displays, opinion_source_url = self._durable_match_evidence(
+            cluster_id, opinion_ids
+        )
+        quality = official_pagination_quality(cluster, displays)
+        if not quality.eligible:
+            return None
+        text = "\n\n".join(display.text for display in displays if display.text).strip()
+        return DurableCaseMatch(
+            cluster_id=cluster_id,
+            title=_cluster_title(cluster),
+            official_citation=quality.official_citation,
+            cluster=cluster,
+            text=text,
+            marker_count=quality.marker_count,
+            # Prefer the selected opinion's provenance URL (the imported
+            # Scholar source) and fall back to the cluster's own stored URL so
+            # imported Scholar provenance survives when an imported opinion is
+            # attached to a CourtListener cluster without its own source_url.
+            source_url=opinion_source_url or str(cluster.get("source_url") or "").strip(),
+        )
+
+    def _reconcile_by_official_citation(self, citation: str) -> DurableCaseMatch | None:
+        """Resolve one official California citation through stored aliases."""
+        normalized = normalize_citation(citation).casefold()
+        if not normalized or official_citation_parts_from_text(normalized) is None:
+            return None
+        incoming_parts = official_citation_parts_from_text(normalized)
+        if incoming_parts is None:
+            return None
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT cases.cluster_id, cases.cluster_json, cases.opinion_ids_json
+                FROM citation_aliases
+                JOIN cases ON cases.cluster_id = citation_aliases.cluster_id
+                WHERE citation_aliases.normalized_citation = ?
+                ORDER BY cases.cluster_id
+                """,
+                (normalized,),
+            ).fetchall()
+        candidates: list[DurableCaseMatch] = []
+        for row in rows:
+            try:
+                stored = _json_loads(str(row["cluster_json"]))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(stored, dict):
+                continue
+            if official_citation_parts_from_cluster(stored) != incoming_parts:
+                continue
+            opinion_data = _json_loads(str(row["opinion_ids_json"]))
+            opinion_ids = (
+                [str(value).strip() for value in opinion_data if str(value).strip()]
+                if isinstance(opinion_data, list)
+                else []
+            )
+            match = self._eligible_durable_match(stored, opinion_ids)
+            if match is not None:
+                candidates.append(match)
+        return candidates[0] if len(candidates) == 1 else None
+
+    def _reconcile_by_title_and_year(self, cluster: dict[str, Any]) -> DurableCaseMatch | None:
+        """Match an uncited cluster on exact canonical title plus filing year."""
+        incoming_title = _reconciliation_title_key(cluster_short_title_value(cluster))
+        incoming_year = _reconcile_filing_year(cluster)
+        if not incoming_title or not incoming_year:
+            return None
+        candidates: list[DurableCaseMatch] = []
+        for _cluster_id, stored, opinion_ids in self._read_stored_case_rows():
+            if not official_citation_from_cluster(stored):
+                continue
+            if _reconciliation_title_key(_cluster_title(stored)) != incoming_title:
+                continue
+            if _reconcile_filing_year(stored) != incoming_year:
+                continue
+            match = self._eligible_durable_match(stored, opinion_ids)
+            if match is not None:
+                candidates.append(match)
+        return candidates[0] if len(candidates) == 1 else None
 
     def save_research_set(
         self,

@@ -268,6 +268,65 @@ class ImportTests(unittest.TestCase):
                     clipboard_text=CADEN_OPINION,
                 )
 
+    def test_identity_only_import_stays_attached_to_courtlistener_cluster(self) -> None:
+        existing = {
+            "id": "6240402",
+            "case_name": "In re Caden C.",
+            "case_name_full": "In re Caden C.",
+            "date_filed": "2021-06-01",
+            "docket": {"docket_number": "H049921"},
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = _client(temp_dir)
+            result = import_scholar_text(
+                client,
+                citation="",
+                source_url=CADEN_CASE_URL,
+                clipboard_text=CADEN_OPINION,
+                case_name="In re Caden C.",
+                existing_cluster=existing,
+            )
+            # The identity-only import stays attached to the CourtListener
+            # cluster in both the durable Library and the Research Cache.
+            self.assertEqual(result.cluster_id, "6240402")
+            entries = client.library.list_case_entries()
+            self.assertEqual([entry["cluster_id"] for entry in entries], ["6240402"])
+            cached = client.cache.read_cached_cluster("6240402")
+            self.assertIsNotNone(cached)
+            self.assertEqual(cached["official_citation"], CADEN_CITATION)
+
+    def test_identity_only_import_rejects_wrong_year_and_docket(self) -> None:
+        existing = {
+            "id": "6240402",
+            "case_name": "In re Caden C.",
+            "case_name_full": "In re Caden C.",
+            # The copied opinion names the right case but carries a different
+            # year and no matching docket number.
+            "date_filed": "1999-01-01",
+            "docket": {"docket_number": "S999999"},
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = _client(temp_dir)
+            with self.assertRaises(ScholarBrowserError):
+                import_scholar_text(
+                    client,
+                    citation="",
+                    source_url=CADEN_CASE_URL,
+                    clipboard_text=CADEN_OPINION,
+                    existing_cluster=existing,
+                )
+            # No Library or Research Cache write on a discriminator mismatch.
+            self.assertEqual(client.library.list_case_entries(), [])
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = _client(temp_dir)
+            with self.assertRaises(ScholarBrowserError):
+                import_scholar_text(
+                    client,
+                    citation="",
+                    source_url=CADEN_CASE_URL,
+                    clipboard_text=CADEN_OPINION,
+                )
+
     def test_identity_only_import_rejects_mismatched_identity(self) -> None:
         existing = {
             "id": "6240402",
