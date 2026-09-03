@@ -3638,6 +3638,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
         self._agent_copy_trace_button = Gtk.Button(label="Copy Trace")
         self._agent_copy_trace_button.add_css_class("flat")
+        self._agent_copy_trace_button.add_css_class("no-bold")
+        self._agent_copy_trace_button.set_valign(Gtk.Align.CENTER)
         self._agent_copy_trace_button.set_tooltip_text(
             "Refresh the latest full Agent session trace and copy its path "
             "for pasting into a new Pi session"
@@ -3646,20 +3648,24 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_copy_trace_button.connect(
             "clicked", self._on_agent_copy_trace_clicked
         )
-        header.append(self._agent_copy_trace_button)
+        tabs.append(self._agent_copy_trace_button)
 
         self._agent_save_answer_button = Gtk.Button(label="Save")
         self._agent_save_answer_button.add_css_class("flat")
+        self._agent_save_answer_button.add_css_class("no-bold")
+        self._agent_save_answer_button.set_valign(Gtk.Align.CENTER)
         self._agent_save_answer_button.set_tooltip_text("Save final answer to Research Cache")
         self._agent_save_answer_button.set_sensitive(False)
         self._agent_save_answer_button.connect("clicked", self._on_save_agent_answer_clicked)
-        header.append(self._agent_save_answer_button)
+        tabs.append(self._agent_save_answer_button)
 
         collapse_button = Gtk.Button(label="Hide")
         collapse_button.add_css_class("flat")
+        collapse_button.add_css_class("no-bold")
+        collapse_button.set_valign(Gtk.Align.CENTER)
         collapse_button.set_tooltip_text("Hide Agent output")
         collapse_button.connect("clicked", self._on_agent_output_toggle_clicked)
-        header.append(collapse_button)
+        tabs.append(collapse_button)
         self._agent_output_toggle_button = collapse_button
         self._agent_output_header = header
         return header
