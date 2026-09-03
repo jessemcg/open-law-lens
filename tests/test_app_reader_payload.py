@@ -5237,12 +5237,15 @@ Opinion text.
         window = DummyWindow()
         rendered, spans, _offset_map = OpenLawLensWindow._render_markdown_text(  # type: ignore[arg-type]
             window,
-            "# Suggested Arguments\n\n> Important limit.\n\n## Record Notes\n",
+            "# Suggested Arguments\n\n> Important limit.\n\n## Record Notes\n\n#### Custody Sub-Issue\n\n- **Claim preclusion**: bars relitigation.\n####No space stays plain",
         )
         window.reader_buffer.set_text(rendered)
 
         OpenLawLensWindow._apply_reader_markdown_spans(window, spans)  # type: ignore[arg-type]
 
+        self.assertNotIn("#### ", rendered)
+        self.assertIn("Custody Sub-Issue", rendered)
+        self.assertIn("####No space stays plain", rendered)
         heading_tags = {
             tag.props.name
             for tag in window.reader_buffer.get_iter_at_offset(1).get_tags()
@@ -5259,9 +5262,75 @@ Opinion text.
                 second_heading_offset
             ).get_tags()
         }
+        fourth_heading_offset = rendered.index("Custody Sub-Issue")
+        fourth_heading_tags = {
+            tag.props.name
+            for tag in window.reader_buffer.get_iter_at_offset(
+                fourth_heading_offset
+            ).get_tags()
+        }
+        body_bold_offset = rendered.index("Claim preclusion")
+        body_bold_tags = {
+            tag.props.name
+            for tag in window.reader_buffer.get_iter_at_offset(
+                body_bold_offset
+            ).get_tags()
+        }
         self.assertIn("reader-md-h1", heading_tags)
         self.assertIn("reader-md-blockquote", quote_tags)
         self.assertIn("reader-md-h2", second_heading_tags)
+        self.assertIn("reader-md-h4", fourth_heading_tags)
+        self.assertIn("reader-md-bold", body_bold_tags)
+
+    def test_agent_markdown_spans_style_level4_heading_below_level3(self) -> None:
+        class DummyWindow:
+            def _render_markdown_text(
+                self,
+                text: str,
+            ) -> tuple[str, list[tuple[int, int, str]], list[int]]:
+                return OpenLawLensWindow._render_markdown_text(  # type: ignore[arg-type]
+                    self,
+                    text,
+                )
+
+            def _render_inline_markdown(
+                self,
+                text: str,
+                base_offset: int,
+            ) -> tuple[str, list[tuple[int, int, str]], list[int]]:
+                return OpenLawLensWindow._render_inline_markdown(  # type: ignore[arg-type]
+                    self,
+                    text,
+                    base_offset,
+                )
+
+        window = DummyWindow()
+        rendered, spans, _offset_map = window._render_markdown_text(
+            "### Record Notes\n\n#### Custody Sub-Issue\n"
+        )
+        buffer = Gtk.TextBuffer()
+        buffer.set_text(rendered)
+
+        OpenLawLensWindow._apply_agent_markdown_spans(window, buffer, spans)  # type: ignore[arg-type]
+
+        self.assertNotIn("####", rendered)
+        self.assertIn("Custody Sub-Issue", rendered)
+        h3_offset = rendered.index("Record Notes")
+        h4_offset = rendered.index("Custody Sub-Issue")
+        h3_tags = {
+            tag.props.name: tag
+            for tag in buffer.get_iter_at_offset(h3_offset).get_tags()
+        }
+        h4_tags = {
+            tag.props.name: tag
+            for tag in buffer.get_iter_at_offset(h4_offset).get_tags()
+        }
+        self.assertIn("md-h3", h3_tags)
+        self.assertIn("md-h4", h4_tags)
+        self.assertLess(
+            float(h4_tags["md-h4"].props.scale),
+            float(h3_tags["md-h3"].props.scale),
+        )
 
     def test_markdown_reader_links_use_rendered_authority_text(self) -> None:
         class DummyWindow:

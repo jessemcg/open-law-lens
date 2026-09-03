@@ -324,6 +324,7 @@ AGENT_MARKDOWN_HEADING_SCALES = {
     1: 1.55,
     2: 1.3,
     3: 1.15,
+    4: 1.05,
 }
 
 
@@ -10165,7 +10166,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             prefix_len = 0
             heading = ""
             blockquote = False
-            if content.startswith("### "):
+            if content.startswith("#### "):
+                prefix_len = 5
+                heading = "heading4"
+            elif content.startswith("### "):
                 prefix_len = 4
                 heading = "heading3"
             elif content.startswith("## "):
