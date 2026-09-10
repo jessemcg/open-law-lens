@@ -609,12 +609,50 @@ exact official-citation match and qualifying official pagination, and persists
 with `source_provider: google_scholar` and `retrieval_mode: browser_clipboard`.
 
 The deterministic sequence scopes the exact target frame and selected tab,
-matches exactly one corroborated result, and performs only targeted
-`Ctrl+A`/`Ctrl+C` key presses on an exact numeric `window_id`. The bounded MCP
+classifies the selected document contextually, matches exactly one corroborated
+result, and performs only targeted `Ctrl+A`/`Ctrl+C` key presses on an exact
+numeric `window_id`. The bounded MCP
 client exposes only `doctor`, `list_windows`, `get_app_state`, `perform_action`,
 and `press_key`; screenshots, pointer coordinates, clicks, typing, scrolling,
 dragging, setup operations, and every key other than `Ctrl+A`/`Ctrl+C` are
 denied.
+
+### Contextual barrier classification
+
+Barrier detection never scans the whole document for bare trigger words.
+Instead, a pure classifier (`classify_page`) inspects only the selected
+document's own structure and returns one of `search_results`, `opinion`,
+`challenge`, `no_results`, `missing_page`, or `unknown` with a stable reason
+code. A challenge (CAPTCHA, robot check, unusual-traffic check, required
+sign-in, consent interstitial) is recognized only through bounded, coherent
+evidence — a challenge-specific page title, heading, short notice, or visible
+modal containing a complete challenge phrase, paired with a required control
+(a checkbox or challenge-labeled button) in the same verified frame. Ordinary
+opinion prose, quotations, footnotes, headings like `CONSENT`, search-result
+snippets, and the optional signed-out `Sign in` link can therefore never block
+a recovery, even when they contain trigger words such as `consent` or `sign
+in`. A genuine challenge overlay takes precedence and is always left visible
+and untouched. An incomplete or unrecognized tree keeps polling within the
+deadline and then reports a load/inspection failure — never a claim that no
+official copy exists.
+
+### Truthful outcomes
+
+Recovery outcomes carry the failed `stage` and a stable `reason_code`
+(for example `challenge_captcha`, `challenge_traffic`, `challenge_login`,
+`challenge_consent`, `no_matching_result`, `ambiguous_results`,
+`identity_mismatch`, `inspection_incomplete`, `page_load_timeout`,
+`copy_failed`, `validation_rejected`, `persistence_failed`,
+`reextract_failed`, `cancelled`, `busy`) through the recovery result, service
+result JSON, CLI warnings, and GUI status. A single presentation mapping
+drives both surfaces, and the GUI modal distinguishes **Scholar Access
+Blocked** (a real challenge was detected), **Scholar Copy Rejected** (a
+candidate was copied but failed validation), **Scholar Recovery Failed**
+(load, inspection, copy, storage, or unexpected failure), **No Matching
+Scholar Copy Found** (the bounded search genuinely found no qualifying
+match — not a claim of global nonexistence), and concise cancellation/busy
+status without a false not-found warning. The baseline reader remains offered
+whenever it is available.
 
 Recovery queries carry an explicit identity. When the official citation is
 known, the Scholar search and the opened-opinion corroboration use that exact
@@ -660,7 +698,16 @@ on the imported opinion for transparency. If a CAPTCHA or robot check appears,
 the command reports `blocked` and leaves the challenge visible rather than
 attempting to solve it. A copied but invalid opinion is rejected without
 touching the Library or Research Cache, and the CourtListener/slip baseline
-remains available. External research writes to an isolated disposable cache —
+remains available. The cross-process recovery lock is held from before the
+browser job through clipboard capture, validation, and persistence, so a
+concurrent recovery can never replace the clipboard mid-flight; around the
+copy, the selected document and Scholar case URL are revalidated and the copy
+target is confirmed to be document content rather than an editable
+address/search field, failing safely otherwise. The clipboard read itself is
+time- and size-bounded: a stalled reader is terminated at the deadline instead
+of blocking forever. Cancellation is honored before persistence, and a
+post-persistence Library readback failure reports that the copy was saved but
+could not be re-verified — never not-found, and never a second search. External research writes to an isolated disposable cache —
 under the private runtime workspace — so the next normal Open Law Lens launch
 still shows your unchanged Research Cache sidebar, while validated official
 opinions remain in the durable Library.
@@ -691,11 +738,14 @@ opinions remain in the durable Library.
   `get_app_state`, `perform_action`, and `press_key`.
 - `open_law_lens/browser_recovery.py`: deterministic default-browser Google
   Scholar recovery state machine (model-free, drives Computer Use directly,
-  scopes the exact frame/tab, matches one corroborated result, copies with
-  targeted `Ctrl+A`/`Ctrl+C`).
+  scopes the exact frame/tab, classifies the selected page contextually so
+  challenge evidence is always paired and opinion prose never blocks, matches
+  one corroborated result, copies with targeted `Ctrl+A`/`Ctrl+C`).
 - `open_law_lens/scholar_recovery_service.py`: recovery-and-import service
-  (recovery -> clipboard read -> validation -> persistence -> re-extraction),
-  used by the CLI, GTK app, and embedded legal-researcher sessions.
+  (recovery -> clipboard read -> validation -> persistence -> re-extraction)
+  holding the cross-process recovery lock across the whole handoff and
+  reporting typed stage/reason-code outcomes, used by the CLI, GTK app, and
+  embedded legal-researcher sessions.
 - `open_law_lens/scholar_browser.py`: default-browser Scholar launch and
   clipboard import primitives for recovery.
 - `scripts/open-law-lens-agent-vte.sh`: embedded Pi terminal launcher. It keeps

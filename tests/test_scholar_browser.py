@@ -1,16 +1,21 @@
 from __future__ import annotations
 
-import io
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import open_law_lens.scholar_browser
+import subprocess
+import threading
 from open_law_lens.cache import JsonCache
 from open_law_lens.import_text import clean_imported_opinion_text
 from open_law_lens.library import CaseLibrary
 from open_law_lens.scholar_browser import (
+    CLIPBOARD_COMMAND_TIMEOUT_SECONDS,
     CLIPBOARD_MAX_BYTES,
     ScholarBrowserError,
     ScholarSourceUrlError,
@@ -39,17 +44,99 @@ OPINION
 """
 
 
-class _FakeProc:
-    def __init__(self, data: bytes):
-        self._data = data
+SEARLES_CITATION = "60 Cal.App.5th 43"
+SEARLES_CASE_URL = "https://scholar.google.com/scholar_case?case=1733697791252697933"
+
+SEARLES_OPINION = """\
+60 Cal.App.5th 43 (2021)
+
+Searles v. Archangel
+
+OPINION
+
+*45 The mother appeals the termination of her parental rights.
+
+*46 She argues the court erred in finding the boys adoptable.
+
+*47 The juvenile court removed the children from her custody.
+
+*48 We recount the proceedings below.
+
+*49 The petition was sustained.
+
+*50 Reunification services were ordered.
+
+*51 The mother did not reconcile with the children.
+
+*52 The court terminated her parental rights.
+
+*53 The children were adopted by their foster parents.
+
+*54 The mother filed a timely notice of appeal.
+
+*55 We review the findings for substantial evidence.
+
+*56 Substantial evidence supports the findings.
+
+*57 The judgment is affirmed.
+"""
+
+
+class _PipeProc:
+    """A subprocess stand-in whose stdout is a real os.pipe.
+
+    Data is fed from a background writer thread so payloads larger than the
+    kernel pipe buffer work. ``hold_open=True`` keeps the write end open
+    without writing, simulating a stalled clipboard reader that must be
+    killed at the read deadline.
+    """
+
+    def __init__(self, data: bytes = b"", *, hold_open: bool = False):
         self.returncode = 0
-        self.stdout = io.BytesIO(data)
+        self.killed = False
+        self._write_fd: int | None = None
+        read_fd, write_fd = os.pipe()
+        if hold_open:
+            self._write_fd = write_fd
+        elif data:
+            threading.Thread(target=self._feed, args=(write_fd, data), daemon=True).start()
+        else:
+            os.close(write_fd)
+        self.stdout = os.fdopen(read_fd, "rb")
+
+    @staticmethod
+    def _feed(write_fd: int, data: bytes) -> None:
+        try:
+            view = memoryview(data)
+            while view:
+                written = os.write(write_fd, view[:4096])
+                view = view[written:]
+        except OSError:
+            pass
+        finally:
+            try:
+                os.close(write_fd)
+            except OSError:
+                pass
+
+    def poll(self) -> int | None:
+        return None if self._write_fd is not None else self.returncode
 
     def wait(self, timeout: float | None = None) -> int:
+        if self._write_fd is not None:
+            # The process is still alive: a real bounded wait expires.
+            raise subprocess.TimeoutExpired(cmd="wl-paste", timeout=timeout or 0)
         return self.returncode
 
     def kill(self) -> None:
-        pass
+        self.killed = True
+        self.returncode = -9
+        if self._write_fd is not None:
+            try:
+                os.close(self._write_fd)
+            except OSError:
+                pass
+            self._write_fd = None
 
 
 def _client(temp_dir: str) -> SimpleNamespace:
@@ -100,16 +187,17 @@ class CitationAndUrlTests(unittest.TestCase):
 
 class ClipboardTests(unittest.TestCase):
     def test_read_regular_clipboard_returns_text(self) -> None:
-        proc = _FakeProc(b"hello scholar\n")
+        proc = _PipeProc(b"hello scholar\n")
         with patch("open_law_lens.scholar_browser.shutil.which", return_value="/usr/bin/wl-paste"), patch(
             "open_law_lens.scholar_browser.subprocess.Popen", return_value=proc
         ) as popen:
             text = read_regular_clipboard()
         self.assertEqual(text, "hello scholar")
         popen.assert_called_once_with(("wl-paste", "--no-newline"), stdout=-1, stderr=-3)
+        self.assertFalse(proc.killed)
 
     def test_read_regular_clipboard_empty_fails_closed(self) -> None:
-        proc = _FakeProc(b"   \n")
+        proc = _PipeProc(b"   \n")
         with patch("open_law_lens.scholar_browser.shutil.which", return_value="/usr/bin/wl-paste"), patch(
             "open_law_lens.scholar_browser.subprocess.Popen", return_value=proc
         ):
@@ -117,17 +205,49 @@ class ClipboardTests(unittest.TestCase):
                 read_regular_clipboard()
 
     def test_read_regular_clipboard_oversize_fails(self) -> None:
-        proc = _FakeProc(b"x" * (CLIPBOARD_MAX_BYTES + 1))
+        # Use a small cap so the payload fits the OS pipe buffer while still
+        # exceeding the configured limit.
+        proc = _PipeProc(b"x" * 2048)
         with patch("open_law_lens.scholar_browser.shutil.which", return_value="/usr/bin/wl-paste"), patch(
             "open_law_lens.scholar_browser.subprocess.Popen", return_value=proc
         ):
             with self.assertRaises(ScholarBrowserError):
-                read_regular_clipboard()
+                read_regular_clipboard(max_bytes=1024)
 
     def test_read_regular_clipboard_no_utility(self) -> None:
         with patch("open_law_lens.scholar_browser.shutil.which", return_value=None):
             with self.assertRaises(ScholarBrowserError):
                 read_regular_clipboard()
+
+    def test_stalled_reader_is_killed_at_the_deadline(self) -> None:
+        # A reader that never produces output and never exits must be killed
+        # by the bounded streaming read instead of blocking forever before the
+        # process timeout applies.
+        proc = _PipeProc(hold_open=True)
+        started = time.monotonic()
+        with patch(
+            "open_law_lens.scholar_browser.shutil.which", return_value="/usr/bin/wl-paste"
+        ), patch(
+            "open_law_lens.scholar_browser.subprocess.Popen", return_value=proc
+        ), patch.object(
+            open_law_lens.scholar_browser,
+            "CLIPBOARD_COMMAND_TIMEOUT_SECONDS",
+            0.3,
+        ):
+            with self.assertRaises(ScholarBrowserError):
+                read_regular_clipboard()
+        self.assertLess(time.monotonic() - started, 5.0)
+        self.assertTrue(proc.killed)
+
+    def test_large_payload_is_read_across_chunks(self) -> None:
+        # Output larger than one 64 KiB chunk is fully consumed within the cap.
+        payload = (b"scholar opinion line\n") * 9000  # ~180 KiB
+        proc = _PipeProc(payload)
+        with patch("open_law_lens.scholar_browser.shutil.which", return_value="/usr/bin/wl-paste"), patch(
+            "open_law_lens.scholar_browser.subprocess.Popen", return_value=proc
+        ):
+            text = read_regular_clipboard(max_bytes=CLIPBOARD_MAX_BYTES)
+        self.assertEqual(len(text), len(payload.strip()))
 
 
 class DiscoveredCitationImportTests(unittest.TestCase):
@@ -455,6 +575,60 @@ class ImportTests(unittest.TestCase):
             self.assertNotIn("How cited", persisted_text)
             self.assertNotIn("Cited by", persisted_text)
             self.assertNotIn("Save", persisted_text)
+
+
+class SearlesImportTests(unittest.TestCase):
+    """The reported Searles page imports with its 45-57 marker range.
+
+    The live page was the correctly paginated opinion; the import must
+    preserve its exact citation, markers 45-57, and Scholar provenance.
+    """
+
+    def test_searles_opinion_imports_with_markers_and_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = _client(temp_dir)
+            result = import_scholar_text(
+                client,
+                citation=SEARLES_CITATION,
+                source_url=SEARLES_CASE_URL,
+                clipboard_text=SEARLES_OPINION,
+                case_name="Searles v. Archangel",
+            )
+            self.assertTrue(result.eligible)
+            self.assertEqual(result.official_citation, SEARLES_CITATION)
+            self.assertGreaterEqual(result.marker_count, 13)
+
+            opinion = client.library.read_opinion(result.opinion_id)
+            self.assertIsNotNone(opinion)
+            self.assertEqual(opinion["source_provider"], "google_scholar")
+            self.assertEqual(opinion["retrieval_mode"], "browser_clipboard")
+            self.assertEqual(opinion["source_url"], SEARLES_CASE_URL)
+
+            display = client.library.read_opinion_display(result.opinion_id)
+            self.assertIsNotNone(display)
+            labels = [marker.page_label for marker in display.page_markers]
+            self.assertEqual(labels, [str(page) for page in range(45, 58)])
+
+    def test_searles_prose_containing_consent_still_imports(self) -> None:
+        # The opinion's "electronic delivery with consent" prose must never
+        # affect import: validation checks identity and pagination, not
+        # barrier substrings.
+        text = SEARLES_OPINION.replace(
+            "*46 She argues the court erred in finding the boys adoptable.",
+            "*46 The father's electronic delivery with consent of the summons "
+            "satisfied due process, and his consent was implied.",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = _client(temp_dir)
+            result = import_scholar_text(
+                client,
+                citation=SEARLES_CITATION,
+                source_url=SEARLES_CASE_URL,
+                clipboard_text=text,
+                case_name="Searles v. Archangel",
+            )
+            self.assertTrue(result.eligible)
+            self.assertEqual(result.official_citation, SEARLES_CITATION)
 
 
 if __name__ == "__main__":

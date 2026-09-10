@@ -13,11 +13,23 @@ from typing import Any
 from unittest import mock
 
 from open_law_lens.browser_recovery import (
+    REASON_AMBIGUOUS_RESULTS,
+    REASON_CANCELLED,
+    REASON_CHALLENGE_CAPTCHA,
+    REASON_CHALLENGE_CONSENT,
+    REASON_CHALLENGE_LOGIN,
+    REASON_CHALLENGE_TRAFFIC,
+    REASON_COPY_FAILED,
+    REASON_INSPECTION_INCOMPLETE,
+    REASON_NO_MATCHING_RESULT,
+    REASON_PAGE_LOAD_TIMEOUT,
     RecoveryBusyError,
     RecoveryLock,
     ScholarRecoveryJob,
     ScholarRecoveryRequest,
+    classify_page,
     detect_barrier,
+    document_copy_target_confirmed,
     find_result_link,
     find_result_matches,
     find_scholar_url,
@@ -233,6 +245,14 @@ class TreeScopeTests(unittest.TestCase):
 
 
 class BarrierTests(unittest.TestCase):
+    """Challenges are detected only through bounded, coherent evidence.
+
+    Every genuine-challenge fixture pairs a challenge-specific heading, page
+    title, or short notice with a required control; trigger words inside
+    ordinary opinion prose, headings like ``CONSENT``, quotations, snippets,
+    or an optional signed-out ``Sign in`` link never block.
+    """
+
     def _tree_with_text(self, text: str) -> list[dict[str, Any]]:
         return [
             node(0, "application", "Firefox"),
@@ -240,29 +260,202 @@ class BarrierTests(unittest.TestCase):
             node(2, "static text", text, parent=1),
         ]
 
+    def _challenge_tree(
+        self,
+        evidence_role: str,
+        evidence_text: str,
+        control_role: str,
+        control_name: str,
+        *,
+        extra: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        tree = [
+            node(0, "application", "Firefox"),
+            node(1, "frame", "Google Scholar", states=["showing", "visible"], parent=0),
+            node(2, evidence_role, evidence_text, states=["showing", "visible"], parent=1),
+            node(3, control_role, control_name, states=["showing", "visible"], parent=1),
+        ]
+        if extra:
+            for item in extra:
+                item["parent_index"] = 1
+                tree.append(item)
+        return tree
+
     def test_captcha(self) -> None:
-        tree = self._tree_with_text("Please complete the CAPTCHA to continue.")
-        self.assertEqual(detect_barrier(tree, tree[1:]), "captcha")
+        tree = self._challenge_tree(
+            "heading", "Please complete the CAPTCHA to continue.", "push button", "Verify"
+        )
+        self.assertEqual(detect_barrier(tree, tree[1:]), "challenge_captcha")
 
     def test_robot_check(self) -> None:
-        tree = self._tree_with_text("Confirm you are not a robot.")
-        self.assertEqual(detect_barrier(tree, tree[1:]), "not a robot")
+        tree = self._challenge_tree(
+            "static text",
+            "Confirm you are not a robot.",
+            "check box",
+            "I'm not a robot",
+        )
+        self.assertEqual(detect_barrier(tree, tree[1:]), "challenge_captcha")
 
     def test_unusual_traffic(self) -> None:
-        tree = self._tree_with_text("Our systems detected unusual traffic.")
-        self.assertEqual(detect_barrier(tree, tree[1:]), "unusual traffic")
+        tree = self._challenge_tree(
+            "static text",
+            "Our systems have detected unusual traffic from your computer network.",
+            "check box",
+            "I'm not a robot",
+        )
+        self.assertEqual(detect_barrier(tree, tree[1:]), "challenge_traffic")
 
     def test_login(self) -> None:
-        tree = self._tree_with_text("Please log in to continue.")
-        self.assertEqual(detect_barrier(tree, tree[1:]), "log in")
+        tree = self._challenge_tree(
+            "heading", "Sign in to continue.", "push button", "Sign in"
+        )
+        self.assertEqual(detect_barrier(tree, tree[1:]), "challenge_login")
 
     def test_consent(self) -> None:
+        tree = self._challenge_tree(
+            "heading", "Before you continue", "push button", "Accept all"
+        )
+        self.assertEqual(detect_barrier(tree, tree[1:]), "challenge_consent")
+
+    def test_challenge_modal_dialog_with_nested_notice_and_controls(self) -> None:
+        tree = [
+            node(0, "application", "Firefox"),
+            node(1, "frame", "Google Scholar", states=["showing", "visible"], parent=0),
+            node(2, "document web", "Google Scholar", states=["showing", "visible"], parent=1),
+            node(3, "dialog", states=["showing", "visible"], parent=2),
+            node(4, "static text", "Before you continue to Google Scholar", parent=3),
+            node(5, "static text", "Google uses cookies for its services.", parent=3),
+            node(6, "push button", "I agree", states=["showing", "visible"], parent=3),
+        ]
+        self.assertEqual(detect_barrier(tree, tree[2:]), "challenge_consent")
+
+    def test_signed_out_interstitial_still_blocks_with_optional_sign_in_link(self) -> None:
+        # Signed-out layout: the optional header ``Sign in`` link coexists
+        # with a genuine CAPTCHA interstitial; the interstitial still blocks.
+        tree = self._challenge_tree(
+            "heading", "Please complete the CAPTCHA to continue.", "check box", "I'm not a robot",
+            extra=[node(9, "link", "Sign in", states=["showing", "visible"])],
+        )
+        self.assertEqual(detect_barrier(tree, tree[1:]), "challenge_captcha")
+
+    def test_signed_in_challenge_layout_blocks(self) -> None:
+        # Signed-in layout: no sign-in link anywhere; the traffic challenge
+        # with its embedded robot checkbox blocks.
+        tree = self._challenge_tree(
+            "static text",
+            "Our systems have detected unusual traffic from your computer network.",
+            "check box",
+            "I'm not a robot",
+        )
+        self.assertEqual(detect_barrier(tree, tree[1:]), "challenge_traffic")
+
+    def test_challenge_phrase_without_required_control_is_not_a_barrier(self) -> None:
+        # A challenge phrase with no associated required control never blocks:
+        # stopping requires coherent evidence, not a substring.
         tree = self._tree_with_text("Choose your country before you continue.")
-        self.assertIsNotNone(detect_barrier(tree, tree[1:]))
+        self.assertIsNone(detect_barrier(tree, tree[1:]))
+
+    def test_bare_consent_substring_never_blocks(self) -> None:
+        # Regression for the reported Searles recovery: the opinion discussed
+        # "electronic delivery with consent", and the old whole-document
+        # substring scan classified that prose as a consent barrier.
+        searles_paragraph = (
+            "Father consented to electronic delivery of the summons and did not "
+            "appear to contest the jurisdictional finding, so the court implied "
+            "consent to the jurisdiction of the juvenile court."
+        )
+        tree = [
+            node(0, "application", "Firefox"),
+            node(1, "frame", "Searles v. Archangel - Google Scholar", states=["showing", "visible"], parent=0),
+            node(2, "document web", "Searles v. Archangel", states=["focused", "showing", "visible"], parent=1),
+            node(3, "paragraph", text={"content": searles_paragraph}, parent=2),
+            # The optional signed-out header link and an ordinary CONSENT
+            # heading are also present on the same page.
+            node(4, "heading", "CONSENT", parent=2),
+            node(5, "link", "Sign in", states=["showing", "visible"], parent=2),
+        ]
+        self.assertIsNone(detect_barrier(tree, tree[2:]))
+
+    def test_optional_sign_in_link_and_consent_heading_are_harmless(self) -> None:
+        tree = [
+            node(0, "application", "Firefox"),
+            node(1, "frame", "Google Scholar", states=["showing", "visible"], parent=0),
+            node(2, "heading", "CONSENT", parent=1),
+            node(3, "link", "Sign in", states=["showing", "visible"], parent=1),
+            node(4, "static text", "Your choice about delivery was recorded.", parent=1),
+        ]
+        self.assertIsNone(detect_barrier(tree, tree[1:]))
+
+    def test_challenge_evidence_scoped_to_selected_document(self) -> None:
+        # A hidden tab's challenge modal must never block the visible page.
+        tree = [
+            node(0, "application", "Firefox"),
+            node(1, "frame", "Google Scholar", states=["showing", "visible"], parent=0),
+            node(2, "internal frame", parent=1),
+            node(3, "document web", "Hidden", states=["visible"], parent=2),
+            node(4, "dialog", "Sign in to continue", states=["showing", "visible"], parent=3),
+            node(5, "push button", "Sign in", states=["showing", "visible"], parent=4),
+            node(6, "internal frame", states=["showing", "visible"], parent=1),
+            node(7, "document web", "Google Scholar", states=["focused", "showing", "visible"], parent=6),
+            node(8, "static text", "In re Caden C. 11 Cal.5th 614", parent=7),
+        ]
+        from open_law_lens.browser_recovery import _descendant_set
+
+        scoped_frame = [n for n in tree if int(n["index"]) in _descendant_set(tree, 1)]
+        selected = scope_selected_document(tree, scoped_frame)
+        indexes = {int(n["index"]) for n in selected}
+        self.assertIn(7, indexes)
+        self.assertNotIn(4, indexes)
+        self.assertIsNone(detect_barrier(tree, selected))
 
     def test_no_barrier(self) -> None:
         tree = self._tree_with_text("In re Caden C. 11 Cal.5th 614")
         self.assertIsNone(detect_barrier(tree, tree[1:]))
+
+
+class ClassifyPageTests(unittest.TestCase):
+    """The structured classifier distinguishes page states with reason codes."""
+
+    def test_search_page_with_results(self) -> None:
+        tree = scholar_search_tree()
+        classification = classify_page(tree, tree[1:], context="search")
+        self.assertEqual(classification.classification, "search_results")
+        self.assertEqual(classification.reason_code, "")
+
+    def test_unknown_page_is_never_not_found(self) -> None:
+        # An incomplete/unrecognized tree classifies as unknown so the caller
+        # polls and reports an inspection failure instead of claiming that no
+        # official copy exists.
+        tree = [
+            node(0, "application", "Firefox"),
+            node(1, "frame", "Google Scholar", states=["showing", "visible"], parent=0),
+            node(2, "static text", "Rendering", parent=1),
+        ]
+        classification = classify_page(tree, tree[1:], context="search")
+        self.assertEqual(classification.classification, "unknown")
+
+    def test_opinion_context_classification(self) -> None:
+        tree = [
+            node(0, "application", "Firefox"),
+            node(1, "frame", "Opinion", states=["showing", "visible"], parent=0),
+            node(2, "document web", "Opinion", states=["focused", "showing", "visible"], parent=1),
+            node(3, "static text", "OPINION", parent=2),
+        ]
+        classification = classify_page(tree, tree[2:], context="opinion")
+        self.assertEqual(classification.classification, "opinion")
+
+    def test_no_results_notice_context_dependent(self) -> None:
+        tree = [
+            node(0, "application", "Firefox"),
+            node(1, "frame", "Google Scholar", parent=0),
+            node(2, "static text", "No results found for '82 Cal.App.5th 1660'", parent=1),
+        ]
+        search = classify_page(tree, tree[1:], context="search")
+        self.assertEqual(search.classification, "no_results")
+        self.assertEqual(search.reason_code, "no_matching_result")
+        opinion = classify_page(tree, tree[1:], context="opinion")
+        self.assertEqual(opinion.classification, "missing_page")
+        self.assertEqual(opinion.reason_code, "no_matching_result")
 
 
 class ResultLinkTests(unittest.TestCase):
@@ -488,7 +681,14 @@ class _FakeClient:
                 parent=1,
             ),
             node(3, "panel", "page", parent=1),
-            node(4, "static text", "81 Cal.App.5th 309 (2022) OPINION", parent=3),
+            node(
+                4,
+                "document web",
+                "In re Rylei S. - Google Scholar",
+                states=["focused", "showing", "visible"],
+                parent=1,
+            ),
+            node(5, "static text", "81 Cal.App.5th 309 (2022) OPINION", parent=4),
         ]
 
 
@@ -669,7 +869,7 @@ class _NoResultStructureClient(_FakeClient):
 
 
 class _BarrierSearchClient(_FakeClient):
-    """The search page is an unusual-traffic barrier."""
+    """The search page shows a genuine unusual-traffic challenge."""
 
     @staticmethod
     def _search_tree() -> list[dict[str, Any]]:
@@ -679,8 +879,12 @@ class _BarrierSearchClient(_FakeClient):
                 8,
                 "static text",
                 "Our systems have detected unusual traffic from your computer network.",
+                states=["showing", "visible"],
                 parent=3,
             )
+        )
+        tree.append(
+            node(9, "check box", "I'm not a robot", states=["showing", "visible"], parent=3)
         )
         return tree
 
@@ -727,11 +931,10 @@ class CorroborationStateMachineTests(unittest.TestCase):
     def test_parse_failure_reason_when_no_result_structure_loads(self) -> None:
         client = _NoResultStructureClient()
         outcome = self._run(client)
-        self.assertEqual(outcome.outcome, "not_found")
-        self.assertEqual(
-            outcome.message,
-            "The Scholar page loaded but showed no parseable result structure.",
-        )
+        # An unrecognized/incomplete page is an inspection failure, never a
+        # claim that no official copy exists.
+        self.assertEqual(outcome.outcome, "failed")
+        self.assertEqual(outcome.reason_code, REASON_INSPECTION_INCOMPLETE)
         self.assertFalse(client.navigated)
         self.assertEqual(client.pressed, [])
 
@@ -739,7 +942,8 @@ class CorroborationStateMachineTests(unittest.TestCase):
         client = _BarrierSearchClient()
         outcome = self._run(client)
         self.assertEqual(outcome.outcome, "blocked")
-        self.assertIn("unusual traffic", outcome.message)
+        self.assertEqual(outcome.reason_code, REASON_CHALLENGE_TRAFFIC)
+        self.assertIn("unusual-traffic check", outcome.message)
         self.assertFalse(client.navigated)
         self.assertEqual(client.pressed, [])
 
@@ -1605,9 +1809,16 @@ class CitationlessStateMachineTests(unittest.TestCase):
                 node(3, "panel", "page", parent=1),
                 node(
                     4,
+                    "document web",
+                    "In re S.H. - Google Scholar",
+                    states=["focused", "showing", "visible"],
+                    parent=1,
+                ),
+                node(
+                    5,
                     "static text",
                     "In re S.H. No. B299242 82 Cal.App.5th 166 (2022) OPINION",
-                    parent=3,
+                    parent=4,
                 ),
             ]
 
@@ -1697,9 +1908,16 @@ class InReECStateMachineTests(unittest.TestCase):
                 node(3, "panel", "page", parent=1),
                 node(
                     4,
+                    "document web",
+                    "In re E.C. - Google Scholar",
+                    states=["focused", "showing", "visible"],
+                    parent=1,
+                ),
+                node(
+                    5,
                     "static text",
                     "In re E.C. No. F084030 85 Cal.App.5th 123 (2022) OPINION",
-                    parent=3,
+                    parent=4,
                 ),
             ]
 
@@ -1771,6 +1989,326 @@ class InReECStateMachineTests(unittest.TestCase):
         self.assertEqual(outcome.outcome, "not_found")
         self.assertEqual(client.pressed, [])
 
+
+
+class SearlesRegressionTests(unittest.TestCase):
+    """Regression for the reported Searles v. Archangel false failure.
+
+    The live page was the correctly paginated opinion (60 Cal.App.5th 43,
+    markers 45-57), yet the old whole-document substring scan classified the
+    opinion's "electronic delivery with consent" prose as a consent barrier
+    and reported "Official Pagination Not Found".
+    """
+
+    SEARLES_CITATION = "60 Cal.App.5th 43"
+
+    @staticmethod
+    def _results() -> list[dict[str, Any]]:
+        return [
+            {
+                "title": "Searles v. Archangel",
+                "metadata": (
+                    "60 Cal. App. 5th 43 - Cal: Court of Appeal, "
+                    "4th Appellate Dist. 2021 - Google Scholar"
+                ),
+                "snippet": "… The mother appeals the termination of her parental rights.",
+                "cited_by": "Cited by 5",
+            }
+        ]
+
+    @staticmethod
+    def _scoped() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        tree = firefox_scholar_search_tree("60 Cal.App.5th 43", SearlesRegressionTests._results())
+        return tree, _scoped_search(tree)
+
+    def test_searles_result_is_selected_exactly_once(self) -> None:
+        tree, scoped = self._scoped()
+        matches = find_result_matches(tree, scoped, self.SEARLES_CITATION, "Searles v. Archangel")
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0].official_citation, self.SEARLES_CITATION)
+        link = find_result_link(tree, scoped, self.SEARLES_CITATION, "Searles v. Archangel")
+        self.assertIsNotNone(link)
+
+    def test_searles_opinion_prose_is_not_a_barrier(self) -> None:
+        # The observed opinion paragraph, plus the ordinary CONSENT heading
+        # and the optional signed-out Sign in link, must never block. The old
+        # whole-document scan matched bare "consent" across the entire page.
+        paragraph = (
+            "The court found that the father's electronic delivery with consent "
+            "of the summons satisfied due process, and his consent to the "
+            "jurisdiction of the juvenile court was implied."
+        )
+        tree = [
+            node(0, "application", "Firefox"),
+            node(1, "frame", "Searles v. Archangel - Google Scholar", states=["showing", "visible"], parent=0),
+            node(2, "document web", "Searles v. Archangel", states=["focused", "showing", "visible"], parent=1),
+            node(3, "paragraph", text={"content": paragraph}, parent=2),
+            node(4, "heading", "CONSENT", parent=2),
+            node(5, "link", "Sign in", states=["showing", "visible"], parent=2),
+            node(6, "static text", "60 Cal.App.5th 43 (2021) OPINION", parent=2),
+        ]
+        # Demonstrating the old defect: the whole document text contains the
+        # bare "consent" substring the former detector scanned for.
+        whole_document_text = " ".join(
+            f"{n.get('name') or ''} {n_text}" for n in tree
+            for n_text in [str((n.get("text") or {}).get("content", "") if isinstance(n.get("text"), dict) else (n.get("text") or ""))]
+        ).casefold()
+        self.assertIn("consent", whole_document_text)
+        self.assertIsNone(detect_barrier(tree, tree[2:], context="opinion"))
+
+    def test_searles_recovery_copies_the_paginated_opinion(self) -> None:
+        class _Client(_FakeClient):
+            SEARCH_TITLE = "Google Scholar"
+            OPINION_TITLE = "Searles v. Archangel - Google Scholar"
+
+            @staticmethod
+            def _search_tree() -> list[dict[str, Any]]:
+                return firefox_scholar_search_tree(
+                    "60 Cal.App.5th 43", SearlesRegressionTests._results()
+                )
+
+            @staticmethod
+            def _opinion_tree() -> list[dict[str, Any]]:
+                return [
+                    node(0, "application", "Firefox"),
+                    node(
+                        1,
+                        "frame",
+                        "Searles v. Archangel - Google Scholar",
+                        states=["showing", "visible"],
+                        parent=0,
+                    ),
+                    node(
+                        2,
+                        "combo box",
+                        text={"content": "https://scholar.google.com/scholar_case?case=1733697791252697933"},
+                        parent=1,
+                    ),
+                    node(3, "panel", "page", parent=1),
+                    node(
+                        4,
+                        "document web",
+                        "Searles v. Archangel",
+                        states=["focused", "showing", "visible"],
+                        parent=1,
+                    ),
+                    node(5, "heading", "CONSENT", parent=4),
+                    node(6, "link", "Sign in", states=["showing", "visible"], parent=4),
+                    node(
+                        7,
+                        "paragraph",
+                        text={"content": (
+                            "The court found that the father's electronic delivery with "
+                            "consent of the summons satisfied due process."
+                        )},
+                        parent=4,
+                    ),
+                    node(
+                        8,
+                        "static text",
+                        "60 Cal.App.5th 43 (2021) OPINION",
+                        parent=4,
+                    ),
+                ]
+
+        request = ScholarRecoveryRequest(
+            query="60 Cal.App.5th 43",
+            expected_citation=self.SEARLES_CITATION,
+            case_name="Searles v. Archangel",
+        )
+        client = _Client()
+        job = ScholarRecoveryJob(request, client=client)
+        with mock.patch(
+            "open_law_lens.browser_recovery.time", _FakeTime()
+        ), mock.patch(
+            "open_law_lens.browser_recovery.RecoveryLock", return_value=_FakeLock()
+        ), mock.patch(
+            "open_law_lens.browser_recovery.launch_scholar_url",
+            return_value=("Firefox", "firefox.desktop"),
+        ):
+            outcome = job.run()
+        self.assertEqual(outcome.outcome, "copied")
+        self.assertEqual(
+            outcome.source_url,
+            "https://scholar.google.com/scholar_case?case=1733697791252697933",
+        )
+        self.assertEqual(outcome.official_citation, self.SEARLES_CITATION)
+        self.assertEqual(client.pressed, [("Ctrl+A", 7), ("Ctrl+C", 7)])
+
+
+class FailurePathStateMachineTests(unittest.TestCase):
+    """Distinct truthful outcomes for load, ambiguity, and copy failures."""
+
+    def _run(self, client: Any, *, cancelled: Any = None, timeout: float = 300.0) -> Any:
+        request = ScholarRecoveryRequest(
+            query="81 Cal.App.5th 309",
+            expected_citation="81 Cal.App.5th 309",
+            case_name="In re Rylei S.",
+        )
+        job = ScholarRecoveryJob(
+            request, client=client, timeout=timeout, cancelled=cancelled
+        )
+        with mock.patch(
+            "open_law_lens.browser_recovery.time", _FakeTime()
+        ), mock.patch(
+            "open_law_lens.browser_recovery.RecoveryLock", return_value=_FakeLock()
+        ), mock.patch(
+            "open_law_lens.browser_recovery.launch_scholar_url",
+            return_value=("Firefox", "firefox.desktop"),
+        ):
+            return job.run()
+
+    def test_search_page_timeout_reports_page_load_timeout(self) -> None:
+        class _NeverLoadsClient(_FakeClient):
+            SEARCH_TITLE = "Something Unrelated"
+
+        outcome = self._run(_NeverLoadsClient())
+        self.assertEqual(outcome.outcome, "failed")
+        self.assertEqual(outcome.reason_code, REASON_PAGE_LOAD_TIMEOUT)
+
+    def test_cancelled_recovery_reports_cancelled(self) -> None:
+        outcome = self._run(_FakeClient(), cancelled=lambda: True)
+        self.assertEqual(outcome.outcome, "failed")
+        self.assertEqual(outcome.reason_code, REASON_CANCELLED)
+
+    def test_multiple_qualifying_results_report_ambiguous(self) -> None:
+        class _AmbiguousClient(_FakeClient):
+            @staticmethod
+            def _search_tree() -> list[dict[str, Any]]:
+                tree = _FakeClient._search_tree()
+                tree.extend(
+                    [
+                        node(8, "group", "result-block-2", parent=3),
+                        node(9, "heading", "In re Rylei S.", parent=8),
+                        node(10, "link", "In re Rylei S.", states=["showing", "visible"], parent=9),
+                        node(11, "static text", "81 Cal.App.5th 309", parent=8),
+                    ]
+                )
+                return tree
+
+        client = _AmbiguousClient()
+        outcome = self._run(client)
+        self.assertEqual(outcome.outcome, "not_found")
+        self.assertEqual(outcome.reason_code, REASON_AMBIGUOUS_RESULTS)
+        self.assertFalse(client.navigated)
+        self.assertEqual(client.pressed, [])
+
+    def test_opinion_phase_challenge_blocks_before_copy(self) -> None:
+        class _OpinionCaptchaClient(_FakeClient):
+            @staticmethod
+            def _opinion_tree() -> list[dict[str, Any]]:
+                tree = _FakeClient._opinion_tree()
+                tree.extend(
+                    [
+                        node(6, "heading", "Sign in to continue", states=["showing", "visible"], parent=4),
+                        node(7, "push button", "Sign in", states=["showing", "visible"], parent=4),
+                    ]
+                )
+                return tree
+
+        client = _OpinionCaptchaClient()
+        outcome = self._run(client)
+        self.assertEqual(outcome.outcome, "blocked")
+        self.assertEqual(outcome.reason_code, REASON_CHALLENGE_LOGIN)
+        self.assertTrue(client.navigated)
+        self.assertEqual(client.pressed, [])
+
+    def test_stale_opinion_url_during_copy_fails_without_pasting(self) -> None:
+        class _ChangingOpinionClient(_FakeClient):
+            def press_key(self, *, key: str, window_id: int) -> dict[str, Any]:
+                super().press_key(key=key, window_id=window_id)
+                return {"ok": True}
+
+            def get_app_state(
+                self, *, window_id: int, max_nodes: int, max_depth: int
+            ) -> dict[str, Any]:
+                if self.navigated and any(key == "Ctrl+A" for key, _ in self.pressed):
+                    # The tab navigates away between selection and copy.
+                    return {
+                        "accessibility_tree": self._changed_opinion_tree(),
+                        "window_context": {"title": "Other - Google Scholar"},
+                    }
+                return super().get_app_state(
+                    window_id=window_id, max_nodes=max_nodes, max_depth=max_depth
+                )
+
+            @staticmethod
+            def _changed_opinion_tree() -> list[dict[str, Any]]:
+                return [
+                    node(0, "application", "Firefox"),
+                    node(1, "frame", "Other - Google Scholar", states=["showing", "visible"], parent=0),
+                    node(
+                        2,
+                        "combo box",
+                        text={"content": "https://scholar.google.com/scholar_case?case=456"},
+                        parent=1,
+                    ),
+                    node(3, "panel", "page", parent=1),
+                    node(4, "static text", "Other case OPINION", parent=3),
+                ]
+
+        client = _ChangingOpinionClient()
+        outcome = self._run(client)
+        self.assertEqual(outcome.outcome, "failed")
+        self.assertEqual(outcome.reason_code, REASON_COPY_FAILED)
+        # Ctrl+C never fired on the stale page.
+        self.assertEqual([key for key, _ in client.pressed], ["Ctrl+A"])
+
+    def test_editable_focus_never_receives_the_copy(self) -> None:
+        class _EditableFocusClient(_FakeClient):
+            @staticmethod
+            def _opinion_tree() -> list[dict[str, Any]]:
+                tree = _FakeClient._opinion_tree()
+                tree.append(
+                    node(
+                        6,
+                        "entry",
+                        "Search Scholar",
+                        states=["focused", "showing", "visible"],
+                        parent=4,
+                    )
+                )
+                tree[4]["states"] = ["showing", "visible"]
+                return tree
+
+        client = _EditableFocusClient()
+        outcome = self._run(client)
+        self.assertEqual(outcome.outcome, "failed")
+        self.assertEqual(outcome.reason_code, REASON_COPY_FAILED)
+        self.assertEqual([key for key, _ in client.pressed], ["Ctrl+A"])
+
+    def test_document_copy_target_confirmed(self) -> None:
+        confirmed_tree = [
+            node(0, "document web", "Opinion", states=["focused", "showing", "visible"], parent=None),
+            node(1, "static text", "OPINION", parent=0),
+        ]
+        self.assertTrue(document_copy_target_confirmed(confirmed_tree))
+        editable_tree = [
+            node(0, "document web", "Opinion", states=["showing", "visible"], parent=None),
+            node(1, "entry", "Search", states=["focused", "showing", "visible"], parent=0),
+        ]
+        self.assertFalse(document_copy_target_confirmed(editable_tree))
+        self.assertFalse(document_copy_target_confirmed([]))
+
+    def test_window_disappearing_before_copy_reports_copy_failed(self) -> None:
+        class _VanishingWindowClient(_FakeClient):
+            def list_windows(self) -> dict[str, Any]:
+                if self.navigated:
+                    # The Scholar window disappears after the opinion loads.
+                    return {"windows": []}
+                return super().list_windows()
+
+        client = _VanishingWindowClient()
+        outcome = self._run(client)
+        self.assertEqual(outcome.outcome, "failed")
+        self.assertEqual(outcome.reason_code, REASON_COPY_FAILED)
+        self.assertEqual(client.pressed, [])
+
+
+def client_or_pressed(job: ScholarRecoveryJob) -> list[tuple[str, int | None]]:
+    client = job.client
+    pressed = getattr(client, "pressed", [])
+    return [(key, window_id) for key, window_id in pressed]
 
 
 if __name__ == "__main__":

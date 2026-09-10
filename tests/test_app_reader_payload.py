@@ -4328,6 +4328,7 @@ class AppReaderPayloadTests(unittest.TestCase):
                 self._selected_cluster = None
                 self._research_cache_generation = 3
                 self.notices: list[bool] = []
+                self.recovery_notices: list[tuple[str, str, bool]] = []
                 self.statuses: list[str] = []
                 self.refreshed: list[object] = []
 
@@ -4350,6 +4351,11 @@ class AppReaderPayloadTests(unittest.TestCase):
 
             def _show_official_pagination_not_found_notice(self, *, can_view_current: bool) -> None:
                 self.notices.append(can_view_current)
+
+            def _show_recovery_notice(
+                self, title: str, message: str, *, can_view_current: bool = True
+            ) -> None:
+                self.recovery_notices.append((title, message, can_view_current))
 
             def _refresh_after_scholar_import(self, imported: object) -> None:
                 self.refreshed.append(imported)
@@ -4388,7 +4394,11 @@ class AppReaderPayloadTests(unittest.TestCase):
         )
 
         self.assertEqual(window.refreshed, [])
-        self.assertEqual(window.notices, [True])
+        self.assertEqual(window.notices, [])
+        self.assertEqual(len(window.recovery_notices), 1)
+        title, _message, can_view_current = window.recovery_notices[0]
+        self.assertEqual(title, "No Matching Scholar Copy Found")
+        self.assertTrue(can_view_current)
         self.assertIn("no matching official reporter copy", window.statuses[-1])
 
     def test_browser_recovery_blocked_reports_blocker_without_import(self) -> None:
@@ -4402,6 +4412,31 @@ class AppReaderPayloadTests(unittest.TestCase):
 
         self.assertEqual(window.refreshed, [])
         self.assertEqual(window.statuses[-1], "CAPTCHA shown")
+        self.assertEqual(len(window.recovery_notices), 1)
+        title, _message, _can_view = window.recovery_notices[0]
+        self.assertEqual(title, "Scholar Access Blocked")
+
+    def test_browser_recovery_busy_and_cancelled_show_status_without_modal(self) -> None:
+        window = self._browser_recovery_dummy_window()()  # type: ignore[call-arg]
+        busy = self._service_result("busy", message="Another Scholar recovery is already running.")
+        OpenLawLensWindow._finish_browser_recovery(window, busy)  # type: ignore[arg-type]
+        cancelled = self._service_result("cancelled", message="Scholar recovery was cancelled.")
+        OpenLawLensWindow._finish_browser_recovery(window, cancelled)  # type: ignore[arg-type]
+
+        self.assertEqual(window.recovery_notices, [])
+        self.assertEqual(window.notices, [])
+        self.assertEqual(window.statuses[-1], "Scholar recovery was cancelled.")
+
+    def test_browser_recovery_unexpected_error_shows_failed_modal(self) -> None:
+        window = self._browser_recovery_dummy_window()()  # type: ignore[call-arg]
+        OpenLawLensWindow._finish_browser_recovery_unexpected_error(  # type: ignore[arg-type]
+            window,
+            "boom",
+        )
+        self.assertEqual(window.statuses[-1], "Scholar recovery failed: boom")
+        self.assertEqual(len(window.recovery_notices), 1)
+        title, _message, _can_view = window.recovery_notices[0]
+        self.assertEqual(title, "Scholar Recovery Failed")
 
     def test_browser_recovery_imported_refreshes_reader(self) -> None:
         window = self._browser_recovery_dummy_window()()  # type: ignore[call-arg]

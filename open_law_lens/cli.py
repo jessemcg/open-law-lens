@@ -248,7 +248,12 @@ def _recover_official_authority(
     if service.ok and service.authority is not None:
         return service.authority
     reason = _strip_recovery_reason(service.reason)
-    warning = f"Scholar recovery: {service.outcome}" + (f" — {reason}" if reason else "")
+    reason_code = str(getattr(service, "reason_code", "") or "").strip()
+    warning = f"Scholar recovery: {service.outcome}"
+    if reason_code:
+        warning += f" [{reason_code}]"
+    if reason:
+        warning += f" — {reason}"
     warnings = list(getattr(result, "warnings", []) or [])
     warnings.append(warning)
     if hasattr(result, "warnings"):

@@ -24,6 +24,9 @@ Privacy invariants:
   or MCP messages.
 * A copied opinion that fails validation is reported as validation-rejected and
   the CourtListener/slip baseline is preserved untouched.
+* The cross-process recovery lock is held from before the browser job through
+  clipboard capture, validation, and persistence, so a concurrent recovery can
+  never replace the clipboard mid-flight.
 """
 
 from __future__ import annotations
@@ -36,6 +39,11 @@ from .browser_recovery import (
     DEFAULT_TIMEOUT_SECONDS,
     CancelCallback,
     ProgressCallback,
+    REASON_BUSY,
+    REASON_CANCELLED,
+    REASON_COPY_FAILED,
+    REASON_NO_MATCHING_RESULT,
+    RecoveryLock,
     ScholarRecoveryOutcome,
     ScholarRecoveryRequest,
     normalize_recovery_query,
@@ -58,6 +66,21 @@ OUTCOME_NOT_FOUND = "not_found"
 OUTCOME_BLOCKED = "blocked"
 OUTCOME_FAILED = "failed"
 OUTCOME_BUSY = "busy"
+OUTCOME_CANCELLED = "cancelled"
+
+# Service-level reason codes for failures detected after the browser job.
+REASON_VALIDATION_REJECTED = "validation_rejected"
+REASON_PERSISTENCE_FAILED = "persistence_failed"
+REASON_REEXTRACT_FAILED = "reextract_failed"
+
+# Service pipeline stages (controlled identifiers).
+SERVICE_STAGE_IDENTITY = "identity"
+SERVICE_STAGE_LOCK = "lock"
+SERVICE_STAGE_BROWSER = "browser_recovery"
+SERVICE_STAGE_CLIPBOARD = "clipboard"
+SERVICE_STAGE_VALIDATION = "validation"
+SERVICE_STAGE_PERSISTENCE = "persistence"
+SERVICE_STAGE_REEXTRACTION = "reextraction"
 
 
 @dataclass(frozen=True)
@@ -69,6 +92,10 @@ class ScholarRecoveryServiceResult:
     imported: ScholarClipboardImport | None = None
     authority: Any = None
     reason: str = ""
+    # Backward-compatible optional fields: the pipeline stage (controlled
+    # identifier) where the outcome was reached and a stable reason code.
+    stage: str = ""
+    reason_code: str = ""
 
     @property
     def ok(self) -> bool:
@@ -81,6 +108,8 @@ class ScholarRecoveryServiceResult:
             "recovery_outcome": self.recovery.outcome,
             "query": self.recovery.query,
             "reason": self.reason,
+            "stage": self.stage,
+            "reason_code": self.reason_code,
         }
         if self.imported is not None:
             value["case_name"] = self.imported.case_name
@@ -282,7 +311,10 @@ def recover_official_copy(
             ),
         )
         return ScholarRecoveryServiceResult(
-            outcome=OUTCOME_NOT_FOUND, recovery=recovery, reason=recovery.message
+            outcome=OUTCOME_NOT_FOUND,
+            recovery=recovery,
+            reason=recovery.message,
+            stage=SERVICE_STAGE_IDENTITY,
         )
     request = _recover_request(
         query=query,
@@ -292,16 +324,80 @@ def recover_official_copy(
         filing_year=filing_year,
         docket_number=docket_number,
     )
+    # Hold the cross-process recovery lock through clipboard capture,
+    # validation, and persistence so another recovery cannot replace the
+    # clipboard between the browser job and the service read. The browser job
+    # reuses the already-held lock instead of double-acquiring.
+    lock = RecoveryLock()
+    if not lock.acquire():
+        busy_recovery = ScholarRecoveryOutcome(
+            version=1,
+            outcome="busy",
+            query=request.query,
+            source_url="",
+            message="Another Scholar recovery is already running.",
+            stage=SERVICE_STAGE_LOCK,
+            reason_code=REASON_BUSY,
+        )
+        return ScholarRecoveryServiceResult(
+            outcome=OUTCOME_BUSY,
+            recovery=busy_recovery,
+            reason=busy_recovery.message,
+            stage=SERVICE_STAGE_LOCK,
+            reason_code=REASON_BUSY,
+        )
+    try:
+        return _recover_locked(
+            client,
+            request=request,
+            citation=citation,
+            case_name=case_name,
+            docket_number=docket_number,
+            existing_cluster=existing_cluster,
+            timeout=timeout,
+            progress=progress,
+            cancelled=cancelled,
+            started_at=started_at,
+            lock=lock,
+        )
+    finally:
+        lock.release()
+
+
+def _recover_locked(
+    client: Any,
+    *,
+    request: ScholarRecoveryRequest,
+    citation: str,
+    case_name: str,
+    docket_number: str,
+    existing_cluster: dict[str, Any] | None,
+    timeout: float,
+    progress: ProgressCallback | None,
+    cancelled: CancelCallback | None,
+    started_at: float,
+    lock: RecoveryLock,
+) -> ScholarRecoveryServiceResult:
     recovery = run_scholar_recovery(
         request,
         timeout=timeout,
         progress=progress,
         cancelled=cancelled,
+        lock=lock,
     )
 
-    if recovery.outcome == "busy":
+    if recovery.outcome == "busy" or recovery.reason_code == REASON_BUSY:
         return ScholarRecoveryServiceResult(
-            outcome=OUTCOME_BUSY, recovery=recovery, reason=recovery.message
+            outcome=OUTCOME_BUSY, recovery=recovery, reason=recovery.message,
+            stage=recovery.stage or SERVICE_STAGE_LOCK, reason_code=REASON_BUSY,
+        )
+    if recovery.reason_code == REASON_CANCELLED:
+        return ScholarRecoveryServiceResult(
+            outcome=OUTCOME_CANCELLED,
+            recovery=recovery,
+            reason=recovery.message or "Scholar recovery was cancelled.",
+            stage=recovery.stage,
+            reason_code=REASON_CANCELLED,
         )
     if recovery.outcome != "copied":
         outcome = {
@@ -309,11 +405,34 @@ def recover_official_copy(
             "blocked": OUTCOME_BLOCKED,
             "failed": OUTCOME_FAILED,
         }.get(recovery.outcome, OUTCOME_FAILED)
+        reason_code = recovery.reason_code or (
+            REASON_NO_MATCHING_RESULT if outcome == OUTCOME_NOT_FOUND else ""
+        )
         return ScholarRecoveryServiceResult(
-            outcome=outcome, recovery=recovery, reason=recovery.message
+            outcome=outcome,
+            recovery=recovery,
+            reason=recovery.message,
+            stage=recovery.stage or SERVICE_STAGE_BROWSER,
+            reason_code=reason_code,
         )
 
     progress_stage(progress, "Validating copy", time.monotonic() - started_at)
+
+    if cancelled is not None:
+        try:
+            if cancelled():
+                return ScholarRecoveryServiceResult(
+                    outcome=OUTCOME_CANCELLED,
+                    recovery=recovery,
+                    reason=(
+                        "Scholar recovery was cancelled before the copied "
+                        "opinion was saved."
+                    ),
+                    stage=SERVICE_STAGE_CLIPBOARD,
+                    reason_code=REASON_CANCELLED,
+                )
+        except Exception:
+            pass
 
     try:
         clipboard_text = read_regular_clipboard()
@@ -322,6 +441,8 @@ def recover_official_copy(
             outcome=OUTCOME_FAILED,
             recovery=recovery,
             reason="Could not read the copied Scholar opinion: " + str(exc),
+            stage=SERVICE_STAGE_CLIPBOARD,
+            reason_code=REASON_COPY_FAILED,
         )
 
     progress_stage(progress, "Importing opinion", time.monotonic() - started_at)
@@ -340,14 +461,46 @@ def recover_official_copy(
             discovered_citation=recovery.official_citation,
             docket_number=docket_number,
         )
-    except (ScholarBrowserError, ValueError, RuntimeError) as exc:
+    except (ScholarBrowserError, ValueError) as exc:
         return ScholarRecoveryServiceResult(
             outcome=OUTCOME_REJECTED,
             recovery=recovery,
             reason=_concise(str(exc)),
+            stage=SERVICE_STAGE_VALIDATION,
+            reason_code=REASON_VALIDATION_REJECTED,
+        )
+    except RuntimeError as exc:
+        # Persistence-stage failure (Library/Research Cache write, network to
+        # CourtListener): the copy was captured but nothing was stored. The
+        # exception payload may be arbitrary, so only a controlled message is
+        # reported.
+        return ScholarRecoveryServiceResult(
+            outcome=OUTCOME_FAILED,
+            recovery=recovery,
+            reason=(
+                "The copied Scholar opinion could not be saved to the Library "
+                "because of a storage or unexpected error."
+            ),
+            stage=SERVICE_STAGE_PERSISTENCE,
+            reason_code=REASON_PERSISTENCE_FAILED,
         )
 
     authority = _re_extract_authority(client, imported)
+    if authority is None:
+        # The copy was saved but the post-persistence readback failed: never
+        # report not-found and never trigger another search.
+        return ScholarRecoveryServiceResult(
+            outcome=OUTCOME_IMPORTED,
+            recovery=recovery,
+            imported=imported,
+            authority=None,
+            reason=(
+                "The official copy was saved to the Library, but the saved "
+                "copy could not be re-verified and refreshed by re-extraction."
+            ),
+            stage=SERVICE_STAGE_REEXTRACTION,
+            reason_code=REASON_REEXTRACT_FAILED,
+        )
 
     return ScholarRecoveryServiceResult(
         outcome=OUTCOME_IMPORTED,
@@ -367,6 +520,59 @@ def _re_extract_authority(client: Any, imported: ScholarClipboardImport) -> Any:
         return extract_case(citation, client=client)
     except (RuntimeError, ValueError):
         return None
+
+
+# Single presentation mapping for GUI and CLI-facing explanations. Titles
+# distinguish blocked / rejected / failed / genuinely-not-found outcomes;
+# messages are controlled and never contain opinion, clipboard, or
+# accessibility-tree text.
+_PRESENTATIONS: dict[str, tuple[str, str]] = {
+    OUTCOME_BLOCKED: (
+        "Scholar Access Blocked",
+        "Google Scholar showed a verification challenge. The recovery stopped "
+        "without interacting with it; the challenge is left visible in the "
+        "browser window.",
+    ),
+    OUTCOME_REJECTED: (
+        "Scholar Copy Rejected",
+        "The copied Scholar page did not pass validation, so nothing was "
+        "saved. The current baseline is retained.",
+    ),
+    OUTCOME_FAILED: (
+        "Scholar Recovery Failed",
+        "Default-browser Scholar recovery stopped because of a load, "
+        "inspection, copy, storage, or unexpected problem. The current "
+        "baseline is retained.",
+    ),
+    OUTCOME_NOT_FOUND: (
+        "No Matching Scholar Copy Found",
+        "The bounded Google Scholar search found no single qualifying "
+        "matching copy. This does not mean no official copy exists.",
+    ),
+    OUTCOME_CANCELLED: (
+        "Scholar Recovery Cancelled",
+        "The Scholar recovery was cancelled before any copy was saved.",
+    ),
+    OUTCOME_BUSY: (
+        "Scholar Recovery Busy",
+        "Another Scholar recovery is already running.",
+    ),
+}
+_DEFAULT_PRESENTATION = (
+    "Scholar Recovery Failed",
+    "Default-browser Scholar recovery stopped without an official reporter "
+    "copy. The current baseline is retained.",
+)
+
+
+def recovery_presentation(outcome: str, reason_code: str = "") -> tuple[str, str]:
+    """Return the ``(title, message)`` presentation for a service outcome.
+
+    The single mapping shared by the GTK app modal and CLI-facing text.
+    ``reason_code`` is accepted for future refinement; presentations stay
+    keyed on the outcome so every code maps to a controlled message.
+    """
+    return _PRESENTATIONS.get(outcome, _DEFAULT_PRESENTATION)
 
 
 def progress_stage(
@@ -390,10 +596,15 @@ def _concise(message: str) -> str:
 __all__ = [
     "OUTCOME_BLOCKED",
     "OUTCOME_BUSY",
+    "OUTCOME_CANCELLED",
     "OUTCOME_FAILED",
     "OUTCOME_IMPORTED",
     "OUTCOME_NOT_FOUND",
     "OUTCOME_REJECTED",
+    "REASON_PERSISTENCE_FAILED",
+    "REASON_REEXTRACT_FAILED",
+    "REASON_VALIDATION_REJECTED",
     "ScholarRecoveryServiceResult",
     "recover_official_copy",
+    "recovery_presentation",
 ]

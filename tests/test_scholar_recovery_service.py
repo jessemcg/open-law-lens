@@ -13,12 +13,14 @@ from typing import Any
 from open_law_lens.scholar_recovery_service import (
     OUTCOME_BLOCKED,
     OUTCOME_BUSY,
+    OUTCOME_CANCELLED,
     OUTCOME_FAILED,
     OUTCOME_IMPORTED,
     OUTCOME_NOT_FOUND,
     OUTCOME_REJECTED,
     ScholarRecoveryServiceResult,
     recover_official_copy,
+    recovery_presentation,
 )
 from open_law_lens.browser_recovery import ScholarRecoveryOutcome
 from open_law_lens.scholar_browser import ScholarClipboardImport, ScholarBrowserError
@@ -176,13 +178,262 @@ class ServiceTests(unittest.TestCase):
             return_value=long_secret,
         ), mock.patch(
             "open_law_lens.scholar_recovery_service.import_scholar_text",
-            side_effect=RuntimeError(long_secret),
+            side_effect=ScholarBrowserError("Clipboard content was empty after cleanup."),
         ):
             result = recover_official_copy(
                 client, query="11 Cal.5th 614", citation="11 Cal.5th 614"
             )
         self.assertEqual(result.outcome, OUTCOME_REJECTED)
         self.assertLessEqual(len(result.reason), 400)
+        self.assertNotIn("TOPSECRET", result.reason)
+
+    def test_validation_rejection_carries_stage_and_reason_code(self) -> None:
+        client = self._client()
+        with mock.patch(
+            "open_law_lens.scholar_recovery_service.run_scholar_recovery",
+            return_value=copied_outcome(),
+        ), mock.patch(
+            "open_law_lens.scholar_recovery_service.read_regular_clipboard",
+            return_value="fake opinion text",
+        ), mock.patch(
+            "open_law_lens.scholar_recovery_service.import_scholar_text",
+            side_effect=ScholarBrowserError("Clipboard case name does not match the requested case."),
+        ):
+            result = recover_official_copy(
+                client, query="11 Cal.5th 614", citation="11 Cal.5th 614"
+            )
+        self.assertEqual(result.outcome, OUTCOME_REJECTED)
+        self.assertEqual(result.reason_code, "validation_rejected")
+        self.assertEqual(result.stage, "validation")
+        self.assertIn("validation_rejected", result.to_json()["reason_code"])
+
+    def test_persistence_failure_is_failed_not_rejected(self) -> None:
+        client = self._client()
+        long_secret = "TOPSECRET OPINION BODY " * 200
+        with mock.patch(
+            "open_law_lens.scholar_recovery_service.run_scholar_recovery",
+            return_value=copied_outcome(),
+        ), mock.patch(
+            "open_law_lens.scholar_recovery_service.read_regular_clipboard",
+            return_value=long_secret,
+        ), mock.patch(
+            "open_law_lens.scholar_recovery_service.import_scholar_text",
+            side_effect=RuntimeError("library write failed"),
+        ):
+            result = recover_official_copy(
+                client, query="11 Cal.5th 614", citation="11 Cal.5th 614"
+            )
+        self.assertEqual(result.outcome, OUTCOME_FAILED)
+        self.assertEqual(result.reason_code, "persistence_failed")
+        self.assertEqual(result.stage, "persistence")
+        self.assertIn("could not be saved to the Library", result.reason)
+        self.assertNotIn("TOPSECRET", result.reason)
+
+    def test_clipboard_read_failure_reports_copy_failed(self) -> None:
+        client = self._client()
+        with mock.patch(
+            "open_law_lens.scholar_recovery_service.run_scholar_recovery",
+            return_value=copied_outcome(),
+        ), mock.patch(
+            "open_law_lens.scholar_recovery_service.read_regular_clipboard",
+            side_effect=ScholarBrowserError("No text was available from the regular clipboard."),
+        ), mock.patch(
+            "open_law_lens.scholar_recovery_service.import_scholar_text"
+        ) as importer:
+            result = recover_official_copy(
+                client, query="11 Cal.5th 614", citation="11 Cal.5th 614"
+            )
+        self.assertEqual(result.outcome, OUTCOME_FAILED)
+        self.assertEqual(result.reason_code, "copy_failed")
+        self.assertEqual(result.stage, "clipboard")
+        importer.assert_not_called()
+
+    def test_cancelled_before_persistence_never_imports(self) -> None:
+        client = self._client()
+        cancelled = mock.Mock(return_value=True)
+        with mock.patch(
+            "open_law_lens.scholar_recovery_service.run_scholar_recovery",
+            return_value=copied_outcome(),
+        ), mock.patch(
+            "open_law_lens.scholar_recovery_service.read_regular_clipboard",
+            return_value="fake opinion text",
+        ), mock.patch(
+            "open_law_lens.scholar_recovery_service.import_scholar_text"
+        ) as importer:
+            result = recover_official_copy(
+                client,
+                query="11 Cal.5th 614",
+                citation="11 Cal.5th 614",
+                cancelled=cancelled,
+            )
+        self.assertEqual(result.outcome, OUTCOME_CANCELLED)
+        self.assertEqual(result.reason_code, "cancelled")
+        importer.assert_not_called()
+
+    def test_cancelled_recovery_outcome_maps_to_cancelled(self) -> None:
+        client = self._client()
+        recovery = ScholarRecoveryOutcome(
+            1, "failed", "q", "", "Scholar recovery was cancelled.",
+            stage="search", reason_code="cancelled",
+        )
+        with mock.patch(
+            "open_law_lens.scholar_recovery_service.run_scholar_recovery",
+            return_value=recovery,
+        ), mock.patch(
+            "open_law_lens.scholar_recovery_service.import_scholar_text"
+        ) as importer:
+            result = recover_official_copy(client, query="q", citation="q")
+        self.assertEqual(result.outcome, OUTCOME_CANCELLED)
+        self.assertEqual(result.reason_code, "cancelled")
+        self.assertEqual(result.stage, "search")
+        importer.assert_not_called()
+
+    def test_busy_from_reason_code_maps_to_busy(self) -> None:
+        client = self._client()
+        recovery = ScholarRecoveryOutcome(
+            1, "failed", "q", "", "Another Scholar recovery is already running.",
+            stage="", reason_code="busy",
+        )
+        with mock.patch(
+            "open_law_lens.scholar_recovery_service.run_scholar_recovery",
+            return_value=recovery,
+        ):
+            result = recover_official_copy(client, query="q", citation="q")
+        self.assertEqual(result.outcome, OUTCOME_BUSY)
+        self.assertEqual(result.reason_code, "busy")
+
+    def test_lock_held_across_recovery_and_persistence(self) -> None:
+        """The service holds one lock through the browser job and persistence.
+
+        The browser job must reuse the service's lock (never double-acquire),
+        and the lock must still be held when the clipboard is read so another
+        recovery cannot replace the clipboard between copy and read.
+        """
+        client = self._client()
+        seen_locks: list[object] = []
+        lock_during_recovery: list[object] = []
+
+        class _TrackingLock:
+            def acquire(self) -> bool:
+                seen_locks.append("acquire")
+                return True
+
+            def release(self) -> None:
+                seen_locks.append("release")
+
+        def _fake_run(request, *, lock=None, **kwargs):
+            lock_during_recovery.append(lock)
+            return copied_outcome()
+
+        real_lock = (
+            "open_law_lens.scholar_recovery_service.RecoveryLock"
+        )
+        with mock.patch(
+            real_lock, return_value=_TrackingLock()
+        ) as lock_factory, mock.patch(
+            "open_law_lens.scholar_recovery_service.run_scholar_recovery",
+            side_effect=_fake_run,
+        ), mock.patch(
+            "open_law_lens.scholar_recovery_service.read_regular_clipboard",
+            return_value="fake opinion text",
+        ), mock.patch(
+            "open_law_lens.scholar_recovery_service.import_scholar_text",
+            return_value=imported_result(),
+        ), mock.patch(
+            "open_law_lens.scholar_recovery_service._re_extract_authority",
+            return_value={"text": "imported"},
+        ):
+            result = recover_official_copy(
+                client, query="11 Cal.5th 614", citation="11 Cal.5th 614"
+            )
+        self.assertTrue(result.ok)
+        lock_factory.assert_called_once_with()
+        self.assertEqual(seen_locks, ["acquire", "release"])
+        # The job reused the service's already-held lock.
+        self.assertEqual(len(lock_during_recovery), 1)
+        self.assertIs(lock_during_recovery[0], lock_factory.return_value)
+
+    def test_service_reports_busy_when_lock_is_contented(self) -> None:
+        client = self._client()
+
+        class _ContendedLock:
+            def acquire(self) -> bool:
+                return False
+
+            def release(self) -> None:
+                pass
+
+        with mock.patch(
+            "open_law_lens.scholar_recovery_service.RecoveryLock",
+            return_value=_ContendedLock(),
+        ), mock.patch(
+            "open_law_lens.scholar_recovery_service.run_scholar_recovery"
+        ) as run_recovery:
+            result = recover_official_copy(
+                client, query="11 Cal.5th 614", citation="11 Cal.5th 614"
+            )
+        self.assertEqual(result.outcome, OUTCOME_BUSY)
+        self.assertEqual(result.reason_code, "busy")
+        run_recovery.assert_not_called()
+
+    def test_failed_readback_reports_saved_but_unverified(self) -> None:
+        client = self._client()
+        with mock.patch(
+            "open_law_lens.scholar_recovery_service.run_scholar_recovery",
+            return_value=copied_outcome(),
+        ), mock.patch(
+            "open_law_lens.scholar_recovery_service.read_regular_clipboard",
+            return_value="fake opinion text",
+        ), mock.patch(
+            "open_law_lens.scholar_recovery_service.import_scholar_text",
+            return_value=imported_result(),
+        ), mock.patch(
+            "open_law_lens.scholar_recovery_service._re_extract_authority",
+            return_value=None,
+        ):
+            result = recover_official_copy(
+                client, query="11 Cal.5th 614", citation="11 Cal.5th 614"
+            )
+        # Saved-but-unverified is never not-found and never re-searched.
+        self.assertEqual(result.outcome, OUTCOME_IMPORTED)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.reason_code, "reextract_failed")
+        self.assertEqual(result.stage, "reextraction")
+        self.assertIn("saved to the Library", result.reason)
+        self.assertIn("could not be re-verified", result.reason)
+
+    def test_blocked_carries_challenge_reason_code(self) -> None:
+        client = self._client()
+        recovery = ScholarRecoveryOutcome(
+            1, "blocked", "q", "",
+            "Google Scholar showed a CAPTCHA challenge; leaving it visible.",
+            stage="search", reason_code="challenge_captcha",
+        )
+        with mock.patch(
+            "open_law_lens.scholar_recovery_service.run_scholar_recovery",
+            return_value=recovery,
+        ), mock.patch(
+            "open_law_lens.scholar_recovery_service.import_scholar_text"
+        ) as importer:
+            result = recover_official_copy(client, query="q", citation="q")
+        self.assertEqual(result.outcome, OUTCOME_BLOCKED)
+        self.assertEqual(result.reason_code, "challenge_captcha")
+        self.assertEqual(result.stage, "search")
+        importer.assert_not_called()
+
+    def test_presentation_mapping_distinguishes_outcomes(self) -> None:
+        cases = {
+            OUTCOME_BLOCKED: "Scholar Access Blocked",
+            OUTCOME_REJECTED: "Scholar Copy Rejected",
+            OUTCOME_FAILED: "Scholar Recovery Failed",
+            OUTCOME_NOT_FOUND: "No Matching Scholar Copy Found",
+            OUTCOME_CANCELLED: "Scholar Recovery Cancelled",
+            OUTCOME_BUSY: "Scholar Recovery Busy",
+        }
+        for outcome, title in cases.items():
+            presentation_title, message = recovery_presentation(outcome, "any_code")
+            self.assertEqual(presentation_title, title, outcome)
+            self.assertTrue(message)
 
     def test_result_json_omits_clipboard_text(self) -> None:
         result = ScholarRecoveryServiceResult(

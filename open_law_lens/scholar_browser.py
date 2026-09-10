@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import os
 import re
+import select
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -163,30 +166,61 @@ def launch_scholar_url(url: str) -> tuple[str, str]:
 
 
 def _read_command_capped(command: tuple[str, ...], max_bytes: int) -> str | None:
+    """Read command output with a bounded streaming read and total deadline.
+
+    The pipe is consumed through readiness-selected reads bounded by
+    ``CLIPBOARD_COMMAND_TIMEOUT_SECONDS`` so a stalled clipboard reader is
+    killed at the deadline instead of blocking forever before the process
+    timeout would apply. The ``max_bytes`` cap is preserved; oversize content
+    raises :class:`ScholarBrowserError`.
+    """
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
     )
+    chunks: list[bytes] = []
+    total = 0
+    oversize = False
+    stalled = False
+    assert process.stdout is not None
+    fd = process.stdout.fileno()
+    deadline = time.monotonic() + CLIPBOARD_COMMAND_TIMEOUT_SECONDS
     try:
-        assert process.stdout is not None
-        data = process.stdout.read(max_bytes + 1)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                stalled = True
+                break
+            ready, _, _ = select.select([fd], [], [], min(remaining, 0.25))
+            if ready:
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    oversize = True
+                    break
+                chunks.append(chunk)
+            elif process.poll() is not None:
+                # The process exited; the pipe reports EOF on the next
+                # readiness check once any final buffered output is drained.
+                continue
     finally:
         if process.stdout is not None:
             process.stdout.close()
-    try:
-        process.wait(timeout=CLIPBOARD_COMMAND_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait()
-        return None
-    if process.returncode != 0:
-        return None
-    if len(data) > max_bytes:
+        try:
+            process.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+    if oversize:
         raise ScholarBrowserError(
             f"Clipboard content exceeds the {max_bytes // (1024 * 1024)} MiB limit."
         )
-    text = data.decode("utf-8", errors="replace").strip()
+    if stalled or process.returncode != 0:
+        return None
+    text = b"".join(chunks).decode("utf-8", errors="replace").strip()
     return text or None
 
 

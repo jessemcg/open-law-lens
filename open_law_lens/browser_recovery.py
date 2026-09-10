@@ -22,7 +22,12 @@ The job is deliberately small and side-effect constrained:
   job only if the Scholar window still has focus. It never steals focus back
   after the user switches elsewhere, and it leaves barriers visible.
 * Barriers (CAPTCHA, robot check, unusual traffic, login, consent) stop the job
-  immediately with ``blocked`` and no interaction.
+  immediately with ``blocked`` and no interaction. Barrier detection is a
+  contextual classification of the exact selected document: challenge evidence
+  must be a challenge-specific heading, page title, short notice, or visible
+  modal *paired with* an associated control, so ordinary opinion prose,
+  quotations, footnotes, snippets, an optional ``Sign in`` link, or an ordinary
+  ``Consent`` heading can never block a recovery.
 * No accessibility tree, clipboard content, opinion text, or full URL is ever
   logged.
 """
@@ -54,6 +59,29 @@ from .scholar_browser import (
 RESULT_VERSION = 1
 VALID_OUTCOMES = ("copied", "not_found", "blocked", "failed")
 
+# Stable reason codes carried on recovery outcomes. They are controlled
+# identifiers (never page, clipboard, or tree text) suitable for CLI/GUI
+# presentation mappings and diagnostics.
+REASON_CANCELLED = "cancelled"
+REASON_BUSY = "busy"
+REASON_CHALLENGE_CAPTCHA = "challenge_captcha"
+REASON_CHALLENGE_CONSENT = "challenge_consent"
+REASON_CHALLENGE_LOGIN = "challenge_login"
+REASON_CHALLENGE_TRAFFIC = "challenge_traffic"
+REASON_NO_MATCHING_RESULT = "no_matching_result"
+REASON_AMBIGUOUS_RESULTS = "ambiguous_results"
+REASON_IDENTITY_MISMATCH = "identity_mismatch"
+REASON_INSPECTION_INCOMPLETE = "inspection_incomplete"
+REASON_PAGE_LOAD_TIMEOUT = "page_load_timeout"
+REASON_COPY_FAILED = "copy_failed"
+
+# Recovery pipeline stages reported on outcomes (controlled identifiers).
+STAGE_DESKTOP = "desktop"
+STAGE_LAUNCH = "launch"
+STAGE_SEARCH = "search"
+STAGE_OPINION = "opinion"
+STAGE_COPY = "copy"
+
 DEFAULT_TIMEOUT_SECONDS = 300.0
 DEFAULT_PAGE_DEADLINE_SECONDS = 120.0
 
@@ -65,14 +93,73 @@ CancelCallback = Callable[[], bool]
 LOCK_DIR_REL = Path("open-law-lens")
 LOCK_FILENAME = "scholar-recovery.lock"
 
-# Barrier signals that must stop recovery without interaction.
-_BARRIER_PATTERNS: tuple[tuple[str, ...], ...] = (
-    ("captcha",),
-    ("i'm not a robot", "i am not a robot", "not a robot"),
-    ("unusual traffic", "automated queries"),
-    ("log in", "sign in", "login required"),
-    ("your choice", "consent", "before you continue"),
+# --- Contextual page classification ----------------------------------------
+#
+# Challenge pages (CAPTCHA, robot checks, unusual traffic, required sign-in,
+# consent interstitials) are recognized only through *bounded, coherent*
+# evidence: a challenge-specific page title, heading, short standalone notice,
+# or a visible modal containing challenge instructions, paired with an
+# associated required control (a checkbox or a challenge-labeled button) in the
+# same verified frame. Complete challenge phrases are used; bare ``consent``,
+# ``sign in``, or ``your choice`` substrings are never evidence, so opinion
+# prose (for example a passage discussing "electronic delivery with consent"),
+# quotations, footnotes, headings like ``CONSENT``, search-result snippets, and
+# the optional signed-out ``Sign in`` link can never block a recovery.
+
+# Page classification values returned by :func:`classify_page`.
+PAGE_CLASSIFICATIONS = (
+    "search_results",
+    "opinion",
+    "challenge",
+    "no_results",
+    "missing_page",
+    "unknown",
 )
+
+# (complete challenge phrase, reason code) — order matters: earlier entries
+# take precedence when several phrases appear.
+_CHALLENGE_PHRASES: tuple[tuple[str, str], ...] = (
+    ("captcha", REASON_CHALLENGE_CAPTCHA),
+    ("i'm not a robot", REASON_CHALLENGE_CAPTCHA),
+    ("i am not a robot", REASON_CHALLENGE_CAPTCHA),
+    ("not a robot", REASON_CHALLENGE_CAPTCHA),
+    ("unusual traffic from your computer network", REASON_CHALLENGE_TRAFFIC),
+    ("automated queries", REASON_CHALLENGE_TRAFFIC),
+    ("sign in to continue", REASON_CHALLENGE_LOGIN),
+    ("log in to continue", REASON_CHALLENGE_LOGIN),
+    ("sign in to google scholar", REASON_CHALLENGE_LOGIN),
+    ("login required", REASON_CHALLENGE_LOGIN),
+    ("before you continue", REASON_CHALLENGE_CONSENT),
+)
+
+# Controlled, human-readable labels per challenge reason code. These — never
+# page or accessibility-tree text — are what appears in outcome messages.
+_CHALLENGE_LABELS: dict[str, str] = {
+    REASON_CHALLENGE_CAPTCHA: "a CAPTCHA challenge",
+    REASON_CHALLENGE_TRAFFIC: "an unusual-traffic check",
+    REASON_CHALLENGE_LOGIN: "a sign-in requirement",
+    REASON_CHALLENGE_CONSENT: "a consent page",
+}
+
+_CHALLENGE_DIALOG_ROLES = frozenset(
+    {"dialog", "alert", "alert dialog", "notification"}
+)
+_CHALLENGE_CONTROL_ROLES = frozenset({"check box", "push button"})
+_CHALLENGE_BUTTON_LABELS = (
+    "i'm not a robot",
+    "i am not a robot",
+    "not a robot",
+    "i'm human",
+    "i agree",
+    "agree",
+    "accept all",
+    "reject all",
+    "accept",
+    "sign in",
+    "log in",
+    "verify",
+)
+_NOTICE_TEXT_ROLES = frozenset({"static text", "label"})
 
 # A genuine Scholar "no results"/"not found" notice is a short standalone
 # element. Loaded opinions routinely contain the same words inside ordinary
@@ -89,8 +176,31 @@ _MISSING_PAGE_CONTAINED_PATTERNS = (
 )
 
 
+@dataclass(frozen=True)
+class PageClassification:
+    """A structured, model-free classification of one selected page.
+
+    ``classification`` is one of :data:`PAGE_CLASSIFICATIONS`. ``reason_code``
+    is a stable identifier (for example ``challenge_captcha``) for failures and
+    challenges. ``detail`` is a controlled human label — it never contains
+    page, opinion, or accessibility-tree text.
+    """
+
+    classification: str
+    reason_code: str = ""
+    detail: str = ""
+
+
 class BrowserRecoveryError(RuntimeError):
     """Base error for default-browser Scholar recovery."""
+
+
+class RecoveryOutcomeError(BrowserRecoveryError):
+    """A recovery failure carrying a stable reason code."""
+
+    def __init__(self, message: str, reason_code: str = "") -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
 
 
 class RecoveryBusyError(BrowserRecoveryError):
@@ -128,6 +238,11 @@ class ScholarRecoveryOutcome:
     # California reporter citation discovered from the selected result's own
     # primary metadata. Old callers/tests may omit it; it defaults to empty.
     official_citation: str = ""
+    # Backward-compatible optional fields: the pipeline stage (controlled
+    # identifier) where the outcome was reached and a stable reason code for
+    # failures. Old callers/tests may omit them; they default to empty.
+    stage: str = ""
+    reason_code: str = ""
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -137,7 +252,18 @@ class ScholarRecoveryOutcome:
             "source_url": self.source_url,
             "message": self.message,
             "official_citation": self.official_citation,
+            "stage": self.stage,
+            "reason_code": self.reason_code,
         }
+
+
+def _clean_reason_code(value: Any) -> str:
+    code = re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+    return re.sub(r"[^a-z0-9_.-]", "", code)[:64]
+
+
+def _clean_stage(value: Any) -> str:
+    return _clean_reason_code(value)
 
 
 def normalize_recovery_query(query: str) -> str:
@@ -180,6 +306,8 @@ def validate_recovery_result(payload: Any) -> ScholarRecoveryOutcome | None:
         source_url=source_url,
         message=message,
         official_citation=official_citation,
+        stage=_clean_stage(payload.get("stage")),
+        reason_code=_clean_reason_code(payload.get("reason_code")),
     )
 
 
@@ -551,31 +679,192 @@ def find_scholar_url(
     return None
 
 
-def detect_barrier(
-    tree: Sequence[Mapping[str, Any]], scoped: Sequence[Mapping[str, Any]]
-) -> str | None:
-    """Return a barrier reason if the scoped page is blocked, else ``None``.
+def _challenge_phrase_code(text: str) -> str:
+    """Return the challenge reason code for a complete challenge phrase."""
+    lowered = text.casefold()
+    for phrase, code in _CHALLENGE_PHRASES:
+        if phrase in lowered:
+            return code
+    return ""
 
-    Interaction barriers (CAPTCHA, robot checks, login, consent) are matched
-    as substrings of the scoped page because stopping early is always safe. A
-    "missing page" verdict, by contrast, is only derived from short standalone
-    notice elements so ordinary opinion prose containing phrases like "no
-    results" can never masquerade as a missing page.
+
+def _visible_challenge_control(scoped: Sequence[Mapping[str, Any]]) -> bool:
+    """Whether the scoped page shows a required challenge control.
+
+    A visible checkbox (the CAPTCHA/robot checkbox) or a push button labeled
+    with a challenge action (``I agree``, ``Accept all``, ``Sign in``, ...)
+    counts. Ordinary links — including the optional signed-out ``Sign in``
+    link — never count.
     """
-    text = " ".join(node_full_text(node) for node in scoped).casefold()
-    for patterns in _BARRIER_PATTERNS:
-        for pattern in patterns:
-            if pattern in text:
-                return pattern
+    for node in scoped:
+        if not node_is_visible(node):
+            continue
+        role = node_role(node)
+        if role == "check box":
+            return True
+        if role == "push button":
+            label = re.sub(r"\s+", " ", node_full_text(node)).casefold()
+            if any(hint in label for hint in _CHALLENGE_BUTTON_LABELS):
+                return True
+    return False
+
+
+def _challenge_classification(
+    tree: Sequence[Mapping[str, Any]],
+    scoped: Sequence[Mapping[str, Any]],
+) -> PageClassification | None:
+    """Detect a genuine challenge overlay or interstitial, else ``None``.
+
+    Challenge evidence must be bounded and coherent: a visible modal whose own
+    subtree contains challenge instructions *and* a required control, or a
+    challenge-specific heading/page title/short notice on a page that also
+    shows such a control. Opinion prose, quotations, snippets, bare trigger
+    words, and optional sign-in links are never evidence.
+    """
+    if not _visible_challenge_control(scoped):
+        return None
+    # 1. A visible modal (dialog/alert/notification) containing challenge
+    #    instructions and required controls — including wrapped/nested notice
+    #    text within the modal's own container.
+    for node in scoped:
+        if node_role(node) not in _CHALLENGE_DIALOG_ROLES or not node_is_visible(node):
+            continue
+        subtree = _descendant_set(tree, int(node.get("index")))
+        text = " ".join(
+            node_full_text(n)
+            for n in scoped
+            if int(n.get("index")) in subtree
+        )
+        code = _challenge_phrase_code(text)
+        if code:
+            return PageClassification(
+                "challenge", code, _CHALLENGE_LABELS.get(code, "a verification challenge")
+            )
+    # 2. A challenge-specific heading, page title, or short standalone notice
+    #    paired with a required control somewhere in the same verified
+    #    document. Long text nodes (ordinary opinion paragraphs) are never
+    #    evidence.
+    for node in scoped:
+        if not node_is_visible(node):
+            continue
+        role = node_role(node)
+        if role in ("heading", "document web"):
+            text = re.sub(r"\s+", " ", node_full_text(node)).strip()
+        elif role in _NOTICE_TEXT_ROLES:
+            text = re.sub(r"\s+", " ", node_full_text(node)).strip()
+            if not text or len(text) > _MISSING_PAGE_NODE_MAX_CHARS:
+                continue
+        else:
+            continue
+        code = _challenge_phrase_code(text)
+        if code:
+            return PageClassification(
+                "challenge", code, _CHALLENGE_LABELS.get(code, "a verification challenge")
+            )
+    return None
+
+
+def _notice_classification(
+    scoped: Sequence[Mapping[str, Any]], context: str
+) -> PageClassification | None:
+    """Detect a genuine no-results/missing-page notice in page context."""
     for node in scoped:
         notice = re.sub(r"\s+", " ", node_full_text(node)).strip()
         if not notice or len(notice) > _MISSING_PAGE_NODE_MAX_CHARS:
             continue
         lowered = notice.casefold()
         if any(lowered.startswith(p) for p in _MISSING_PAGE_PREFIX_PATTERNS):
-            return "missing page"
-        if any(p in lowered for p in _MISSING_PAGE_CONTAINED_PATTERNS):
-            return "missing page"
+            pass
+        elif any(p in lowered for p in _MISSING_PAGE_CONTAINED_PATTERNS):
+            pass
+        else:
+            continue
+        classification = "missing_page" if context == "opinion" else "no_results"
+        return PageClassification(
+            classification, REASON_NO_MATCHING_RESULT, "no matching notice"
+        )
+    return None
+
+
+def _page_has_result_structure(scoped: Sequence[Mapping[str, Any]]) -> bool:
+    return any(
+        node_role(node) == "heading" and node_name(node) for node in scoped
+    )
+
+
+# Editable controls that must never become the Ctrl+A/Ctrl+C copy target.
+_EDITABLE_ROLES = frozenset(
+    {"entry", "text box", "text", "combo box", "edit bar", "search box"}
+)
+
+
+def document_copy_target_confirmed(scoped: Sequence[Mapping[str, Any]]) -> bool:
+    """Whether the focused node is document content, not an editable field.
+
+    Returns ``False`` when no focused node is exposed in the selected document
+    (the copy target cannot be established) or when the focused node is an
+    editable address/search input. Callers must fail safely on ``False``.
+    """
+    focused = [
+        node for node in scoped if "focused" in (node.get("states") or [])
+    ]
+    if not focused:
+        return False
+    return all(node_role(node) not in _EDITABLE_ROLES for node in focused)
+
+
+def classify_page(
+    tree: Sequence[Mapping[str, Any]],
+    scoped: Sequence[Mapping[str, Any]],
+    *,
+    context: str = "search",
+) -> PageClassification:
+    """Classify the exact selected document contextually, without substrings.
+
+    ``context`` is ``"search"`` for the results page or ``"opinion"`` for the
+    opened case page. A genuine challenge overlay takes precedence even when a
+    valid opinion remains visible behind it. Opinion paragraphs, footnotes,
+    quotations, and search-result snippets are never treated as barriers
+    merely because they contain trigger words. When the tree is incomplete or
+    the page is unrecognized the result is ``unknown`` — the caller keeps
+    polling within its deadline and then reports an inspection/load failure
+    instead of asserting that an official copy does not exist.
+    """
+    challenge = _challenge_classification(tree, scoped)
+    if challenge is not None:
+        return challenge
+    notice = _notice_classification(scoped, context)
+    if notice is not None:
+        return notice
+    if context == "opinion":
+        has_text = any(node_full_text(node).strip() for node in scoped)
+        return PageClassification("opinion" if has_text else "unknown")
+    return PageClassification(
+        "search_results" if _page_has_result_structure(scoped) else "unknown"
+    )
+
+
+def detect_barrier(
+    tree: Sequence[Mapping[str, Any]],
+    scoped: Sequence[Mapping[str, Any]],
+    *,
+    context: str = "search",
+) -> str | None:
+    """Return a barrier reason if the scoped page is blocked, else ``None``.
+
+    Backward-compatible wrapper around :func:`classify_page`. Challenge
+    pages return the stable challenge reason code (for example
+    ``challenge_captcha``); a genuine no-results/missing-page notice returns
+    ``"missing page"``. Interaction barriers require bounded, coherent
+    evidence — a challenge phrase in a heading, page title, short notice, or
+    visible modal *paired with* a required control — so ordinary opinion
+    prose containing trigger words can never stop a recovery.
+    """
+    classification = classify_page(tree, scoped, context=context)
+    if classification.classification == "challenge":
+        return classification.reason_code
+    if classification.classification in ("no_results", "missing_page"):
+        return "missing page"
     return None
 
 
@@ -889,6 +1178,7 @@ class ScholarRecoveryJob:
         progress: ProgressCallback | None = None,
         cancelled: CancelCallback | None = None,
         client: ComputerUseMCPClient | None = None,
+        lock: RecoveryLock | None = None,
     ) -> None:
         self.request = request
         self.timeout = timeout
@@ -896,11 +1186,16 @@ class ScholarRecoveryJob:
         self.cancelled = cancelled
         self._owns_client = client is None
         self.client = client
+        # An externally supplied, already-held lock (used by the shared
+        # recovery service to keep the cross-process lock through clipboard
+        # capture, validation, and persistence) prevents double acquisition.
+        self._external_lock = lock
         self._started_at = time.monotonic()
         self._origin_window_id: int | None = None
         self._target_window_id: int | None = None
         self._target_title: str = ""
         self._final_outcome = ""
+        self._stage = ""
         self._handler_name = ""
         self._handler_desktop_id = ""
 
@@ -909,7 +1204,16 @@ class ScholarRecoveryJob:
     def _elapsed(self) -> float:
         return time.monotonic() - self._started_at
 
+    _STAGE_BY_REPORT = {
+        "Checking desktop": STAGE_DESKTOP,
+        "Opening Scholar": STAGE_LAUNCH,
+        "Finding matching case": STAGE_SEARCH,
+        "Opening opinion": STAGE_OPINION,
+        "Copying opinion": STAGE_COPY,
+    }
+
     def _report(self, stage: str) -> None:
+        self._stage = self._STAGE_BY_REPORT.get(stage, "")
         if self.progress is not None:
             self.progress(stage, self._elapsed())
 
@@ -931,6 +1235,7 @@ class ScholarRecoveryJob:
         message: str,
         source_url: str = "",
         official_citation: str = "",
+        reason_code: str = "",
     ) -> ScholarRecoveryOutcome:
         self._final_outcome = outcome
         return ScholarRecoveryOutcome(
@@ -940,15 +1245,9 @@ class ScholarRecoveryJob:
             source_url=source_url,
             message=(message or ""),
             official_citation=normalize_official_citation(official_citation),
+            stage=self._stage,
+            reason_code=reason_code,
         )
-
-    # -- state 1: acquire lock ---------------------------------------------
-
-    def _acquire_lock(self) -> RecoveryLock:
-        lock = RecoveryLock()
-        if not lock.acquire():
-            raise RecoveryBusyError("Another Scholar recovery is already running.")
-        return lock
 
     # -- state 2: check desktop --------------------------------------------
 
@@ -1012,8 +1311,15 @@ class ScholarRecoveryJob:
         """
         deadline = time.monotonic() + self.page_deadline()
         while time.monotonic() < deadline:
-            if self._is_cancelled() or self._deadline_exceeded():
-                break
+            if self._is_cancelled():
+                raise RecoveryOutcomeError(
+                    "Scholar recovery was cancelled.", REASON_CANCELLED
+                )
+            if self._deadline_exceeded():
+                raise RecoveryOutcomeError(
+                    "The Scholar search page did not appear.",
+                    REASON_PAGE_LOAD_TIMEOUT,
+                )
             payload = self.client.list_windows()
             windows = payload.get("windows")
             if not isinstance(windows, list):
@@ -1038,7 +1344,9 @@ class ScholarRecoveryJob:
                 if scholar_search_url_matches(observed_url, expected_search_url):
                     return window_id, observed_title or title
             time.sleep(0.5)
-        raise BrowserRecoveryError("The Scholar search page did not appear.")
+        raise RecoveryOutcomeError(
+            "The Scholar search page did not appear.", REASON_PAGE_LOAD_TIMEOUT
+        )
 
     def _matches_handler(self, window: Mapping[str, Any]) -> bool:
         identity = (
@@ -1083,12 +1391,16 @@ class ScholarRecoveryJob:
         url = find_scholar_url(tree, scoped)
         return list(tree), title, (url or "")
 
-    # -- state 8: check barriers -------------------------------------------
+    # -- state 8: classify the page ----------------------------------------
 
-    def _check_barriers(
-        self, tree: list[Mapping[str, Any]], scoped: list[Mapping[str, Any]]
-    ) -> str | None:
-        return detect_barrier(tree, scoped)
+    def _classify_page(
+        self,
+        tree: list[Mapping[str, Any]],
+        scoped: list[Mapping[str, Any]],
+        *,
+        context: str,
+    ) -> PageClassification:
+        return classify_page(tree, scoped, context=context)
 
     # -- run ---------------------------------------------------------------
 
@@ -1096,7 +1408,20 @@ class ScholarRecoveryJob:
         return min(DEFAULT_PAGE_DEADLINE_SECONDS, max(15.0, self.timeout / 2.0))
 
     def run(self) -> ScholarRecoveryOutcome:
-        lock = self._acquire_lock()
+        # When the caller (the shared recovery service) supplies an already
+        # held lock, reuse it so the cross-process lock spans clipboard capture
+        # and persistence; never double-acquire.
+        external_lock = self._external_lock
+        if external_lock is not None:
+            lock = external_lock
+        else:
+            lock = RecoveryLock()
+            if not lock.acquire():
+                return self._outcome(
+                    "failed",
+                    "Another Scholar recovery is already running.",
+                    reason_code=REASON_BUSY,
+                )
         try:
             if self.client is None:
                 self.client = ComputerUseMCPClient(job_deadline=self.timeout)
@@ -1124,8 +1449,18 @@ class ScholarRecoveryJob:
             saw_result_structure = False
             multiple_qualifying = False
             while time.monotonic() < search_deadline:
-                if self._is_cancelled() or self._deadline_exceeded():
-                    return self._outcome("failed", "Scholar recovery timed out.")
+                if self._is_cancelled():
+                    return self._outcome(
+                        "failed",
+                        "Scholar recovery was cancelled.",
+                        reason_code=REASON_CANCELLED,
+                    )
+                if self._deadline_exceeded():
+                    return self._outcome(
+                        "failed",
+                        "Scholar recovery timed out.",
+                        reason_code=REASON_PAGE_LOAD_TIMEOUT,
+                    )
                 tree, observed_title, url = self._observe(window_id)
                 frame_index = scope_frame_index(tree, observed_title or title)
                 if frame_index is None or not scholar_search_url_matches(url, search_url):
@@ -1138,15 +1473,21 @@ class ScholarRecoveryJob:
                     if int(node.get("index")) in _descendant_set(tree, frame_index)
                 ]
                 scoped = scope_selected_document(tree, scoped_frame)
-                barrier = self._check_barriers(tree, scoped)
-                if barrier == "missing page":
-                    return self._outcome("not_found", "Google Scholar returned no matching case.")
-                if barrier:
-                    return self._outcome("blocked", f"Google Scholar showed {barrier}; leaving it visible.")
-                if any(
-                    node_role(node) == "heading" and node_name(node)
-                    for node in scoped
-                ):
+                classification = self._classify_page(tree, scoped, context="search")
+                if classification.classification == "challenge":
+                    return self._outcome(
+                        "blocked",
+                        f"Google Scholar showed {classification.detail}; "
+                        "leaving it visible.",
+                        reason_code=classification.reason_code,
+                    )
+                if classification.classification in ("no_results", "missing_page"):
+                    return self._outcome(
+                        "not_found",
+                        "Google Scholar returned no matching case.",
+                        reason_code=REASON_NO_MATCHING_RESULT,
+                    )
+                if _page_has_result_structure(scoped):
                     saw_result_structure = True
                 matches = find_result_matches(
                     tree,
@@ -1166,31 +1507,45 @@ class ScholarRecoveryJob:
             if match is None:
                 if not saw_search_page:
                     return self._outcome(
-                        "not_found", "The Scholar search results page did not load."
+                        "failed",
+                        "The Scholar search results page did not load.",
+                        reason_code=REASON_PAGE_LOAD_TIMEOUT,
                     )
                 if not saw_result_structure:
                     return self._outcome(
-                        "not_found",
-                        "The Scholar page loaded but showed no parseable result structure.",
+                        "failed",
+                        "The Scholar page could not be inspected reliably; no "
+                        "parseable result structure loaded.",
+                        reason_code=REASON_INSPECTION_INCOMPLETE,
                     )
                 if multiple_qualifying:
                     return self._outcome(
                         "not_found",
                         "Multiple qualifying Scholar results matched; recovery stopped "
                         "without selecting one.",
+                        reason_code=REASON_AMBIGUOUS_RESULTS,
                     )
                 if not expected_citation.strip():
                     return self._outcome(
                         "not_found",
                         "No exact-title California reporter result matched the recovery identity.",
+                        reason_code=REASON_NO_MATCHING_RESULT,
                     )
-                return self._outcome("not_found", "No single corroborated Scholar result matched.")
+                return self._outcome(
+                    "not_found",
+                    "No single corroborated Scholar result matched.",
+                    reason_code=REASON_NO_MATCHING_RESULT,
+                )
 
             self._report("Opening opinion")
             try:
                 self.client.perform_action(element_index=int(match.link.get("index")))
             except ComputerUseMCPError as exc:
-                return self._outcome("failed", "Opening the Scholar result failed: " + str(exc))
+                return self._outcome(
+                    "failed",
+                    "Opening the Scholar result failed: " + str(exc),
+                    reason_code=REASON_INSPECTION_INCOMPLETE,
+                )
 
             # Revalidate the opinion page on the same numeric window/frame.
             deadline = time.monotonic() + self.page_deadline()
@@ -1198,8 +1553,18 @@ class ScholarRecoveryJob:
             saw_opinion_url = False
             identity_confirmed = False
             while time.monotonic() < deadline:
-                if self._is_cancelled() or self._deadline_exceeded():
-                    return self._outcome("failed", "Scholar recovery timed out.")
+                if self._is_cancelled():
+                    return self._outcome(
+                        "failed",
+                        "Scholar recovery was cancelled.",
+                        reason_code=REASON_CANCELLED,
+                    )
+                if self._deadline_exceeded():
+                    return self._outcome(
+                        "failed",
+                        "Scholar recovery timed out.",
+                        reason_code=REASON_PAGE_LOAD_TIMEOUT,
+                    )
                 tree, observed_title, url = self._observe(window_id)
                 opinion_url = url
                 if not (opinion_url and is_scholar_case_url(opinion_url)):
@@ -1216,13 +1581,20 @@ class ScholarRecoveryJob:
                     if int(node.get("index")) in _descendant_set(tree, frame_index)
                 ]
                 scoped = scope_selected_document(tree, scoped_frame)
-                barrier = self._check_barriers(tree, scoped)
-                if barrier == "missing page":
+                classification = self._classify_page(tree, scoped, context="opinion")
+                if classification.classification == "challenge":
                     return self._outcome(
-                        "not_found", "The Scholar opinion page was not found."
+                        "blocked",
+                        f"Google Scholar showed {classification.detail}; "
+                        "leaving it visible.",
+                        reason_code=classification.reason_code,
                     )
-                if barrier:
-                    return self._outcome("blocked", f"Google Scholar showed {barrier}; leaving it visible.")
+                if classification.classification in ("no_results", "missing_page"):
+                    return self._outcome(
+                        "not_found",
+                        "The Scholar opinion page was not found.",
+                        reason_code=REASON_NO_MATCHING_RESULT,
+                    )
                 # The opened opinion must identify the expected case before
                 # anything is copied: by name plus official citation when one
                 # is known, or by case name plus the citation discovered from
@@ -1245,21 +1617,55 @@ class ScholarRecoveryJob:
             if not identity_confirmed:
                 if saw_opinion_url:
                     return self._outcome(
-                        "not_found", "The opened opinion did not match the expected case."
+                        "not_found",
+                        "The opened opinion did not match the expected case.",
+                        reason_code=REASON_IDENTITY_MISMATCH,
                     )
-                return self._outcome("failed", "The Scholar opinion page did not load.")
+                return self._outcome(
+                    "failed",
+                    "The Scholar opinion page did not load.",
+                    reason_code=REASON_PAGE_LOAD_TIMEOUT,
+                )
 
             self._report("Copying opinion")
             # The compositor title can update before get_app_state's context
             # title after search -> opinion navigation. Confirm the exact
-            # numeric window still exists, then use the stronger Scholar case
-            # URL identity after selection instead of comparing lagging titles.
+            # numeric window still exists and the selected document still
+            # carries the same Scholar case URL before any input, then use the
+            # stronger Scholar case URL identity after selection instead of
+            # comparing lagging titles.
             self._revalidate_window(window_id)
+            _tree, _pre_title, pre_url = self._observe(window_id)
+            if not scholar_case_url_matches(pre_url, opinion_url):
+                raise RecoveryOutcomeError(
+                    "The Scholar opinion changed before the copy.",
+                    REASON_COPY_FAILED,
+                )
             self.client.press_key(key="Ctrl+A", window_id=window_id)
             time.sleep(0.5)
-            _tree, _after_select_title, after_select_url = self._observe(window_id)
+            after_tree, _after_select_title, after_select_url = self._observe(window_id)
             if not scholar_case_url_matches(after_select_url, opinion_url):
-                raise BrowserRecoveryError("The Scholar opinion changed during copy.")
+                raise RecoveryOutcomeError(
+                    "The Scholar opinion changed during copy.", REASON_COPY_FAILED
+                )
+            # The copy target must be document content, never an editable
+            # address/search field. Fail safely when this cannot be
+            # established from the observed tree.
+            frame_index = scope_frame_index(after_tree, _after_select_title or title)
+            if frame_index is None or not document_copy_target_confirmed(
+                scope_selected_document(
+                    after_tree,
+                    [
+                        node
+                        for node in after_tree
+                        if int(node.get("index")) in _descendant_set(after_tree, frame_index)
+                    ],
+                )
+            ):
+                raise RecoveryOutcomeError(
+                    "The copy target could not be confirmed as the opinion document.",
+                    REASON_COPY_FAILED,
+                )
 
             self.client.press_key(key="Ctrl+C", window_id=window_id)
 
@@ -1270,12 +1676,19 @@ class ScholarRecoveryJob:
                 official_citation=match.official_citation,
             )
         except RecoveryBusyError:
-            return self._outcome("failed", "Another Scholar recovery is already running.")
+            return self._outcome(
+                "failed",
+                "Another Scholar recovery is already running.",
+                reason_code=REASON_BUSY,
+            )
         except (BrowserRecoveryError, ComputerUseMCPError, OSError) as exc:
-            return self._outcome("failed", str(exc))
+            return self._outcome(
+                "failed", str(exc), reason_code=getattr(exc, "reason_code", "")
+            )
         finally:
             self._return_focus_if_appropriate()
-            lock.release()
+            if external_lock is None:
+                lock.release()
             if self._owns_client and self.client is not None:
                 try:
                     self.client.close()
@@ -1310,7 +1723,9 @@ class ScholarRecoveryJob:
         for window in windows:
             if window.get("window_id") == window_id:
                 return str(window.get("title") or "")
-        raise BrowserRecoveryError("The Scholar window disappeared before input.")
+        raise RecoveryOutcomeError(
+            "The Scholar window disappeared before input.", REASON_COPY_FAILED
+        )
 
     def cancel(self) -> None:
         if self.client is not None:
@@ -1447,18 +1862,22 @@ def run_scholar_recovery(
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     progress: ProgressCallback | None = None,
     cancelled: CancelCallback | None = None,
+    lock: RecoveryLock | None = None,
 ) -> ScholarRecoveryOutcome:
     """Run the deterministic Scholar recovery state machine.
 
-    This is the only desktop-recovery entry point. It returns one of the
+    This is the one desktop-recovery entry point. It returns one of the
     ``copied`` / ``not_found`` / ``blocked`` / ``failed`` outcomes without ever
-    launching a model.
+    launching a model. When ``lock`` is an already-held :class:`RecoveryLock`
+    (supplied by the shared recovery service), the job reuses it instead of
+    acquiring its own so the lock can span clipboard capture and persistence.
     """
     job = ScholarRecoveryJob(
         request,
         timeout=timeout,
         progress=progress,
         cancelled=cancelled,
+        lock=lock,
     )
     return job.run()
 
@@ -1467,13 +1886,34 @@ __all__ = [
     "BrowserRecoveryError",
     "CancelCallback",
     "DEFAULT_TIMEOUT_SECONDS",
+    "PageClassification",
     "ProgressCallback",
+    "REASON_AMBIGUOUS_RESULTS",
+    "REASON_BUSY",
+    "REASON_CANCELLED",
+    "REASON_CHALLENGE_CAPTCHA",
+    "REASON_CHALLENGE_CONSENT",
+    "REASON_CHALLENGE_LOGIN",
+    "REASON_CHALLENGE_TRAFFIC",
+    "REASON_COPY_FAILED",
+    "REASON_IDENTITY_MISMATCH",
+    "REASON_INSPECTION_INCOMPLETE",
+    "REASON_NO_MATCHING_RESULT",
+    "REASON_PAGE_LOAD_TIMEOUT",
     "RecoveryBusyError",
     "RecoveryLock",
+    "RecoveryOutcomeError",
+    "STAGE_COPY",
+    "STAGE_DESKTOP",
+    "STAGE_LAUNCH",
+    "STAGE_OPINION",
+    "STAGE_SEARCH",
     "ScholarRecoveryJob",
     "ScholarRecoveryOutcome",
     "ScholarRecoveryRequest",
+    "classify_page",
     "detect_barrier",
+    "document_copy_target_confirmed",
     "find_result_link",
     "find_result_matches",
     "find_scholar_url",

@@ -151,7 +151,7 @@ from .library import (
     normalize_display_quote_stacks,
     opinion_display_text,
 )
-from .scholar_recovery_service import recover_official_copy
+from .scholar_recovery_service import OUTCOME_BUSY, OUTCOME_CANCELLED, recover_official_copy, recovery_presentation
 from .official_import import persist_official_opinion
 from .opinion_formatting import DisplayStyleSpan
 from .pi_runtime import (
@@ -299,8 +299,7 @@ GOOGLE_SCHOLAR_CASE_SEARCH_TEMPLATE = "https://scholar.google.com/scholar?hl=en&
 GOOGLE_SCHOLAR_CASE_LAW_HOME_URL = "https://scholar.google.com/scholar?hl=en&as_sdt=6,33"
 EXTERNAL_URL_RE = re.compile(r"https?://\S+")
 OFFICIAL_PAGINATION_NOT_FOUND_TITLE = "Official Pagination Not Found"
-OFFICIAL_PAGINATION_NOT_FOUND_MESSAGE = (
-    "A version of this case with pagination from the official reporter was not found. "
+OFFICIAL_PAGINATION_BASELINE_OFFER_MESSAGE = (
     "You can view this version, but page citations may not match the official reporter."
 )
 OFFICIAL_PAGINATION_NOT_FOUND_ONLY_MESSAGE = (
@@ -7217,11 +7216,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def _browser_recovery_failure_message(self, outcome: str) -> str:
         return {
-            "not_found": "Google Scholar returned no matching official reporter copy.",
-            "blocked": "Google Scholar showed a CAPTCHA or blocked the recovery; complete it in the visible browser window.",
+            "not_found": "Google Scholar recovery found no matching official reporter copy.",
+            "blocked": "Google Scholar showed a verification challenge; recovery stopped without interacting with it.",
             "failed": "Default-browser Scholar recovery could not run. The current baseline is retained.",
             "rejected": "The copied Scholar opinion failed validation and was not saved.",
             "busy": "Another Scholar recovery is already running.",
+            "cancelled": "The Scholar recovery was cancelled.",
         }.get(outcome, "Default-browser Scholar recovery stopped without an official reporter copy.")
 
     def _recovery_identity(self) -> tuple[str, str, str, str]:
@@ -7352,9 +7352,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             getattr(service, "outcome", "failed")
         )
         self._set_status(reason)
-        if transient_notice:
-            self._show_official_pagination_not_found_notice(
-                can_view_current=getattr(self, "_browser_recovery_can_view_current", True)
+        outcome = str(getattr(service, "outcome", "failed") or "failed")
+        if transient_notice and outcome not in (OUTCOME_BUSY, OUTCOME_CANCELLED):
+            title, message = recovery_presentation(
+                outcome, str(getattr(service, "reason_code", "") or "")
+            )
+            self._show_recovery_notice(
+                title,
+                message,
+                can_view_current=getattr(self, "_browser_recovery_can_view_current", True),
             )
         return False
 
@@ -7364,8 +7370,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_browser_recovery_cancel_visible(False)
         self._set_reader_busy(False)
         self._set_status(f"Scholar recovery failed: {message}")
-        self._show_official_pagination_not_found_notice(
-            can_view_current=getattr(self, "_browser_recovery_can_view_current", True)
+        self._show_recovery_notice(
+            "Scholar Recovery Failed",
+            "Default-browser Scholar recovery stopped unexpectedly. The "
+            "current baseline is retained.",
+            can_view_current=getattr(self, "_browser_recovery_can_view_current", True),
         )
         return False
 
@@ -7427,12 +7436,21 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         )
 
     def _show_official_pagination_not_found_notice(self, *, can_view_current: bool) -> None:
-        message = (
-            OFFICIAL_PAGINATION_NOT_FOUND_MESSAGE
-            if can_view_current
-            else OFFICIAL_PAGINATION_NOT_FOUND_ONLY_MESSAGE
+        self._show_recovery_notice(
+            OFFICIAL_PAGINATION_NOT_FOUND_TITLE,
+            OFFICIAL_PAGINATION_NOT_FOUND_ONLY_MESSAGE,
+            can_view_current=can_view_current,
         )
-        window = Gtk.Window(title=OFFICIAL_PAGINATION_NOT_FOUND_TITLE)
+
+    def _show_recovery_notice(
+        self, title: str, message: str, *, can_view_current: bool = True
+    ) -> None:
+        if can_view_current:
+            # Continue offering the baseline reader whenever it is available.
+            message = (
+                message + " " + OFFICIAL_PAGINATION_BASELINE_OFFER_MESSAGE
+            ).strip()
+        window = Gtk.Window(title=title)
         window.set_transient_for(self)
         window.set_modal(True)
         window.set_default_size(460, 160)
@@ -7443,7 +7461,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         box.set_margin_start(16)
         box.set_margin_end(16)
 
-        heading = Gtk.Label(label=OFFICIAL_PAGINATION_NOT_FOUND_TITLE, xalign=0)
+        heading = Gtk.Label(label=title, xalign=0)
         heading.add_css_class("heading")
         box.append(heading)
 
