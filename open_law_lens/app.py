@@ -1978,43 +1978,102 @@ def research_cache_group(item_type: str) -> ResearchCacheGroup:
 
 
 # GTK 4.14: use named theme colors and classes, not newer CSS variables/media queries.
+# Checkbox boundaries need an inset shadow in Libadwaita; 68% is the first
+# whole-percent neutral opacity passing 3:1 against both the row and checked fill.
+# HC's theme-selected white/blue pair is only 3.77:1 in Libadwaita 1.5;
+# a 10% black mix preserves its theme hue while reaching 4.51:1 for text.
 RESEARCH_CACHE_CSS = """
 list.research-cache row.cache-section-header {
   margin: 12px 2px 4px; padding: 8px; border-radius: 6px;
-  border-left: 3px solid; color: @window_fg_color;
+  border-left: 4px solid; color: @window_fg_color;
 }
 list.research-cache row.cache-section-header:first-child { margin-top: 4px; }
 list.research-cache row.cache-section-header label { color: @window_fg_color; }
 list.research-cache label.cache-section-label { font-weight: 600; }
-list.research-cache row.case-cache-row { border-left: 2px solid; }
+list.research-cache row.case-cache-row {
+  border-left: 4px solid; color: @window_fg_color;
+}
+list.research-cache row.case-cache-row label { color: @window_fg_color; }
+list.research-cache row.case-cache-row label.dim-label {
+  color: alpha(@window_fg_color, 0.85); opacity: 1;
+}
+list.research-cache row.case-cache-row:selected {
+  outline: 1px solid alpha(@window_fg_color, 0.65); outline-offset: -1px;
+}
+list.research-cache row.case-cache-row:focus-visible {
+  outline: 2px solid @window_fg_color; outline-offset: -2px;
+}
+list.research-cache row.case-cache-row:hover button.cache-row-remove-button,
+list.research-cache row.case-cache-row:selected button.cache-row-remove-button,
+list.research-cache button.cache-row-remove-button:focus-visible {
+  color: alpha(@window_fg_color, 0.65);
+}
+list.research-cache checkbutton.neutral-agent-check check {
+  border-color: alpha(@window_fg_color, 0.68); color: @window_fg_color;
+  box-shadow: inset 0 0 0 1px alpha(@window_fg_color, 0.68);
+}
 """ + "\n".join(
     f"""
 list.research-cache{mode}:not(.cache-high-contrast) row.{group.css_class} {{ border-left-color: {color}; }}
+list.research-cache{mode}:not(.cache-high-contrast) row.case-cache-row.{group.css_class} {{
+  background-color: alpha({color}, {ordinary});
+}}
+list.research-cache{mode}:not(.cache-high-contrast) row.case-cache-row.{group.css_class}:hover:not(:selected) {{
+  background-color: alpha({color}, {hover});
+}}
+list.research-cache{mode}:not(.cache-high-contrast) row.case-cache-row.{group.css_class}:selected {{
+  background-color: alpha({color}, {selected});
+}}
 list.research-cache{mode}:not(.cache-high-contrast) row.cache-section-header.{group.css_class} {{
-  background-color: alpha({color}, 0.10);
+  background-color: alpha({color}, {heading});
 }}
 """
     for group in RESEARCH_CACHE_GROUPS
-    for mode, color in (("", group.light), (".cache-dark", group.dark))
+    for mode, color, ordinary, heading, hover, selected in (
+        (":not(.cache-dark)", group.light, "0.10", "0.21", "0.16", "0.23"),
+        (".cache-dark", group.dark, "0.16", "0.30", "0.23", "0.31"),
+    )
 ) + """
 list.research-cache.cache-high-contrast row.cache-section-header {
   background-color: transparent; border: 1px solid @window_fg_color;
-  border-left-width: 3px;
+  border-left-width: 4px;
 }
 list.research-cache.cache-high-contrast row.case-cache-row {
-  border-left-color: @window_fg_color;
+  background-color: transparent; border-left-color: @window_fg_color;
 }
-list.research-cache.cache-high-contrast row:selected {
-  background-color: @theme_selected_bg_color; color: @theme_selected_fg_color;
+list.research-cache.cache-high-contrast row.case-cache-row:hover:not(:selected) {
+  background-color: transparent;
 }
-list.research-cache.cache-high-contrast row:selected label {
+list.research-cache.cache-high-contrast row.case-cache-row:selected {
+  background-color: mix(@theme_selected_bg_color, black, 0.10);
+  color: @theme_selected_fg_color;
+  border-left-color: @theme_selected_fg_color;
+  outline-color: @theme_selected_fg_color;
+}
+list.research-cache.cache-high-contrast row.case-cache-row label.dim-label {
+  color: @window_fg_color;
+}
+list.research-cache.cache-high-contrast row.case-cache-row:selected label,
+list.research-cache.cache-high-contrast row.case-cache-row:selected label.dim-label {
   color: @theme_selected_fg_color;
 }
-list.research-cache.cache-high-contrast row:focus-visible {
+list.research-cache.cache-high-contrast row.case-cache-row:focus-visible {
   outline: 2px solid @window_fg_color; outline-offset: -2px;
 }
-list.research-cache.cache-high-contrast button.cache-row-remove-button {
+list.research-cache.cache-high-contrast row.case-cache-row:selected:focus-visible {
+  outline-color: @theme_selected_fg_color;
+}
+list.research-cache.cache-high-contrast row.case-cache-row button.cache-row-remove-button {
   color: inherit;
+}
+list.research-cache.cache-high-contrast checkbutton.neutral-agent-check check {
+  border-color: @window_fg_color; color: @window_fg_color;
+  box-shadow: inset 0 0 0 1px @window_fg_color;
+}
+list.research-cache.cache-high-contrast row:selected checkbutton.neutral-agent-check check {
+  background-color: mix(@theme_selected_bg_color, black, 0.10);
+  border-color: @theme_selected_fg_color; color: @theme_selected_fg_color;
+  box-shadow: inset 0 0 0 1px @theme_selected_fg_color;
 }
 """
 
@@ -8476,10 +8535,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         heading.append(label)
         heading.append(Gtk.Label(label=str(count), xalign=1))
         band.append(heading)
-        if group.key == "statutes":
-            description = Gtk.Label(label="Includes rules of court", xalign=0)
-            description.set_wrap(True)
-            band.append(description)
         row.set_child(band)
         row._open_law_lens_cache_section = group.key + "_header"
         row._open_law_lens_cache_count = count

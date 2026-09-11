@@ -3,11 +3,15 @@ from pathlib import Path
 from types import SimpleNamespace
 import tempfile
 import unittest
-from unittest.mock import Mock
+import re
+from unittest.mock import Mock, patch
+
+import cairo
 
 from open_law_lens.app import (
-    Adw, Gtk, OpenLawLensWindow, RESEARCH_CACHE_CSS, RESEARCH_CACHE_GROUPS,
+    Adw, Gdk, Gtk, OpenLawLensWindow, RESEARCH_CACHE_CSS, RESEARCH_CACHE_GROUPS,
 )
+from open_law_lens.config import AppConfig
 from open_law_lens.cache import JsonCache
 from open_law_lens.library import CaseLibrary
 
@@ -15,8 +19,8 @@ from open_law_lens.library import CaseLibrary
 def seed(cache):
     cache.ensure()
     cache.upsert_cluster({"id": 42, "case_name": "Example v. State", "citations": [{"volume": 1, "reporter": "Cal.", "page": "2"}]})
-    cache.upsert_statute({"statute_id": "WIC:300", "title": "Synthetic statute", "text": "Statute text"})
-    cache.upsert_rule({"rule_id": "CRC:8.11", "title": "California Rules of Court, rule 8.11", "text": "Rule text"})
+    cache.upsert_statute({"statute_id": "WIC:300", "title": "Synthetic statute", "citation": "Welf. & Inst. Code, § 300", "text": "Statute text"})
+    cache.upsert_rule({"rule_id": "CRC:8.11", "title": "California Rules of Court, rule 8.11", "citation": "Cal. Rules of Court, rule 8.11", "text": "Rule text"})
     cache.upsert_prior_brief({"brief_id": "brief-1", "title": "Synthetic prior advocacy", "text": "Brief text"})
     cache.save_agent_answer("Synthetic answer about statutes", mode="appeal", title="Saved statute assessment")
 
@@ -81,6 +85,10 @@ class SidebarTests(unittest.TestCase):
         for header in headers:
             self.assertFalse(header.get_focusable())
             self.assertFalse(header.get_activatable())
+            band = header.get_child()
+            heading = band.get_first_child()
+            self.assertIsNone(heading.get_next_sibling())
+            self.assertEqual(heading.get_last_child().get_label(), str(header._open_law_lens_cache_count))
         self.window.render(select_first=True)
         self.assertIn(self.window.case_list.get_selected_row()._open_law_lens_authority_type, ("statute", "rule"))
 
@@ -166,7 +174,165 @@ class SidebarTests(unittest.TestCase):
         self.assertTrue(self.cache.is_rule_agent_selected("CRC:8.11"))
         self.assertEqual(len(rows(self.window)), 9)
 
+    def test_composited_category_states_contrast_and_pinned_exclusion(self):
+        # Exercise GTK's actual cascade, including the generic case-list rules.
+        # Cairo renders final backgrounds/frames/outlines without taking a
+        # screenshot of the user's desktop. No private config is read.
+        host = SimpleNamespace(_css_provider=None)
+        with patch("open_law_lens.app.load_config", return_value=AppConfig()):
+            OpenLawLensWindow._install_css(host)
+        self.addCleanup(Gtk.StyleContext.remove_provider_for_display,
+                        Gdk.Display.get_default(), host._css_provider)
+        settings = Gtk.Settings.get_default()
+        animations = settings.get_property("gtk-enable-animations")
+        settings.set_property("gtk-enable-animations", False)
+        self.addCleanup(settings.set_property, "gtk-enable-animations", animations)
+        manager = Adw.StyleManager.get_default()
+        original = manager.get_color_scheme()
+        self.addCleanup(manager.set_color_scheme, original)
+        self.window.render()
+        cache_list = self.window.case_list
+        pinned = Gtk.ListBox()
+        pinned.add_css_class("case-list")
+        pinned_row = Gtk.ListBoxRow()
+        pinned_row.add_css_class("case-cache-row")
+        # Even a stray category class must not bring cache styling to this list.
+        pinned_row.add_css_class("cache-statutes")
+        pinned.append(pinned_row)
+
+        def rgb(color):
+            return (color.red, color.green, color.blue)
+
+        def blend(fg, bg, opacity):
+            return tuple(a * opacity + b * (1 - opacity) for a, b in zip(fg, bg))
+
+        def contrast(a, b):
+            def lum(c):
+                linear = [v / 12.92 if v <= .04045 else ((v + .055) / 1.055) ** 2.4 for v in c]
+                return sum(v * w for v, w in zip(linear, (.2126, .7152, .0722)))
+            values = sorted((lum(a), lum(b)))
+            return (values[1] + .05) / (values[0] + .05)
+
+        def paint(widget, bg, operation=Gtk.render_background, point=(50, 30)):
+            surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 100, 60)
+            ctx = cairo.Context(surface)
+            ctx.set_source_rgb(*bg)
+            ctx.paint()
+            if operation == Gtk.render_focus:
+                # GTK 4.14's deprecated cairo render_focus erroneously renders
+                # the frame; Snapshot.render_focus renders the actual outline.
+                snapshot = Gtk.Snapshot()
+                snapshot.render_focus(widget.get_style_context(), 0, 0, 100, 60)
+                node = snapshot.to_node()
+                if node is not None:
+                    node.draw(ctx)
+            else:
+                operation(widget.get_style_context(), ctx, 0, 0, 100, 60)
+            surface.flush()
+            x, y = point
+            offset = y * surface.get_stride() + x * 4
+            b, g, r, _ = surface.get_data()[offset:offset + 4]
+            return (r / 255, g / 255, b / 255)
+
+        minima = {"text": 100, "subtitle": 100, "indicator": 100}
+        for dark in (False, True):
+            manager.set_color_scheme(Adw.ColorScheme.FORCE_DARK if dark else Adw.ColorScheme.FORCE_LIGHT)
+            if dark:
+                cache_list.add_css_class("cache-dark")
+            else:
+                cache_list.remove_css_class("cache-dark")
+            hc = manager.get_high_contrast()
+            if hc:
+                cache_list.add_css_class("cache-high-contrast")
+            context = cache_list.get_style_context()
+            bg = rgb(context.lookup_color("window_bg_color")[1])
+            fg = rgb(context.lookup_color("window_fg_color")[1])
+            self.assertEqual(pinned_row.get_style_context().get_border().left, 0)
+            self.assertEqual(paint(pinned_row, bg), tuple(round(v * 255) / 255 for v in bg))
+            for row in rows(self.window):
+                group = next(g for g in RESEARCH_CACHE_GROUPS if row.has_css_class(g.css_class))
+                accent = Gdk.RGBA()
+                accent.parse(group.dark if dark else group.light)
+                header = not row.get_selectable()
+                for hover, selected, focused, backdrop in (
+                    (False, False, False, False), (True, False, False, False),
+                    (False, True, False, False), (True, True, False, False),
+                    (False, True, False, True), (True, True, True, False),
+                    (True, False, True, False),
+                ):
+                    if header and (hover or selected or focused or backdrop):
+                        continue
+                    with self.subTest(dark=dark, hc=hc, group=group.key, header=header,
+                                      hover=hover, selected=selected, focused=focused, backdrop=backdrop):
+                        flags = Gtk.StateFlags.NORMAL
+                        for active, flag in ((hover, Gtk.StateFlags.PRELIGHT), (selected, Gtk.StateFlags.SELECTED),
+                                             (focused, Gtk.StateFlags.FOCUSED | Gtk.StateFlags.FOCUS_VISIBLE),
+                                             (backdrop, Gtk.StateFlags.BACKDROP)):
+                            if active:
+                                flags |= flag
+                        row.set_state_flags(flags, True)
+                        opacity = ((.30 if dark else .21) if header else
+                                   (.31 if dark else .23) if selected else
+                                   (.23 if dark else .16) if hover else (.16 if dark else .10))
+                        expected = blend(rgb(accent), bg, opacity)
+                        foreground = fg
+                        if hc:
+                            expected = blend((0, 0, 0), rgb(context.lookup_color("theme_selected_bg_color")[1]), .10) if selected else bg
+                            if selected:
+                                foreground = rgb(context.lookup_color("theme_selected_fg_color")[1])
+                        actual = paint(row, bg)
+                        for a, b in zip(actual, expected):
+                            self.assertAlmostEqual(a, b, delta=2 / 255)
+                        self.assertEqual(row.get_style_context().get_border().left, 4)
+                        edge = paint(row, actual, Gtk.render_frame, (1, 30))
+                        edge_color = context.lookup_color("theme_selected_fg_color" if selected else "window_fg_color")[1] if hc else accent
+                        expected_edge = blend(rgb(edge_color), actual, edge_color.alpha)
+                        for a, b in zip(edge, expected_edge):
+                            self.assertAlmostEqual(a, b, delta=2 / 255)
+                        fg_alpha = context.lookup_color("theme_selected_fg_color" if hc and selected else "window_fg_color")[1].alpha
+                        text_ratio = contrast(blend(foreground, actual, fg_alpha), actual)
+                        subtitle_ratio = contrast(blend(foreground, actual, 1 if hc else .85), actual)
+                        self.assertGreaterEqual(text_ratio, 4.5)
+                        self.assertGreaterEqual(subtitle_ratio, 4.5)
+                        minima["text"] = min(minima["text"], text_ratio)
+                        minima["subtitle"] = min(minima["subtitle"], subtitle_ratio)
+                        if selected or focused:
+                            snapshot = Gtk.Snapshot()
+                            snapshot.render_focus(row.get_style_context(), 0, 0, 100, 60)
+                            outline_node = snapshot.to_node()
+                            self.assertEqual(list(outline_node.get_widths()), [2 if focused else 1] * 4)
+                            outline = paint(row, actual, Gtk.render_focus, (50, 0))
+                            ratio = contrast(outline, actual)
+                            self.assertGreaterEqual(ratio, 3)
+                            minima["indicator"] = min(minima["indicator"], ratio)
+                        if not header:
+                            box = row.get_child()
+                            subtitle = box.get_first_child().get_last_child()
+                            if subtitle.has_css_class("dim-label"):
+                                self.assertEqual(subtitle.get_opacity(), 1)
+                                color = subtitle.get_style_context().get_color()
+                                self.assertAlmostEqual(color.alpha, fg_alpha if hc else .85, places=2)
+                            rail = box.get_last_child()
+                            check = rail.get_last_child()
+                            check_node = check.get_first_child()
+                            for checked in (False, True):
+                                check.set_active(checked)
+                                border = paint(check_node, actual, Gtk.render_background, (50, 0))
+                                self.assertGreaterEqual(contrast(border, actual), 3)
+                                interior = paint(check_node, actual)
+                                self.assertGreaterEqual(contrast(border, interior), 3)
+                                minima["indicator"] = min(minima["indicator"], contrast(border, actual), contrast(border, interior))
+                            if hover or selected:
+                                color = rail.get_first_child().get_style_context().get_color()
+                                ratio = contrast(blend(rgb(color), actual, color.alpha), actual)
+                                self.assertGreaterEqual(ratio, 3)
+                                minima["indicator"] = min(minima["indicator"], ratio)
+        print("Research Cache composited contrast minima", minima)
+
     def test_css_and_appearance_notifications_preserve_rows(self):
+        for selector_block in re.findall(r"([^{}]+)\{[^{}]*\}", RESEARCH_CACHE_CSS):
+            for selector in selector_block.split(","):
+                self.assertTrue(selector.strip().startswith("list.research-cache"), selector)
         provider = Gtk.CssProvider()
         errors = []
         provider.connect("parsing-error", lambda *args: errors.append(args))
@@ -178,6 +344,10 @@ class SidebarTests(unittest.TestCase):
         self.window.render(select_rule_id="CRC:8.11")
         before = rows(self.window)
         selected = self.window.case_list.get_selected_row()
+        checks = [r.get_child().get_last_child().get_last_child() for r in before if r.get_selectable()]
+        checks[0].set_active(True)
+        values = [check.get_active() for check in checks]
+        metadata = self.cache.active_research_set_metadata()
         OpenLawLensWindow._watch_research_cache_appearance(window)
         manager = Adw.StyleManager.get_default()
         original = manager.get_color_scheme()
@@ -189,6 +359,8 @@ class SidebarTests(unittest.TestCase):
                 self.assertEqual(window.case_list.has_css_class("cache-high-contrast"), manager.get_high_contrast())
                 self.assertEqual(rows(self.window), before)
                 self.assertIs(self.window.case_list.get_selected_row(), selected)
+                self.assertEqual([check.get_active() for check in checks], values)
+                self.assertEqual(self.cache.active_research_set_metadata(), metadata)
         finally:
             manager.set_color_scheme(original)
             window.destroy()

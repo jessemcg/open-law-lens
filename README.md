@@ -53,8 +53,13 @@ Or save it in the app menu under Settings. The Settings path writes a local
 - Research Cache sidebar grouped as **Statutes**, **Case Law**, **Prior Briefing**,
   and **Saved Answers**, in that order. Statutes includes all supported court
   rules; saved answers from every workflow remain answers, not legal authority.
-  Empty groups are hidden. Compact counted bands and muted teal/blue/bronze/violet
-  borders identify categories without changing selection or agent checkmarks.
+  Empty groups are hidden. Tinted item rows, stronger counted heading bands, and
+  4-pixel teal/blue/bronze/violet edges identify categories in light and dark
+  appearances. Text and controls stay neutral; persistent selection outlines and
+  stronger keyboard-focus outlines distinguish state from category. Research
+  Cache subtitles have stronger contrast without changing other secondary text.
+  High contrast replaces category fills with neutral edges and outlined headings.
+  Color does not indicate authority quality, confidence, or agent inclusion.
   This is presentation-only: rule types, citations, readers, cached data and
   existing Research Sets remain unchanged; no migration is required.
 - Durable SQLite library at `library/open_law_lens.sqlite3` for saved authority
