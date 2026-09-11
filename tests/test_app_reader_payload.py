@@ -6280,25 +6280,28 @@ Opinion text.
 
         self.assertEqual(subtitle, "June 8, 2026")
 
-    def test_research_cache_section_header_is_plain_and_nonselectable(self) -> None:
+    def test_research_cache_section_header_is_banded_and_nonselectable(self) -> None:
+        from open_law_lens.app import RESEARCH_CACHE_GROUPS
         row = OpenLawLensWindow._build_research_cache_section_header(
-            "Authorities",
-            "authority_header",
+            RESEARCH_CACHE_GROUPS[0], 2,
         )
 
-        label = row.get_child()
-        self.assertEqual(label.get_text(), "Authorities")
-        self.assertTrue(label.has_css_class("dim-label"))
+        label = row.get_child().get_first_child().get_first_child()
+        self.assertEqual(label.get_text(), "Statutes")
+        self.assertFalse(label.has_css_class("dim-label"))
         self.assertTrue(label.has_css_class("cache-section-label"))
         self.assertFalse(row.get_selectable())
         self.assertFalse(row.get_activatable())
-        self.assertEqual(row._open_law_lens_cache_section, "authority_header")
+        self.assertFalse(row.get_focusable())
+        self.assertEqual(row._open_law_lens_cache_section, "statutes_header")
 
     def test_research_cache_sort_orders_section_headers_before_items(self) -> None:
         window = OpenLawLensWindow.__new__(OpenLawLensWindow)
         sections = (
-            "authority_header",
-            "authority",
+            "statutes_header",
+            "statutes",
+            "case_law_header",
+            "case_law",
             "prior_brief_header",
             "prior_brief",
             "agent_answer_header",
@@ -6320,9 +6323,9 @@ Opinion text.
     def test_first_selectable_research_cache_row_skips_section_header(self) -> None:
         window = OpenLawLensWindow.__new__(OpenLawLensWindow)
         window.case_list = Gtk.ListBox()
+        from open_law_lens.app import RESEARCH_CACHE_GROUPS
         header = OpenLawLensWindow._build_research_cache_section_header(
-            "Authorities",
-            "authority_header",
+            RESEARCH_CACHE_GROUPS[0], 1,
         )
         item = Gtk.ListBoxRow()
         item.set_selectable(True)

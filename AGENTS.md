@@ -52,6 +52,16 @@
 - `config.json` is local runtime state and may contain a CourtListener token. Do not commit it.
 - `library/` contains the durable SQLite case library. It stores raw CourtListener JSON plus display-ready text and page-marker metadata. Do not commit it.
 - `cache/` contains disposable local CourtListener lookup, cluster, opinion, and case-index data. Do not commit generated cache data unless a task explicitly asks for a fixture, and then place it under an intentional test fixture path.
+- Research Cache presentation groups are defined once in `app.py`: Statutes
+  (statute + all supported rule types), Case Law (case), Prior Briefing
+  (prior_brief), Saved Answers (agent_answer from every workflow). Hide empty
+  groups; count rendered items after existing client deduplication. This is
+  presentation-only: never change a rule's stored type or dispatch to statute,
+  migrate storage, or dirty a Research Set because of grouping. Scope category
+  CSS to `list.research-cache`, not the shared pinned Current Case list. Style
+  notifications must only change appearance classes, not rebuild rows or reload
+  settings. `tests/preview_research_cache.py` provides an isolated synthetic
+  full-window preview with process-local appearance controls.
 - The app sidebar is the Research Cache, not the full library. Clearing Research Cache should hide sidebar cases while preserving the durable library database.
 - `.venv/`, `__pycache__/`, `.pytest_cache/`, and `.mypy_cache/` are generated and should stay out of diffs.
 - `.pi/npm/` is Pi's generated project-local package cache. The embedded workflow uses Pi's user-level package installation instead, so this directory should stay out of diffs.

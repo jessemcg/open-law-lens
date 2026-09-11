@@ -50,7 +50,13 @@ Or save it in the app menu under Settings. The Settings path writes a local
 - Citation lookup for California cases through CourtListener.
 - California statute and California Rules of Court lookup.
 - Pinned Current Case SOCF and brief-prep Markdown reports above the Research Cache, with per-case SOCF agent-context selection.
-- Research Cache sidebar for the authorities currently in view.
+- Research Cache sidebar grouped as **Statutes**, **Case Law**, **Prior Briefing**,
+  and **Saved Answers**, in that order. Statutes includes all supported court
+  rules; saved answers from every workflow remain answers, not legal authority.
+  Empty groups are hidden. Compact counted bands and muted teal/blue/bronze/violet
+  borders identify categories without changing selection or agent checkmarks.
+  This is presentation-only: rule types, citations, readers, cached data and
+  existing Research Sets remain unchanged; no migration is required.
 - Durable SQLite library at `library/open_law_lens.sqlite3` for saved authority
   data, display text, and reporter page-marker metadata.
 - Disposable JSON API cache under `cache/`.

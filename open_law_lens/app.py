@@ -11,6 +11,7 @@ import sqlite3
 import sys
 import tempfile
 import threading
+import weakref
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
@@ -1954,6 +1955,70 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.concordance_row.set_text("")
 
 
+@dataclass(frozen=True)
+class ResearchCacheGroup:
+    key: str
+    label: str
+    item_types: tuple[str, ...]
+    css_class: str
+    light: str
+    dark: str
+
+
+RESEARCH_CACHE_GROUPS = (
+    ResearchCacheGroup("statutes", "Statutes", ("statute", "rule"), "cache-statutes", "#2C7A70", "#79B9AA"),
+    ResearchCacheGroup("case_law", "Case Law", ("case",), "cache-case-law", "#3F6696", "#8EB3D8"),
+    ResearchCacheGroup("prior_brief", "Prior Briefing", ("prior_brief",), "cache-prior-brief", "#8A6944", "#C8AC84"),
+    ResearchCacheGroup("agent_answer", "Saved Answers", ("agent_answer",), "cache-answers", "#78618F", "#B6A1CD"),
+)
+
+
+def research_cache_group(item_type: str) -> ResearchCacheGroup:
+    return next(group for group in RESEARCH_CACHE_GROUPS if item_type in group.item_types)
+
+
+# GTK 4.14: use named theme colors and classes, not newer CSS variables/media queries.
+RESEARCH_CACHE_CSS = """
+list.research-cache row.cache-section-header {
+  margin: 12px 2px 4px; padding: 8px; border-radius: 6px;
+  border-left: 3px solid; color: @window_fg_color;
+}
+list.research-cache row.cache-section-header:first-child { margin-top: 4px; }
+list.research-cache row.cache-section-header label { color: @window_fg_color; }
+list.research-cache label.cache-section-label { font-weight: 600; }
+list.research-cache row.case-cache-row { border-left: 2px solid; }
+""" + "\n".join(
+    f"""
+list.research-cache{mode}:not(.cache-high-contrast) row.{group.css_class} {{ border-left-color: {color}; }}
+list.research-cache{mode}:not(.cache-high-contrast) row.cache-section-header.{group.css_class} {{
+  background-color: alpha({color}, 0.10);
+}}
+"""
+    for group in RESEARCH_CACHE_GROUPS
+    for mode, color in (("", group.light), (".cache-dark", group.dark))
+) + """
+list.research-cache.cache-high-contrast row.cache-section-header {
+  background-color: transparent; border: 1px solid @window_fg_color;
+  border-left-width: 3px;
+}
+list.research-cache.cache-high-contrast row.case-cache-row {
+  border-left-color: @window_fg_color;
+}
+list.research-cache.cache-high-contrast row:selected {
+  background-color: @theme_selected_bg_color; color: @theme_selected_fg_color;
+}
+list.research-cache.cache-high-contrast row:selected label {
+  color: @theme_selected_fg_color;
+}
+list.research-cache.cache-high-contrast row:focus-visible {
+  outline: 2px solid @window_fg_color; outline-offset: -2px;
+}
+list.research-cache.cache-high-contrast button.cache-row-remove-button {
+  color: inherit;
+}
+"""
+
+
 class OpenLawLensWindow(Adw.ApplicationWindow):
     def __init__(self, app: Adw.Application) -> None:
         super().__init__(application=app)
@@ -2150,6 +2215,31 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._restore_active_research_set()
         self._load_cached_cases()
         self.add_tick_callback(self._on_window_tick)
+
+    def _watch_research_cache_appearance(self) -> None:
+        manager = Adw.StyleManager.get_default()
+        window_ref = weakref.ref(self)
+
+        def changed(style: Adw.StyleManager, _pspec: Any = None) -> None:
+            window = window_ref()
+            if window is not None:
+                for name, enabled in (("cache-dark", style.get_dark()),
+                                      ("cache-high-contrast", style.get_high_contrast())):
+                    if enabled:
+                        window.case_list.add_css_class(name)
+                    else:
+                        window.case_list.remove_css_class(name)
+
+        handlers = [manager.connect("notify::" + prop, changed)
+                    for prop in ("dark", "high-contrast")]
+
+        def disconnect(_window: Gtk.Window) -> None:
+            for handler in handlers:
+                manager.disconnect(handler)
+            handlers.clear()
+
+        self.connect("destroy", disconnect)
+        changed(manager)
 
     def _install_actions(self) -> None:
         settings = Gio.SimpleAction.new("settings", None)
@@ -2505,7 +2595,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
               font-size: 0.9rem;
               color: alpha(@window_fg_color, 0.72);
             }}
-            """.encode("utf-8")
+            """.encode("utf-8") + RESEARCH_CACHE_CSS.encode("utf-8")
         )
         if self._css_provider is None and (display := Gdk.Display.get_default()):
             Gtk.StyleContext.add_provider_for_display(
@@ -2600,6 +2690,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         box.append(self._build_research_cache_header())
 
         self.case_list = Gtk.ListBox()
+        self.case_list.add_css_class("research-cache")
+        self._watch_research_cache_appearance()
         self.case_list.add_css_class("case-list")
         self.case_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
         self.case_list.set_sort_func(self._sort_research_cache_rows)
@@ -8369,22 +8461,28 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return us_long_date(str(entry.get("document_date") or "").strip())
 
     @staticmethod
-    def _build_research_cache_section_header(
-        title: str,
-        section: str,
-    ) -> Gtk.ListBoxRow:
+    def _build_research_cache_section_header(group: "ResearchCacheGroup", count: int) -> Gtk.ListBoxRow:
         row = Gtk.ListBoxRow()
         row.set_selectable(False)
         row.set_activatable(False)
-        label = Gtk.Label(label=title, xalign=0)
-        label.add_css_class("dim-label")
+        row.set_focusable(False)
+        row.add_css_class("cache-section-header")
+        row.add_css_class(group.css_class)
+        band = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        heading = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        label = Gtk.Label(label=group.label, xalign=0)
+        label.set_hexpand(True)
         label.add_css_class("cache-section-label")
-        label.set_margin_top(8)
-        label.set_margin_bottom(2)
-        label.set_margin_start(8)
-        label.set_margin_end(8)
-        row.set_child(label)
-        row._open_law_lens_cache_section = section
+        heading.append(label)
+        heading.append(Gtk.Label(label=str(count), xalign=1))
+        band.append(heading)
+        if group.key == "statutes":
+            description = Gtk.Label(label="Includes rules of court", xalign=0)
+            description.set_wrap(True)
+            band.append(description)
+        row.set_child(band)
+        row._open_law_lens_cache_section = group.key + "_header"
+        row._open_law_lens_cache_count = count
         row._open_law_lens_cache_sort_key = ("", "", "", "", "")
         return row
 
@@ -8441,13 +8539,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             for entry in self._agent_answers
         }
         self._prior_brief_entries = self.client.cache.list_prior_brief_entries()
-        if clusters or statutes or rules:
-            self.case_list.append(
-                self._build_research_cache_section_header(
-                    "Authorities",
-                    "authority_header",
-                )
-            )
         for index, cluster in enumerate(clusters):
             row = Gtk.ListBoxRow()
             row.set_selectable(True)
@@ -8561,13 +8652,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self.case_list.append(row)
             if select_rule_id and rule_id == select_rule_id:
                 selected_row = row
-        if self._prior_brief_entries:
-            self.case_list.append(
-                self._build_research_cache_section_header(
-                    "Prior Briefing",
-                    "prior_brief_header",
-                )
-            )
         for index, entry in enumerate(self._prior_brief_entries):
             row = Gtk.ListBoxRow()
             row.set_selectable(True)
@@ -8604,13 +8688,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             )
             self.case_list.append(row)
 
-        if self._agent_answers:
-            self.case_list.append(
-                self._build_research_cache_section_header(
-                    "Saved Answers",
-                    "agent_answer_header",
-                )
-            )
         for index, answer_entry in enumerate(self._agent_answers):
             row = Gtk.ListBoxRow()
             row.set_selectable(True)
@@ -8652,6 +8729,21 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self.case_list.append(row)
             if select_agent_answer_id and answer_id == select_agent_answer_id:
                 selected_row = row
+        # Count rendered items after upstream deduplication, not raw indices.
+        counts = {group.key: 0 for group in RESEARCH_CACHE_GROUPS}
+        index = 0
+        while row := self.case_list.get_row_at_index(index):
+            group = research_cache_group(row._open_law_lens_authority_type)
+            row._open_law_lens_cache_section = group.key
+            row.add_css_class(group.css_class)
+            counts[group.key] += 1
+            index += 1
+        for group in RESEARCH_CACHE_GROUPS:
+            if counts[group.key]:
+                self.case_list.append(
+                    self._build_research_cache_section_header(group, counts[group.key])
+                )
+        self.case_list.invalidate_sort()
         if selected_row is None and select_first:
             selected_row = self._first_selectable_research_cache_row()
         if selected_row is not None:
@@ -8686,12 +8778,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         _user_data: Any = None,
     ) -> int:
         section_order = {
-            "authority_header": 0,
-            "authority": 1,
-            "prior_brief_header": 2,
-            "prior_brief": 3,
-            "agent_answer_header": 4,
-            "agent_answer": 5,
+            section: rank * 2 + offset
+            for rank, group in enumerate(RESEARCH_CACHE_GROUPS)
+            for offset, section in enumerate((group.key + "_header", group.key))
         }
         section_a = section_order.get(getattr(row_a, "_open_law_lens_cache_section", "authority"), 0)
         section_b = section_order.get(getattr(row_b, "_open_law_lens_cache_section", "authority"), 0)
