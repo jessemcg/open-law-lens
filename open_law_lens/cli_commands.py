@@ -28,7 +28,7 @@ CLI_COMMANDS: tuple[CliCommand, ...] = (
         name="case-search",
         title="Search Cases",
         description="Search CourtListener case law for California case-discovery leads and print JSON.",
-        example='uv run open-law-lens case-search "beneficial relationship exception"',
+        example='uv run open-law-lens case-search "beneficial relationship exception" --limit 5 --compact',
     ),
     CliCommand(
         name="extract-slip-opinion",

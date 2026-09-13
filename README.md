@@ -198,7 +198,7 @@ uv run open-law-lens lookup-citation "11 Cal.5th 614"
 uv run open-law-lens lookup-citation "11 Cal.5th 614" --text
 uv run open-law-lens extract-case "13 Cal.4th 952"
 uv run open-law-lens extract-case "13 Cal.4th 952" --find "presumed father"
-uv run open-law-lens case-search "beneficial relationship exception"
+uv run open-law-lens case-search "beneficial relationship exception" --limit 5 --compact
 uv run open-law-lens extract-statute "Welf. & Inst. Code, § 300"
 uv run open-law-lens extract-rule "Cal. Rules of Court, rule 8.1115"
 uv run open-law-lens published-citing-cases --cluster-id 6240402 --limit 10 --json
@@ -216,14 +216,46 @@ For narrow verified propositions and quotations, `--find` (repeatable) returns
 bounded exact source passages instead of the full opinion. The compact payload
 omits the full `text` field, keeps citation, source, warnings, `text_length`,
 and pagination metadata, and returns every passage with its original offsets,
-matched query names, and nearest preceding reporter page marker:
+matched query names, and conservatively attributed reporter pages:
 
 ```bash
 uv run open-law-lens extract-case "13 Cal.4th 952" --find "presumed father" --find "biological father"
 ```
 
 `--find` is mutually exclusive with `--text`. Passing no `--find` keeps the
-ordinary full-JSON `extract-case` output unchanged.
+ordinary full-JSON `extract-case` output unchanged. Whole-match windows are
+allocated in query rounds (one match per query before second occurrences),
+within two matches per query, six passages, 2,000 characters per passage and
+12,000 passage characters total. `query_accounting` distinguishes source totals,
+returned matches, and omissions; `unmatched_queries` means genuinely absent,
+not omitted by output limits. `match_count` counts only contained verified
+matches. Oversized matches are omitted, never advertised partially.
+
+`pinpoint_status` is `available`, `ambiguous`, or `unavailable`. Only a single
+coherent official reporter sequence supplies pages; mixed/descending markers
+leave page fields empty. The opinion-level `official_pagination` flag does not
+prove that every marker belongs to that reporter. Passage `page` describes the
+passage start; matches have their own `start_page`/`end_page`. Ambiguity does not
+trigger another Scholar recovery or rewrite stored markers. Use the verified
+citation and source URL without guessing a pinpoint.
+
+Lexical and semantic searches validate delivered court IDs and publication
+status locally. Scoped searches exclude unknown/mismatched courts; published
+status is required unless `--include-unpublished` is specified. `--court` and
+`--all-courts` retain their overrides. `total_count` remains the upstream count,
+labeled `total_count_scope: upstream_unverified`; `result_count` counts delivered
+rows. Exclusion reasons and coverage warnings disclose incomplete coverage;
+no replacement pages are fetched. Opt-in `--compact` limits each snippet to
+1,200 characters with truncation diagnostics; default snippets are unchanged.
+Keep complete JSON: use CLI bounds, never `head`/`tail` on research results.
+
+Statute parsing recognizes CCP aliases including `Cal. Civ. Proc. Code` and
+`Civ. Proc. Code`. Only bare section expressions default to WIC; unsupported,
+conflicting, or malformed qualified citations fail closed. LegInfo extraction
+requires a matching section body and rejects conflicting identity or navigation
+alone before authority caching. Failures retain nonzero CLI exit and `ok: false`.
+Previously cached bad authorities are not deleted or migrated; handle those
+manually rather than assuming this update repairs existing saved research.
 
 Uncited `--cluster-id` extraction reconciles against the durable Library before
 any fallback. When the requested CourtListener cluster is unpaginated, Open Law
@@ -322,7 +354,7 @@ shortens the answer length but never waives that published-case floor or lets
 the agent silently treat statutes alone as sufficient. On the mandatory route,
 a known material case is direct-extracted with `extract-case --find` for narrow
 propositions in the same tool round as the statute extractions, and a focused
-`case-search --limit 5` is run only when no reliable citation or name is
+`case-search --limit 5 --compact` is run only when no reliable citation or name is
 already known. Pi's `web_search` remains available only for unresolved,
 open-ended verification after those deterministic fallbacks. This agent-facing
 web search is separate from the confined default-browser Scholar official-copy
@@ -784,6 +816,18 @@ Do not commit local runtime data:
   development artifacts.
 
 These paths are ignored by Git in this repository.
+
+## General Law quality validation
+
+The preloaded skill remains the single workflow authority. It requires
+issue-specific, gap-driven research, independent verification of statutory
+incorporation steps, explicit treatment of adverse passages and amendments,
+and separation of express text/holdings from analogy and proposed inference.
+The mandatory published-case floor and single Scholar recovery remain intact.
+No model profile, launch interface, database schema, or private setting changes
+are required. Newly launched Agent sessions receive the updated skill; existing
+sessions do not. See [acceptance results](docs/general-law-quality-acceptance.md)
+for checks performed and remaining quality/efficiency validation.
 
 ## Tests
 

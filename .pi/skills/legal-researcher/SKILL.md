@@ -17,7 +17,10 @@ uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync open-law-lens <command>
 ```
 
 The embedded launcher uses an already synchronized environment, so retain
-`--no-sync` in agent commands.
+`--no-sync` in agent commands. Use this supplied prefix directly; do not spend
+an environment-echo preflight checking it. Never pipe research JSON through
+`head`, `tail`, or arbitrary textual clipping. Use CLI output bounds and retain
+complete JSON, including errors and coverage diagnostics.
 
 ## Transient library lock errors
 
@@ -32,7 +35,9 @@ library is unavailable.
 
 1. Identify the jurisdiction, issue, procedural posture, and requested output.
    Classify what principally controls the question: a statute, a rule, a known
-   case, or an unresolved case-law issue.
+   case, or an unresolved case-law issue. For procedural issues, identify the
+   governing rule, procedural stage, and material cross-references early;
+   distinguish notice of an application/hearing from service of an issued order.
 
 ### Route gate
 
@@ -74,7 +79,7 @@ practical consequences.
 3. If a reliable official citation or case name is already known, treat it as
    a lead and extract it directly; do not run a confirmatory `case-search`
    first. Prefer a bounded `--find` passage for the specific proposition and
-   run one leading case with one or two broad exact terms:
+   run one leading case with one or two issue-specific exact terms:
 
    ```bash
    uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync open-law-lens extract-case "<citation>" --find "<term>" --find "<term>"
@@ -112,29 +117,38 @@ practical consequences.
    authority:
 
    ```bash
-   uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync open-law-lens case-search "<query>" --limit 5
+   uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync open-law-lens case-search "<query>" --limit 5 --compact
    ```
 
    Treat results as leads. Prefer published California Supreme Court and Court
    of Appeal decisions. Use unpublished decisions only for noncontrolling
    context when useful.
 
-6. Stop after the current enactment and the minimum case authority needed to
-   support the answer. Do not expand into secondary cases merely because a
-   leading opinion cites them.
+6. Each additional search must resolve a named missing proposition,
+   contrary-authority issue, or identity problem, not merely find more cases
+   about the topic. For an ordinary single-issue argument question, target one
+   initial discovery search and up to two distinct gap-driven follow-ups. This
+   is not a quota or a waiver of verification; complex questions may need more.
+   Inspect adverse material already retrieved before expanding research.
+   Stop when the proposed argument, its necessary premises, and its strongest
+   material objection are supported or explicitly identified as unresolved.
+   Do not expand into secondary cases merely because a leading opinion cites them.
 
 7. Verify each proposition, quotation, publication status, and pinpoint against
-   extracted full text before using it. A case proposition must be supported by
-   the case you directly extracted, not merely by a case named inside another
-   opinion.
+   the actual relied-on extracted passage before using it; a successful
+   extraction of introductory material alone does not verify the proposition.
+   A case proposition must be supported by the case you directly extracted, not
+   merely by a case named inside another opinion.
 
 ### Bounded recovery
 
 If the mandatory case cannot be verified immediately, follow this sequence
 before finalizing:
 
-1. Known-case extraction fails or returns no useful passage: retry with
-   broader exact terms or the full text of that one case.
+1. Known-case extraction fails or returns no useful passage: use one targeted
+   retry or one ordinary full extraction of that case, not repeated broad-term
+   cycles. Read query accounting and omission reasons; absence from a bounded
+   passage is not absence from the opinion.
 2. Identity or citation remains unresolved: run one focused published-case
    search and extract the best lead.
 3. No case can be verified: disclose the case-law verification gap and confine
@@ -240,6 +254,13 @@ command immediately with `blocked` and leaves the page visible; it never solves
 or interacts with it and never falls back to coordinates, typing, scrolling,
 screenshots, or unrelated windows.
 
+Ambiguous excerpt pinpoints are not missing official copies. If
+`official_pagination` is true but `pinpoint_status` is ambiguous/unavailable,
+do not trigger another recovery. Cite the verified case citation and source URL
+without guessing a page. Passage `page` describes its start only; use verified
+match-level start/end pages for a match and never an indirect quotation's page
+as a directly verified pinpoint.
+
 ## Pre-answer legal-source audit
 
 Before writing the final answer, audit the title, subtitle, and body against
@@ -248,6 +269,11 @@ the extracted sources:
 - Confirm every mandatory-case (Route B) trigger has at least one successful
   case extraction and a corresponding normalized case citation present in the
   body. If not, do not finalize: complete the bounded-recovery sequence first.
+- Distinguish express text, judicial holding, analogy, and proposed inference.
+  A request for the best argument authorizes advocacy, not assuming a missing
+  premise (for example, required notice does not itself prove personal service).
+- Verify each incorporation step independently: reference to one provision does
+  not automatically import its neighboring statutory scheme or exceptions.
 - Confirm each case proposition maps to a case you directly extracted, not to a
   case only named inside another opinion.
 - Reconcile opening clauses, cross-referenced chapters, subdivisions, counts,
@@ -292,6 +318,15 @@ the extracted sources:
   law.
 - Distinguish controlling authority, persuasive authority, and prior advocacy.
 - Include normalized citations for authorities relied upon.
+- Explain material intervening amendments when relying on older cases; do not
+  present former restrictions as unqualified current law. Address alternative
+  procedures and material adverse passages, not just favorable sentences.
+- Replace unsupported universal negatives with bounded statements such as
+  “I did not verify a published decision squarely deciding that issue.”
+- Keep title/subtitle confidence no stronger than the body's evidentiary support.
+- For best-argument questions, lead with the strongest defensible formulation
+  and its central vulnerability. Do not repeat the same theory through multiple
+  research summaries and drafting passes.
 - For a simple "what is" question, provide a short definition, the statutory
   routes, and only the material caveats—normally about 350 to 650 words unless
   the user requests depth.

@@ -373,8 +373,8 @@ def _cmd_extract_slip_opinion(args: argparse.Namespace) -> int:
     return 0
 
 
-def _case_search_result_json(result: Any, rank: int) -> dict[str, Any]:
-    return {
+def _case_search_result_json(result: Any, rank: int, *, compact: bool = False) -> dict[str, Any]:
+    payload = {
         "rank": rank,
         "cluster_id": result.cluster_id,
         "opinion_ids": list(result.opinion_ids),
@@ -391,6 +391,11 @@ def _case_search_result_json(result: Any, rank: int) -> dict[str, Any]:
             f"extract-case --cluster-id {result.cluster_id}"
         ),
     }
+    if compact:
+        payload["snippet"] = result.snippet[:1200]
+        payload["snippet_truncated"] = len(result.snippet) > 1200
+        payload["snippet_original_length"] = len(result.snippet)
+    return payload
 
 
 def _cmd_case_search(args: argparse.Namespace) -> int:
@@ -427,10 +432,14 @@ def _cmd_case_search(args: argparse.Namespace) -> int:
             "semantic": bool(getattr(args, "semantic", False)),
             "include_unpublished": bool(getattr(args, "include_unpublished", False)),
             "total_count": page.count,
+            "total_count_scope": "upstream_unverified",
+            "excluded_count": sum(count for _, count in page.exclusions),
+            "exclusion_reasons": dict(page.exclusions),
+            "coverage_warning": page.coverage_warning,
             "result_count": len(page.results),
             "next_url": page.next_url,
             "results": [
-                _case_search_result_json(result, index)
+                _case_search_result_json(result, index, compact=getattr(args, "compact", False))
                 for index, result in enumerate(page.results, start=1)
             ],
         }
@@ -1067,6 +1076,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     case_search_parser = subparsers.add_parser("case-search", help="search California case law")
     case_search_parser.add_argument("query", nargs="?", help="CourtListener case-search query")
+    case_search_parser.add_argument("--compact", action="store_true", help="bound snippets to 1,200 characters in complete JSON")
     case_search_parser.add_argument("--semantic", action="store_true", help="request CourtListener semantic search")
     case_search_parser.add_argument(
         "--include-unpublished",

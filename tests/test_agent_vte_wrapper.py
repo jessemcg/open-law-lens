@@ -454,7 +454,7 @@ class AgentVteWrapperTests(unittest.TestCase):
             text,
         )
         self.assertIn(
-            "Stop after the current enactment and the minimum case authority",
+            "Stop when the proposed argument, its necessary premises, and its strongest",
             text,
         )
         self.assertIn("run exactly one focused search", text)

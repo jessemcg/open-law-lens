@@ -123,6 +123,8 @@ class CourtListenerSearchPage:
     results: list[CourtListenerSearchResult]
     count: int
     next_url: str
+    exclusions: tuple[tuple[str, int], ...] = ()
+    coverage_warning: str = ""
 
 
 @dataclass(frozen=True)
@@ -741,18 +743,37 @@ class CourtListenerClient:
         rows = result.get("results")
         if not isinstance(rows, list):
             raise CourtListenerError("CourtListener search returned unexpected results.")
-        normalized = [
-            search_result
-            for row in rows
-            if isinstance(row, dict)
-            if (search_result := normalize_search_api_result(row)) is not None
-        ][:safe_page_size]
-        count = _int_value(result.get("count"), len(normalized))
+        normalized = []
+        exclusions: dict[str, int] = {}
+        requested_courts = {court.strip().casefold() for court in courts if court.strip()}
+        for row in rows:
+            item = normalize_search_api_result(row) if isinstance(row, dict) else None
+            reason = ""
+            if item is None:
+                reason = "missing_identity"
+            elif requested_courts and not item.court_id:
+                reason = "unverified_court"
+            elif requested_courts and item.court_id.casefold() not in requested_courts:
+                reason = "court_out_of_scope"
+            elif not include_unpublished and item.status.casefold() != "published":
+                reason = "unverified_or_unpublished_status"
+            elif len(normalized) >= safe_page_size:
+                reason = "delivery_limit"
+            if reason:
+                exclusions[reason] = exclusions.get(reason, 0) + 1
+            else:
+                normalized.append(item)
+        count = _int_value(result.get("count"), len(rows))
         next_value = result.get("next")
         return CourtListenerSearchPage(
             results=normalized,
             count=count,
             next_url=next_value if isinstance(next_value, str) else "",
+            exclusions=tuple(sorted(exclusions.items())),
+            coverage_warning=(
+                "Bounded upstream page, locally validated; not exhaustive. "
+                "Excluded rows were not replaced; upstream totals are not verified in-scope counts."
+            ),
         )
 
     @staticmethod

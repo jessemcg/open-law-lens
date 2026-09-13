@@ -132,6 +132,8 @@ class CliCommandTests(unittest.TestCase):
         result = MagicMock()
         result.ok = True
         result.text = "The presumed father discussion."
+        result.citation = "28 Cal.4th 56"
+        result.official_pagination = False
         result.error = ""
         result.to_json.return_value = {
             "ok": True,
@@ -160,6 +162,8 @@ class CliCommandTests(unittest.TestCase):
         result = MagicMock()
         result.ok = True
         result.text = "A presumed father may rebut."
+        result.citation = ""
+        result.official_pagination = False
         result.error = ""
         result.to_json.return_value = {
             "ok": True,
@@ -205,6 +209,8 @@ class CliCommandTests(unittest.TestCase):
         page.count = 1
         page.next_url = ""
         page.results = [search_result]
+        page.exclusions = ()
+        page.coverage_warning = "Bounded upstream page; not exhaustive."
         client = MagicMock()
         client.search_cases.return_value = page
         client.case_search_api_query.return_value = "court_id:(cal) status:Published beneficial"
