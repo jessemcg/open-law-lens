@@ -5041,7 +5041,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 )
             )
             self.reader_clipboard_button.set_tooltip_text(
-                "Copy selected text with pinpoint citation"
+                "Copy pinpoint citation"
                 if has_selection
                 else "Copy citation"
             )
@@ -5076,24 +5076,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 return
             self._copy_formatted_citation(self._reader_header_citation)
             return
-        start_offset, end_offset, selected_text = selection
+        start_offset, end_offset, _selected_text = selection
         citation = self._reader_selection_pinpoint_formatted_citation(start_offset, end_offset)
         if citation is None:
             self._set_status("Could not determine a pinpoint citation for the selected text.")
             return
-        selected_text = self._clipboard_selected_authority_text(
-            selected_text,
-            strip_page_markers=True,
-        )
-        if not selected_text:
-            self._set_status("Selected text is empty.")
-            return
-        payload = self._selection_pinpoint_clipboard_payload(
-            selected_text,
-            citation,
-        )
-        if self._set_formatted_clipboard(payload, "Could not copy selected text."):
-            self._set_status("Selected text and pinpoint citation copied.")
+        if self._set_formatted_clipboard(citation, "Could not copy pinpoint citation."):
+            self._set_status("Pinpoint citation copied.")
 
     def _start_later_treatment_agent(
         self,
@@ -5362,45 +5351,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if parts is None:
             return None
         return parts[2]
-
-    @staticmethod
-    def _clipboard_selected_authority_text(text: str, *, strip_page_markers: bool = False) -> str:
-        if strip_page_markers:
-            text = re.sub(r"\[\*\d{1,5}\]", " ", text)
-            text = re.sub(r"\[Slip opn\. p\. \d{1,5}\]", " ", text)
-        return re.sub(r"\s+", " ", text).strip()
-
-    @staticmethod
-    def _pinpoint_citation_parenthetical(citation: str) -> str:
-        stripped = citation.strip()
-        if not stripped:
-            return ""
-        suffix = "" if stripped.endswith(".") else "."
-        return f"({stripped}{suffix})"
-
-    @staticmethod
-    def _pinpoint_citation_parenthetical_html(citation_html: str) -> str:
-        stripped = citation_html.strip()
-        if not stripped:
-            return ""
-        suffix = "" if stripped.endswith(".") else "."
-        return f"({stripped}{suffix})"
-
-    @staticmethod
-    def _selection_pinpoint_clipboard_payload(
-        selected_text: str,
-        citation: FormattedCitation,
-    ) -> FormattedCitation:
-        return FormattedCitation(
-            plain_text=(
-                f"{selected_text} "
-                f"{OpenLawLensWindow._pinpoint_citation_parenthetical(citation.plain_text)}"
-            ),
-            html_text=(
-                f"{GLib.markup_escape_text(selected_text)} "
-                f"{OpenLawLensWindow._pinpoint_citation_parenthetical_html(citation.html_text)}"
-            ),
-        )
 
     def _on_later_treatment_clicked(
         self,

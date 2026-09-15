@@ -8,7 +8,7 @@ import unittest
 from importlib import resources
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from open_law_lens.app import (
     AGENT_ANSWER_HEIGHT_PADDING,
@@ -825,10 +825,10 @@ class AppReaderPayloadTests(unittest.TestCase):
             "Embedded terminal is unavailable."
         )
         OpenLawLensWindow._set_status(  # type: ignore[arg-type]
-            window, "Selected text and pinpoint citation copied."
+            window, "Pinpoint citation copied."
         )
         window._show_toast.assert_called_once_with(
-            "Selected text and pinpoint citation copied.", error=False
+            "Pinpoint citation copied.", error=False
         )
         OpenLawLensWindow._set_status(  # type: ignore[arg-type]
             window, "Match 2 of 7 · Brief 1 of 3"
@@ -6601,7 +6601,7 @@ Opinion text.
             "___ Cal.App.5th ___ slip opn. at p. 7",
         )
 
-    def test_copy_reader_selection_slip_pinpoint_copies_text_and_full_citation(self) -> None:
+    def test_copy_reader_selection_slip_pinpoint_copies_only_full_citation(self) -> None:
         class DummyWindow:
             def __init__(self) -> None:
                 self._selected_cluster = {
@@ -6636,27 +6636,6 @@ Opinion text.
                     end_offset,
                 )
 
-            def _clipboard_selected_authority_text(
-                self,
-                text: str,
-                *,
-                strip_page_markers: bool = False,
-            ) -> str:
-                return OpenLawLensWindow._clipboard_selected_authority_text(
-                    text,
-                    strip_page_markers=strip_page_markers,
-                )
-
-            def _selection_pinpoint_clipboard_payload(
-                self,
-                selected_text: str,
-                citation: FormattedCitation,
-            ) -> FormattedCitation:
-                return OpenLawLensWindow._selection_pinpoint_clipboard_payload(
-                    selected_text,
-                    citation,
-                )
-
             def _set_formatted_clipboard(
                 self,
                 citation: FormattedCitation,
@@ -6674,14 +6653,15 @@ Opinion text.
 
         self.assertEqual(
             window.copied[0].plain_text,
-            "Selected text. (In re Bella L. et al. (January 20, 2026, B348279) "
-            "___ Cal.App.5th ___ slip opn. at p. 7.)",
+            "In re Bella L. et al. (January 20, 2026, B348279) "
+            "___ Cal.App.5th ___ slip opn. at p. 7",
         )
         self.assertEqual(
             window.copied[0].html_text,
-            "Selected text. (<i>In re Bella L. et al.</i> (January 20, 2026, B348279) "
-            "___ Cal.App.5th ___ slip opn. at p. 7.)",
+            "<i>In re Bella L. et al.</i> (January 20, 2026, B348279) "
+            "___ Cal.App.5th ___ slip opn. at p. 7",
         )
+        self.assertEqual(window.statuses, ["Pinpoint citation copied."])
 
     def test_reader_case_selection_pinpoint_html_italicizes_case_name(self) -> None:
         class DummyWindow:
@@ -6948,13 +6928,18 @@ Opinion text.
         self.assertTrue(window.reader_clipboard_button.sensitive)
         self.assertEqual(
             window.reader_clipboard_button.tooltip,
-            "Copy selected text with pinpoint citation",
+            "Copy pinpoint citation",
         )
+
+        window._selected_cluster = None
+        OpenLawLensWindow._update_reader_clipboard_button(window)  # type: ignore[arg-type]
+        self.assertFalse(window.reader_clipboard_button.sensitive)
 
         window.selection = None
         window._reader_header_citation = None
         OpenLawLensWindow._update_reader_clipboard_button(window)  # type: ignore[arg-type]
         self.assertFalse(window.reader_clipboard_button.sensitive)
+        self.assertEqual(window.reader_clipboard_button.tooltip, "Copy citation")
 
     def test_case_header_shows_subsequent_treatment_button_for_displayed_cluster(self) -> None:
         class DummyLabel:
@@ -7085,31 +7070,89 @@ Opinion text.
             ],
         )
 
-    def test_case_clipboard_text_strips_reader_page_markers(self) -> None:
-        text = OpenLawLensWindow._clipboard_selected_authority_text(
-            "First page [*631] second page [Slip opn. p. 4] third page.",
-            strip_page_markers=True,
-        )
+    def test_copy_reader_selection_copies_resolved_citation_only(self) -> None:
+        from types import SimpleNamespace
 
-        self.assertEqual(text, "First page second page third page.")
+        cluster = {
+            "case_name_short": "In re Caden C.",
+            "date_filed": "2021-05-27",
+            "citations": [{"volume": "11", "reporter": "Cal.5th", "page": "614"}],
+        }
+        case_text = "[*631] Selected <prose>. [*632] More prose."
+        boundary = case_text.index("[*632]")
+        markers = [
+            PageMarker("631", "[*631]", 0, 6, "plain_text"),
+            PageMarker("632", "[*632]", boundary, boundary + 6, "plain_text"),
+        ]
+        statute_text = "300. (a) First.\n(b) Second.\n(1) One.\n(2) Two."
+        rule_text = "Rule 8.204. Briefs.\n(a) Contents.\n(1) Each brief must.\n(A) State facts.\n(B) Cite authority."
+        case_prefix = "In re Caden C. (2021) 11 Cal.5th 614, "
+        fixtures = [
+            ("official", case_text, cluster, None, None, markers, 7, boundary,
+             case_prefix + "631"),
+            ("range", case_text, cluster, None, None, markers, 7, len(case_text),
+             case_prefix + "631–632"),
+            ("marker only", case_text, cluster, None, None, markers, 0, 6,
+             case_prefix + "631"),
+            ("whitespace", case_text, cluster, None, None, markers, 6, 7,
+             case_prefix + "631"),
+            ("statute", statute_text, None,
+             {"law_code": "WIC", "section": "300", "citation": "Welf. & Inst. Code, § 300"},
+             None, [], statute_text.index("One"), len(statute_text),
+             "Welf. & Inst. Code, § 300, subds. (b)(1)-(2)"),
+            ("rule", rule_text, None, None,
+             {"rule_number": "8.204", "citation": "Cal. Rules of Court, rule 8.204"},
+             [], rule_text.index("State facts"), len(rule_text),
+             "Cal. Rules of Court, rule 8.204(a)(1)(A)-(B)"),
+            ("missing pagination", case_text, cluster, None, None, [], 7, boundary, None),
+            ("missing authority", case_text, None, None, None, [], 7, boundary, None),
+        ]
+        for name, text, case, statute, rule, pages, start, end, expected in fixtures:
+            for succeeds in (True, False):
+                with self.subTest(name=name, clipboard_succeeds=succeeds):
+                    window = SimpleNamespace(
+                        _reader_text=text, _selected_cluster=case,
+                        _selected_statute=statute, _selected_rule=rule,
+                        _reader_page_markers=pages,
+                        _reader_selection_bounds=Mock(return_value=(start, end, text[start:end])),
+                        _set_formatted_clipboard=Mock(return_value=succeeds),
+                        _set_status=Mock(),
+                        _copy_formatted_citation=Mock(),
+                    )
+                    resolved = []
 
-    def test_selection_pinpoint_clipboard_payload_preserves_citation_html(self) -> None:
-        payload = OpenLawLensWindow._selection_pinpoint_clipboard_payload(
-            "Selected <text>",
-            FormattedCitation(
-                plain_text="In re Caden C. (2021) 11 Cal.5th 614, 631",
-                html_text="<i>In re Caden C.</i> (2021) 11 Cal.5th 614, 631",
-            ),
-        )
+                    def resolve(start_offset, end_offset):
+                        result = OpenLawLensWindow._reader_selection_pinpoint_formatted_citation(
+                            window, start_offset, end_offset
+                        )
+                        resolved.append(result)
+                        return result
 
-        self.assertEqual(
-            payload.plain_text,
-            "Selected <text> (In re Caden C. (2021) 11 Cal.5th 614, 631.)",
-        )
-        self.assertEqual(
-            payload.html_text,
-            "Selected &lt;text&gt; (<i>In re Caden C.</i> (2021) 11 Cal.5th 614, 631.)",
-        )
+                    window._reader_selection_pinpoint_formatted_citation = Mock(side_effect=resolve)
+                    OpenLawLensWindow._on_copy_reader_clipboard_clicked(window, object())
+                    window._reader_selection_pinpoint_formatted_citation.assert_called_once_with(start, end)
+                    window._copy_formatted_citation.assert_not_called()
+                    if expected is None:
+                        window._set_formatted_clipboard.assert_not_called()
+                        window._set_status.assert_called_once_with(
+                            "Could not determine a pinpoint citation for the selected text."
+                        )
+                        continue
+                    payload = window._set_formatted_clipboard.call_args.args[0]
+                    self.assertIs(payload, resolved[0])
+                    self.assertEqual(payload.plain_text, expected)
+                    self.assertEqual(
+                        payload.html_text,
+                        expected.replace("In re Caden C.", "<i>In re Caden C.</i>")
+                        .replace(" & ", " &amp; "),
+                    )
+                    window._set_formatted_clipboard.assert_called_once_with(
+                        payload, "Could not copy pinpoint citation."
+                    )
+                    if succeeds:
+                        window._set_status.assert_called_once_with("Pinpoint citation copied.")
+                    else:
+                        window._set_status.assert_not_called()
 
     def test_copy_reader_citation_uses_reader_header_citation(self) -> None:
         class DummyWindow:
@@ -7130,9 +7173,14 @@ Opinion text.
 
         OpenLawLensWindow._on_copy_reader_clipboard_clicked(window, object())  # type: ignore[arg-type]
 
+        self.assertEqual(window.copied, [window._reader_header_citation])
         self.assertEqual(
             window.copied[0].plain_text,
             "In re L.G. (Mar. 6, 2026, A173218) ___ Cal.App.5th ___",
+        )
+        self.assertEqual(
+            window.copied[0].html_text,
+            "<i>In re L.G.</i> (Mar. 6, 2026, A173218) ___ Cal.App.5th ___",
         )
 
     def test_copy_reader_clipboard_warns_without_citation_or_selection(self) -> None:
@@ -7234,16 +7282,6 @@ Opinion text.
             )
 
         self.assertEqual(window.errors, ["bad input"])
-
-    def test_pinpoint_citation_parenthetical_places_period_inside(self) -> None:
-        parenthetical = OpenLawLensWindow._pinpoint_citation_parenthetical(
-            "Welf. & Inst. Code, § 388, subd. (a)(2)"
-        )
-
-        self.assertEqual(
-            parenthetical,
-            "(Welf. & Inst. Code, § 388, subd. (a)(2).)",
-        )
 
 
 if __name__ == "__main__":

@@ -431,6 +431,16 @@ jumps directly to that section of the reader. It is independently scrollable
 so the Research Cache remains available below it. Headings and subheadings are
 rendered in bold in the SOCF reader.
 
+### Reader Copy Citation
+
+With text selected, the reader’s **Copy Citation** button copies only the complete
+citation with the selection’s page, page-range, or subdivision pinpoint—not the
+selected prose. It preserves case-name italics for rich-text pasting and provides
+a plain-text alternative, without adding quotation parentheses or a terminal
+period. If no pinpoint can be determined, it warns and leaves the clipboard
+untouched. Without a selection, it copies the full citation as before. Use
+ordinary **Copy** to copy selected prose.
+
 ### Copy Trace
 
 The **Copy Trace** button in the Agent output header exports the current
