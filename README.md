@@ -130,7 +130,7 @@ pi install npm:pi-web-access
 
 Open Law Lens explicitly loads that package from Pi's user agent directory
 while keeping unrelated extensions disabled. This uses the same package updates
-and `~/.pi/web-search.json` credentials as ordinary Pi sessions. The launcher
+and `~/.pi/agent/web-search.json` credentials as ordinary Pi sessions. The launcher
 also uses the Node runtime installed alongside Pi instead of the desktop
 session's system Node.
 
