@@ -487,7 +487,18 @@ class AppReaderPayloadTests(unittest.TestCase):
                 lambda: OpenLawLensWindow._sync_agent_subviews(window)
             )
 
-            result = OpenLawLensWindow._poll_agent_answer(window)  # type: ignore[arg-type]
+            window._agent_mode = AGENT_MODE_GENERAL
+            window._case_agent_text_sources = []
+            window._set_composer_idle = lambda: None
+            window._set_agent_subview = lambda name: None
+            window._set_status = lambda text: None
+            window._agent_answer_prepared = lambda *args: OpenLawLensWindow._agent_answer_prepared(window, *args)
+            window._finish_agent_answer_work = lambda *args: OpenLawLensWindow._finish_agent_answer_work(window, *args)
+            with patch("open_law_lens.app.threading.Thread") as thread, patch(
+                "open_law_lens.app.GLib.idle_add", side_effect=lambda callback, *args: callback(*args),
+            ):
+                result = OpenLawLensWindow._poll_agent_answer(window)
+                thread.call_args.kwargs["target"]()
 
             self.assertFalse(result)
             self.assertIsNone(window._agent_answer_poll_id)

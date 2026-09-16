@@ -11,11 +11,12 @@ import sqlite3
 import sys
 import tempfile
 import threading
+import time
 import weakref
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 from urllib.parse import quote_plus
 
 import gi
@@ -49,6 +50,7 @@ from .agent import (
     snapshot_pi_session_jsonl,
     trace_clipboard_text,
 )
+from .answer_rendering import PreparedAnswer, prepare_answer
 from .agent_commands import agent_cli_command
 from .authority_resolver import first_authority_candidate
 from .cache import cluster_id_from_cluster
@@ -2147,6 +2149,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_workspace_path: Path | None = None
         self._agent_session_log_path: Path | None = None
         self._agent_answer_poll_id: int | None = None
+        self._agent_answer_generation = 0
+        self._agent_answer_working = False
+        self._agent_answer_finishing = False
+        self._agent_answer_recheck = False
+        self._agent_answer_render_id: int | None = None
         self._agent_last_answer_text = ""
         self._agent_last_question = ""
         self._agent_search_output_visible = False
@@ -3974,6 +3981,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._brief_search_summary_box.set_visible(search_summary)
 
     def _set_composer_idle(self) -> None:
+        if getattr(self, "_agent_answer_finishing", False):
+            self._set_composer_message("Preparing final answer…", busy=True)
+            return
         if (
             getattr(self, "_agent_active", False)
             and not getattr(self, "_agent_last_answer_text", "").strip()
@@ -4252,6 +4262,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return False
 
     def _on_window_close_request(self, _window: Gtk.Window) -> bool:
+        self._stop_agent_answer_polling()
         self._capture_current_reader_position()
         if self._agent_answer_layout_idle_id is not None:
             GLib.source_remove(self._agent_answer_layout_idle_id)
@@ -6050,7 +6061,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _sync_agent_subviews(self) -> None:
         self._update_agent_panel_height(force=True)
         has_agent_output = (
-            self._agent_active
+            getattr(self, "_agent_answer_finishing", False)
+            or self._agent_active
             or self._agent_failure_visible
             or bool(self._agent_last_answer_text)
             or self._agent_search_output_visible
@@ -6075,7 +6087,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if self._agent_subview_strip is not None:
             self._agent_subview_strip.set_visible(has_agent_output)
         if self._agent_save_answer_button is not None:
-            self._agent_save_answer_button.set_sensitive(bool(self._agent_last_answer_text.strip()))
+            self._agent_save_answer_button.set_sensitive(
+                bool(self._agent_last_answer_text.strip())
+                and not getattr(self, "_agent_answer_finishing", False)
+            )
         if self._agent_copy_trace_button is not None:
             trace_source = self._agent_session_log_path
             self._agent_copy_trace_button.set_sensitive(
@@ -6132,6 +6147,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         buffer = self._agent_answer_buffer
         if view is None or buffer is None or buffer.get_char_count() <= 0:
             return AGENT_ANSWER_MIN_HEIGHT
+        # Asking for the final line forces layout of the entire buffer. Large
+        # answers already need the full panel height; don't synchronously shape
+        # every off-screen paragraph merely to establish that fact.
+        if buffer.get_char_count() > 16384:
+            return max(AGENT_ANSWER_MIN_HEIGHT, self._agent_panel_height)
         try:
             line_y, line_height = view.get_line_yrange(buffer.get_end_iter())
         except (TypeError, ValueError):
@@ -10139,6 +10159,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _on_agent_exited(self, _terminal: Any, status: int) -> None:
         self._agent_pid = None
         self._agent_active = False
+        if getattr(self, "_agent_answer_poll_id", None) is not None:
+            GLib.source_remove(self._agent_answer_poll_id)
+            self._agent_answer_poll_id = None
         self._poll_agent_answer()
         try:
             exit_code = os.waitstatus_to_exitcode(status)
@@ -10187,6 +10210,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._sync_agent_subviews()
 
     def _stop_agent_answer_polling(self) -> None:
+        self._agent_answer_generation = getattr(self, "_agent_answer_generation", 0) + 1
+        self._agent_answer_working = False
+        self._agent_answer_finishing = False
+        self._agent_answer_recheck = False
+        render_id = getattr(self, "_agent_answer_render_id", None)
+        if render_id is not None:
+            GLib.source_remove(render_id)
+            self._agent_answer_render_id = None
         if self._agent_answer_poll_id is not None:
             GLib.source_remove(self._agent_answer_poll_id)
             self._agent_answer_poll_id = None
@@ -10202,27 +10233,160 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if workspace is None:
             self._agent_answer_poll_id = None
             return False
-        if self._agent_session_log_path is None:
-            discovered = find_latest_pi_session_log_for_cwd(
-                workspace / "pi-sessions",
-                workspace,
-            )
-            if discovered is not None:
-                self._agent_session_log_path = discovered
-                self._sync_agent_subviews()
-        if self._agent_session_log_path is not None:
-            answer = strip_agent_legal_authority_backticks(
-                extract_latest_pi_final_answer_from_jsonl(self._agent_session_log_path)
-            )
-            if answer and answer != self._agent_last_answer_text:
-                self._agent_last_answer_text = answer
-                self._render_agent_answer(answer)
-                self._set_agent_subview(AGENT_SUBVIEW_ANSWER)
-                self._set_status("Agent final answer mirrored.")
         if not self._agent_active:
             self._agent_answer_poll_id = None
+            self._agent_answer_finishing = True
+            self._set_composer_idle()
+        if getattr(self, "_agent_answer_working", False):
+            # The exit signal may arrive during an earlier poll. Read once more
+            # after it completes so a just-written final JSONL record isn't lost.
+            if not self._agent_active:
+                self._agent_answer_recheck = True
+            return self._agent_active
+        generation = getattr(self, "_agent_answer_generation", 0)
+        self._agent_answer_working = True
+        source = self._agent_session_log_path
+        previous = self._agent_last_answer_text
+        mode = self._agent_mode
+        sources = list(self._case_agent_text_sources)
+
+        def worker() -> None:
+            try:
+                path = source or find_latest_pi_session_log_for_cwd(
+                    workspace / "pi-sessions", workspace,
+                )
+                answer = strip_agent_legal_authority_backticks(
+                    extract_latest_pi_final_answer_from_jsonl(path)
+                ) if path is not None else ""
+                plan = prepare_answer(
+                    answer, mode, sources, _AgentAnswerTextFormatter().format,
+                    OpenLawLensWindow._external_url_links,
+                ) if answer and answer != previous else None
+                GLib.idle_add(self._agent_answer_prepared, generation, path, answer, plan, None)
+            except Exception as exc:
+                GLib.idle_add(self._agent_answer_prepared, generation, source, "", None, str(exc))
+
+        threading.Thread(target=worker, daemon=True, name="oll-final-answer").start()
+        return self._agent_active
+
+    def _agent_answer_prepared(
+        self, generation: int, path: Path | None, answer: str,
+        plan: PreparedAnswer | None, error: str | None,
+    ) -> bool:
+        if generation != getattr(self, "_agent_answer_generation", 0):
             return False
-        return True
+        self._agent_session_log_path = path
+        if error is not None:
+            self._agent_answer_working = False
+            self._agent_answer_finishing = False
+            self._agent_answer_recheck = False
+            self._agent_failure_visible = True
+            self._set_agent_subview(AGENT_SUBVIEW_SESSION)
+            self._set_status("Unable to prepare agent answer. Review the Session output.")
+            return False
+        if plan is None:
+            self._finish_agent_answer_work(generation)
+            return False
+        self._agent_answer_finishing = True
+        self._set_composer_idle()
+        self._set_agent_subview(AGENT_SUBVIEW_SESSION)
+        steps = self._agent_answer_render_steps(plan)
+
+        def apply_batch() -> bool:
+            if generation != getattr(self, "_agent_answer_generation", 0):
+                return False
+            deadline = time.monotonic() + 0.006
+            try:
+                while time.monotonic() < deadline:
+                    next(steps)
+            except StopIteration:
+                self._agent_answer_render_id = None
+                self._agent_last_answer_text = answer
+                if not self._agent_failure_visible:
+                    self._set_agent_subview(AGENT_SUBVIEW_ANSWER)
+                # Let GTK lay out and paint the completed answer before stopping
+                # the finishing indicator. The generation check also guards this idle.
+                GLib.idle_add(self._finish_agent_answer_work, generation,
+                              priority=GLib.PRIORITY_LOW)
+                return False
+            except Exception:
+                self._agent_answer_render_id = None
+                self._agent_answer_prepared(generation, path, "", None, "render failed")
+                return False
+            return True
+
+        self._agent_answer_render_id = GLib.idle_add(apply_batch)
+        return False
+
+    def _finish_agent_answer_work(self, generation: int) -> None:
+        if generation != getattr(self, "_agent_answer_generation", 0):
+            return
+        self._agent_answer_working = False
+        if getattr(self, "_agent_answer_recheck", False):
+            self._agent_answer_recheck = False
+            self._poll_agent_answer()
+            return
+        self._agent_answer_finishing = False
+        if not self._agent_active and not self._agent_last_answer_text and not self._agent_failure_visible:
+            self._agent_failure_visible = True
+            self._set_agent_subview(AGENT_SUBVIEW_SESSION)
+            self._set_status("Unable to find an agent final answer. Review the Session output.")
+        self._sync_agent_subviews()
+        if not self._agent_failure_visible:
+            self._set_composer_idle()
+
+    def _agent_answer_render_steps(self, plan: PreparedAnswer) -> Iterator[None]:
+        """GTK-only work, in bounded idle batches; source scanning is already done."""
+        buffer = self._agent_answer_buffer
+        if buffer is None:
+            return
+        table = buffer.get_tag_table()
+        for tag in self._agent_link_tags:
+            if table is not None:
+                table.remove(tag)
+            yield
+        self._agent_link_tags.clear()
+        for lookup in (self._agent_link_lookup, self._agent_citation_link_lookup,
+                       self._agent_statute_link_lookup, self._agent_rule_link_lookup,
+                       self._agent_external_url_link_lookup, self._agent_search_link_lookup,
+                       self._agent_search_action_link_lookup):
+            lookup.clear()
+        self._agent_search_next_link_tags.clear()
+        self._agent_search_highlight_tags.clear()
+        buffer.set_text("")
+        for start in range(0, len(plan.text), 8192):
+            buffer.insert(buffer.get_end_iter(), plan.text[start:start + 8192])
+            yield
+        color = self._resolve_agent_quote_color()
+        lookups = {"quote": self._agent_link_lookup, "title": self._agent_link_lookup,
+                   "citation": self._agent_citation_link_lookup,
+                   "statute": self._agent_statute_link_lookup,
+                   "rule": self._agent_rule_link_lookup,
+                   "external": self._agent_external_url_link_lookup}
+        for span in plan.styles:
+            start, end = max(0, span.start), min(len(plan.text), span.end)
+            if end <= start:
+                continue
+            if span.kind == "markdown":
+                self._apply_agent_markdown_spans(buffer, [(start, end, span.target)])
+            else:
+                if span.kind == "italic":
+                    tag = table.lookup("agent-citation-italic") if table else None
+                    if tag is None:
+                        tag = buffer.create_tag("agent-citation-italic", style=Pango.Style.ITALIC)
+                else:
+                    tag = buffer.create_tag(
+                        None, foreground_rgba=color,
+                        underline=Pango.Underline.SINGLE if span.kind in {"title", "external"} else Pango.Underline.NONE,
+                        weight=Pango.Weight.BOLD if span.kind == "quote" else Pango.Weight.MEDIUM,
+                    )
+                    self._agent_link_tags.append(tag)
+                    lookups[span.kind][tag] = (
+                        AgentExternalUrlLink(span.target) if span.kind == "external" else span.target
+                    )
+                buffer.apply_tag(tag, buffer.get_iter_at_offset(start), buffer.get_iter_at_offset(end))
+            yield
+        self._queue_agent_answer_height_update()
 
     def _on_agent_copy_trace_clicked(self, _button: Gtk.Button) -> None:
         workspace = self._agent_workspace_path
@@ -11440,6 +11604,20 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._agent_pid = None
         self._agent_active = False
         self._sync_agent_subviews()
+
+
+class _AgentAnswerTextFormatter:
+    """Reuse pure text transforms without passing a GTK window to a worker."""
+
+    _render_inline_markdown = OpenLawLensWindow._render_inline_markdown
+    _render_markdown_text = OpenLawLensWindow._render_markdown_text
+
+    def format(self, text: str) -> tuple[str, list[tuple[int, int, str]], list[int]]:
+        display, quote_map = OpenLawLensWindow._remove_direct_quote_marks(
+            text, extract_quoted_phrases(text),
+        )
+        rendered, spans, markdown_map = self._render_markdown_text(display)
+        return rendered, spans, [markdown_map[offset] for offset in quote_map]
 
 
 class OpenLawLensApp(Adw.Application):

@@ -395,6 +395,14 @@ the installed project with this canonical prefix:
 This keeps command resolution deterministic without exposing the project tree
 through ordinary workspace discovery.
 
+Final-answer completion keeps GTK responsive: session-log reading, source/quote
+matching, and text/link preparation run in a background worker; GTK inserts and
+formatting are applied in short main-loop batches. **Preparing final answer…**
+keeps its spinner active after the agent exits until formatting and layout have
+been handed back to GTK. Stale work from a replaced session or closed window is
+ignored. Failures leave the Session output available rather than keeping a
+spinner running forever. See [completion validation](docs/answer-completion-responsiveness.md).
+
 Saved agent answers begin with an issue-specific title and compact disposition
 subtitle. Open Law Lens uses those fields in the Research Cache sidebar and
 enforces short sidebar-friendly limits: at most eight title words and five
