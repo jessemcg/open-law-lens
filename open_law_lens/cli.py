@@ -813,7 +813,7 @@ def _cmd_update_brief_library(_args: argparse.Namespace) -> int:
 
 def _cmd_search_briefs(args: argparse.Namespace) -> int:
     library = PriorBriefLibrary.default()
-    results = library.search(
+    page = library.search_page(
         args.query,
         match=args.match,
         sort=args.sort,
@@ -824,8 +824,10 @@ def _cmd_search_briefs(args: argparse.Namespace) -> int:
             "query": args.query,
             "match": args.match,
             "sort": args.sort,
-            "count": len(results),
-            "results": [result.to_json() for result in results],
+            "count": len(page.results),
+            "limit": page.limit,
+            "has_more": page.has_more,
+            "results": [result.to_json() for result in page.results],
         }
     )
     return 0
@@ -1219,6 +1221,10 @@ def build_parser() -> argparse.ArgumentParser:
     search_briefs_parser = subparsers.add_parser(
         "search-briefs",
         help="search indexed prior briefs",
+        description=(
+            "Search indexed prior briefs. JSON has_more reports additional matches "
+            "for this query only; false does not establish exhaustive relevance coverage."
+        ),
     )
     search_briefs_parser.add_argument("query")
     search_briefs_parser.add_argument(
@@ -1233,7 +1239,9 @@ def build_parser() -> argparse.ArgumentParser:
         default="relevance",
         help="result ordering",
     )
-    search_briefs_parser.add_argument("--limit", type=int, default=20)
+    search_briefs_parser.add_argument(
+        "--limit", type=int, default=20, help="maximum results, clamped to 1–100",
+    )
     search_briefs_parser.set_defaults(func=_cmd_search_briefs)
 
     extract_brief_parser = subparsers.add_parser(

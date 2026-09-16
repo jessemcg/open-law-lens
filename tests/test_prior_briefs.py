@@ -303,6 +303,32 @@ class PriorBriefLibraryTests(unittest.TestCase):
             ):
                 library.sync()
 
+            for requested, effective, count, more in (
+                (5, 5, 5, True), (105, 100, 100, True),
+                (0, 1, 1, True), (-10, 1, 1, True),
+            ):
+                page = library.search_page("beneficial relationship", limit=requested)
+                self.assertEqual((page.limit, len(page.results), page.has_more),
+                                 (effective, count, more))
+                self.assertEqual(page.results, library.search(
+                    "beneficial relationship", limit=requested))
+            for query in ("", "...", "unmatchedtoken"):
+                page = library.search_page(query, limit=500)
+                self.assertEqual((page.results, page.limit, page.has_more),
+                                 ([], 100, False))
+            exact = library.search_page("07 29 2026", limit=1)
+            self.assertEqual(len(exact.results), 1)
+            self.assertFalse(exact.has_more)
+            self.assertEqual(exact.results[0].document_date, "2026-07-29")
+            self.assertEqual(exact.results[0].source_link,
+                             "open-law-lens://prior-brief/" + exact.results[0].brief_id)
+            for mode in ("all", "any", "phrase"):
+                for sort in ("relevance", "newest"):
+                    page = library.search_page("beneficial relationship", match=mode,
+                                               sort=sort, limit=10)
+                    self.assertEqual(page.results, library.search(
+                        "beneficial relationship", match=mode, sort=sort, limit=10))
+
             matches = library.search_phrase_briefs("beneficial relationship")
 
             self.assertEqual(len(matches), 105)

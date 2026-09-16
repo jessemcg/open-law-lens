@@ -543,6 +543,15 @@ class PriorBriefSearchResult:
 
 
 @dataclass(frozen=True)
+class PriorBriefSearchPage:
+    """Bounded query coverage, not completeness of relevant archive material."""
+
+    results: list[PriorBriefSearchResult]
+    limit: int
+    has_more: bool
+
+
+@dataclass(frozen=True)
 class PriorBriefSyncResult:
     total: int
     added: int
@@ -797,10 +806,21 @@ class PriorBriefLibrary:
         sort: Literal["relevance", "newest"] = "relevance",
         limit: int = 20,
     ) -> list[PriorBriefSearchResult]:
+        return self.search_page(query, match=match, sort=sort, limit=limit).results
+
+    def search_page(
+        self,
+        query: str,
+        *,
+        match: Literal["all", "any", "phrase"] = "all",
+        sort: Literal["relevance", "newest"] = "relevance",
+        limit: int = 20,
+    ) -> PriorBriefSearchPage:
         self.ensure()
+        limit = max(1, min(int(limit), 100))
         terms = re.findall(r"[\w§'-]+", query, flags=re.UNICODE)
         if not terms:
-            return []
+            return PriorBriefSearchPage([], limit, False)
         quoted = [f'"{term.replace(chr(34), chr(34) * 2)}"' for term in terms]
         if match == "phrase":
             expression = '"' + " ".join(terms).replace('"', '""') + '"'
@@ -808,7 +828,6 @@ class PriorBriefLibrary:
             expression = " OR ".join(quoted)
         else:
             expression = " AND ".join(quoted)
-        limit = max(1, min(int(limit), 100))
         ordering = "briefs.document_date DESC, briefs.title COLLATE NOCASE" if sort == "newest" else "bm25(briefs_fts), briefs.document_date DESC"
         with self.connection() as conn:
             rows = conn.execute(
@@ -821,9 +840,9 @@ class PriorBriefLibrary:
                 ORDER BY {ordering}
                 LIMIT ?
                 """,
-                (expression, limit),
+                (expression, limit + 1),
             ).fetchall()
-        return [
+        results = [
             PriorBriefSearchResult(
                 brief_id=str(row["brief_id"]),
                 title=str(row["title"]),
@@ -835,8 +854,9 @@ class PriorBriefLibrary:
                 snippet=str(row["snippet"] or ""),
                 source_link=f"open-law-lens://prior-brief/{row['brief_id']}",
             )
-            for row in rows
+            for row in rows[:limit]
         ]
+        return PriorBriefSearchPage(results, limit, len(rows) > limit)
 
     def backup(self, target: Path) -> Path:
         self.ensure()

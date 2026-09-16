@@ -827,6 +827,32 @@ Do not commit local runtime data:
 
 These paths are ignored by Git in this repository.
 
+## Prior Brief quality and search coverage
+
+Prior Brief answers recommend documents, not independently verified current law.
+The revised default ranks direct briefing first, attributes advocacy, distinguishes
+child/adult/nondependent contexts and trial burdens from appellate review, requires
+complete selected-source inspection, and limits exact linked quotes to 2–10 words.
+Temporary extractions are permitted only inside the disposable agent workspace.
+Searches should be short and gap-driven; `--match any` ORs individual tokens,
+including split citation numbers. Prefer `all` or a specific `phrase` search.
+
+`search-briefs` retains its existing results and returned `count`, adding the
+effective `limit` (clamped to 1–100) and `has_more`. An extra query row determines
+coverage without being returned. `has_more: false` means all matches **for that
+query**, not all relevant archive documents. No automatic pagination, reindexing,
+ranking change, or schema migration is involved. Python callers can use
+`PriorBriefLibrary.search_page()`; `search()` still returns the same list shape.
+
+Only an exact known shipped Prior Brief default (including normalized legacy CLI
+prefixes) upgrades in memory on configuration load. Customized prompts and all
+model/reasoning profiles survive; no deployment step rewrites `config.json`.
+Normal user-initiated Settings saves behave as before. Reload application code
+and launch a new Agent session to receive revised defaults; existing sessions
+are unchanged. Prompt requirements are not runtime enforcement: see
+[Prior Brief acceptance results](docs/prior-brief-quality-acceptance.md) for
+observed behavioral failures and validation limits.
+
 ## General Law quality validation
 
 The preloaded skill remains the single workflow authority. It requires
