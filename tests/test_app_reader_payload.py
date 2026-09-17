@@ -3473,6 +3473,13 @@ class AppReaderPayloadTests(unittest.TestCase):
             def _apply_reader_citation_links(self, _text: str) -> None:
                 pass
 
+            def _apply_reader_prior_brief_links(
+                self,
+                _text: str,
+                _spans: object,
+            ) -> None:
+                pass
+
         window = DummyWindow()
         text = "[*373] Opinion text."
         marker = PageMarker("373", "[*373]", 0, len("[*373]"), "plain_text")
@@ -3575,6 +3582,13 @@ class AppReaderPayloadTests(unittest.TestCase):
                 pass
 
             def _apply_reader_citation_links(self, _text: str) -> None:
+                pass
+
+            def _apply_reader_prior_brief_links(
+                self,
+                _text: str,
+                _spans: object,
+            ) -> None:
                 pass
 
         window = DummyWindow()
@@ -5424,6 +5438,13 @@ Opinion text.
 
             def _apply_reader_citation_links(self, text: str) -> None:
                 self.link_text = text
+
+            def _apply_reader_prior_brief_links(
+                self,
+                _text: str,
+                _spans: object,
+            ) -> None:
+                pass
 
         window = DummyWindow()
         markdown = (

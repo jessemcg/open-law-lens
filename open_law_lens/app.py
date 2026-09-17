@@ -427,6 +427,33 @@ MARKDOWN_TOKEN_RE = re.compile(
     r"(\[([^\]\n]+)\]\(open-law-lens://prior-brief/([a-fA-F0-9]{16,64})\)"
     r"|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*)"
 )
+
+
+def unwrap_prior_brief_link_markup(
+    content: str,
+) -> tuple[str, list[tuple[int, int, str]]]:
+    """Replace prior-brief links nested inside emphasis spans with their titles."""
+    if "open-law-lens://prior-brief/" not in content:
+        return content, []
+    out: list[str] = []
+    spans: list[tuple[int, int, str]] = []
+    cursor = 0
+    clean_offset = 0
+    for match in PRIOR_BRIEF_MARKDOWN_LINK_RE.finditer(content):
+        before = content[cursor:match.start()]
+        out.append(before)
+        clean_offset += len(before)
+        title = match.group(1)
+        span_start = clean_offset
+        out.append(title)
+        clean_offset += len(title)
+        if title:
+            spans.append((span_start, clean_offset, f"prior_brief:{match.group(2)}"))
+        cursor = match.end()
+    out.append(content[cursor:])
+    return "".join(out), spans
+
+
 BACKTICK_TOKEN_RE = re.compile(r"`([^`\n]+)`")
 TERMINAL_DARK_FOREGROUND = "#f2f4f8"
 TERMINAL_DARK_BACKGROUND = "#3d3d3d"
@@ -2213,6 +2240,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._reader_citation_link_lookup: dict[Gtk.TextTag, CitedCaseLink] = {}
         self._reader_statute_link_lookup: dict[Gtk.TextTag, StatuteLink] = {}
         self._reader_rule_link_lookup: dict[Gtk.TextTag, RuleLink] = {}
+        self._reader_prior_brief_link_tags: list[Gtk.TextTag] = []
+        self._reader_prior_brief_link_lookup: dict[Gtk.TextTag, QuoteTarget] = {}
         self._reader_citation_motion_controller: Gtk.EventControllerMotion | None = None
         self._reader_citation_click_gesture: Gtk.GestureClick | None = None
         self._reader_link_press: LinkPressState | None = None
@@ -4669,6 +4698,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._apply_reader_markdown_spans(markdown_spans)
         self._apply_reader_citation_italics(text)
         self._apply_reader_citation_links(text)
+        self._apply_reader_prior_brief_links(text, markdown_spans)
         apply_highlights = getattr(self, "_apply_saved_reader_highlights", None)
         if apply_highlights is not None:
             apply_highlights()
@@ -5454,10 +5484,86 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if table is not None:
             for tag in self._reader_citation_link_tags:
                 table.remove(tag)
+            for tag in self._reader_prior_brief_link_tags:
+                table.remove(tag)
         self._reader_citation_link_tags.clear()
         self._reader_citation_link_lookup.clear()
         self._reader_statute_link_lookup.clear()
         self._reader_rule_link_lookup.clear()
+        self._reader_prior_brief_link_tags.clear()
+        self._reader_prior_brief_link_lookup.clear()
+
+    def _apply_reader_prior_brief_links(
+        self,
+        text: str,
+        markdown_spans: list[tuple[int, int, str]],
+    ) -> None:
+        """Link prior-brief titles rendered in the reader to their briefs."""
+        occupied: list[tuple[int, int]] = []
+        for start, end, kind in markdown_spans:
+            if not kind.startswith("prior_brief:") or end <= start:
+                continue
+            if self._apply_reader_prior_brief_link(start, end, kind.partition(":")[2]):
+                occupied.append((start, end))
+        for match in PRIOR_BRIEF_MARKDOWN_LINK_RE.finditer(text):
+            start, end = match.span(1)
+            if any(start < prior_end and end > prior_start for prior_start, prior_end in occupied):
+                continue
+            if self._apply_reader_prior_brief_link(start, end, match.group(2)):
+                occupied.append((start, end))
+
+    def _apply_reader_prior_brief_link(self, start: int, end: int, brief_id: str) -> bool:
+        target = self._reader_prior_brief_target(brief_id)
+        if target is None:
+            return False
+        start = max(0, min(start, len(self._reader_text)))
+        end = max(start, min(end, len(self._reader_text)))
+        if start == end:
+            return False
+        tag = self.reader_buffer.create_tag(
+            f"reader-prior-brief-link-{len(self._reader_prior_brief_link_tags)}",
+            underline=Pango.Underline.SINGLE,
+            foreground="#1a5fb4",
+        )
+        self.reader_buffer.apply_tag(
+            tag,
+            self.reader_buffer.get_iter_at_offset(start),
+            self.reader_buffer.get_iter_at_offset(end),
+        )
+        self._reader_prior_brief_link_tags.append(tag)
+        self._reader_prior_brief_link_lookup[tag] = target
+        return True
+
+    def _reader_prior_brief_target(self, brief_id: str) -> QuoteTarget | None:
+        brief_id = brief_id.strip()
+        if not brief_id:
+            return None
+        brief: PriorBrief | None = None
+        try:
+            brief = self.prior_briefs.read(brief_id)
+        except (PriorBriefError, OSError, ValueError, sqlite3.Error):
+            brief = None
+        if brief is None:
+            payload = self.client.cache.read_prior_brief(brief_id)
+            if isinstance(payload, dict):
+                try:
+                    brief = PriorBrief.from_json(payload)
+                except (TypeError, ValueError):
+                    brief = None
+        if brief is None:
+            return None
+        return QuoteTarget(
+            phrase=brief.title,
+            cluster_id="",
+            opinion_id="",
+            title=brief.title,
+            citation=brief.document_date,
+            text_path=brief.source_path,
+            offset=0,
+            end_offset=0,
+            authority_type="prior_brief",
+            prior_brief_id=brief.brief_id,
+        )
 
     def _apply_reader_citation_link(self, index: int, link: CitedCaseLink) -> None:
         start = max(0, min(link.start_offset, len(self._reader_text)))
@@ -5563,7 +5669,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             int(y),
         )
 
-    def _reader_citation_link_at_coords(self, x: float, y: float) -> CitedCaseLink | StatuteLink | RuleLink | None:
+    def _reader_citation_link_at_coords(
+        self,
+        x: float,
+        y: float,
+    ) -> CitedCaseLink | StatuteLink | RuleLink | QuoteTarget | None:
         bx, by = self.reader_view.window_to_buffer_coords(Gtk.TextWindowType.WIDGET, int(x), int(y))
         iter_result = self.reader_view.get_iter_at_location(int(bx), int(by))
         if isinstance(iter_result, tuple):
@@ -5584,6 +5694,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             rule_link = self._reader_rule_link_lookup.get(tag)
             if rule_link is not None:
                 return rule_link
+            prior_brief_target = self._reader_prior_brief_link_lookup.get(tag)
+            if prior_brief_target is not None:
+                return prior_brief_target
         return None
 
     def _on_reader_citation_motion(
@@ -5638,6 +5751,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return
         if isinstance(link, RuleLink):
             self._open_rule_link(link)
+            return
+        if isinstance(link, QuoteTarget):
+            self._open_quote_target(link)
             return
         self._open_cited_case_link(link)
 
@@ -10508,20 +10624,29 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             for idx in range(cursor, start):
                 orig_to_clean[idx] = clean_offset + (idx - cursor)
             clean_offset += len(before)
+            nested_spans: list[tuple[int, int, str]] = []
             if match.group(2) is not None:
                 content = match.group(2)
                 kind = f"prior_brief:{match.group(3)}"
             elif match.group(4) is not None:
-                content = match.group(4)
+                content, nested_spans = unwrap_prior_brief_link_markup(match.group(4))
                 kind = "bold"
             else:
-                content = match.group(5) or ""
+                content, nested_spans = unwrap_prior_brief_link_markup(match.group(5) or "")
                 kind = "italic"
             span_start = clean_offset
             out.append(content)
             clean_offset += len(content)
             if content:
                 spans.append((base_offset + span_start, base_offset + clean_offset, kind))
+            spans.extend(
+                (
+                    base_offset + span_start + nested_start,
+                    base_offset + span_start + nested_end,
+                    nested_kind,
+                )
+                for nested_start, nested_end, nested_kind in nested_spans
+            )
             for idx in range(start, end):
                 orig_to_clean[idx] = span_start
             orig_to_clean[end] = clean_offset

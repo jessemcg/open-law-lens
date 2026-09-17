@@ -4,10 +4,13 @@ import tempfile
 import unittest
 from collections.abc import Callable
 from pathlib import Path
+from types import MethodType, SimpleNamespace
 from unittest.mock import patch
 
 from open_law_lens.app import (
     QUERY_MODE_BRIEF_SEARCH,
+    Gtk,
+    LinkPressState,
     OpenLawLensApp,
     OpenLawLensWindow,
     PriorBriefPhraseGroup,
@@ -214,6 +217,101 @@ class PriorBriefAppTests(unittest.TestCase):
         self.assertEqual(rendered, "B353817_AOB")
         self.assertEqual(spans, [(0, len(rendered), f"prior_brief:{brief_id}")])
         self.assertEqual(offsets[-1], len(rendered))
+
+    @staticmethod
+    def _markdown_renderer() -> SimpleNamespace:
+        renderer = SimpleNamespace()
+        for name in ("_render_inline_markdown", "_render_markdown_text"):
+            setattr(renderer, name, MethodType(getattr(OpenLawLensWindow, name), renderer))
+        return renderer
+
+    def test_inline_markdown_unwraps_brief_link_nested_in_emphasis(self) -> None:
+        brief_id = "a" * 64
+        raw = f"**1. Strongest brief: [B353817_AOB](open-law-lens://prior-brief/{brief_id})**"
+
+        rendered, spans, offsets = self._markdown_renderer()._render_inline_markdown(raw, 0)
+
+        self.assertEqual(rendered, "1. Strongest brief: B353817_AOB")
+        self.assertNotIn("open-law-lens://", rendered)
+        self.assertIn("bold", [kind for _, _, kind in spans])
+        self.assertIn(
+            (len("1. Strongest brief: "), len(rendered), f"prior_brief:{brief_id}"),
+            spans,
+        )
+        self.assertEqual(offsets[-1], len(rendered))
+
+    def test_reader_links_prior_brief_title_from_saved_answer(self) -> None:
+        brief_id = "a" * 64
+        brief = self._brief(brief_id, "B353817_AOB", "Brief text.", "2026-06-08")
+        raw = (
+            f"Ranked brief: [B353817_AOB](open-law-lens://prior-brief/{brief_id}) "
+            "supports the point."
+        )
+        rendered, markdown_spans, _offsets = self._markdown_renderer()._render_markdown_text(raw)
+        buffer = Gtk.TextBuffer()
+        buffer.set_text(rendered)
+        window = SimpleNamespace(
+            reader_buffer=buffer,
+            _reader_text=rendered,
+            _reader_prior_brief_link_tags=[],
+            _reader_prior_brief_link_lookup={},
+            prior_briefs=SimpleNamespace(
+                read=lambda current: brief if current == brief_id else None,
+            ),
+            client=SimpleNamespace(
+                cache=SimpleNamespace(read_prior_brief=lambda _brief_id: None),
+            ),
+        )
+        for name in (
+            "_apply_reader_prior_brief_links",
+            "_apply_reader_prior_brief_link",
+            "_reader_prior_brief_target",
+        ):
+            setattr(window, name, MethodType(getattr(OpenLawLensWindow, name), window))
+
+        OpenLawLensWindow._apply_reader_prior_brief_links(  # type: ignore[arg-type]
+            window,
+            rendered,
+            markdown_spans,
+        )
+
+        self.assertEqual(len(window._reader_prior_brief_link_tags), 1)
+        target = next(iter(window._reader_prior_brief_link_lookup.values()))
+        self.assertEqual(target.authority_type, "prior_brief")
+        self.assertEqual(target.prior_brief_id, brief_id)
+
+    def test_reader_prior_brief_click_opens_the_brief(self) -> None:
+        opened: list[QuoteTarget] = []
+        target = QuoteTarget(
+            phrase="B353817_AOB",
+            cluster_id="",
+            opinion_id="",
+            title="B353817_AOB",
+            citation="2026-06-08",
+            text_path="/archive/B353817_AOB.odt",
+            offset=0,
+            end_offset=0,
+            authority_type="prior_brief",
+            prior_brief_id="a" * 64,
+        )
+        window = SimpleNamespace(
+            _open_quote_target=opened.append,
+            _reader_link_press=LinkPressState(target, 4.0, 4.0),
+            reader_view=SimpleNamespace(drag_check_threshold=lambda *_args: False),
+            _reader_citation_link_at_coords=lambda _x, _y: target,
+            _link_release_is_click=OpenLawLensWindow._link_release_is_click,
+        )
+        gesture = SimpleNamespace(get_current_button=lambda: 1)
+
+        OpenLawLensWindow._on_reader_citation_click(  # type: ignore[arg-type]
+            window,
+            gesture,
+            1,
+            4.0,
+            4.0,
+        )
+
+        self.assertEqual(opened, [target])
 
     def test_brief_prompt_includes_snapshot_and_optional_socf_state(self) -> None:
         window = type(
