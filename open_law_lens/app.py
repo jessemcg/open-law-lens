@@ -3532,6 +3532,21 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         )
         self.reader_header_action_box.append(self.reader_save_prior_brief_button)
 
+        self.reader_cache_prior_brief_button = Gtk.Button(icon_name="bookmark-new-symbolic")
+        self.reader_cache_prior_brief_button.add_css_class("reader-masthead-action-button")
+        self.reader_cache_prior_brief_button.set_tooltip_text(
+            "Add prior brief to Research Cache"
+        )
+        self.reader_cache_prior_brief_button.update_property(
+            [Gtk.AccessibleProperty.LABEL], ["Add prior brief to Research Cache"]
+        )
+        self.reader_cache_prior_brief_button.set_visible(False)
+        self.reader_cache_prior_brief_button.connect(
+            "clicked",
+            self._on_cache_prior_brief_clicked,
+        )
+        self.reader_header_action_box.append(self.reader_cache_prior_brief_button)
+
         self.reader_view = Gtk.TextView(buffer=self.reader_buffer)
         self.reader_view.set_editable(False)
         self.reader_view.set_cursor_visible(False)
@@ -4960,6 +4975,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             )
             self.reader_save_prior_brief_button.set_visible(bool(header and is_prior_brief))
             self.reader_save_prior_brief_button.set_sensitive(source_exists)
+        update_prior_brief_cache = getattr(self, "_update_prior_brief_cache_button", None)
+        if update_prior_brief_cache is not None:
+            update_prior_brief_cache(bool(header))
         update_paginated = getattr(self, "_update_find_paginated_copy_button", None)
         if update_paginated is not None:
             update_paginated()
@@ -11602,6 +11620,47 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 f"Opened prior brief: {brief.title}."
                 + (" Added to Research Cache." if added_to_cache else "")
             )
+
+    def _update_prior_brief_cache_button(self, header_visible: bool = True) -> None:
+        button = getattr(self, "reader_cache_prior_brief_button", None)
+        if button is None:
+            return
+        brief = getattr(self, "_selected_prior_brief", None)
+        cached = False
+        if brief is not None:
+            try:
+                cached = self.client.cache.read_prior_brief(brief.brief_id) is not None
+            except (OSError, ValueError, TypeError, sqlite3.Error):
+                cached = False
+        available = bool(header_visible and brief is not None and not cached)
+        button.set_visible(available)
+        button.set_sensitive(available)
+
+    def _on_cache_prior_brief_clicked(self, _button: Gtk.Button) -> None:
+        brief = getattr(self, "_selected_prior_brief", None)
+        if brief is None:
+            self._set_status("Open a prior brief before adding it to the Research Cache.")
+            return
+        try:
+            if self.client.cache.read_prior_brief(brief.brief_id) is not None:
+                self._update_prior_brief_cache_button()
+                self._set_status(
+                    f"Prior brief is already in the Research Cache: {brief.title}."
+                )
+                return
+        except (OSError, ValueError, TypeError, sqlite3.Error):
+            pass
+        try:
+            added = self.client.cache.upsert_prior_brief(brief.to_json())
+        except (OSError, ValueError, TypeError, sqlite3.Error) as exc:
+            self._set_status(f"Unable to add prior brief to the Research Cache: {exc}")
+            return
+        if not added:
+            self._set_status("Unable to add prior brief to the Research Cache.")
+            return
+        self._load_cached_cases()
+        self._update_prior_brief_cache_button()
+        self._set_status(f"Added prior brief to Research Cache: {brief.title}.")
 
     def _on_save_prior_brief_clicked(self, _button: Gtk.Button) -> None:
         brief = self._selected_prior_brief

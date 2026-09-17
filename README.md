@@ -326,7 +326,10 @@ The separate **Search Briefs** scope performs a local, non-LLM exact-phrase
 search. It opens matching briefs newest-first in the main reader without adding
 them to the Research Cache. Use `Ctrl+S` to activate this mode, then `Ctrl+G`
 and `Ctrl+Shift+G` to move forward and backward through occurrences across
-matching briefs.
+matching briefs. While a match is displayed, the reader toolbar's **Add prior
+brief to Research Cache** button (bookmark icon) saves that brief to the
+Research Cache without leaving the search; the button stays hidden once the
+brief is in the cache.
 
 Agent runtime settings, including the five per-query Pi model/reasoning
 profiles, prompt templates, appeal legal questions, and fact-pattern source,

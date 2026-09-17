@@ -609,6 +609,100 @@ class PriorBriefAppTests(unittest.TestCase):
         )
         self.assertEqual(queued, [])
 
+    def test_prior_brief_cache_button_tracks_cache_membership(self) -> None:
+        brief = self._brief(
+            "a" * 64,
+            "B353817_AOB_Joseph_A",
+            "beneficial relationship",
+            "2026-07-29",
+        )
+
+        class Button:
+            def __init__(self) -> None:
+                self.visible = False
+                self.sensitive = False
+
+            def set_visible(self, value: bool) -> None:
+                self.visible = value
+
+            def set_sensitive(self, value: bool) -> None:
+                self.sensitive = value
+
+        class Cache:
+            def __init__(self, cached: bool) -> None:
+                self.cached = cached
+
+            def read_prior_brief(self, _brief_id: str) -> dict[str, object] | None:
+                return {"brief_id": "a" * 64} if self.cached else None
+
+        window = SimpleNamespace(
+            _selected_prior_brief=brief,
+            reader_cache_prior_brief_button=Button(),
+            client=SimpleNamespace(cache=Cache(False)),
+        )
+        button = window.reader_cache_prior_brief_button
+
+        OpenLawLensWindow._update_prior_brief_cache_button(window)  # type: ignore[arg-type]
+        self.assertTrue(button.visible)
+        self.assertTrue(button.sensitive)
+
+        window.client.cache.cached = True
+        OpenLawLensWindow._update_prior_brief_cache_button(window)  # type: ignore[arg-type]
+        self.assertFalse(button.visible)
+
+        window.client.cache.cached = False
+        window._selected_prior_brief = None
+        OpenLawLensWindow._update_prior_brief_cache_button(window)  # type: ignore[arg-type]
+        self.assertFalse(button.visible)
+
+        window._selected_prior_brief = brief
+        OpenLawLensWindow._update_prior_brief_cache_button(window, False)  # type: ignore[arg-type]
+        self.assertFalse(button.visible)
+
+    def test_cache_prior_brief_button_adds_surfaced_brief(self) -> None:
+        brief = self._brief(
+            "a" * 64,
+            "B353817_AOB_Joseph_A",
+            "beneficial relationship",
+            "2026-07-29",
+        )
+
+        class Cache:
+            def __init__(self) -> None:
+                self.payload: dict[str, object] | None = None
+                self.upserts: list[dict[str, object]] = []
+
+            def read_prior_brief(self, _brief_id: str) -> dict[str, object] | None:
+                return self.payload
+
+            def upsert_prior_brief(self, payload: dict[str, object]) -> str:
+                self.upserts.append(payload)
+                self.payload = payload
+                return str(payload["brief_id"])
+
+        window = SimpleNamespace(
+            _selected_prior_brief=brief,
+            client=SimpleNamespace(cache=Cache()),
+            status="",
+            reloads=0,
+        )
+        window._load_cached_cases = lambda: setattr(
+            window, "reloads", window.reloads + 1
+        )
+        window._update_prior_brief_cache_button = lambda *_args: None
+        window._set_status = lambda text: setattr(window, "status", text)
+
+        OpenLawLensWindow._on_cache_prior_brief_clicked(window, None)  # type: ignore[arg-type]
+
+        self.assertEqual(window.reloads, 1)
+        self.assertEqual(len(window.client.cache.upserts), 1)
+        self.assertEqual(window.client.cache.upserts[0]["brief_id"], brief.brief_id)
+        self.assertIn("Added prior brief to Research Cache", window.status)
+
+        OpenLawLensWindow._on_cache_prior_brief_clicked(window, None)  # type: ignore[arg-type]
+        self.assertEqual(len(window.client.cache.upserts), 1)
+        self.assertIn("already in the Research Cache", window.status)
+
     def test_stale_search_scroll_does_not_override_new_match(self) -> None:
         brief = self._brief(
             "a" * 64,
