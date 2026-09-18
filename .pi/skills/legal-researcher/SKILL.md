@@ -22,6 +22,56 @@ an environment-echo preflight checking it. Never pipe research JSON through
 `head`, `tail`, or arbitrary textual clipping. Use CLI output bounds and retain
 complete JSON, including errors and coverage diagnostics.
 
+## Bounded execution and progress
+
+These execution rules apply to Law, Appeal Issue, and Subsequent Treatment;
+mode-specific discovery ceilings and the Route B verification floor remain intact.
+
+- Set bash tool `timeout: 180` for each CLI call. Run recovery separately and
+  sequentially with `--recover-official --timeout 120 --progress`. The tool
+  deadline also bounds baseline lookup and launch; the CLI timeout alone does
+  not. Do not batch recoveries into shell loops or run them concurrently.
+  Independent baseline extractions can still run in the same tool round.
+- Keep complete JSON stdout and separate stderr. Never merge `2>&1` into a
+  JSON parser or pipe a result through `head`/`tail`. For full opinions, save
+  stdout to a unique private workspace file and read the necessary slices;
+  for focused work retain the whole compact `--find` payload and diagnostics.
+  Preserve the baseline before recovery so an interrupted command cannot erase
+  usable authority. Temporary research JSON is not a final deliverable.
+- Announce the authority and the two-minute recovery budget before the call.
+  Track citation, cluster/returned identifier, saved baseline, verified
+  passages, pagination, and recovery outcome. One attempt per authority across
+  citation/name/cluster aliases, not per command spelling.
+- A plain extraction without `--recover-official` has NOT attempted Scholar,
+  even when a warning says recovery is next. Prefer a known official citation
+  for recovery even when the cluster's citation metadata is absent. Use the
+  citation-less cluster form only when no usable official citation is known.
+- Inspect JSON on nonzero exits too. `Command aborted`, timeout, empty output,
+  or malformed JSON is an execution failure, not evidence of no browser,
+  no display, a CAPTCHA, or no matching case. Report only observed diagnostics.
+  After an unexplained abort or desktop-readiness failure, suspend further
+  Scholar attempts for this run, including other cases; continue baseline
+  verification instead of repeatedly testing broken infrastructure.
+- A pagination gap is not a reason to restart discovery. Finish the bounded
+  verification sequence with the best baseline and disclosed limitations. If
+  no case text can be verified, use the Route B gap response, not an unsupported
+  legal conclusion. Never turn a source-access failure into a claim that an
+  authority is wrong or nonexistent.
+
+Example (set `timeout: 180` on the bash call; stdout only goes to the file):
+
+```bash
+research_dir=$(mktemp -d "$PWD/research.XXXXXX")
+uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync open-law-lens extract-case \
+  "13 Cal.4th 952" --recover-official --timeout 120 --progress \
+  --find "presumed father" >"$research_dir/authority.json"
+status=$?
+printf 'exit=%s; result=%s/authority.json\n' "$status" "$research_dir"
+```
+
+Read the saved payload afterward; never mistake a metadata-only summary for
+review of the opinion. Do not modify settings, source documents, or databases.
+
 ## Transient library lock errors
 
 Every `open-law-lens` process opens the shared SQLite case library at startup.
@@ -29,7 +79,8 @@ When the library schema is already current these startups are read-only, but a
 startup that runs a pending migration briefly holds the database write lock. If
 a command fails with `sqlite3.OperationalError: database is locked`, treat it
 as transient: retry that one command by itself once before concluding the
-library is unavailable.
+library is unavailable. This permits only a confirmed startup-lock retry, never
+replaying a Scholar attempt or a failed recovery/import outcome.
 
 ## Research workflow
 
@@ -98,7 +149,7 @@ practical consequences.
    re-extraction:
 
    ```bash
-   uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync open-law-lens extract-case "<citation>" --recover-official --find "<term>" --find "<term>"
+   uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync open-law-lens extract-case "<citation>" --recover-official --timeout 120 --progress --find "<term>" --find "<term>"
    ```
 
    Always rely on that command's final result. Never orchestrate Scholar (or
@@ -108,6 +159,11 @@ practical consequences.
    round when both are needed. Do not sequence the case extraction only after
    the statutes finish. Use the compact `--find` passages for the case; do not
    load the full opinion unless those passages are missing or inadequate.
+   `--find` is normalized phrase matching, not semantic question answering.
+   Use short source phrases, not a paraphrased conclusion. Read
+   `unmatched_queries`, `query_accounting`, omission reasons, and `matches`;
+   an empty result does not prove that the opinion lacks the proposition.
+   Use one shorter-phrase extraction or the saved full opinion when needed.
 
 5. When discovery is genuinely needed—no reliable citation or case name is
    known—run exactly one focused search and extract the best published result;
@@ -119,6 +175,12 @@ practical consequences.
    ```bash
    uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync open-law-lens case-search "<query>" --limit 5 --compact
    ```
+
+   For a missing known case, prefer a quoted exact name and filing-year filter
+   (for example `caseName:"In re M.V." dateFiled:[2022-01-01 TO 2022-12-31]`)
+   over unquoted sentences mixing names, citation numbers, and legal concepts.
+   Corroborate identity before selecting a same-name result. This does not
+   authorize rewriting the fixed Subsequent Treatment queries.
 
    Treat results as leads. Prefer published California Supreme Court and Court
    of Appeal decisions. Use unpublished decisions only for noncontrolling
@@ -180,7 +242,9 @@ the exact commands; use them and stop when the bounds are reached:
   commands in parallel in the same tool round; check `official_pagination`,
   `source_url`, and `warnings`. For each unpaginated selected case, run exactly
   one sequential recovery-enabled extraction (`--recover-official --timeout
-  120`) and let the command perform its single Scholar attempt. Never call
+  120 --progress`) and let the command perform its single Scholar attempt.
+  Apply the execution-failure circuit breaker above; "each" never requires
+  probing a known broken desktop again. Never call
   `extract-slip-opinion`, `lookup-citation`, Scholar, browser tools, alternate
   opinion sites, or `web_search` yourself for pagination, metadata, or copies.
 - If a recovery returns no qualifying copy, is blocked, times out, or fails
@@ -253,6 +317,13 @@ A CAPTCHA, robot check, login prompt, or missing exact-result action stops the
 command immediately with `blocked` and leaves the page visible; it never solves
 or interacts with it and never falls back to coordinates, typing, scrolling,
 screenshots, or unrelated windows.
+
+A non-refresh cluster lookup may reconcile to a different durable Library
+`identifier` while preserving the requested ID in `resolved_input`. Trust its
+returned citation, source URL, text/passages, and `official_pagination`; do not
+refresh merely to force the requested ID or launch Scholar when pagination is
+already available. The final validated recovery payload supersedes incomplete
+baseline metadata.
 
 Ambiguous excerpt pinpoints are not missing official copies. If
 `official_pagination` is true but `pinpoint_status` is ambiguous/unavailable,
@@ -333,5 +404,7 @@ the extracted sources:
 - Use concise legal prose and address contrary authority or material gaps in
   the available legal sources.
 - Use quotation marks only for exact, continuous text verified in the source.
-- Do not invent citations, pinpoints, holdings, or publication status.
+- Do not invent citations, pinpoints, holdings, or publication status. A page
+  supplied by a brief or another opinion is not independently verified merely
+  because recovery failed; omit unverified pinpoints and disclose the limit.
 - If the available sources do not answer the question, say so directly.

@@ -21,8 +21,8 @@ CLI_COMMANDS: tuple[CliCommand, ...] = (
     CliCommand(
         name="extract-case",
         title="Extract Case",
-        description="Look up a case citation, case-like query, or CourtListener cluster ID and print JSON. Use --find QUERY (repeatable) for bounded verified passages instead of full text. Add --recover-official for one deterministic default-browser Google Scholar recovery when a relied-on published case lacks official pagination.",
-        example='uv run open-law-lens extract-case "13 Cal.4th 952" --recover-official --find "presumed father"',
+        description="Look up a case citation, case-like query, or CourtListener cluster ID and print JSON. Use --find QUERY (repeatable short source phrases, not semantic questions) for bounded verified passages instead of full text. Add --recover-official --timeout 120 --progress for one sequential default-browser Google Scholar recovery when official pagination is missing. Keep complete JSON stdout separate from stderr progress; bound the entire command externally too.",
+        example='uv run open-law-lens extract-case "13 Cal.4th 952" --recover-official --timeout 120 --progress --find "presumed father"',
     ),
     CliCommand(
         name="case-search",

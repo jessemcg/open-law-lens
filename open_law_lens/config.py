@@ -128,6 +128,8 @@ LEGACY_APPEAL_ISSUE_AGENT_PROMPT_SHA256ES = (
     "dee4354a0630d199daf29e40ead8fb1d3dc44feb4ae248309b4adfc3b9bddc3b",
 )
 LEGACY_LATER_TREATMENT_AGENT_PROMPT_SHA256ES = (
+    # Bounded discovery default before explicit execution/JSON failure rules.
+    "ad5d943b604828e7ded91cf31ccc3cdf09eb1d5b3e8ae40e7e85b96dd57b3070",
     "e73fc8abadd94b2affb966c126dfb0c2416e0fc86c1994baa486b01deb5d1834",
     "53b08107f87f27b6cd70b895eef4d43522ca311e4c2f40f47aa6cd92b640469e",
     # Immediately preceding tracked default, with judgment-based case-search
@@ -335,6 +337,8 @@ Target case: {target_title}
 Target official citation: {target_citation}
 CourtListener cluster id: {cluster_id}
 
+Apply the preloaded Legal Researcher's bounded execution rules to every supplied command: bash tool `timeout: 180`, complete JSON stdout, separate stderr, saved baselines, and short source phrases for passage matching (not semantic questions). Temporary JSON may be saved only in the private workspace. Announce each recovery's two-minute budget. After an unexplained abort or desktop-readiness failure, suspend further Scholar attempts for this run, including other selected cases; continue from verified baselines and disclose the actual failure, never an invented no-display diagnosis. These rules do not expand the discovery ceiling below.
+
 Discovery limits:
 1. Run this citing-cases command exactly once:
 {published_citing_cases_command}
@@ -356,12 +360,14 @@ Extraction for the selected cases:
 - Inspect `official_pagination`, `source_url`, and `warnings` in each result.
 - For each selected case that still lacks official pagination, make exactly one sequential recovery-enabled extraction, letting Open Law Lens perform its internal baseline and single Scholar attempt:
 {recover_official_extract_command}
+Use the selected case's known official citation in that template. Only if no usable citation is known, replace the citation argument with `--cluster-id <cluster_id>`; choose one identity form, not two attempts. Skip recovery entirely for an already paginated Library reconciliation, even if its durable identifier differs from the requested cluster.
 
 - If compact passages are inadequate for a relied-on case, you may perform one ordinary full extraction for it:
 {full_extract_command}
 Never run a second recovery attempt for the same case.
 
 Citation, fallback, and disclosure rules:
+- A supplied pinpoint or a page quoted by another opinion is not independently verified. Check query accounting and match-level pages; empty phrase matches or ambiguous excerpt pagination never authorize another recovery.
 - Rely on the best citation returned by the bounded sources; do not delay the answer to hunt for an official reporter citation they did not return. State plainly when a citation remains uncertain.
 - If a recovery returns no qualifying copy, is blocked, times out, or fails validation, immediately rely on the best unpaginated baseline Open Law Lens returned, disclose the missing official pagination, and link the case name or citation to the `source_url` that extraction returned. When no source URL was returned, say so; do not search elsewhere for one.
 

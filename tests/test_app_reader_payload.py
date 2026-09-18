@@ -6839,8 +6839,8 @@ Opinion text.
         )
         # Two exact-phrase CourtListener searches, workspace-safe and without
         # the unsupported `--json` flag.
-        self.assertIn(f'{prefix}case-search \'"10 Cal.App.5th 25"\' --limit 10', prompt)
-        self.assertIn(f'{prefix}case-search \'"Target Case"\' --limit 10', prompt)
+        self.assertIn(f'{prefix}case-search \'"10 Cal.App.5th 25"\' --limit 10 --compact', prompt)
+        self.assertIn(f'{prefix}case-search \'"Target Case"\' --limit 10 --compact', prompt)
         self.assertNotIn("case-search --json", prompt)
         self.assertEqual(prompt.count("case-search"), 2)
         # Extraction templates: compact baselines, one recovery-enabled form
@@ -6850,8 +6850,8 @@ Opinion text.
             prompt,
         )
         self.assertIn(
-            f"{prefix}extract-case --cluster-id <cluster_id> --recover-official"
-            ' --timeout 120 --find "<term>"',
+            f'{prefix}extract-case "<official citation>" --recover-official'
+            ' --timeout 120 --progress --find "<term>"',
             prompt,
         )
         self.assertIn(
@@ -6860,6 +6860,10 @@ Opinion text.
         )
         self.assertEqual(prompt.count("--recover-official"), 1)
         self.assertEqual(prompt.count("--timeout 120"), 1)
+        self.assertIn("timeout: 180", prompt)
+        self.assertIn("replace the citation argument with `--cluster-id <cluster_id>`", prompt)
+        self.assertIn("choose one identity form, not two attempts", prompt)
+        self.assertIn("suspend further Scholar attempts", prompt)
         # Bounded preference, prohibitions, and linked fallback requirements.
         self.assertIn("Three to five cases is a ceiling and a preference, not a quota", prompt)
         self.assertIn("use fewer when only fewer can be verified", prompt)

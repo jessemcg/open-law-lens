@@ -5,6 +5,7 @@ import re
 import select
 import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -26,6 +27,19 @@ from .storage import SOURCE_PROVIDER_GOOGLE_SCHOLAR
 
 CLIPBOARD_MAX_BYTES = 8 * 1024 * 1024
 CLIPBOARD_COMMAND_TIMEOUT_SECONDS = 10
+BROWSER_LAUNCH_TIMEOUT_SECONDS = 15
+
+# Run Gio in a short-lived child with detached standard streams. A browser
+# started by Gio inherits these descriptors and intentionally outlives the CLI;
+# inheriting the CLI's pipes would hold json.load()/communicate() open forever.
+# Do not redirect this process's descriptors: the GTK caller is multithreaded.
+_BROWSER_LAUNCH_CODE = """\
+import sys
+import gi
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio
+raise SystemExit(0 if Gio.AppInfo.launch_default_for_uri(sys.argv[1], None) else 1)
+"""
 
 # A qualifying officially paginated opinion must embed at least one reporter
 # page marker in the expected series. This mirrors the floor enforced by
@@ -149,19 +163,21 @@ def launch_scholar_url(url: str) -> tuple[str, str]:
         raise ScholarBrowserError("Scholar launch requires a scholar.google.com URL.")
     name, desktop_id = resolve_default_https_handler()
     try:
-        import gi
-
-        gi.require_version("Gio", "2.0")
-        from gi.repository import Gio
-    except (ImportError, ValueError) as exc:
-        raise ScholarBrowserError(
-            "PyGObject/Gio is unavailable; cannot launch the default browser."
-        ) from exc
-    launched = Gio.AppInfo.launch_default_for_uri(url, None)
-    if not launched:
+        subprocess.run(
+            [sys.executable, "-c", _BROWSER_LAUNCH_CODE, url],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            timeout=BROWSER_LAUNCH_TIMEOUT_SECONDS,
+            check=True,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ScholarBrowserError("Default-browser launch timed out.") from exc
+    except (OSError, subprocess.CalledProcessError) as exc:
         raise ScholarBrowserError(
             "The default https handler could not launch the Scholar URL."
-        )
+        ) from exc
     return name, desktop_id
 
 

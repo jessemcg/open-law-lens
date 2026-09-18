@@ -40,7 +40,23 @@ class AuthorityResolverTests(unittest.TestCase):
 
         client.lookup_citation.assert_called_once_with("123 Cal.App.5th 456", refresh=False)
         self.assertFalse(result.ok)
+        self.assertEqual(result.title, "")  # citation must not become expected name
         self.assertTrue(any("Google Scholar recovery is next" in w for w in result.warnings))
+
+    def test_no_cluster_preserves_supplied_name_for_scholar(self) -> None:
+        client = MagicMock()
+        client.clusters_from_lookup.return_value = []
+        with patch(
+            "open_law_lens.authority_resolver.resolve_case_input",
+            return_value=("118 Cal.App.5th 1208", []),
+        ):
+            result = extract_case(
+                "118 Cal.App.5th 1208",
+                original_input="In re L.G. (2026) 118 Cal.App.5th 1208",
+                client=client,
+            )
+        self.assertEqual(result.title, "In re L.G.")
+        self.assertEqual(result.citation, "118 Cal.App.5th 1208")
 
     def test_no_cluster_reports_no_baseline_and_browser_recovery_next(self) -> None:
         client = MagicMock()

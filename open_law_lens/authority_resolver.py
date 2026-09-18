@@ -220,7 +220,13 @@ def extract_case(
             input=original_input or citation,
             resolved_input=resolved,
             source="",
-            title=imported_case_name_from_text(resolved) or resolved,
+            # Keep the supplied case name when citation normalization removed
+            # it. A bare reporter citation is NOT a case title: passing it as
+            # recovery's expected name rejects the real Scholar result.
+            title=(
+                imported_case_name_from_text(original_input or citation)
+                or imported_case_name_from_text(resolved)
+            ),
             citation=normalize_official_citation(resolved),
             identifier="",
             source_url="",

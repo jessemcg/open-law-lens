@@ -5190,7 +5190,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
         def exact_phrase_search_command(query_text: str) -> str:
             phrase = json.dumps(query_text.strip(), ensure_ascii=False)
-            return agent_cli_command(f"case-search {shlex.quote(phrase)} --limit 10")
+            return agent_cli_command(f"case-search {shlex.quote(phrase)} --limit 10 --compact")
 
         citation_search_command = exact_phrase_search_command(target_citation)
         case_name_search_command = exact_phrase_search_command(target_title)
@@ -5198,8 +5198,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             'extract-case --cluster-id <cluster_id> --find "<term>" --find "<term>"'
         )
         recover_official_extract_command = agent_cli_command(
-            "extract-case --cluster-id <cluster_id> --recover-official --timeout 120"
-            ' --find "<term>"'
+            'extract-case "<official citation>" --recover-official --timeout 120'
+            ' --progress --find "<term>"'
         )
         full_extract_command = agent_cli_command(
             "extract-case --cluster-id <cluster_id>"

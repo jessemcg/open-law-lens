@@ -365,6 +365,18 @@ recovery described below, and is never used to retrieve an official reporter
 copy. Research Cache and Prior Brief runs load no skill and no web extension
 and remain closed-corpus workflows.
 
+All research-capable modes also follow the skill's bounded execution contract:
+180-second bash tool deadlines, sequential 120-second recovery with progress,
+complete JSON stdout and separate stderr, preserved baselines, and one attempt
+per authority across identity aliases. An unexplained abort or desktop-readiness
+failure suspends further Scholar attempts for that run; agents report observed
+failures rather than inventing a no-display explanation. Phrase-based `--find`
+queries require match accounting and source review, not semantic paraphrases or
+metadata-only summaries. These bounds do not weaken the mandatory case-law floor,
+expand Subsequent Treatment discovery, or open closed-corpus modes. The system
+prompt no longer advertises a retired agent-driven browser bridge.
+See [research execution validation](docs/research-execution-validation.md).
+
 Subsequent Treatment is hard-bounded. The runtime prompt supplies one
 `published-citing-cases` command, at most two exact-phrase `case-search`
 commands (official citation first, then case name), and ready-made
@@ -375,14 +387,22 @@ calls, Scholar orchestration, or alternate opinion sites. Three to five
 verified later cases is a ceiling and a preference — fewer verified cases plus
 a disclosed coverage caveat are preferable to open-ended searching. Compact
 `extract-case --find` baselines run in parallel; each unpaginated selected
-case gets exactly one sequential `--recover-official --timeout 120` extraction
-that performs Open Law Lens's own single Scholar attempt. An unpaginated
+case gets at most one sequential `--recover-official --timeout 120 --progress`
+extraction, subject to the execution-failure stop rule above. It performs Open
+Law Lens's own single Scholar attempt. Recovery templates prefer a known
+official citation and use the cluster-ID alternative only if none is available;
+the two fixed discovery searches now request compact results. An unpaginated
 selected case that reconciles against a durable official copy (see
 Official-Copy Source Order below) is returned immediately from the Library and
 never launches Scholar. Unsuccessful Scholar recovery yields the linked
 CourtListener/slip baseline with a disclosed pagination limitation — never
 another source search — and unsupported treatment characterizations are
 omitted rather than inferred.
+
+The immediately preceding exact shipped Subsequent Treatment default upgrades
+in memory on config load; customized prompts and all model profiles are
+preserved, and no settings file is rewritten. Start a fresh Agent session for
+the skill/system updates and restart the GUI for generated-command changes.
 
 The wrapper also resolves `uv` deterministically before launching Pi. It uses
 the validated `OPEN_LAW_LENS_UV_BIN` override, then `uv` on `PATH`, then
@@ -670,6 +690,12 @@ single deterministic, model-free sequence. This path never hardcodes Firefox,
 Chrome, an app ID, an executable, or a profile: it resolves the default handler
 through Gio at runtime and drives Linux Computer Use directly through a bounded
 first-party MCP client (no Pi/model process and no `pi-mcp-adapter`).
+
+Browser launch uses a bounded Gio helper with detached stdin/stdout/stderr, so
+a cold-started browser cannot hold a piped CLI's JSON or stderr open after the
+command finishes. Default HTTPS-handler selection is unchanged. When no
+CourtListener cluster exists, the resolver preserves a supplied case name but
+never treats a bare reporter citation as the expected Scholar case title.
 
 The recovery-enabled extraction performs the baseline lookup, one deterministic
 recovery attempt, import validation, and final re-extraction in one command:
