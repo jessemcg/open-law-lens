@@ -190,7 +190,7 @@ class AnswerRenderingTests(unittest.TestCase):
         text = ('# Synthetic Answer\n*Qualified result*\n\n'
                 f'[Synthetic Opening](open-law-lens://prior-brief/{source.prior_brief_id}) '
                 'argues “children who witnessed the threats”.\n\n'
-                'In re Caden C. (2021) 11 Cal.5th 614, 636; '
+                '***In re Caden C.* (2021) 11 Cal.5th 614**, 636; '
                 'Welf. & Inst. Code, § 300; Cal. Rules of Court, rule 8.1115. '
                 'https://example.invalid/source')
         for mode in ('brief', 'case', 'general', 'appeal'):
@@ -204,6 +204,16 @@ class AnswerRenderingTests(unittest.TestCase):
                     b = w._agent_answer_buffer
                     return b.get_text(b.get_start_iter(), b.get_end_iter(), True)
                 self.assertEqual(rendered(old), rendered(new))
+                self.assertNotIn('*', rendered(new))
+                for obj in (old, new):
+                    buffer = obj._agent_answer_buffer
+                    for phrase in ('In re Caden C.', '11 Cal.5th 614'):
+                        tags = buffer.get_iter_at_offset(rendered(obj).index(phrase)).get_tags()
+                        weighted = [tag for tag in tags if tag.get_property('weight-set')]
+                        effective = max(weighted, key=lambda tag: tag.get_priority())
+                        self.assertEqual(effective.get_property('weight'), 700)
+                    if mode in ('general', 'appeal'):
+                        self.assertTrue(obj._agent_citation_link_lookup)
                 for name in ('_agent_link_lookup', '_agent_citation_link_lookup',
                              '_agent_statute_link_lookup', '_agent_rule_link_lookup',
                              '_agent_external_url_link_lookup'):
@@ -218,6 +228,46 @@ class AnswerRenderingTests(unittest.TestCase):
                                       if tag in b.get_iter_at_offset(i).get_tags()))
                                       for tag, target in getattr(w, name).items())
                     self.assertEqual(ranges(old), ranges(new))
+
+    def test_nested_emphasis_shared_reader_and_source_offsets(self):
+        formatter = _AgentAnswerTextFormatter()
+        citation = 'In re Caden C. (2021) 11 Cal.5th 614'
+        text = f'Résumé: ***In re Caden C.* (2021) 11 Cal.5th 614**; **next**.'
+        rendered, spans, offsets = formatter._render_markdown_text(text)
+        self.assertEqual(rendered, f'Résumé: {citation}; next.')
+        self.assertIn((8, 8 + len(citation), 'bold'), spans)
+        self.assertIn((8, 8 + len('In re Caden C.'), 'italic'), spans)
+        self.assertEqual(offsets, sorted(offsets))
+        for phrase in ('In re Caden C.', '(2021)', '11 Cal.5th 614', 'next'):
+            self.assertEqual(offsets[text.index(phrase)], rendered.index(phrase))
+            self.assertEqual(offsets[text.index(phrase) + len(phrase)],
+                             rendered.index(phrase) + len(phrase))
+        buffer = Gtk.TextBuffer()
+        buffer.set_text(rendered)
+        reader = SimpleNamespace(reader_buffer=buffer)
+        OpenLawLensWindow._apply_reader_markdown_spans(reader, spans)
+        for phrase in ('In re Caden C.', '11 Cal.5th 614'):
+            tags = buffer.get_iter_at_offset(rendered.index(phrase)).get_tags()
+            self.assertTrue(any(tag.get_property('weight') == 700 for tag in tags))
+
+    def test_nested_emphasis_and_prior_brief_links(self):
+        formatter = _AgentAnswerTextFormatter()
+        for markup, expected in (
+            ('***both***', 'both'),
+            ('**before *inside* after**', 'before inside after'),
+            ('**first** and **second**', 'first and second'),
+            ('unmatched **', 'unmatched **'),
+        ):
+            with self.subTest(markup=markup):
+                rendered, _, _ = formatter._render_markdown_text(markup)
+                self.assertEqual(rendered, expected)
+        target = 'a' * 64
+        markup = f'**[*Brief*](open-law-lens://prior-brief/{target}) and *case***'
+        rendered, spans, _ = formatter._render_markdown_text(markup)
+        self.assertEqual(rendered, 'Brief and case')
+        self.assertIn((0, 5, f'prior_brief:{target}'), spans)
+        self.assertIn((0, 5, 'italic'), spans)
+        self.assertIn((0, 14, 'bold'), spans)
 
     def test_prepared_quotes_links_and_unicode_offsets(self):
         source = CaseTextSource('', '', 'Synthetic Opening', '', '',

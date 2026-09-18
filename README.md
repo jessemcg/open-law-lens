@@ -426,6 +426,11 @@ been handed back to GTK. Stale work from a replaced session or closed window is
 ignored. Failures leave the Session output available rather than keeping a
 spinner running forever. See [completion validation](docs/answer-completion-responsiveness.md).
 
+Live and saved answers render nested bold/italic Markdown (including italic
+case names inside bold citations) without showing delimiter stars. Citation
+links preserve explicit bold formatting. Existing saved answers benefit when
+reopened after restarting the app; no stored-answer migration is needed.
+
 Saved agent answers begin with an issue-specific title and compact disposition
 subtitle. Open Law Lens uses those fields in the Research Cache sidebar and
 enforces short sidebar-friendly limits: at most eight title words and five

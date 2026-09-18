@@ -1386,6 +1386,9 @@ class AppReaderPayloadTests(unittest.TestCase):
 
     def test_agent_modes_remove_quote_marks_and_case_mode_links_resolved_quote(self) -> None:
         class DummyTagTable:
+            def lookup(self, _name: str) -> None:
+                return None
+
             def remove(self, _tag: object) -> None:
                 pass
 

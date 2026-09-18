@@ -425,33 +425,8 @@ def build_agent_launch_env(
 
 MARKDOWN_TOKEN_RE = re.compile(
     r"(\[([^\]\n]+)\]\(open-law-lens://prior-brief/([a-fA-F0-9]{16,64})\)"
-    r"|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*)"
+    r"|\*\*((?:[^*\n]|\*[^*\n]+\*)+)\*\*|\*([^*\n]+)\*)"
 )
-
-
-def unwrap_prior_brief_link_markup(
-    content: str,
-) -> tuple[str, list[tuple[int, int, str]]]:
-    """Replace prior-brief links nested inside emphasis spans with their titles."""
-    if "open-law-lens://prior-brief/" not in content:
-        return content, []
-    out: list[str] = []
-    spans: list[tuple[int, int, str]] = []
-    cursor = 0
-    clean_offset = 0
-    for match in PRIOR_BRIEF_MARKDOWN_LINK_RE.finditer(content):
-        before = content[cursor:match.start()]
-        out.append(before)
-        clean_offset += len(before)
-        title = match.group(1)
-        span_start = clean_offset
-        out.append(title)
-        clean_offset += len(title)
-        if title:
-            spans.append((span_start, clean_offset, f"prior_brief:{match.group(2)}"))
-        cursor = match.end()
-    out.append(content[cursor:])
-    return "".join(out), spans
 
 
 BACKTICK_TOKEN_RE = re.compile(r"`([^`\n]+)`")
@@ -10520,6 +10495,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                     )
                 buffer.apply_tag(tag, buffer.get_iter_at_offset(start), buffer.get_iter_at_offset(end))
             yield
+        # Link tags use medium weight; explicit Markdown bold takes precedence.
+        bold_tag = table.lookup("md-bold") if table else None
+        if bold_tag is not None:
+            bold_tag.set_priority(table.get_size() - 1)
         self._queue_agent_answer_height_update()
 
     def _on_agent_copy_trace_clicked(self, _button: Gtk.Button) -> None:
@@ -10642,16 +10621,20 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             for idx in range(cursor, start):
                 orig_to_clean[idx] = clean_offset + (idx - cursor)
             clean_offset += len(before)
-            nested_spans: list[tuple[int, int, str]] = []
             if match.group(2) is not None:
-                content = match.group(2)
+                content_group = 2
                 kind = f"prior_brief:{match.group(3)}"
             elif match.group(4) is not None:
-                content, nested_spans = unwrap_prior_brief_link_markup(match.group(4))
+                content_group = 4
                 kind = "bold"
             else:
-                content, nested_spans = unwrap_prior_brief_link_markup(match.group(5) or "")
+                content_group = 5
                 kind = "italic"
+            # Parse nested emphasis (e.g. ** *case name* citation **) before
+            # authority links are added, retaining source-to-display offsets.
+            content, nested_spans, content_map = OpenLawLensWindow._render_inline_markdown(
+                self, match.group(content_group), 0
+            )
             span_start = clean_offset
             out.append(content)
             clean_offset += len(content)
@@ -10665,9 +10648,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 )
                 for nested_start, nested_end, nested_kind in nested_spans
             )
-            for idx in range(start, end):
+            content_start, content_end = match.span(content_group)
+            for idx in range(start, content_start):
                 orig_to_clean[idx] = span_start
-            orig_to_clean[end] = clean_offset
+            for idx in range(content_start, content_end + 1):
+                orig_to_clean[idx] = span_start + content_map[idx - content_start]
+            for idx in range(content_end + 1, end + 1):
+                orig_to_clean[idx] = clean_offset
             cursor = end
         tail = text[cursor:]
         out.append(tail)
@@ -10779,6 +10766,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._apply_agent_statute_links(buffer, rendered)
             self._apply_agent_rule_links(buffer, rendered)
         self._apply_agent_external_url_links(buffer, rendered)
+        bold_tag = table.lookup("md-bold") if table else None
+        if bold_tag is not None:
+            bold_tag.set_priority(table.get_size() - 1)
         queue_height_update = getattr(self, "_queue_agent_answer_height_update", None)
         if callable(queue_height_update):
             queue_height_update()
