@@ -31,6 +31,7 @@ from open_law_lens.client import (
     us_abbreviated_date,
 )
 from open_law_lens.case_titles import normalize_case_title
+from open_law_lens.citation_model import official_citation_from_cluster
 from open_law_lens.library import CaseLibrary, DisplayText
 from open_law_lens.slip_opinions import SlipOpinionResult
 
@@ -1541,7 +1542,7 @@ class ClientTests(unittest.TestCase):
                         {
                             "id": 42,
                             "case_name": "Example v. State",
-                            "citations": [{"volume": 1, "reporter": "Cal.", "page": "2"}],
+                            "citations": [{"volume": 576, "reporter": "U.S.", "page": "644"}],
                         }
                     ],
                 }
@@ -1553,8 +1554,8 @@ class ClientTests(unittest.TestCase):
                         {
                             "id": 42,
                             "case_name": "Example v. State",
-                            "official_citation": "1 Cal. 2",
-                            "citations": [{"volume": "1", "reporter": "Cal.", "page": "2"}],
+                            "official_citation": "576 U.S. 644",
+                            "citations": [{"volume": "576", "reporter": "U.S.", "page": "644"}],
                         }
                     ],
                 }
@@ -1567,6 +1568,43 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(client.last_lookup_source, "Research Cache")
             self.assertEqual(client.cached_clusters()[0]["case_name"], "Example v. State")
             self.assertEqual(library.saved_clusters(), [])
+
+    def test_stale_official_lookup_cache_falls_through_to_network(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            # A cluster cached before the United States Reports reporter was
+            # recognized carries no official citation for the requested cite.
+            stale_cluster = {"id": 42, "case_name": "Stale v. Cache", "citations": []}
+            cache.write_lookup(
+                "490 U.S. 30", [{"status": 200, "clusters": [stale_cluster]}]
+            )
+            library = CaseLibrary(Path(temp_dir) / "library.sqlite3")
+            library.ensure()
+            client = CourtListenerClient(cache=cache, library=library)
+            fresh = [
+                {
+                    "status": 200,
+                    "clusters": [
+                        {
+                            "id": 42,
+                            "case_name": "Mississippi Band v. Holyfield",
+                            "citations": [
+                                {"volume": "490", "reporter": "U.S.", "page": "30"}
+                            ],
+                        }
+                    ],
+                }
+            ]
+
+            with patch.object(client, "_request_json", return_value=fresh) as request:
+                result = client.lookup_citation("490   U.S. 30")
+
+            request.assert_called_once()
+            self.assertEqual(client.last_lookup_source, "CourtListener API")
+            self.assertEqual(
+                official_citation_from_cluster(result[0]["clusters"][0]),
+                "490 U.S. 30",
+            )
 
     def test_fresh_lookup_tags_courtlistener_clusters(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

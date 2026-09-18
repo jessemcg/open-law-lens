@@ -562,6 +562,70 @@ class CacheTests(unittest.TestCase):
             lookup = cache.read_lookup("110 Cal.App.5th 1132")
             self.assertEqual(lookup[0]["clusters"][0]["case_name"], "B.D. v. Superior Court")
 
+    def test_repair_stripped_official_citations_restores_united_states_reporter(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            # Simulate a cluster cached before the United States Reports
+            # reporter was recognized: canonicalization wiped its citations.
+            cluster = {
+                "id": 112241,
+                "case_name": "Mississippi Band of Choctaw Indians v. Holyfield",
+                "date_filed": "1989-04-03",
+                "citations": [],
+            }
+            cache.upsert_cluster(cluster)
+            cache.write_lookup(
+                "490 U.S. 30",
+                [
+                    {
+                        "status": 200,
+                        "citation": "490 U.S. 30",
+                        "normalized_citations": ["490 U.S. 30"],
+                        "clusters": [cluster],
+                    }
+                ],
+            )
+
+            self.assertEqual(cache.repair_stripped_official_citations(), 1)
+
+            repaired = cache.read_cached_cluster("112241")
+            assert repaired is not None
+            self.assertEqual(repaired["official_citation"], "490 U.S. 30")
+            self.assertEqual(
+                repaired["citations"],
+                [{"volume": "490", "reporter": "U.S.", "page": "30"}],
+            )
+            entry = cache.list_case_entries()[0]
+            self.assertEqual(entry["citation_text"], "490 U.S. 30")
+            lookup = cache.read_lookup("490 U.S. 30")
+            self.assertEqual(lookup[0]["clusters"][0]["official_citation"], "490 U.S. 30")
+
+    def test_repair_stripped_official_citations_leaves_unofficial_lookups_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = JsonCache(Path(temp_dir))
+            cluster = {
+                "id": 7,
+                "case_name": "Recent Slip Opinion",
+                "citations": [],
+            }
+            cache.upsert_cluster(cluster)
+            cache.write_lookup(
+                "111 S. Ct. 1246",
+                [
+                    {
+                        "status": 200,
+                        "citation": "111 S. Ct. 1246",
+                        "normalized_citations": ["111 S. Ct. 1246"],
+                        "clusters": [cluster],
+                    }
+                ],
+            )
+
+            self.assertEqual(cache.repair_stripped_official_citations(), 0)
+            repaired = cache.read_cached_cluster("7")
+            assert repaired is not None
+            self.assertEqual(repaired["citations"], [])
+
     def test_statute_cache_round_trip_and_selection(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = JsonCache(Path(temp_dir))

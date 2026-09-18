@@ -199,6 +199,12 @@ def filter_lookup_result_for_client(
     normalized_citation: str,
 ) -> list[dict[str, Any]]:
     filtered = filter_lookup_result_for_citation(result, normalized_citation)
+    # When the requested citation is itself an official reporter citation,
+    # a cached cluster that carries no recognizable official citation is a
+    # stale entry (for example one canonicalized before the United States
+    # Reports reporter was supported). Drop it so the caller treats the cache
+    # as a miss and re-fetches the authoritative cluster.
+    filtered = filter_official_lookup_result_if_needed(filtered, normalized_citation)
     if filtered or not lookup_result_had_clusters(result):
         return filtered
     return []

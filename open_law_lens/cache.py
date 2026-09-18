@@ -16,7 +16,11 @@ from .case_titles import cluster_short_title_value
 from .citation_model import (
     canonicalize_cluster_citations,
     canonicalize_lookup_result,
+    official_citation_dict_from_parts,
     official_citation_from_cluster,
+    official_citation_from_parts,
+    official_citation_parts_from_cluster,
+    official_citation_parts_from_text,
 )
 from .external_import import repair_reporter_only_imported_cluster
 from .reader_highlights import ReaderHighlight
@@ -119,6 +123,16 @@ def _opinion_import_text(opinion: dict[str, Any]) -> str:
     return ""
 
 
+def _lookup_requested_citation(item: dict[str, Any]) -> str:
+    """Return the citation a cached lookup was requested for."""
+    normalized = item.get("normalized_citations")
+    if isinstance(normalized, list):
+        for value in normalized:
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return str(item.get("citation") or "").strip()
+
+
 def _synchronized(method: Any) -> Any:
     def wrapper(self: "JsonCache", *args: Any, **kwargs: Any) -> Any:
         with self._lock:
@@ -150,6 +164,7 @@ class JsonCache:
         ):
             (self.root / name).mkdir(parents=True, exist_ok=True)
         self.repair_reporter_only_imported_case_names()
+        self.repair_stripped_official_citations()
         self._refresh_case_index_titles()
 
     def case_index_path(self) -> Path:
@@ -737,6 +752,53 @@ class JsonCache:
                 break
         if not repaired_clusters:
             return 0
+        self._repair_lookup_clusters(repaired_clusters)
+        return len(repaired_clusters)
+
+    @_synchronized
+    def repair_stripped_official_citations(self) -> int:
+        """Restore official reporter citations dropped by earlier canonicalization.
+
+        Earlier canonicalization recognized only California reporters, so a
+        cached cluster whose only reporter was the United States Reports had its
+        ``citations`` wiped. Rebuild the official citation from the lookup that
+        produced the cluster whenever that lookup's own requested citation is an
+        official reporter citation. This is a filesystem-only, read-time repair:
+        it never fetches, and it leaves clusters whose requested citation is not
+        an official reporter citation untouched.
+        """
+        repaired_clusters: dict[str, dict[str, Any]] = {}
+        for lookup_path in self.list_lookups():
+            data = self.read_json(lookup_path)
+            if not isinstance(data, list):
+                continue
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                clusters = item.get("clusters")
+                if not isinstance(clusters, list):
+                    continue
+                requested = _lookup_requested_citation(item)
+                parts = official_citation_parts_from_text(requested)
+                if parts is None:
+                    continue
+                for cluster in clusters:
+                    if not isinstance(cluster, dict):
+                        continue
+                    if official_citation_parts_from_cluster(cluster) is not None:
+                        continue
+                    cluster_id = cluster_id_from_cluster(cluster)
+                    if not cluster_id:
+                        continue
+                    repaired_clusters[cluster_id] = {
+                        **cluster,
+                        "official_citation": official_citation_from_parts(parts),
+                        "citations": [official_citation_dict_from_parts(parts)],
+                    }
+        if not repaired_clusters:
+            return 0
+        for cluster in repaired_clusters.values():
+            self.upsert_cluster(cluster, mark_dirty=False)
         self._repair_lookup_clusters(repaired_clusters)
         return len(repaired_clusters)
 
