@@ -14,12 +14,12 @@ SCHOLAR_UI_NOISE_LINES = {
 }
 REPORTER_CITATION_RE = re.compile(
     r"\b\d+\s+"
-    r"(?:Cal\.?\s*(?:App\.?\s*)?(?:\d+d|[2-5]th)?|Cal\.?\s*Rptr\.?\s*(?:\d+d)?|P\.?\s*(?:\d+d)?)"
+    r"(?:Cal\.?\s*(?:App\.?\s*)?(?:\d+d|[2-5]th)?|Cal\.?\s*Rptr\.?\s*(?:\d+d)?|P\.?\s*(?:\d+d)?|U\.?\s*S\.?)"
     r"\s+\d+\b",
     re.IGNORECASE,
 )
 OFFICIAL_CITATION_RE = re.compile(
-    r"\b\d+\s+Cal\.?\s*(?:App\.?\s*)?(?:\d+d|[2-5]th)?\s+\d+\b",
+    r"\b\d+\s+(?:Cal\.?\s*(?:App\.?\s*)?(?:\d+d|[2-5]th)?|U\.?\s*S\.?)\s+\d+\b",
     re.IGNORECASE,
 )
 
@@ -31,12 +31,11 @@ def normalize_external_reporter_markers(text: str, expected_citation: str) -> st
     must repeat the target volume and reporter, and its page must fall in the same
     plausible opinion range as the expected first page.
     """
-    expected = OFFICIAL_CITATION_RE.search(expected_citation or "")
-    if expected is None:
-        return text
     expected_match = re.fullmatch(
-        r"\s*(?P<volume>\d+)\s+(?P<reporter>Cal\.?\s*(?:App\.?\s*)?(?:\d+d|[2-5]th)?)\s+(?P<page>\d+)\s*",
-        expected.group(0),
+        r"\s*(?P<volume>\d+)\s+"
+        r"(?P<reporter>Cal\.?\s*(?:App\.?\s*)?(?:\d+d|[2-5]th)?|U\.?\s*S\.?)\s+"
+        r"(?P<page>\d+)\s*",
+        expected_citation or "",
         flags=re.IGNORECASE,
     )
     if expected_match is None:

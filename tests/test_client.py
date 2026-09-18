@@ -375,7 +375,7 @@ class ClientTests(unittest.TestCase):
             "citations": [{"volume": 576, "reporter": "U.S.", "page": "644"}],
         }
         self.assertEqual(cluster_title(cluster), "Obergefell v. Hodges")
-        self.assertEqual(cluster_citation_line(cluster), "")
+        self.assertEqual(cluster_citation_line(cluster), "576 U.S. 644")
 
     def test_cluster_short_title_prefers_case_name_short(self) -> None:
         cluster = {

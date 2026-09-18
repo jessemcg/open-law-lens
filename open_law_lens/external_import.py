@@ -80,7 +80,7 @@ def build_external_import_cluster(
 ) -> dict[str, Any]:
     normalized_citation = normalize_official_citation(official_citation)
     if not normalized_citation:
-        raise ValueError("Official California citation is required.")
+        raise ValueError("Official reporter citation is required.")
     clean_name = normalize_case_title(case_name.strip()) if case_name.strip() else ""
     if reporter_only_case_name(clean_name, normalized_citation) or re.fullmatch(
         r"v\.?", clean_name, flags=re.IGNORECASE
@@ -94,7 +94,7 @@ def build_external_import_cluster(
     if not citations:
         parts = official_citation_parts(normalized_citation)
         if parts is None:
-            raise ValueError("Official California citation is required.")
+            raise ValueError("Official reporter citation is required.")
         volume, reporter, page = parts
         citations = [{"volume": volume, "reporter": reporter, "page": page}]
     return {

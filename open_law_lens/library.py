@@ -1712,7 +1712,7 @@ class CaseLibrary:
             titles = "; ".join(uncited_titles)
             raise ValueError(
                 "Research Set cannot be saved because the following cached "
-                f"{case_word} lack an official California reporter citation: {titles}"
+                f"{case_word} lack an official reporter citation: {titles}"
             )
         with self.connection() as conn:
             existing = conn.execute(
@@ -2400,7 +2400,7 @@ class CaseLibrary:
                     marker_count=sum(marker_counts.get(opinion_id, 0) for opinion_id in associated),
                     eligible=False,
                     official_citation="",
-                    reason="Missing official California reporter citation.",
+                    reason="Missing official reporter citation.",
                 )
             )
         candidates.sort(key=lambda candidate: (candidate.title.casefold(), candidate.cluster_id))

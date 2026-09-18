@@ -20,6 +20,22 @@ class QualityTests(unittest.TestCase):
         self.assertTrue(quality.eligible)
         self.assertEqual(quality.official_citation, "10 Cal.App.5th 25")
 
+    def test_united_states_supreme_court_citation_with_matching_markers_is_eligible(self) -> None:
+        cluster = {
+            "id": 112566,
+            "case_name": "Arizona v. Fulminante",
+            "date_filed": "1991-05-23",
+            "citations": [{"volume": "499", "reporter": "U.S.", "page": "279"}],
+        }
+        display = opinion_display_text(
+            {"plain_text": "[*281]Opening.\n\n[*282]Next page.\n\n[*283]More."}
+        )
+
+        quality = official_pagination_quality(cluster, [display])
+
+        self.assertTrue(quality.eligible)
+        self.assertEqual(quality.official_citation, "499 U.S. 279")
+
     def test_official_citation_without_markers_is_ineligible(self) -> None:
         cluster = {
             "id": 42,

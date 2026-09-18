@@ -19,6 +19,7 @@ from .config import courtlistener_token
 from .library import CaseLibrary, DisplayText, decode_cp1252_control_chars, opinion_display_text
 from .quality import (
     OFFICIAL_CALIFORNIA_REPORTERS,
+    OFFICIAL_REPORTERS,
     OfficialPaginationQuality,
     normalized_reporter,
     official_california_reporter_citation as quality_official_california_reporter_citation,

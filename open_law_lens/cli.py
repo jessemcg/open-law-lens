@@ -1153,7 +1153,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     open_scholar_parser.add_argument(
         "citation",
-        help="California official reporter citation or a case query",
+        help="official reporter citation (California or U.S. Supreme Court) or a case query",
     )
     open_scholar_parser.set_defaults(func=_cmd_open_scholar_browser)
 
@@ -1163,7 +1163,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     import_scholar_parser.add_argument(
         "--citation",
-        help="exact California official reporter citation; omit for an identity-only import with --cluster-id",
+        help="exact official reporter citation (California or U.S. Supreme Court); omit for an identity-only import with --cluster-id",
     )
     import_scholar_parser.add_argument(
         "--source-url",
@@ -1181,7 +1181,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="perform one deterministic default-browser Google Scholar recovery for diagnostics",
     )
     recover_scholar_parser.add_argument("value", help="Scholar search query, e.g. '11 Cal.5th 614'")
-    recover_scholar_parser.add_argument("--citation", help="expected California official reporter citation")
+    recover_scholar_parser.add_argument("--citation", help="expected official reporter citation (California or U.S. Supreme Court)")
     recover_scholar_parser.add_argument("--case-name", help="expected case name")
     recover_scholar_parser.add_argument("--cluster-id", help="optional existing CourtListener cluster identity")
     recover_scholar_parser.add_argument("--progress", action="store_true", help="report stage progress to stderr")
@@ -1302,7 +1302,7 @@ def build_parser() -> argparse.ArgumentParser:
     prune_library_parser.add_argument(
         "--missing-citation",
         action="store_true",
-        help="audit or remove only content without an official California reporter citation",
+        help="audit or remove only content without an official reporter citation",
     )
     prune_library_mode = prune_library_parser.add_mutually_exclusive_group()
     prune_library_mode.add_argument(

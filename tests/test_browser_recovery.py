@@ -1186,6 +1186,54 @@ class FirefoxResultLinkTests(unittest.TestCase):
         self.assertIsNone(find_result_link(tree, scoped, "82 Cal.App.5th 166", "In re S.H."))
 
 
+def us_scholar_results() -> list[dict[str, Any]]:
+    return [
+        {
+            "title": "Arizona v. Fulminante",
+            "metadata": "499 U.S. 279 - US Supreme Court 1991 - Google Scholar",
+            "snippet": "… The confession was erroneously admitted.",
+            "cited_by": "Cited by 1234",
+        },
+        {
+            "title": "Fulminante v. Arizona",
+            "metadata": "111 S. Ct. 1246 - US Supreme Court 1991 - Google Scholar",
+            "snippet": "… citing 499 U.S. 279.",
+            "cited_by": "Cited by 3",
+        },
+    ]
+
+
+class UnitedStatesSupremeCourtResultLinkTests(unittest.TestCase):
+    """Official United States Reports citations follow the same recovery path."""
+
+    def test_single_corroborated_supreme_court_result(self) -> None:
+        tree = firefox_scholar_search_tree("499 U.S. 279", us_scholar_results())
+        scoped = _scoped_search(tree)
+        matches = find_result_matches(
+            tree, scoped, "499 U.S. 279", "Arizona v. Fulminante"
+        )
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0].official_citation, "499 U.S. 279")
+        self.assertEqual(node_name(matches[0].link), "Arizona v. Fulminante")
+
+    def test_snippet_quoting_supreme_court_citation_does_not_qualify(self) -> None:
+        # The parallel-citation result's snippet quotes the target, but only a
+        # result whose own primary metadata carries the U.S. citation qualifies.
+        tree = firefox_scholar_search_tree("499 U.S. 279", us_scholar_results())
+        scoped = _scoped_search(tree)
+        matches = find_result_matches(
+            tree, scoped, "499 U.S. 279", "Arizona v. Fulminante"
+        )
+        self.assertEqual([node_name(match.link) for match in matches], ["Arizona v. Fulminante"])
+
+    def test_wrong_supreme_court_citation_rejected(self) -> None:
+        tree = firefox_scholar_search_tree("499 U.S. 279", us_scholar_results())
+        scoped = _scoped_search(tree)
+        self.assertIsNone(
+            find_result_link(tree, scoped, "384 U.S. 436", "Arizona v. Fulminante")
+        )
+
+
 class ResultBlockTextTests(unittest.TestCase):
     def _heading(self, tree: list[dict[str, Any]]) -> dict[str, Any]:
         return next(n for n in tree if (n.get("role") or "").casefold() == "heading")

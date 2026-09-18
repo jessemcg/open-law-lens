@@ -583,6 +583,27 @@ OPEN_LAW_LENS_LIBRARY_DB=/tmp/open-law-lens-library.sqlite3 \
 uv run open-law-lens show-cache
 ```
 
+## United States Supreme Court Citations
+
+Open Law Lens treats the official United States Reports reporter (`U.S.`) as
+an officially paginated reporter alongside the California reporters. A United
+States Supreme Court decision is accepted in the California Style Manual form
+`Case Name (Year) Volume U.S. Page`, for example
+`Arizona v. Fulminante (1991) 499 U.S. 279`, and is resolved, validated, and
+persisted to the durable library exactly like a California official reporter
+citation (CourtListener first, then the deterministic Scholar recovery when no
+qualifying copy exists).
+
+```bash
+uv run open-law-lens extract-case "Arizona v. Fulminante (1991) 499 U.S. 279"
+uv run open-law-lens extract-case "499 U.S. 279"
+uv run open-law-lens lookup-citation "384 U.S. 436"
+```
+
+The parenthetical filing year is rendered in the California Style Manual
+position (before the volume/page), and parallel reporters such as `S. Ct.` and
+`L. Ed. 2d` are never substituted for the official `U.S.` citation.
+
 ## Official-Copy Source Order
 
 CourtListener and the durable Library remain the primary case sources. Entering
@@ -626,8 +647,9 @@ A saved Scholar opinion records `source_provider: "google_scholar"` and
 becomes the preferred combined opinion of its CourtListener cluster when one
 exists. The Python app—not the model—reads the regular clipboard and persists
 through the shared validation/persistence service, which requires substantial
-opinion text, a valid Scholar case URL, an official California reporter
-citation, matching case identity, and qualifying reporter markers. A mismatch,
+opinion text, a valid Scholar case URL, an official reporter citation
+(California or `U.S.`), matching case identity, and qualifying reporter
+markers. A mismatch,
 snippet, stale clipboard, or missing markers performs no Library or Research
 Cache write. No opinion or clipboard text is logged.
 

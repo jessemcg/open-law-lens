@@ -16,12 +16,33 @@ OFFICIAL_CALIFORNIA_REPORTERS = {
     "cal.app.4th": "Cal.App.4th",
     "cal.app.5th": "Cal.App.5th",
 }
+# Official United States Supreme Court reporter. The California Style Manual
+# requires the official United States Reports citation for high court cases and
+# places the filing-year parenthetical before the volume/page (for example,
+# ``Arizona v. Fulminante (1991) 499 U.S. 279``).
+OFFICIAL_UNITED_STATES_REPORTERS = {
+    "u.s.": "U.S.",
+    "us": "U.S.",
+}
+# Every reporter this application treats as an official, page-paginated reporter.
+OFFICIAL_REPORTERS = {
+    **OFFICIAL_CALIFORNIA_REPORTERS,
+    **OFFICIAL_UNITED_STATES_REPORTERS,
+}
 OFFICIAL_CITATION_RE = re.compile(
     r"\b(?P<volume>\d+)\s+"
-    r"(?P<reporter>Cal\.?\s*(?:App\.?\s*)?(?:\d+d|[2-5]th)?)\s+"
+    r"(?P<reporter>"
+    r"Cal\.?\s*(?:App\.?\s*)?(?:\d+d|[2-5]th)?"
+    r"|U\.?\s*S\.?"
+    r")\s+"
     r"(?P<page>\d+)\b",
     re.IGNORECASE,
 )
+
+
+def is_official_reporter(value: str) -> bool:
+    """Return whether *value* names an officially paginated reporter."""
+    return normalized_reporter(value) in OFFICIAL_REPORTERS
 
 
 def normalized_reporter(value: str) -> str:
@@ -32,7 +53,7 @@ def official_citation_parts_from_text(text: str) -> tuple[str, str, str] | None:
     match = OFFICIAL_CITATION_RE.search(text)
     if match is None:
         return None
-    reporter = OFFICIAL_CALIFORNIA_REPORTERS.get(normalized_reporter(match.group("reporter")))
+    reporter = OFFICIAL_REPORTERS.get(normalized_reporter(match.group("reporter")))
     if reporter is None:
         return None
     return (match.group("volume"), reporter, match.group("page"))
@@ -65,7 +86,7 @@ def official_citation_parts_from_cluster(
         reporter = citation.get("reporter")
         if not isinstance(reporter, str):
             continue
-        display_reporter = OFFICIAL_CALIFORNIA_REPORTERS.get(normalized_reporter(reporter))
+        display_reporter = OFFICIAL_REPORTERS.get(normalized_reporter(reporter))
         if display_reporter is None:
             continue
         volume = str(citation.get("volume") or "").strip()

@@ -7763,7 +7763,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     ) -> bool:
         default_citation = self._default_import_official_citation()
         if not default_citation:
-            self._set_status("Select a case or enter an official California citation before importing.")
+            self._set_status("Select a case or enter an official reporter citation before importing.")
             return False
         window = Gtk.Window(title="Import Official Text")
         window.set_transient_for(self)

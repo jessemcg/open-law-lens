@@ -67,7 +67,7 @@ def require_official_citation(citation: str) -> str:
     normalized = normalize_official_citation(citation or "")
     if not normalized:
         raise ScholarBrowserError(
-            "A California official reporter citation is required (e.g. '11 Cal.5th 614')."
+            "An official reporter citation is required (e.g. '11 Cal.5th 614' or '499 U.S. 279')."
         )
     return normalized
 
@@ -99,7 +99,7 @@ def require_scholar_query(query: str) -> str:
 def build_scholar_case_search_url(query: str) -> str:
     """Return the case-law Scholar search URL for a nonempty case query.
 
-    A normalized California official citation is used when one is present;
+    A normalized official citation is used when one is present;
     otherwise the supplied case query is used verbatim. This supports both the
     exact-citation and recent-slip identity recovery queries.
     """
@@ -343,7 +343,7 @@ def _derived_identity_citation(
     itself carries no docket number."""
     citation = normalize_official_citation(front)
     if not citation:
-        raise ScholarBrowserError("Clipboard text has no California official reporter citation.")
+        raise ScholarBrowserError("Clipboard text has no official reporter citation.")
     _corroborate_identity(cluster, front, docket_number)
     discovered = normalize_official_citation(discovered_citation or "")
     if discovered and citation != discovered:

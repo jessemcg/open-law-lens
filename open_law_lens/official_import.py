@@ -49,14 +49,14 @@ def persist_official_opinion(
         raise ValueError("Imported text was empty after cleanup.")
     citation = validated_import_official_citation(official_citation, cleaned)
     if not citation:
-        raise ValueError("Official California citation is required.")
+        raise ValueError("Official reporter citation is required.")
     cleaned = normalize_external_reporter_markers(cleaned, citation)
 
     if existing_cluster is not None and cluster_id_from_cluster(existing_cluster):
         cluster = dict(existing_cluster)
         parsed_citation = official_citation_dict_from_text(citation)
         if parsed_citation is None:
-            raise ValueError("Official California citation is required.")
+            raise ValueError("Official reporter citation is required.")
         existing_citation = normalize_official_citation(
             str(cluster.get("official_citation") or official_citation_from_cluster(cluster))
         )

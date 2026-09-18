@@ -6,6 +6,7 @@ from typing import Iterable
 
 from .citation_model import (
     OFFICIAL_CALIFORNIA_REPORTERS,
+    OFFICIAL_REPORTERS,
     normalized_reporter,
     official_citation_from_cluster,
     official_citation_from_parts,
@@ -59,7 +60,7 @@ def official_pagination_quality(
     citation = official_california_reporter_citation(cluster)
     parsed = official_california_reporter_parts(cluster)
     if parsed is None:
-        return OfficialPaginationQuality(False, reason="No official California reporter citation.")
+        return OfficialPaginationQuality(False, reason="No official reporter citation.")
     _volume, _reporter, first_page_text = parsed
     try:
         first_page = int(first_page_text)

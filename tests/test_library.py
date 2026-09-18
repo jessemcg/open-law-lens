@@ -740,7 +740,7 @@ class LibraryTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 ValueError,
-                "lack an official California reporter citation.*In re L.G",
+                "lack an official reporter citation.*In re L.G",
             ):
                 library.save_research_set("Example_research", cache)
 

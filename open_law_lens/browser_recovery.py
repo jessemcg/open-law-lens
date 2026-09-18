@@ -235,7 +235,7 @@ class ScholarRecoveryOutcome:
     source_url: str
     message: str
     # Backward-compatible optional field (result version stays 1): the official
-    # California reporter citation discovered from the selected result's own
+    # Official reporter citation discovered from the selected result's own
     # primary metadata. Old callers/tests may omit it; it defaults to empty.
     official_citation: str = ""
     # Backward-compatible optional fields: the pipeline stage (controlled
@@ -413,7 +413,7 @@ class ScholarResultMatch:
 
     ``link`` is the semantic title link to activate; ``heading_text`` and
     ``primary_metadata`` hold the result's own heading and reporter/court
-    metadata text; ``official_citation`` is the official California reporter
+    metadata text; ``official_citation`` is the official reporter
     citation discovered in that primary metadata — never from a snippet, the
     search box, or another result.
     """
@@ -1049,7 +1049,7 @@ def find_result_matches(
     Citation-less recovery never treats the free-form search query as a
     citation. It requires a trustworthy case name plus a discriminator — the
     docket number when available, otherwise the filing year — and matches only
-    results whose primary metadata carries an official California reporter
+    results whose primary metadata carries an official reporter
     citation plus that discriminator. Title alone is never enough to click a
     result, and a snippet, the search box, or another result can never
     corroborate a candidate.
@@ -1118,7 +1118,7 @@ def find_result_matches(
             # Citation-less identity: the link must carry the exact case name
             # (punctuation-only differences such as ``S.H.`` versus ``SH``
             # normalize away), the primary metadata must parse as an official
-            # California reporter citation, and the docket — or, when the
+            # reporter citation, and the docket — or, when the
             # metadata omits it, the filing year — must corroborate. Snippets
             # and other results can never corroborate a candidate.
             if normalize_match_token(node_name(link)) != case_norm:
@@ -1528,7 +1528,7 @@ class ScholarRecoveryJob:
                 if not expected_citation.strip():
                     return self._outcome(
                         "not_found",
-                        "No exact-title California reporter result matched the recovery identity.",
+                        "No exact-title official reporter result matched the recovery identity.",
                         reason_code=REASON_NO_MATCHING_RESULT,
                     )
                 return self._outcome(

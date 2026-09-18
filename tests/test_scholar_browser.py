@@ -417,6 +417,41 @@ class ImportTests(unittest.TestCase):
             self.assertIsNotNone(display)
             self.assertGreaterEqual(len(display.page_markers), 3)
 
+    def test_united_states_supreme_court_import_persists_and_round_trips(self) -> None:
+        opinion = (
+            "499 U.S. 279 (1991)\n\n"
+            "Arizona v. Fulminante\n\n"
+            "OPINION\n\n"
+            "[*280]The judgment of the Court of Appeals is reversed.\n\n"
+            "[*281]It is so ordered.\n"
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = _client(temp_dir)
+            result = import_scholar_text(
+                client,
+                citation="499 U.S. 279",
+                source_url=CADEN_CASE_URL,
+                clipboard_text=opinion,
+                case_name="Arizona v. Fulminante",
+            )
+            self.assertTrue(result.eligible)
+            self.assertEqual(result.official_citation, "499 U.S. 279")
+            self.assertEqual(result.case_name, "Arizona v. Fulminante")
+
+            entries = client.library.list_case_entries()
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(entries[0]["citation_text"], "499 U.S. 279")
+
+    def test_united_states_reporter_bracketed_markers_are_normalized(self) -> None:
+        from open_law_lens.import_text import normalize_external_reporter_markers
+
+        text = "499 U.S. 279 (1991)\n\n[499 U.S. 280]First page.\n\n[499 U.S. 281]Second page."
+        normalized = normalize_external_reporter_markers(text, "499 U.S. 279")
+
+        self.assertIn("[*280]", normalized)
+        self.assertIn("[*281]", normalized)
+        self.assertNotIn("[499 U.S. 280]", normalized)
+
     def test_existing_cluster_association_preserves_cluster_id(self) -> None:
         existing = {
             "id": "6240402",

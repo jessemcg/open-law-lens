@@ -9,7 +9,7 @@ from typing import Iterable
 from .cache import cluster_id_from_cluster
 from .case_titles import cluster_short_title_value
 from .client import (
-    OFFICIAL_CALIFORNIA_REPORTERS,
+    OFFICIAL_REPORTERS,
     format_official_california_citation,
     official_california_reporter_citation,
 )
@@ -82,7 +82,7 @@ def normalized_official_reporter_citation_from_text(text: str) -> str:
     if not match:
         return ""
     reporter_key = re.sub(r"\s+", "", match.group("reporter").strip()).casefold()
-    display_reporter = OFFICIAL_CALIFORNIA_REPORTERS.get(reporter_key)
+    display_reporter = OFFICIAL_REPORTERS.get(reporter_key)
     if display_reporter is None:
         return ""
     return f"{match.group('volume')} {display_reporter} {match.group('page')}"
