@@ -788,7 +788,19 @@ result: for citation-less recovery that metadata must parse as an official
 California reporter citation (which excludes same-title same-year results
 from other states, such as an `In re E.C.` Ohio decision), and must carry the
 docket or, when the metadata omits the docket, the filing year. Two
-qualifying results are never resolved by guessing. The opened opinion is then
+qualifying results are never resolved by guessing. A narrowly bounded exception
+handles docket-specific searches when CourtListener dates a later order rather
+than the original published opinion: after verifying the exact quoted-name-plus-
+docket search URL, one unique exact-title official-reporter candidate may be
+opened despite a missing/different metadata year. It must then confirm the exact
+docket in the opened front matter before copying; a year match cannot substitute.
+Conflicting metadata dockets and ambiguous candidates still stop recovery.
+
+Result parsing uses only the first primary metadata text node, excluding title
+link descendants and subsequent snippets even without a leading ellipsis.
+Opened front matter is traversed in document reading order, not Firefox's
+breadth-first snapshot order, so nested caption/docket links are inspected before
+the body within the existing 48-node/600-character bounds. The opened opinion is then
 revalidated against the same identity from bounded front-matter text — exact
 normalized title, the official citation selected from the result metadata,
 and the docket when the identity carries one, otherwise the filing year — and

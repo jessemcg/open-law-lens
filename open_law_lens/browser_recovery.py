@@ -422,6 +422,7 @@ class ScholarResultMatch:
     heading_text: str
     primary_metadata: str
     official_citation: str
+    requires_docket_confirmation: bool = False
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -869,7 +870,7 @@ def detect_barrier(
 
 
 _RESULT_BLOCK_MAX_SCANNED = 160
-_RESULT_BLOCK_MAX_TEXT_NODES = 2
+_RESULT_BLOCK_MAX_TEXT_NODES = 1
 _RESULT_BLOCK_MAX_CHARS = 400
 
 
@@ -896,8 +897,8 @@ def split_result_block(
 ) -> ScholarResultText:
     """Separate one Scholar result's heading, primary metadata, and snippet.
 
-    Starting at a result-title heading, this collects the heading text plus up
-    to two short meaningful text nodes that live inside the result container
+    Starting at a result-title heading, this collects the heading text plus the
+    first meaningful metadata text node inside the result container
     (the heading's parent) or the heading itself, walking the tree in index
     order and always stopping at the next heading. This covers the reporter
     metadata whether AT-SPI exposes it as a direct sibling of the heading or
@@ -905,7 +906,8 @@ def split_result_block(
     the page footer, or the search box (which echoes the query) can never
     corroborate the candidate. Text beginning with an ellipsis is classified
     as the snippet and is returned separately; it can never corroborate a
-    candidate.
+    candidate. Stop after that first metadata node: snippets need not start
+    with an ellipsis and must never supplement missing reporter/docket data.
     """
     by_index: dict[int, Mapping[str, Any]] = {
         int(node.get("index")): node for node in tree
@@ -942,6 +944,7 @@ def split_result_block(
                 return False
         return False
 
+    heading_descendants = _descendant_set(tree, heading_index)
     heading_text = node_full_text(heading)
     metadata_parts: list[str] = []
     snippet_parts: list[str] = []
@@ -957,6 +960,8 @@ def split_result_block(
             continue
         if node_role(node) == "heading":
             break
+        if int(node.get("index")) in heading_descendants:
+            continue
         if not within_block(node):
             continue
         text = re.sub(r"\s+", " ", node_full_text(node)).strip()
@@ -1037,6 +1042,7 @@ def find_result_matches(
     *,
     docket_number: str = "",
     filing_year: str = "",
+    verified_search_query: str = "",
 ) -> list[ScholarResultMatch]:
     """Return every qualifying visible result link, in tree order.
 
@@ -1052,7 +1058,10 @@ def find_result_matches(
     results whose primary metadata carries an official reporter
     citation plus that discriminator. Title alone is never enough to click a
     result, and a snippet, the search box, or another result can never
-    corroborate a candidate.
+    corroborate a candidate. Exception: an exact verified docket search may
+    nominate an exact-title official-reporter candidate with a different or
+    missing year for inspection only. It must confirm the docket in opened
+    front matter before copy; uniqueness still applies to all candidates.
     """
     by_index: dict[int, Mapping[str, Any]] = {
         int(n.get("index")): n for n in tree
@@ -1064,6 +1073,12 @@ def find_result_matches(
     docket_norm = normalize_match_token(docket_number)
     docket_raw = re.sub(r"\s+", " ", docket_number or "").strip()
     year = validated_filing_year(filing_year)
+    # Only the caller that verified the selected search URL may supply this.
+    # A docket-specific search can surface an original published opinion with
+    # a different year from CourtListener's later modification/rehearing order.
+    docket_search = bool(docket_raw) and verified_search_query == (
+        f'"{normalize_recovery_query(case_name)}" {docket_raw}'
+    )
     if not citation_norm:
         # Citation-less identity: an exact case name plus at least one
         # discriminator (docket or filing year) is required. A name-only
@@ -1102,6 +1117,7 @@ def find_result_matches(
             continue
         text = split_result_block(tree, scoped_indexes, heading)
         primary_raw = f"{text.heading} {text.primary_metadata}"
+        requires_docket_confirmation = False
         if citation_norm:
             derived = normalize_official_citation(text.primary_metadata)
             if derived:
@@ -1132,11 +1148,15 @@ def find_result_matches(
                 # A docket-constrained result whose metadata omits the docket
                 # may still qualify on title + citation + year, but only when
                 # the metadata exposes no different case number.
-                if not docket_ok and not (
-                    year_in_metadata
-                    and not _metadata_docket_conflicts(docket_raw, primary_raw)
-                ):
+                if _metadata_docket_conflicts(docket_raw, primary_raw):
                     continue
+                if not docket_ok and not year_in_metadata:
+                    if not docket_search:
+                        continue
+                    # This is only a candidate to inspect, not an identity
+                    # match. The opened front matter MUST supply the docket;
+                    # a coincidental year there cannot authorize copying.
+                    requires_docket_confirmation = True
             elif not year_in_metadata:
                 continue
         matches.append(
@@ -1145,6 +1165,7 @@ def find_result_matches(
                 heading_text=text.heading,
                 primary_metadata=text.primary_metadata,
                 official_citation=discovered,
+                requires_docket_confirmation=requires_docket_confirmation,
             )
         )
 
@@ -1496,6 +1517,7 @@ class ScholarRecoveryJob:
                     case_name,
                     docket_number=self.request.docket_number,
                     filing_year=self.request.filing_year,
+                    verified_search_query=self.request.query,
                 )
                 if len(matches) == 1:
                     match = matches[0]
@@ -1606,7 +1628,10 @@ class ScholarRecoveryJob:
                     expected_citation=expected_citation,
                     case_name=case_name,
                     docket_number=self.request.docket_number,
-                    filing_year=self.request.filing_year,
+                    filing_year=(
+                        "" if match.requires_docket_confirmation
+                        else self.request.filing_year
+                    ),
                     observed_title=observed_title,
                     page_text=front_matter_text(scoped),
                     official_citation="" if expected_citation else match.official_citation,
@@ -1750,12 +1775,40 @@ def front_matter_text(tree: Sequence[Mapping[str, Any]]) -> str:
     """
     parts: list[str] = []
     collected = 0
+    # AT-SPI snapshots are breadth-first. Traverse parent/child order instead:
+    # otherwise a nested caption/docket comes *after* body paragraphs and falls
+    # outside the front-matter bound. Never search the whole opinion for it.
+    indexes = {node.get("index") for node in tree}
+    children: dict[Any, list[Mapping[str, Any]]] = {}
+    roots = []
     for node in tree:
-        text = re.sub(r"\s+", " ", node_full_text(node)).strip()
-        if not text:
+        parent = node.get("parent_index")
+        if parent not in indexes:
+            roots.append(node)
+        else:
+            children.setdefault(parent, []).append(node)
+    pending = list(reversed(roots))
+    visited = set()
+    while pending:
+        node = pending.pop()
+        index = node.get("index")
+        if index in visited:
             continue
+        visited.add(index)
+        pending.extend(reversed(children.get(index, [])))
+        # Names and text often duplicate one another, while container text is
+        # only embedded-object placeholders; neither should consume the bound.
+        raw_text = (node_name(node) or node_text(node)).replace("\ufffc", " ")
+        text = re.sub(r"\s+", " ", raw_text).strip()
+        if not text or text in parts:
+            continue
+        separator_size = int(bool(parts))
+        remaining = _FRONT_MATTER_MAX_CHARS - collected - separator_size
+        if remaining <= 0:
+            break
+        text = text[:remaining]
         parts.append(text)
-        collected += len(text)
+        collected += len(text) + separator_size
         if (
             len(parts) >= _FRONT_MATTER_NODE_LIMIT
             or collected >= _FRONT_MATTER_MAX_CHARS
@@ -1784,17 +1837,6 @@ def opinion_identity_confirmed(
     With a known citation, both the case name (when supplied) and the exact
     normalized citation must appear — the historical behavior. For
     citation-less recovery the free-form query is never treated as a
-    citation: the opened page must instead identify the exact case name, the
-    official citation that was discovered in the selected result's primary
-    metadata, and the docket number or (when the identity carries no docket)
-    the filing year. With no usable identity the match can never be confirmed
-    (fail closed).
-    """
-    """Corroborate an opened opinion against the explicit recovery identity.
-
-    With a known citation, both the case name (when supplied) and the exact
-    normalized citation must appear — the historical behavior. For
-    citation-less recovery the free-form query is never treated as a
     citation: the bounded front-matter text must identify the exact case
     name, the official citation discovered in the selected result's primary
     metadata, and the docket number when the page exposes it, or the filing
@@ -1816,7 +1858,9 @@ def opinion_identity_confirmed(
         # result's primary metadata to be confirmed on the opened page.
         return False
     docket_norm = normalize_match_token(docket_number)
-    if docket_norm and docket_norm in identity_norm:
+    if docket_norm and _metadata_docket_conflicts(docket_number, raw_identity):
+        return False
+    if docket_norm and _metadata_docket_confirmed(docket_number, raw_identity):
         return True
     year = validated_filing_year(filing_year)
     if year and re.search(rf"(?<![0-9]){year}(?![0-9])", raw_identity):
