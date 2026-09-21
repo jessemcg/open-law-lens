@@ -511,6 +511,19 @@ acceptance window with fresh temporary state. See
 [enactment link validation](docs/enactment-links-validation.md) for automated,
 desktop, and official-source checks.
 
+### Reader masthead
+
+The reader keeps the title and citation/subtitle centered, with a small muted
+source at the upper left and unchanged actions at the right. Ordinary provider
+names remain fully visible; long external-web descriptions are ellipsized, with
+complete accessible text and a hover tooltip. Navigation clears source details.
+The title remains 13 pt semibold; metadata is 10.5 pt and source text 9.5 pt.
+No stored content or settings are changed.
+
+`tests/preview_reader_masthead.py --auto` checks the production masthead in a
+separately identified synthetic window with temporary state. See
+[masthead validation](docs/reader-masthead-validation.md) for coverage and limits.
+
 ### Reader Copy Citation
 
 With text selected, the reader’s **Copy Citation** button copies only the complete

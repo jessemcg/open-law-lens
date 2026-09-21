@@ -193,6 +193,7 @@ from .storage import (
     SOURCE_PROVIDER_CALIFORNIA_COURTS,
     displayed_case_source_provider,
     source_provider_label,
+    normalize_source_provider,
 )
 from .rules import (
     CaliforniaRulesError,
@@ -223,10 +224,10 @@ READER_FG = "#000000"
 READER_MASTHEAD_BG = "#f5f6f7"
 READER_MASTHEAD_DIVIDER = "#dfe2e5"
 READER_MASTHEAD_METADATA_FG = "#4d5866"
-READER_MASTHEAD_SOURCE_FG = "#69737e"
+READER_MASTHEAD_SOURCE_FG = "#626c77"
 READER_MASTHEAD_TITLE_FONT_SIZE_PT = 13
-READER_MASTHEAD_METADATA_FONT_SIZE_PT = 10
-READER_MASTHEAD_SOURCE_FONT_SIZE_PT = 9
+READER_MASTHEAD_METADATA_FONT_SIZE_PT = 10.5
+READER_MASTHEAD_SOURCE_FONT_SIZE_PT = 9.5
 READER_COOL_GRAY_BG = "#e8edf3"
 READER_PAGE_MARKER_FG = "#344054"
 READER_PAGE_MARKER_SCALE = 0.9
@@ -3437,18 +3438,19 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.reader_header_box.set_visible(False)
 
         self.reader_header_leading_spacer = Gtk.Box()
-        self.reader_header_leading_spacer.set_can_target(False)
+        self.reader_header_leading_spacer.set_hexpand(False)
         self.reader_header_box.append(self.reader_header_leading_spacer)
 
         self.reader_header_center_box = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL,
-            spacing=2,
+            spacing=3,
         )
         self.reader_header_center_box.set_hexpand(True)
 
         self.reader_header_label = Gtk.Label(label="", xalign=0.5)
         self.reader_header_label.add_css_class("reader-masthead-title")
         self.reader_header_label.set_wrap(True)
+        self.reader_header_label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
         self.reader_header_label.set_justify(Gtk.Justification.CENTER)
         self.reader_header_label.set_selectable(True)
         self.reader_header_label.set_hexpand(True)
@@ -3457,28 +3459,37 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self.reader_header_metadata_label = Gtk.Label(label="", xalign=0.5)
         self.reader_header_metadata_label.add_css_class("reader-masthead-metadata")
         self.reader_header_metadata_label.set_wrap(True)
+        self.reader_header_metadata_label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
         self.reader_header_metadata_label.set_justify(Gtk.Justification.CENTER)
         self.reader_header_metadata_label.set_hexpand(True)
         self.reader_header_metadata_label.set_visible(False)
         self.reader_header_center_box.append(self.reader_header_metadata_label)
 
-        self.reader_source_label = Gtk.Label(label="", xalign=0.5)
+        self.reader_source_label = Gtk.Label(label="", xalign=0)
         self.reader_source_label.add_css_class("reader-masthead-source")
-        self.reader_source_label.set_wrap(True)
-        self.reader_source_label.set_justify(Gtk.Justification.CENTER)
-        self.reader_source_label.set_hexpand(True)
+        self.reader_source_label.set_single_line_mode(True)
+        self.reader_source_label.set_halign(Gtk.Align.START)
+        self.reader_source_label.set_valign(Gtk.Align.START)
+        self.reader_source_label.set_hexpand(False)
+        self.reader_source_label.set_can_target(True)
         self.reader_source_label.set_visible(False)
-        self.reader_header_center_box.append(self.reader_source_label)
+        self.reader_header_leading_spacer.append(self.reader_source_label)
         self.reader_header_box.append(self.reader_header_center_box)
 
         self.reader_header_action_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self.reader_header_action_box.set_halign(Gtk.Align.END)
         self.reader_header_action_box.set_valign(Gtk.Align.CENTER)
-        self.reader_header_box.append(self.reader_header_action_box)
+        self.reader_header_action_box.set_hexpand(True)
+        # Balance columns, not the action row itself: when source text is wider,
+        # the row must still sit at the far right of its balanced column.
+        self.reader_header_trailing_spacer = Gtk.Box()
+        self.reader_header_trailing_spacer.set_hexpand(False)
+        self.reader_header_trailing_spacer.append(self.reader_header_action_box)
+        self.reader_header_box.append(self.reader_header_trailing_spacer)
 
         self.reader_header_size_group = Gtk.SizeGroup(mode=Gtk.SizeGroupMode.HORIZONTAL)
         self.reader_header_size_group.add_widget(self.reader_header_leading_spacer)
-        self.reader_header_size_group.add_widget(self.reader_header_action_box)
+        self.reader_header_size_group.add_widget(self.reader_header_trailing_spacer)
 
         self.reader_clipboard_button = self._build_reader_clipboard_button()
         self.reader_header_action_box.append(self.reader_clipboard_button)
@@ -4964,15 +4975,18 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         header = masthead.title
         self._reader_header_citation = citation
         self._reader_display_cluster = cluster
+        source_label = getattr(self, "reader_source_label", None)
+        if source_label is not None:
+            source_label.set_text("")
+            source_label.set_tooltip_text(None)
+            source_label.set_ellipsize(Pango.EllipsizeMode.NONE)
+            source_label.set_max_width_chars(-1)
+            source_label.set_visible(False)
         self.reader_header_label.set_text(header)
         metadata_label = getattr(self, "reader_header_metadata_label", None)
         if metadata_label is not None:
             metadata_label.set_text(masthead.metadata)
             metadata_label.set_visible(bool(masthead.metadata))
-        source_label = getattr(self, "reader_source_label", None)
-        if source_label is not None:
-            source_label.set_text("")
-            source_label.set_visible(False)
         if self.reader_clipboard_button is not None:
             has_selected_authority = (
                 self._reader_display_cluster is not None
@@ -5009,7 +5023,16 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def _set_reader_source_provider(self, provider: str) -> None:
         label = source_provider_label(provider, getattr(self, "_reader_source_url", ""))
-        self.reader_source_label.set_text(f"Source: {label}")
+        text = f"Source: {label}"
+        external = normalize_source_provider(provider) == "external_web"
+        # Ellipsizing ordinary names reduces their minimum width unnecessarily.
+        # Keep the complete external description in both accessible text and tooltip.
+        self.reader_source_label.set_ellipsize(
+            Pango.EllipsizeMode.END if external else Pango.EllipsizeMode.NONE
+        )
+        self.reader_source_label.set_max_width_chars(24 if external else -1)
+        self.reader_source_label.set_tooltip_text(text if external else None)
+        self.reader_source_label.set_text(text)
         self.reader_source_label.set_visible(bool(self.reader_header_label.get_text().strip()))
 
     def _case_header_text(self, cluster: dict[str, Any]) -> str:

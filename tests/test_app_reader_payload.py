@@ -644,6 +644,9 @@ class AppReaderPayloadTests(unittest.TestCase):
             def set_visible(self, visible: bool) -> None:
                 self.visible = visible
 
+        DummyLabel.set_tooltip_text = lambda self, value: setattr(self, "tooltip", value)
+        DummyLabel.set_ellipsize = lambda self, value: setattr(self, "ellipsize", value)
+        DummyLabel.set_max_width_chars = lambda self, value: setattr(self, "max_width", value)
         window = SimpleNamespace(
             reader_header_label=DummyLabel("In re Example (2026) 1 Cal.5th 2"),
             reader_source_label=DummyLabel(),
@@ -656,6 +659,22 @@ class AppReaderPayloadTests(unittest.TestCase):
 
         self.assertEqual(window.reader_source_label.text, "Source: Google Scholar")
         self.assertTrue(window.reader_source_label.visible)
+        self.assertIsNone(window.reader_source_label.tooltip)
+        self.assertEqual(window.reader_source_label.max_width, -1)
+
+        window._reader_source_url = "https://scocal.stanford.edu/opinion/example"
+        OpenLawLensWindow._set_reader_source_provider(window, "external_web")
+        source = window.reader_source_label
+        self.assertEqual(source.text, "Source: Stanford Law School (scocal.stanford.edu)")
+        self.assertEqual(source.tooltip, source.text)
+        self.assertEqual(source.max_width, 24)
+        self.assertEqual(source.ellipsize.value_nick, "end")
+        for provider in ("courtlistener", "google_scholar", "california_courts",
+                         "manual_import", "unknown"):
+            OpenLawLensWindow._set_reader_source_provider(window, provider)
+            self.assertIsNone(source.tooltip)
+            self.assertEqual(source.max_width, -1)
+            self.assertEqual(source.ellipsize.value_nick, "none")
 
     def test_reader_masthead_clears_metadata_source_and_formatted_citation(self) -> None:
         class DummyLabel:
@@ -679,6 +698,9 @@ class AppReaderPayloadTests(unittest.TestCase):
             def set_visible(self, visible: bool) -> None:
                 self.visible = visible
 
+        DummyLabel.set_tooltip_text = lambda self, value: setattr(self, "tooltip", value)
+        DummyLabel.set_ellipsize = lambda self, value: setattr(self, "ellipsize", value)
+        DummyLabel.set_max_width_chars = lambda self, value: setattr(self, "max_width", value)
         formatted = FormattedCitation(
             plain_text="Example v. State (2020) 1 Cal.5th 1",
             html_text="<i>Example v. State</i> (2020) 1 Cal.5th 1",
@@ -710,8 +732,14 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertTrue(window.reader_source_label.visible)
         self.assertTrue(window.reader_header_box.visible)
 
+        window._reader_source_url = "https://scocal.stanford.edu/opinion/example"
+        OpenLawLensWindow._set_reader_source_provider(window, "external_web")
+        self.assertIsNotNone(window.reader_source_label.tooltip)
         OpenLawLensWindow._set_reader_header(window, "")  # type: ignore[arg-type]
 
+        self.assertIsNone(window.reader_source_label.tooltip)
+        self.assertEqual(window.reader_source_label.max_width, -1)
+        self.assertEqual(window.reader_source_label.ellipsize.value_nick, "none")
         self.assertIsNone(window._reader_header_citation)
         self.assertEqual(window.reader_header_label.text, "")
         self.assertEqual(window.reader_header_metadata_label.text, "")
