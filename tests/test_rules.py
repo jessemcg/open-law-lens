@@ -70,7 +70,7 @@ class RuleTests(unittest.TestCase):
         links = cited_rule_links(text)
         self.assertEqual(
             [link.lookup_text for link in links],
-            ["Cal. Rules of Court, rule 8.204(a)(1)(B)", "rule 5.695"],
+            ["Cal. Rules of Court, rule 8.204(a)(1)(B)", "Cal. Rules of Court, rule 5.695"],
         )
 
     def test_rule_subdivisions_for_selected_range(self) -> None:
@@ -101,6 +101,46 @@ class RuleTests(unittest.TestCase):
             rule_pinpoint_citation(citation, ("(a)(1)(A)", "(a)(1)(B)")),
             "Cal. Rules of Court, rule 8.204(a)(1)(A)-(B)",
         )
+
+
+class RuleSourceSafetyTests(unittest.TestCase):
+    def test_three_component_identity(self):
+        citation = RuleCitation('5.112.1')
+        self.assertEqual(citation.rule_id, 'CRC:5.112.1')
+        self.assertTrue(rule_url(citation.rule_number).endswith('/five/rule5_112_1'))
+
+    def test_wrong_missing_navigation_and_soft_error_bodies(self):
+        from open_law_lens.rules import CaliforniaRulesError
+        for body in (
+            '<h1>Rule 5.112.10. Wrong</h1><p>Some real rule content.</p>',
+            '<h1>Page not found</h1><p>Sorry we cannot find this page.</p>',
+            '<nav><h1>Rule 5.112.1. Title</h1><p>Navigation only.</p></nav>',
+            '<h1>Rule 5.112.1. Title</h1>',
+            '<h1>Rule 5.112.1. Title</h1><h1>Rule 5.113. Other rule</h1>',
+            '<h1>Rule 5.112.1. Title</h1><p>Search results for your request.</p>',
+            '<h1>Rule 5.112. Wrong</h1><h2>Rule 5.112.1. A reference</h2><p>Other content.</p>',
+        ):
+            with self.subTest(body=body), self.assertRaises(CaliforniaRulesError):
+                extract_california_rule_text(body, RuleCitation('5.112.1'))
+
+    def test_cross_reference_at_paragraph_start_does_not_truncate_body(self):
+        body = ('<h1>Rule 5.112.1. Title</h1><p>Rule 5.111 applies to these declarations.</p>'
+                '<p>The remaining content must also be retained.</p>')
+        text = extract_california_rule_text(body, RuleCitation('5.112.1'))
+        self.assertIn('Rule 5.111 applies', text)
+        self.assertIn('remaining content', text)
+
+    def test_timeout_and_unrelated_redirect(self):
+        from unittest.mock import patch, MagicMock
+        from open_law_lens.rules import fetch_california_rule, CaliforniaRulesError
+        with patch('open_law_lens.rules.urlopen', side_effect=TimeoutError):
+            with self.assertRaisesRegex(CaliforniaRulesError, 'timed out'):
+                fetch_california_rule(RuleCitation('5.112.1'))
+        response = MagicMock()
+        response.__enter__.return_value.geturl.return_value = 'https://courts.ca.gov/search'
+        with patch('open_law_lens.rules.urlopen', return_value=response):
+            with self.assertRaisesRegex(CaliforniaRulesError, 'redirected'):
+                fetch_california_rule(RuleCitation('5.112.1'))
 
 
 if __name__ == "__main__":

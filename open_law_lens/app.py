@@ -13,7 +13,7 @@ import tempfile
 import threading
 import time
 import weakref
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib import resources
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -56,6 +56,7 @@ from .authority_resolver import first_authority_candidate
 from .cache import cluster_id_from_cluster
 from .cli_commands import CLI_COMMANDS
 from .client import (
+    CALIFORNIA_CASE_COURT_IDS,
     CourtListenerClient,
     CourtListenerError,
     CourtListenerSearchResult,
@@ -80,6 +81,8 @@ from .case_suggestions import (
     resolve_case_lookup_text,
 )
 from .citation_links import (
+    CitationContext,
+    collect_authority_links,
     CitedCaseLink,
     CitationStyleSpan,
     RuleLink,
@@ -99,7 +102,6 @@ from .config import (
     AGENT_PROFILE_RESEARCH_CACHE,
     AGENT_PROFILE_SUBSEQUENT_TREATMENT,
     AppConfig,
-    BARE_STATUTE_LAW_CODE_OPTIONS,
     DEFAULT_APPEAL_ISSUE_PRESETS,
     DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
     DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE,
@@ -152,6 +154,7 @@ from .library import (
     PageMarker,
     ResearchSet,
     normalize_display_quote_stacks,
+    normalize_display_parenthesis_spacing,
     opinion_display_text,
 )
 from .scholar_recovery_service import OUTCOME_BUSY, OUTCOME_CANCELLED, recover_official_copy, recovery_presentation
@@ -201,7 +204,7 @@ from .rules import (
 from .statutes import (
     LegInfoError,
     StatuteCitation,
-    normalize_section,
+    is_unqualified_statute_reference,
     parse_statute_citation,
     statute_display_citation,
     statute_pinpoint_citation,
@@ -605,7 +608,7 @@ class CaseReaderPayload:
     page_markers: list[PageMarker]
     style_spans: list[DisplayStyleSpan]
     italic_spans: list[CitationStyleSpan]
-    cited_links: list[CitedCaseLink]
+    cited_links: list[CitedCaseLink | StatuteLink | RuleLink]
     quality_eligible: bool
     quality_reason: str
     opinion_source: str
@@ -714,6 +717,20 @@ def strip_agent_legal_authority_backticks(text: str) -> str:
     return BACKTICK_TOKEN_RE.sub(replace, text)
 
 
+def case_citation_context(cluster: dict[str, Any]) -> CitationContext:
+    docket = cluster.get('docket')
+    court = cluster.get('court_id') or cluster.get('court')
+    if not court and isinstance(docket, dict):
+        court = docket.get('court_id') or docket.get('court')
+    if isinstance(court, dict):
+        court = court.get('id') or court.get('resource_uri')
+    court_id = str(court or '').rstrip('/').rsplit('/', 1)[-1]
+    return CitationContext(california=(
+        court_id in CALIFORNIA_CASE_COURT_IDS
+        or any(re.search(r'\bCal\.', value) for value in cluster_citation_texts(cluster))
+    ))
+
+
 def build_case_reader_payload(
     cluster: dict[str, Any],
     displays: list[DisplayText],
@@ -728,12 +745,15 @@ def build_case_reader_payload(
     slip_source_url: str = "",
     slip_case_number: str = "",
 ) -> CaseReaderPayload:
+    exclusions = cluster_citation_texts(cluster)
+    context = case_citation_context(cluster)
     text_parts: list[str] = []
     page_markers: list[PageMarker] = []
     style_spans: list[DisplayStyleSpan] = []
     text_length = 0
+    opinion_ranges: list[tuple[int, int]] = []
     for display in displays:
-        display = normalize_display_quote_stacks(display)
+        display = normalize_display_parenthesis_spacing(normalize_display_quote_stacks(display))
         if not display.text:
             continue
         if text_parts:
@@ -742,6 +762,7 @@ def build_case_reader_payload(
         base_offset = text_length
         text_parts.append(display.text)
         text_length += len(display.text)
+        opinion_ranges.append((base_offset, text_length))
         page_markers.extend(
             PageMarker(
                 page_label=marker.page_label,
@@ -775,7 +796,12 @@ def build_case_reader_payload(
         page_markers=page_markers,
         style_spans=style_spans,
         italic_spans=citation_italic_spans(text),
-        cited_links=cited_case_links(text, excluded_citations=cluster_citation_texts(cluster)),
+        cited_links=[replace(link, start_offset=link.start_offset + start,
+                             end_offset=link.end_offset + start)
+                     for start, end in opinion_ranges
+                     for link in collect_authority_links(
+                         text[start:end], context=context,
+                         excluded_case_citations=exclusions)],
         quality_eligible=quality.eligible,
         quality_reason=quality.reason,
         opinion_source=opinion_source,
@@ -1044,25 +1070,6 @@ class SettingsWindow(Adw.ApplicationWindow):
             selected_index = 0
         self.reader_font_family_row.set_selected(selected_index)
         self.general_settings_expander.add_row(self.reader_font_family_row)
-
-        self.bare_statute_law_code_values = [code for code, _label in BARE_STATUTE_LAW_CODE_OPTIONS]
-        bare_statute_labels = [
-            f"{label} ({code})"
-            for code, label in BARE_STATUTE_LAW_CODE_OPTIONS
-        ]
-        self.bare_statute_law_code_row = Adw.ComboRow(
-            title="Bare Number Statute Code",
-            subtitle="When selected text is only a section number, open it as this California code.",
-        )
-        self.bare_statute_law_code_row.set_model(Gtk.StringList.new(bare_statute_labels))
-        try:
-            selected_bare_statute_index = self.bare_statute_law_code_values.index(
-                config.default_bare_statute_law_code
-            )
-        except ValueError:
-            selected_bare_statute_index = 0
-        self.bare_statute_law_code_row.set_selected(selected_bare_statute_index)
-        self.general_settings_expander.add_row(self.bare_statute_law_code_row)
 
         self.concordance_row = Adw.EntryRow(title="Concordance file")
         self.concordance_row.set_text(config.concordance_file_path)
@@ -1861,11 +1868,9 @@ class SettingsWindow(Adw.ApplicationWindow):
             reader_font_family = self.reader_font_family_values[selected_font_family_index]
         else:
             reader_font_family = load_config().reader_font_family
-        selected_bare_statute_index = int(self.bare_statute_law_code_row.get_selected())
-        if 0 <= selected_bare_statute_index < len(self.bare_statute_law_code_values):
-            bare_statute_law_code = self.bare_statute_law_code_values[selected_bare_statute_index]
-        else:
-            bare_statute_law_code = load_config().default_bare_statute_law_code
+        # Preserve the retired field for config round trips, but never use it
+        # to qualify an authority or expose it as an active preference.
+        bare_statute_law_code = load_config().default_bare_statute_law_code
         appeal_issue_presets, appeal_issue_labels = self._appeal_issue_data()
         agent_runtime_profiles = (
             self._selected_pi_profiles()
@@ -4022,7 +4027,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return
         if self._active_toast is not None:
             self._active_toast.dismiss()
-        toast = Adw.Toast(title=text)
+        toast = Adw.Toast(title=GLib.markup_escape_text(text))
         toast.set_timeout(8 if error else 3)
         self._active_toast = toast
         toast.connect("dismissed", self._on_toast_dismissed, toast)
@@ -4281,6 +4286,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return False
 
     def _on_window_close_request(self, _window: Gtk.Window) -> bool:
+        self._case_load_generation = getattr(self, '_case_load_generation', 0) + 1
         self._stop_agent_answer_polling()
         self._capture_current_reader_position()
         if self._agent_answer_layout_idle_id is not None:
@@ -4646,7 +4652,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         style_spans: list[DisplayStyleSpan] | None = None,
         *,
         apply_markdown: bool = False,
+        citation_context: CitationContext | None = None,
+        excluded_case_citations: tuple[str, ...] = (),
     ) -> bool:
+        self._case_load_generation = getattr(self, '_case_load_generation', 0) + 1
+        context = replace(citation_context or CitationContext(california=True),
+                          declaration_source=text)
         if (
             getattr(self, "_brief_search_groups", [])
             and not getattr(self, "_rendering_brief_search_hit", False)
@@ -4678,6 +4689,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._reader_pagination_mode = READER_PAGINATION_NONE
             self._reader_slip_source_url = ""
             self._reader_slip_case_number = ""
+        self._clear_reader_citation_links()
         self.reader_buffer.set_text(text)
         self._update_reader_clipboard_button()
         if page_markers:
@@ -4687,8 +4699,19 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._apply_reader_style_span(span, len(text))
         self._apply_reader_markdown_spans(markdown_spans)
         self._apply_reader_citation_italics(text)
-        self._apply_reader_citation_links(text)
         self._apply_reader_prior_brief_links(text, markdown_spans)
+        generation = self._case_load_generation
+        occupied = tuple((a, b) for a, b, kind in markdown_spans
+                         if kind.startswith('prior_brief:'))
+        occupied += tuple(match.span(1) for match in PRIOR_BRIEF_MARKDOWN_LINK_RE.finditer(text))
+
+        def prepare_links() -> None:
+            links = collect_authority_links(
+                text, context=context, occupied_ranges=occupied,
+                excluded_case_citations=excluded_case_citations,
+            )
+            GLib.idle_add(self._apply_shared_reader_link_chunk, generation, text, links, 0)
+        threading.Thread(target=prepare_links, daemon=True).start()
         apply_highlights = getattr(self, "_apply_saved_reader_highlights", None)
         if apply_highlights is not None:
             apply_highlights()
@@ -4704,6 +4727,32 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if update_paginated is not None:
             update_paginated()
         return False
+
+    def _apply_shared_reader_link_chunk(
+        self,
+        generation: int,
+        text: str,
+        links: tuple[CitedCaseLink | StatuteLink | RuleLink, ...],
+        index: int,
+    ) -> bool:
+        if generation != self._case_load_generation or text != self._reader_text:
+            return False
+        end = min(index + READER_RENDER_TAG_CHUNK_SIZE, len(links))
+        for number, link in enumerate(links[index:end], start=index):
+            self._apply_reader_authority_link(number, link)
+        if end < len(links):
+            GLib.idle_add(self._apply_shared_reader_link_chunk, generation, text, links, end)
+        return False
+
+    def _apply_reader_authority_link(
+        self, index: int, link: CitedCaseLink | StatuteLink | RuleLink,
+    ) -> None:
+        if isinstance(link, StatuteLink):
+            self._apply_reader_statute_link(index, link)
+        elif isinstance(link, RuleLink):
+            self._apply_reader_rule_link(index, link)
+        else:
+            self._apply_reader_citation_link(index, link)
 
     def _apply_reader_page_marker(self, marker: PageMarker, text: str) -> None:
         start = max(0, min(marker.start_offset, len(text)))
@@ -4872,7 +4921,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return False
         end_index = min(index + READER_RENDER_TAG_CHUNK_SIZE, len(payload.cited_links))
         for link_index, link in enumerate(payload.cited_links[index:end_index], start=index):
-            self._apply_reader_citation_link(link_index, link)
+            self._apply_reader_authority_link(link_index, link)
         if end_index < len(payload.cited_links):
             GLib.idle_add(self._apply_reader_payload_link_chunk, payload, end_index)
             return False
@@ -5415,14 +5464,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _apply_reader_citation_links(self, text: str) -> None:
         self._clear_reader_citation_links()
         excluded = cluster_citation_texts(self._selected_cluster)
-        for index, link in enumerate(cited_case_links(text, excluded_citations=excluded)):
-            self._apply_reader_citation_link(index, link)
-        offset = len(self._reader_citation_link_tags)
-        for index, link in enumerate(cited_statute_links(text), start=offset):
-            self._apply_reader_statute_link(index, link)
-        offset = len(self._reader_citation_link_tags)
-        for index, link in enumerate(cited_rule_links(text), start=offset):
-            self._apply_reader_rule_link(index, link)
+        for index, link in enumerate(collect_authority_links(
+                text, context=CitationContext(california=True), excluded_case_citations=excluded)):
+            self._apply_reader_authority_link(index, link)
 
     def _apply_reader_markdown_spans(self, spans: list[tuple[int, int, str]]) -> None:
         if not spans:
@@ -6547,10 +6591,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if not entry_text:
             self._set_status("No authority text provided.")
             return False
-        bare_statute_lookup_text = self._bare_statute_lookup_text(entry_text)
-        if bare_statute_lookup_text:
-            self.citation_entry.set_text("")
-            self._start_statute_lookup(bare_statute_lookup_text)
+        if is_unqualified_statute_reference(entry_text):
+            self._set_status('Specify the California code as well as the section number.')
             return False
         candidate = first_authority_candidate(entry_text)
         lookup_text = candidate.text
@@ -6578,16 +6620,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._refresh_case_suggestion_index_async()
             return lookup_text
         return resolve_case_lookup_text(lookup_text, self._case_suggestions) or lookup_text
-
-    def _bare_statute_lookup_text(self, text: str) -> str:
-        if re.fullmatch(r"\d+[a-z]?(?:\.\d+[a-z]?)?", text, re.IGNORECASE) is None:
-            return ""
-        try:
-            law_code = normalize_bare_statute_law_code(load_config().default_bare_statute_law_code)
-            section = normalize_section(text)
-            return statute_display_citation(StatuteCitation(law_code, section))
-        except ValueError:
-            return ""
 
     def show_open_authority_pending(self, message: str = "Opening selected authority...") -> None:
         capture_position = getattr(self, "_capture_current_reader_position", None)
@@ -8013,6 +8045,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             display.text,
             display.page_markers,
             display.style_spans,
+            citation_context=case_citation_context(cluster),
+            excluded_case_citations=tuple(cluster_citation_texts(cluster)),
         )
         self._set_status(success_status)
         return True
@@ -8021,6 +8055,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         entry_text = self.citation_entry.get_text().strip()
         if not entry_text:
             self._set_status("Enter a citation.")
+            return
+        if is_unqualified_statute_reference(entry_text):
+            self._set_status('Specify the California code as well as the section number.')
             return
         citation = self._lookup_text_from_entry(entry_text)
         case_number = normalize_case_number(citation)
@@ -8163,6 +8200,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return False
 
     def _start_statute_lookup(self, citation: str) -> None:
+        self._case_load_generation += 1
+        generation = self._case_load_generation
+        self._clear_reader_citation_links()
         capture_position = getattr(self, "_capture_current_reader_position", None)
         if capture_position is not None:
             capture_position()
@@ -8183,8 +8223,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             on_success=lambda statute: self._apply_statute_lookup_result(
                 statute,
                 cache_generation,
-            ),
-            on_error=lambda exc: self._apply_error(str(exc)),
+            ) if generation == self._case_load_generation else False,
+            on_error=lambda exc: self._apply_error(str(exc)) if generation == self._case_load_generation else False,
             handled_exceptions=(LegInfoError, ValueError),
         )
 
@@ -8222,6 +8262,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return False
 
     def _start_rule_lookup(self, citation: str) -> None:
+        self._case_load_generation += 1
+        generation = self._case_load_generation
+        self._clear_reader_citation_links()
         capture_position = getattr(self, "_capture_current_reader_position", None)
         if capture_position is not None:
             capture_position()
@@ -8239,8 +8282,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         cache_generation = self._research_cache_generation
         self._start_background_worker(
             lambda: self.client.lookup_rule(citation, populate_research_cache=False),
-            on_success=lambda rule: self._apply_rule_lookup_result(rule, cache_generation),
-            on_error=lambda exc: self._apply_error(str(exc)),
+            on_success=lambda rule: self._apply_rule_lookup_result(rule, cache_generation)
+                if generation == self._case_load_generation else False,
+            on_error=lambda exc: self._apply_error(str(exc)) if generation == self._case_load_generation else False,
             handled_exceptions=(CaliforniaRulesError, ValueError),
         )
 
@@ -9304,7 +9348,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             html_text=GLib.markup_escape_text(citation_text),
         ) if citation_text else None
         self._set_reader_header(header, formatted, None, masthead.metadata)
-        self._set_reader_text(str(statute.get("text") or "No statute text found."))
+        self._set_reader_text(str(statute.get("text") or "No statute text found."),
+                              citation_context=CitationContext(california=True,
+                                  owning_code=str(statute.get('law_code') or '')))
         self._set_status(f"Loaded {citation_text or header} from Research Cache.")
 
     def _open_rule_in_reader(self, rule: dict[str, Any]) -> None:
@@ -9333,7 +9379,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             html_text=GLib.markup_escape_text(citation_text),
         ) if citation_text else None
         self._set_reader_header(header, formatted, None, masthead.metadata)
-        self._set_reader_text(str(rule.get("text") or "No rule text found."))
+        self._set_reader_text(str(rule.get("text") or "No rule text found."),
+                              citation_context=CitationContext(california=True,
+                                  official_rule=str(rule.get('rule_number') or '')))
         self._set_status(f"Loaded {citation_text or header} from Research Cache.")
 
     def _begin_case_load(self, cluster: dict[str, Any]) -> int:
@@ -10715,10 +10763,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_link_tags.clear()
         self._agent_link_lookup.clear()
         self._agent_citation_link_lookup.clear()
+        self._agent_statute_link_lookup.clear()
+        self._agent_rule_link_lookup.clear()
         self._agent_external_url_link_lookup.clear()
         self._agent_search_link_lookup.clear()
         self._agent_search_next_link_tags.clear()
         self._agent_search_highlight_tags.clear()
+        self._agent_search_action_link_lookup.clear()
         quote_spans = (
             resolved_agent_quote_spans(text, self._case_agent_text_sources)
             if self._agent_mode in {AGENT_MODE_CASE, AGENT_MODE_BRIEF}
@@ -10761,10 +10812,27 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             )
             self._agent_link_tags.append(tag)
             self._agent_link_lookup[tag] = span.target
-        if self._agent_mode in {AGENT_MODE_GENERAL, AGENT_MODE_APPEAL}:
-            self._apply_agent_citation_links(buffer, rendered)
-            self._apply_agent_statute_links(buffer, rendered)
-            self._apply_agent_rule_links(buffer, rendered)
+        occupied = [(self._map_offset(span.start_offset, offset_map),
+                     self._map_offset(span.end_offset, offset_map))
+                    for span in quote_spans if span.target is not None]
+        occupied.extend((a, b) for a, b, _ in self._external_url_links(rendered))
+        if self._agent_mode == AGENT_MODE_BRIEF:
+            occupied.extend(match.span() for source in self._case_agent_text_sources
+                            if source.authority_type == 'prior_brief' and source.title
+                            for match in re.finditer(re.escape(source.title), rendered, re.I))
+        kinds = ('case', 'statute', 'rule') if self._agent_mode in {AGENT_MODE_GENERAL, AGENT_MODE_APPEAL} else ('statute', 'rule')
+        for link in collect_authority_links(rendered, context=CitationContext(
+                california=True, declaration_source=text),
+                                            kinds=kinds, occupied_ranges=occupied):
+            lookup = (self._agent_statute_link_lookup if isinstance(link, StatuteLink)
+                      else self._agent_rule_link_lookup if isinstance(link, RuleLink)
+                      else self._agent_citation_link_lookup)
+            tag = buffer.create_tag(None, foreground_rgba=quote_color,
+                                    underline=Pango.Underline.NONE)
+            buffer.apply_tag(tag, buffer.get_iter_at_offset(link.start_offset),
+                             buffer.get_iter_at_offset(link.end_offset))
+            self._agent_link_tags.append(tag)
+            lookup[tag] = link
         self._apply_agent_external_url_links(buffer, rendered)
         bold_tag = table.lookup("md-bold") if table else None
         if bold_tag is not None:

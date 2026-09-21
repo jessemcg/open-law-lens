@@ -9,6 +9,8 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
+from .california_codes import CODE_LABELS, CODE_SHORT_LABELS, CODE_PATTERNS
+
 
 LEGINFO_SECTION_URL = "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml"
 
@@ -43,35 +45,8 @@ class LegInfoError(RuntimeError):
     pass
 
 
-CODE_LABELS = {
-    "WIC": "Welfare and Institutions Code",
-    "EVID": "Evidence Code",
-    "CIV": "Civil Code",
-    "CCP": "Code of Civil Procedure",
-    "FAM": "Family Code",
-    "PEN": "Penal Code",
-}
-
-CODE_SHORT_LABELS = {
-    "WIC": "Welf. & Inst. Code",
-    "EVID": "Evid. Code",
-    "CIV": "Civ. Code",
-    "CCP": "Code Civ. Proc.",
-    "FAM": "Fam. Code",
-    "PEN": "Pen. Code",
-}
-
-CODE_PATTERNS: tuple[tuple[str, str], ...] = (
-    ("WIC", r"Welf\.?\s*&\s*Inst\.?\s+Code|Welfare\s+and\s+Institutions\s+Code|WIC|W\s*&\s*I"),
-    ("EVID", r"Evid(?:ence)?\.?\s+Code|EVID"),
-    ("CCP", r"Code\s+Civ\.?\s+Proc\.?|Code\s+of\s+Civil\s+Procedure|Civ(?:il)?\.?\s+Proc(?:edure)?\.?\s+Code|CCP"),
-    ("CIV", r"Civ(?:il)?\.?\s+Code|CIV"),
-    ("FAM", r"Fam(?:ily)?\.?\s+Code|FAM"),
-    ("PEN", r"Pen(?:al)?\.?\s+Code|PEN"),
-)
-
 SECTION_RE = re.compile(
-    r"(?:§+\s*|(?:sections?|secs?\.?)\s+)?(?P<section>\d+[a-z]?(?:\.\d+[a-z]?)?)",
+    r"(?:§+\s*|(?:sections?|secs?\.?)\s+)?(?P<section>\d+[a-z]*(?:\.\d+[a-z]*)?)",
     re.IGNORECASE,
 )
 SUBDIVISION_RE = re.compile(
@@ -83,19 +58,6 @@ SUBDIVISION_MARKER_RE = re.compile(
     r"(?P<markers>\([A-Za-z0-9]+\)(?:\s*\([A-Za-z0-9]+\))*)"
     r"(?=\s+)",
 )
-
-STATUTE_LINK_RE = re.compile(
-    r"\b(?P<full>"
-    r"(?:Cal(?:ifornia)?\.?\s+)?(?:"
-    + "|".join(pattern for _, pattern in CODE_PATTERNS)
-    + r")"
-    r",?\s*(?:§|section|sec\.?)\s*"
-    r"\d+[a-z]?(?:\.\d+[a-z]?)?"
-    r"(?:,\s*(?:subd\.?|subdivision)\s*\([^)]+\)(?:\([^)]+\))*)?"
-    r")",
-    re.IGNORECASE,
-)
-
 
 def statute_id(law_code: str, section: str) -> str:
     return f"{normalize_law_code(law_code)}:{normalize_section(section)}"
@@ -109,9 +71,9 @@ def normalize_law_code(value: str) -> str:
 
 
 def normalize_section(value: str) -> str:
-    section = value.strip().rstrip(".")
+    section = value.strip().removesuffix(".")
     section = re.sub(r"\s+", "", section)
-    if not re.fullmatch(r"\d+[a-z]?(?:\.\d+[a-z]?)?", section, re.IGNORECASE):
+    if not re.fullmatch(r"\d+[a-z]*(?:\.\d+[a-z]*)?", section, re.IGNORECASE):
         raise ValueError(f"Unsupported statute section number: {value}")
     return section
 
@@ -189,17 +151,20 @@ def parse_statute_citation(value: str) -> StatuteCitation | None:
     text = re.sub(r"\s+", " ", value).strip()
     if not text:
         return None
+    reverse = re.fullmatch(r"(sections?\s+.+?)(?:,\s*)?\s+of\s+the\s+(.+)", text, re.I)
+    if reverse:
+        parsed = parse_statute_citation(f"{reverse[2]} {reverse[1].rstrip(',')}")
+        return (StatuteCitation(parsed.law_code, parsed.section, parsed.subdivision, text)
+                if parsed else None)
     # Consume the entire qualified prefix, never search past unknown code names.
-    qualified = re.sub(r"^Cal(?:ifornia)?\.?\s+", "", text, flags=re.IGNORECASE)
+    qualified = text
     candidates = []
     for code, pattern in CODE_PATTERNS:
-        match = re.match(rf"(?:{pattern})(?=\s|,|§|$)", qualified, re.IGNORECASE)
+        match = re.match(rf"(?:Cal(?:ifornia)?\.?\s+)?(?:{pattern})(?=\s|,|:|§|$)", qualified, re.IGNORECASE)
         if match:
-            candidates.append((code, qualified[match.end():].lstrip(" ,")))
+            candidates.append((code, qualified[match.end():].lstrip(" ,:")))
     if len(candidates) == 1:
         law_code, remainder = candidates[0]
-    elif not candidates and re.match(r"^(?:§|sections?\b|secs?\.?(?=\s))", text, re.IGNORECASE):
-        law_code, remainder = "WIC", text
     else:
         return None
     section_match = SECTION_RE.match(remainder)
@@ -210,6 +175,8 @@ def parse_statute_citation(value: str) -> StatuteCitation | None:
     subdivision = ""
     if suffix:
         subdivision_match = SUBDIVISION_RE.fullmatch(suffix)
+        if re.fullmatch(r"(?:\([A-Za-z0-9]+\))+", suffix):
+            return StatuteCitation(law_code, section, suffix, text)
         if subdivision_match is None:
             return None
         subdivision = subdivision_match.group("subdivision").strip()
@@ -219,6 +186,15 @@ def parse_statute_citation(value: str) -> StatuteCitation | None:
         subdivision=subdivision,
         input_text=text,
     )
+
+
+def is_unqualified_statute_reference(value: str) -> bool:
+    """Recognize ambiguous lookup input for rejection, never code inference."""
+    return re.fullmatch(
+        r'(?:§+\s*|sections?\s+|secs?\.\s*)?\d+[a-z]*(?:\.\d+[a-z]*)?'
+        r'(?:\s*,?\s*(?:subd(?:ivision)?\.?\s*)?(?:\([A-Za-z0-9]+\))+)?',
+        value.strip(), re.I,
+    ) is not None
 
 
 def looks_like_statute_citation(value: str) -> bool:
@@ -247,18 +223,9 @@ def statute_search_terms(statute: dict[str, Any]) -> tuple[str, ...]:
 
 
 def cited_statute_links(text: str) -> list[StatuteLink]:
-    links: list[StatuteLink] = []
-    seen: set[tuple[int, int]] = set()
-    for match in STATUTE_LINK_RE.finditer(text):
-        full = re.sub(r"\s+", " ", match.group("full")).strip()
-        if parse_statute_citation(full) is None:
-            continue
-        span = match.span("full")
-        if span in seen:
-            continue
-        seen.add(span)
-        links.append(StatuteLink(start_offset=span[0], end_offset=span[1], lookup_text=full))
-    return links
+    from .citation_context import CitationContext, enactment_links
+    return [link for link in enactment_links(text, CitationContext())
+            if isinstance(link, StatuteLink)]
 
 
 def fetch_leginfo_statute(citation: StatuteCitation, *, timeout: float = 30.0) -> dict[str, Any]:
@@ -266,7 +233,10 @@ def fetch_leginfo_statute(citation: StatuteCitation, *, timeout: float = 30.0) -
     request = Request(url, headers={"User-Agent": "OpenLawLens/0.1"}, method="GET")
     try:
         with urlopen(request, timeout=timeout) as response:
-            raw_html = response.read().decode("utf-8", errors="replace")
+            body = response.read(4 * 1024 * 1024 + 1)
+            if len(body) > 4 * 1024 * 1024:
+                raise LegInfoError('LegInfo response exceeds the size limit.')
+            raw_html = body.decode("utf-8", errors="replace")
     except HTTPError as exc:
         raise LegInfoError(f"LegInfo returned HTTP {exc.code}") from exc
     except URLError as exc:
@@ -340,7 +310,7 @@ class _LegInfoTextParser(HTMLParser):
 def extract_leginfo_text(raw_html: str, citation: StatuteCitation) -> str:
     # Page titles are identity evidence, never statutory content.
     for title in re.findall(r"<title\b[^>]*>(.*?)</title>", raw_html, re.IGNORECASE | re.DOTALL):
-        identity = re.search(r"California Code,\s*([A-Z]+)\s+(\d+(?:\.\d+)?[a-z]?)", html.unescape(title), re.IGNORECASE)
+        identity = re.search(r"California Code,\s*([A-Z]+)\s+(\d+[a-z]*(?:\.\d+[a-z]*)?)", html.unescape(title), re.IGNORECASE)
         if identity and (identity[1].upper(), identity[2].casefold()) != (citation.law_code, citation.section.casefold()):
             raise LegInfoError("LegInfo page title conflicts with requested identity.")
     parser = _LegInfoTextParser()
@@ -356,7 +326,8 @@ def extract_leginfo_text(raw_html: str, citation: StatuteCitation) -> str:
         raise LegInfoError("LegInfo response has no matching section body.")
     front = text[:heading.start()]
     codes = {code for code, label in CODE_LABELS.items()
-             if re.search(rf"\b{re.escape(label)}\b", front, re.IGNORECASE)}
+             if any(re.fullmatch(rf"{re.escape(label)}(?:\s*-\s*{code})?",
+                                 line.strip(), re.I) for line in front.splitlines())}
     for line in front.splitlines():
         # An unsupported explicit code heading is conflicting identity too.
         if re.fullmatch(r"[A-Za-z][A-Za-z &.]* Code(?:\s*-\s*[A-Z]+)?", line.strip(), re.IGNORECASE):

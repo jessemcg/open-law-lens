@@ -206,7 +206,7 @@ class ClientTests(unittest.TestCase):
 
             with patch("open_law_lens.client.fetch_leginfo_statute") as fetch_mock:
                 fetch_mock.return_value = fetched_statute
-                statute = client.lookup_statute("section 300")
+                statute = client.lookup_statute("WIC section 300")
 
             fetch_mock.assert_called_once()
             self.assertEqual(statute["statute_id"], "WIC:300")
@@ -230,7 +230,7 @@ class ClientTests(unittest.TestCase):
 
             with patch("open_law_lens.client.fetch_leginfo_statute", return_value=fetched_statute):
                 result = client.lookup_statute(
-                    "section 300",
+                    "WIC section 300",
                     populate_research_cache=False,
                 )
 
@@ -2167,6 +2167,48 @@ class ClientTests(unittest.TestCase):
 
             self.assertEqual(client.cached_clusters(), [])
             self.assertEqual(library.saved_clusters()[0]["case_name"], "Example v. State")
+
+
+class EnactmentCacheSafetyTests(unittest.TestCase):
+    def test_source_validation_and_timeouts_never_write_authority_or_library(self):
+        from open_law_lens.rules import CaliforniaRulesError, rule_url
+        from open_law_lens.statutes import LegInfoError
+        from unittest.mock import MagicMock
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            library = CaseLibrary(root / 'library.sqlite3')
+            library.ensure()
+            client = CourtListenerClient(cache=JsonCache(root / 'cache'), library=library)
+            for kind, citation, module, error in (
+                ('rule', 'CRC 5.112.1', 'rules', CaliforniaRulesError),
+                ('statute', 'GOV § 815.6', 'statutes', LegInfoError),
+            ):
+                response = MagicMock()
+                response.__enter__.return_value.geturl.return_value = rule_url('5.112.1')
+                response.__enter__.return_value.read.return_value = b'<h1>Page not found</h1><p>Sorry, no content.</p>'
+                with patch(f'open_law_lens.{module}.urlopen', return_value=response):
+                    with self.assertRaises(error):
+                        getattr(client, f'lookup_{kind}')(citation)
+                with patch(f'open_law_lens.{module}.urlopen', side_effect=TimeoutError):
+                    with self.assertRaises(error):
+                        getattr(client, f'lookup_{kind}')(citation)
+            self.assertEqual(client.cache.list_rule_entries(), [])
+            self.assertEqual(client.cache.list_statute_entries(), [])
+            self.assertEqual(library.list_case_entries(), [])
+
+    def test_new_enactments_remain_transient(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            library = CaseLibrary(root / 'library.sqlite3')
+            library.ensure()
+            client = CourtListenerClient(cache=JsonCache(root / 'cache'), library=library)
+            statute = dict(statute_id='PROB:100', law_code='PROB', section='100',
+                           citation='Prob. Code § 100', text='Synthetic section text.')
+            with patch('open_law_lens.client.fetch_leginfo_statute', return_value=statute) as fetch:
+                client.lookup_statute('Probate Code section 100')
+                fetch.assert_called_once()
+            self.assertEqual(len(client.cache.list_statute_entries()), 1)
+            self.assertEqual(library.list_case_entries(), [])
 
 
 if __name__ == "__main__":

@@ -402,5 +402,16 @@ class CitationLinkTests(unittest.TestCase):
         self.assertEqual([link.lookup_text for link in links], ["34 Cal.App.5th 87", "8 Cal.App.5th 636"])
 
 
+class AuthorityCollectorTests(unittest.TestCase):
+    def test_sorted_typed_links_and_self_exclusion(self):
+        from open_law_lens.citation_links import collect_authority_links, CitationContext, StatuteLink, RuleLink
+        text = 'CRC 5.112.1; In re Caden C. (2021) 11 Cal.5th 614; Gov. Code § 815.6'
+        links = collect_authority_links(text, context=CitationContext(), excluded_case_citations=('11 Cal.5th 614',))
+        self.assertEqual([type(link) for link in links], [RuleLink, StatuteLink])
+        self.assertLessEqual(links[0].end_offset, links[1].start_offset)
+        self.assertEqual(len(collect_authority_links(text, context=CitationContext(), kinds=('statute',))), 1)
+        self.assertFalse(collect_authority_links(text, context=CitationContext(), occupied_ranges=((0, len(text)),)))
+
+
 if __name__ == "__main__":
     unittest.main()

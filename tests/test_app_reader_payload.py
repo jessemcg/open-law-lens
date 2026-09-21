@@ -23,6 +23,7 @@ from open_law_lens.app import (
     QUERY_MODE_PRESENTATION,
     READER_CLIPBOARD_ICON,
     Gdk,
+    GLib,
     Gtk,
     Pango,
     LinkPressState,
@@ -1421,6 +1422,10 @@ class AppReaderPayloadTests(unittest.TestCase):
                 self._agent_link_tags: list[object] = []
                 self._agent_link_lookup: dict[object, QuoteTarget] = {}
                 self._agent_citation_link_lookup: dict[object, object] = {}
+                self._agent_statute_link_lookup = {}
+                self._agent_rule_link_lookup = {}
+                self._agent_search_action_link_lookup = {}
+                self._external_url_links = lambda text: []
                 self._agent_external_url_link_lookup: dict[object, object] = {}
                 self._agent_search_link_lookup: dict[object, object] = {}
                 self._agent_search_next_link_tags: set[object] = set()
@@ -3486,6 +3491,8 @@ class AppReaderPayloadTests(unittest.TestCase):
         window = DummyWindow()
         text = "[*373] Opinion text."
         marker = PageMarker("373", "[*373]", 0, len("[*373]"), "plain_text")
+        window._clear_reader_citation_links = lambda: None
+        window._apply_shared_reader_link_chunk = lambda *args: False
 
         OpenLawLensWindow._set_reader_text(  # type: ignore[arg-type]
             window,
@@ -3595,6 +3602,8 @@ class AppReaderPayloadTests(unittest.TestCase):
                 pass
 
         window = DummyWindow()
+        window._clear_reader_citation_links = lambda: None
+        window._apply_shared_reader_link_chunk = lambda *args: False
         text = "INTRODUCTION\n\nBackground\n\nOpinion text."
         heading = DisplayStyleSpan("heading", 0, len("INTRODUCTION"))
         subheading_start = text.index("Background")
@@ -4974,7 +4983,7 @@ Opinion text.
         self.assertEqual(window.opened_cases, [])
         self.assertEqual(window.opened_rules, [])
 
-    def test_open_authority_text_treats_bare_number_as_configured_statute(self) -> None:
+    def test_open_authority_text_rejects_bare_number(self) -> None:
         class DummyEntry:
             def set_text(self, _text: str) -> None:
                 pass
@@ -4995,12 +5004,23 @@ Opinion text.
 
         window = DummyWindow()
 
-        with patch("open_law_lens.app.load_config", return_value=AppConfig()):
-            OpenLawLensWindow.open_authority_text(window, "300")  # type: ignore[arg-type]
+        with patch("open_law_lens.app.load_config", side_effect=AssertionError('No code preference may be consulted')):
+            for text in ('300', 'section 300', '§ 300', 'section 300(b)(1)'):
+                OpenLawLensWindow.open_authority_text(window, text)
 
-        self.assertEqual(window.opened_statutes, ["Welf. & Inst. Code, § 300"])
+        self.assertEqual(window.opened_statutes, [])
 
-    def test_open_authority_text_uses_configured_bare_number_statute_code(self) -> None:
+    def test_lookup_button_rejects_bare_sections_before_suggestion_resolution(self):
+        window = SimpleNamespace(citation_entry=Mock(), _set_status=Mock(),
+                                 _lookup_text_from_entry=Mock(), _start_lookup=Mock())
+        for text in ('300', 'section 300', '§ 300'):
+            window.citation_entry.get_text.return_value = text
+            OpenLawLensWindow._on_lookup_clicked(window, None)
+        window._lookup_text_from_entry.assert_not_called()
+        window._start_lookup.assert_not_called()
+        self.assertEqual(window._set_status.call_count, 3)
+
+    def test_open_authority_text_ignores_retired_bare_number_preference(self) -> None:
         class DummyEntry:
             def set_text(self, _text: str) -> None:
                 pass
@@ -5027,7 +5047,7 @@ Opinion text.
         ):
             OpenLawLensWindow.open_authority_text(window, "7822")  # type: ignore[arg-type]
 
-        self.assertEqual(window.opened_statutes, ["Fam. Code, § 7822"])
+        self.assertEqual(window.opened_statutes, [])
 
     def test_selected_agent_statutes_and_rules_use_cached_text(self) -> None:
         class DummyClient:
@@ -5456,11 +5476,22 @@ Opinion text.
             "**Cal. Rules of Court, rule 8.104**."
         )
 
+        import time
+        window._clear_reader_citation_links = lambda: None
+        def prepared(_generation, rendered, links, _index):
+            window.link_text = rendered
+            self.assertEqual(len(links), 3)
+            return False
+        window._apply_shared_reader_link_chunk = prepared
         OpenLawLensWindow._set_reader_text(  # type: ignore[arg-type]
             window,
             markdown,
             apply_markdown=True,
         )
+        deadline = time.monotonic() + 3
+        while not window.link_text and time.monotonic() < deadline:
+            GLib.MainContext.default().iteration(False)
+            time.sleep(.005)
 
         self.assertNotIn("**", window.link_text)
         self.assertIn("In re Caden C. (2021) 11 Cal.5th 614", window.link_text)
@@ -7321,6 +7352,115 @@ Opinion text.
             )
 
         self.assertEqual(window.errors, ["bad input"])
+
+
+class SharedAuthorityReaderTests(unittest.TestCase):
+    @staticmethod
+    def reader():
+        from types import MethodType
+        reader = SimpleNamespace(reader_buffer=Gtk.TextBuffer(), _case_load_generation=0,
+                                 _reader_text='', _pending_quote_target=None,
+                                 _reader_citation_link_tags=[], _reader_prior_brief_link_tags=[],
+                                 _reader_citation_link_lookup={}, _reader_statute_link_lookup={},
+                                 _reader_rule_link_lookup={}, _reader_prior_brief_link_lookup={})
+        for name in ('_set_reader_busy', '_close_reader_find', '_update_reader_clipboard_button',
+                     '_apply_reader_citation_italics', '_apply_reader_prior_brief_links'):
+            setattr(reader, name, lambda *a, **kw: None)
+        for name in ('_set_reader_text', '_clear_reader_citation_links',
+                     '_apply_shared_reader_link_chunk', '_apply_reader_authority_link',
+                     '_apply_reader_citation_link', '_apply_reader_statute_link',
+                     '_apply_reader_rule_link', '_apply_reader_markdown_spans'):
+            setattr(reader, name, MethodType(getattr(OpenLawLensWindow, name), reader))
+        return reader
+
+    def test_per_opinion_context_and_actual_offsets(self):
+        from open_law_lens.statutes import StatuteLink, parse_statute_citation
+        majority = 'All statutory references are to the Welfare and Institutions Code.\n\nsection 300'
+        dissent = 'section 300 is not qualified. Penal Code section 844.'
+        payload = build_case_reader_payload({}, [DisplayText(majority, '', [], []), DisplayText(dissent, '', [], [])])
+        links = [link for link in payload.cited_links if isinstance(link, StatuteLink)]
+        self.assertEqual([parse_statute_citation(link.lookup_text).statute_id for link in links], ['WIC:300', 'PEN:844'])
+        self.assertEqual([payload.text[link.start_offset:link.end_offset] for link in links], ['section 300', 'Penal Code section 844'])
+
+    def test_bare_rule_requires_california_case_metadata(self):
+        for court, count in [('cal', 1), ('calctapp2d', 1), ('scotus', 0), ('nev', 0), ('', 0)]:
+            payload = build_case_reader_payload({'court_id': court},
+                                               [DisplayText('rule 8.204', '', [], [])])
+            self.assertEqual(len(payload.cited_links), count)
+
+    def test_delayed_shared_preparation_heartbeat_batches_and_supersession(self):
+        import threading
+        from test_answer_rendering import pump_until
+        from open_law_lens.citation_links import collect_authority_links
+        window = self.reader()
+        entered, release = threading.Event(), threading.Event()
+        beats = []
+        timer = GLib.timeout_add(5, lambda: (beats.append(1), True)[1])
+        real = collect_authority_links
+        def delayed(text, **kw):
+            entered.set()
+            release.wait(3)
+            return real(text, **kw)
+        try:
+            with patch('open_law_lens.app.collect_authority_links', side_effect=delayed):
+                window._set_reader_text('WIC § 300; CRC 5.112.1\n\n' * 400)
+                self.assertTrue(entered.wait(1))
+                pump_until(lambda: len(beats) > 5)
+                self.assertFalse(window._reader_statute_link_lookup)
+                # Navigate while the old worker is blocked; its result cannot tag the new text.
+                window._set_reader_text('Government Code section 815.6')
+                release.set()
+                pump_until(lambda: bool(window._reader_statute_link_lookup))
+            self.assertEqual(len(window._reader_statute_link_lookup), 1)
+            self.assertFalse(window._reader_rule_link_lookup)
+            window._set_reader_text('WIC § 300; CRC 5.112.1\n\n' * 400)
+            pump_until(lambda: len(window._reader_rule_link_lookup) == 400, timeout=8)
+            self.assertEqual(len(window._reader_statute_link_lookup), 400)
+            self.assertGreater(len(window._reader_citation_link_tags), 750)
+        finally:
+            release.set()
+            GLib.source_remove(timer)
+
+    def test_shared_case_and_answer_enactment_parity(self):
+        from test_answer_rendering import pump_until
+        from open_law_lens.answer_rendering import prepare_answer
+        from open_law_lens.app import _AgentAnswerTextFormatter
+        fixture = ('Government Code § 815.6; Probate Code §§ 100, 102; '
+                   'Health and Safety Code § 1200; CRC 5.112.1. '
+                   'All section references are to the Welfare and Institutions Code. § 300.')
+        payload = build_case_reader_payload({}, [DisplayText(fixture, '', [], [])])
+        expected = sorted((v.start_offset, v.end_offset, v.lookup_text) for v in payload.cited_links)
+        reader = self.reader()
+        reader._set_reader_text(fixture)
+        pump_until(lambda: len(reader._reader_citation_link_tags) == len(expected))
+        links = list(reader._reader_statute_link_lookup.values()) + list(reader._reader_rule_link_lookup.values())
+        self.assertEqual(sorted((v.start_offset, v.end_offset, v.lookup_text) for v in links), expected)
+        for mode in ('general', 'appeal', 'case', 'brief'):
+            plan = prepare_answer(fixture, mode, [], _AgentAnswerTextFormatter().format,
+                                  OpenLawLensWindow._external_url_links)
+            self.assertEqual(sorted((s.start, s.end, s.target.lookup_text)
+                                    for s in plan.styles if s.kind in ('statute', 'rule')), expected)
+
+    def test_statute_and_rule_lookup_supersession_precedes_cache_write(self):
+        for kind in ('statute', 'rule'):
+            calls = []
+            window = SimpleNamespace(_case_load_generation=4, _research_cache_generation=7,
+                                     reader_buffer=Gtk.TextBuffer(), client=Mock())
+            for name in ('_clear_reader_citation_links', '_hide_case_completion', '_set_status',
+                         '_set_reader_header', '_set_reader_busy'):
+                setattr(window, name, Mock())
+            window._start_background_worker = lambda task, **kw: calls.append((task, kw))
+            setattr(window, f'_apply_{kind}_lookup_result', Mock())
+            window._apply_error = Mock()
+            getattr(OpenLawLensWindow, f'_start_{kind}_lookup')(window, 'synthetic')
+            self.assertEqual(window._case_load_generation, 5)
+            window._case_load_generation += 1
+            task, callbacks = calls[0]
+            callbacks['on_success']({})
+            callbacks['on_error'](ValueError('delayed'))
+            getattr(window, f'_apply_{kind}_lookup_result').assert_not_called()
+            window._apply_error.assert_not_called()
+            window.client.assert_not_called()
 
 
 if __name__ == "__main__":

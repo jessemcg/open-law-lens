@@ -56,6 +56,8 @@ PI_THINKING_LEVELS: tuple[str, ...] = (
     "max",
 )
 DEFAULT_READER_FONT_SIZE_PT = 11
+# Retired preference: retained only for backward-compatible config round trips.
+# No parser, lookup dispatcher, or reader may use this value to infer a code.
 DEFAULT_BARE_STATUTE_LAW_CODE = "WIC"
 BARE_STATUTE_LAW_CODE_OPTIONS: tuple[tuple[str, str], ...] = (
     ("WIC", "Welfare and Institutions Code"),

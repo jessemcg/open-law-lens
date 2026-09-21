@@ -40,10 +40,10 @@ class StatuteIdentityTests(unittest.TestCase):
             self.assertEqual(parse_statute_citation(citation).law_code, "CCP")
             self.assertEqual(cited_statute_links(citation)[0].lookup_text, citation)
         for bare in ("§ 300", "section 300", "sec. 300", "sections 300, subd. (b)(1)"):
-            self.assertEqual(parse_statute_citation(bare).law_code, "WIC")
+            self.assertIsNone(parse_statute_citation(bare))
 
     def test_unsupported_conflicting_and_malformed_fail_closed(self):
-        for citation in ("Probate Code § 300", "Cal. Prob. Code § 300",
+        for citation in ("Nevada Civil Code § 300", "California Constitution § 300",
                          "Unknown Code section 300", "CCP WIC § 300",
                          "Family Code / Penal Code § 300", "CCP § 300 garbage",
                          "CCP § 300 / 301", "Civ. Proc. § 300", "CCP § 300.1.2",

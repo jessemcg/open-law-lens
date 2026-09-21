@@ -6,9 +6,9 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from .agent import CaseTextSource, QuoteTarget, resolved_agent_quote_spans
-from .citation_links import citation_italic_spans, cited_case_links
-from .rules import cited_rule_links
-from .statutes import cited_statute_links
+from .citation_links import citation_italic_spans, collect_authority_links, CitationContext
+from .rules import RuleLink
+from .statutes import StatuteLink
 
 
 @dataclass(frozen=True)
@@ -56,12 +56,15 @@ def prepare_answer(
         if span.target is not None:
             styles.append(AnswerStyle(offset_map[span.start_offset],
                                       offset_map[span.end_offset], 'quote', span.target))
-    if mode in {'general', 'appeal'}:
-        for kind, links in (('citation', cited_case_links(rendered)),
-                            ('statute', cited_statute_links(rendered)),
-                            ('rule', cited_rule_links(rendered))):
-            styles.extend(AnswerStyle(link.start_offset, link.end_offset, kind, link)
-                          for link in links)
+    external = external_links(rendered)
+    occupied = [(s.start, s.end) for s in styles if s.kind in {'quote', 'title'}]
+    occupied.extend((start, end) for start, end, _url in external)
+    kinds = ('case', 'statute', 'rule') if mode in {'general', 'appeal'} else ('statute', 'rule')
+    for link in collect_authority_links(rendered, context=CitationContext(
+            california=True, declaration_source=text),
+                                        kinds=kinds, occupied_ranges=occupied):
+        kind = 'statute' if isinstance(link, StatuteLink) else 'rule' if isinstance(link, RuleLink) else 'citation'
+        styles.append(AnswerStyle(link.start_offset, link.end_offset, kind, link))
     styles.extend(AnswerStyle(start, end, 'external', url)
-                  for start, end, url in external_links(rendered))
+                  for start, end, url in external)
     return PreparedAnswer(rendered, tuple(styles))

@@ -31,13 +31,10 @@ class StatuteTests(unittest.TestCase):
                 assert citation is not None
                 self.assertEqual((citation.law_code, citation.section), expected)
 
-    def test_bare_section_defaults_to_wic(self) -> None:
-        citation = parse_statute_citation("section 300, subdivision (b)(1)")
-        self.assertIsNotNone(citation)
-        assert citation is not None
-        self.assertEqual(citation.law_code, "WIC")
-        self.assertEqual(citation.section, "300")
-        self.assertEqual(citation.subdivision, "(b)(1)")
+    def test_bare_section_has_no_default_code(self) -> None:
+        for text in ('section 300, subdivision (b)(1)', 'section 300', '§ 300', '300'):
+            self.assertIsNone(parse_statute_citation(text))
+            self.assertEqual(cited_statute_links(text), [])
 
     def test_display_and_url(self) -> None:
         citation = StatuteCitation("WIC", "361.5")
@@ -103,6 +100,20 @@ class StatuteTests(unittest.TestCase):
             statute_pinpoint_citation(citation, ("(b)(1)", "(b)(2)")),
             "Welf. & Inst. Code, § 300, subds. (b)(1)-(2)",
         )
+
+
+class ExpandedStatuteIdentityTests(unittest.TestCase):
+    def test_complete_identifiers_and_exact_code_heading(self):
+        for code, heading in [('UIC', 'Unemployment Insurance Code'), ('PEN', 'Penal Code')]:
+            citation = StatuteCitation(code, '1203.1ab')
+            raw = f'<title>California Code, {code} 1203.1ab</title><h2>{heading} - {code}</h2><p>1203.1ab. These provisions apply to all persons.</p>'
+            self.assertIn('These provisions', extract_leginfo_text(raw, citation))
+
+    def test_wrong_alphanumeric_identity_rejected(self):
+        from open_law_lens.statutes import LegInfoError
+        raw = '<title>California Code, PEN 1203.1abc</title><p>1203.1ab. These provisions apply.</p>'
+        with self.assertRaises(LegInfoError):
+            extract_leginfo_text(raw, StatuteCitation('PEN', '1203.1ab'))
 
 
 if __name__ == "__main__":

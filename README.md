@@ -249,9 +249,13 @@ no replacement pages are fetched. Opt-in `--compact` limits each snippet to
 1,200 characters with truncation diagnostics; default snippets are unchanged.
 Keep complete JSON: use CLI bounds, never `head`/`tail` on research results.
 
-Statute parsing recognizes CCP aliases including `Cal. Civ. Proc. Code` and
-`Civ. Proc. Code`. Only bare section expressions default to WIC; unsupported,
-conflicting, or malformed qualified citations fail closed. LegInfo extraction
+Statute parsing recognizes all 29 California LegInfo codes, their California
+Style Manual abbreviations, uppercase identifiers, and common aliases including
+`Educ. Code`, `Gov’t Code`, `Cal. Civ. Proc. Code`, and `W&I`.
+Bare lookup inputs such as `300`, `section 300`, and `§ 300` do not default
+to any code. Specify the code explicitly. The old bare-number code preference
+has been retired; legacy configuration values are ignored. Unsupported, conflicting, or malformed qualified
+citations fail closed. LegInfo extraction
 requires a matching section body and rejects conflicting identity or navigation
 alone before authority caching. Failures retain nonzero CLI exit and `ok: false`.
 Previously cached bad authorities are not deleted or migrated; handle those
@@ -466,6 +470,46 @@ sidebar row. The outline preserves the ODT heading hierarchy and each entry
 jumps directly to that section of the reader. It is independently scrollable
 so the Research Cache remains available below it. Headings and subheadings are
 rendered in bold in the SOCF reader.
+
+### California statute and rule links
+
+Case opinions, saved answers, cached enactments, prior briefs/search views,
+Current Case documents, and live final answers share one pure authority-link
+collector. It recognizes full/abbreviated code names, plural lists, written range
+endpoints, subdivisions, reverse citations, and modern statewide rules including
+`CRC 5.112.1`. Lists link only explicitly written sections/rules, never implied
+sections. Clicking retrieves the whole current official section/rule, not a
+historical version or a subdivision anchor. Rendering performs no retrieval or
+cache writes; successful on-demand government retrieval goes to **Research
+Cache**, never the durable case library. Research Set saving is unchanged.
+
+Undesignated statutory references require an explicit, unquoted document
+code declaration, a preceding same-section reference in the same paragraph
+without conflicting authority, the displayed statute’s owning code, or verified
+Juvenile Rule membership under rule 5.502(36). The active Division 3 membership
+snapshot and official-source provenance are in `citation_context.py`; other
+Title Five rules do not imply WIC. Conflicting declarations disable document
+inference. Each separate opinion is scanned independently; answers and briefs
+never inherit a source opinion’s declaration. Ambiguous, historical/renumbered,
+foreign, federal, local, professional-conduct, and malformed citations remain
+unlinked. This is conservative common-form recognition, not exhaustive citation
+resolution; `id.`/`ibid.` and obsolete integer rule numbers are not converted.
+
+Worker preparation and bounded link-tag batches reject superseded reader work,
+including enactment lookups that finish after navigation or cache clearing.
+Reader metadata shows the section or rule number without an extra current-text
+notice. Invalid government bodies,
+unrelated rule redirects, and timeouts produce errors before any authority write.
+CourtListener sometimes supplies padding after opening parentheses in its HTML
+(e.g., `( People v. …)`). Opinion display normalization removes that padding and
+remaps page-marker, heading, and citation offsets. Restart and reopen existing
+content to gain these display fixes; stored text and old cached records are not
+rewritten or migrated.
+
+`tests/preview_enactment_links.py` launches a separately identified synthetic
+acceptance window with fresh temporary state. See
+[enactment link validation](docs/enactment-links-validation.md) for automated,
+desktop, and official-source checks.
 
 ### Reader Copy Citation
 

@@ -62,19 +62,6 @@ TITLE_SLUGS = {
     "10": "ten",
 }
 
-RULE_NUMBER_RE = re.compile(
-    r"(?P<number>(?:10|[1-9])\.\d+(?:\.\d+)?)",
-    re.IGNORECASE,
-)
-RULE_CITATION_RE = re.compile(
-    r"\b(?P<full>"
-    r"(?:Cal(?:ifornia)?\.?\s+Rules\s+of\s+Court,?\s+)?"
-    r"rule\s+"
-    r"(?P<number>(?:10|[1-9])\.\d+(?:\.\d+)?)"
-    r"(?P<subdivision>(?:\([A-Za-z0-9]+\))*)"
-    r")",
-    re.IGNORECASE,
-)
 SUBDIVISION_MARKER_RE = re.compile(
     r"(?m)(?:^|\n)\s*(?:Rule\s+(?:10|[1-9])\.\d+(?:\.\d+)?\.?\s*)?"
     r"(?P<markers>\([A-Za-z0-9]+\)(?:\s*\([A-Za-z0-9]+\))*)"
@@ -98,7 +85,7 @@ def rule_id(rule_number: str) -> str:
 
 
 def rule_slug(rule_number: str) -> str:
-    return normalize_rule_number(rule_number).replace(".", "_", 1)
+    return normalize_rule_number(rule_number).replace(".", "_")
 
 
 def title_slug_for_rule(rule_number: str) -> str:
@@ -170,22 +157,13 @@ def parse_rule_citation(value: str) -> RuleCitation | None:
     text = re.sub(r"\s+", " ", value).strip()
     if not text:
         return None
-    match = RULE_CITATION_RE.search(text)
-    if match is not None:
-        return RuleCitation(
-            rule_number=normalize_rule_number(match.group("number")),
-            subdivision=match.group("subdivision") or "",
-            input_text=text,
-        )
-    if not re.search(r"\bCal(?:ifornia)?\.?\s+Rules\s+of\s+Court\b", text, re.IGNORECASE):
+    from .citation_context import RULE_PREFIX, NUMBER
+    match = re.fullmatch(
+        rf'(?:(?:{RULE_PREFIX})[:,]?\s*(?:rule\s+)?|rule\s+)'
+        rf'(?P<number>{NUMBER})(?P<subdivision>(?:\([A-Za-z0-9]+\))*)', text, re.I)
+    if match is None:
         return None
-    number_match = RULE_NUMBER_RE.search(text)
-    if number_match is None:
-        return None
-    return RuleCitation(
-        rule_number=normalize_rule_number(number_match.group("number")),
-        input_text=text,
-    )
+    return RuleCitation(normalize_rule_number(match['number']), match['subdivision'], text)
 
 
 def looks_like_rule_citation(value: str) -> bool:
@@ -214,18 +192,9 @@ def rule_search_terms(rule: dict[str, Any]) -> tuple[str, ...]:
 
 
 def cited_rule_links(text: str) -> list[RuleLink]:
-    links: list[RuleLink] = []
-    seen: set[tuple[int, int]] = set()
-    for match in RULE_CITATION_RE.finditer(text):
-        full = re.sub(r"\s+", " ", match.group("full")).strip()
-        if parse_rule_citation(full) is None:
-            continue
-        span = match.span("full")
-        if span in seen:
-            continue
-        seen.add(span)
-        links.append(RuleLink(start_offset=span[0], end_offset=span[1], lookup_text=full))
-    return links
+    from .citation_context import CitationContext, enactment_links
+    return [link for link in enactment_links(text, CitationContext(california=True))
+            if isinstance(link, RuleLink)]
 
 
 def fetch_california_rule(citation: RuleCitation, *, timeout: float = 30.0) -> dict[str, Any]:
@@ -233,11 +202,18 @@ def fetch_california_rule(citation: RuleCitation, *, timeout: float = 30.0) -> d
     request = Request(url, headers={"User-Agent": "OpenLawLens/0.1"}, method="GET")
     try:
         with urlopen(request, timeout=timeout) as response:
-            raw_html = response.read().decode("utf-8", errors="replace")
+            if response.geturl().rstrip('/') != url.rstrip('/'):
+                raise CaliforniaRulesError('California Courts redirected to unrelated content.')
+            body = response.read(4 * 1024 * 1024 + 1)
+            if len(body) > 4 * 1024 * 1024:
+                raise CaliforniaRulesError('California Courts response exceeds the size limit.')
+            raw_html = body.decode("utf-8", errors="replace")
     except HTTPError as exc:
         raise CaliforniaRulesError(f"California Courts returned HTTP {exc.code}") from exc
     except URLError as exc:
         raise CaliforniaRulesError(f"Unable to reach California Courts: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise CaliforniaRulesError('California Courts request timed out.') from exc
     text = extract_california_rule_text(raw_html, citation)
     if not text:
         raise CaliforniaRulesError(f"Could not extract text for {rule_display_citation(citation)}")
@@ -262,14 +238,14 @@ class _RulesTextParser(HTMLParser):
         self._skip_depth = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag in {"script", "style", "noscript"}:
+        if tag in {"script", "style", "noscript", "nav", "footer", "header", "title"}:
             self._skip_depth += 1
             return
         if tag in {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4"}:
             self.parts.append("\n")
 
     def handle_endtag(self, tag: str) -> None:
-        if tag in {"script", "style", "noscript"} and self._skip_depth:
+        if tag in {"script", "style", "noscript", "nav", "footer", "header", "title"} and self._skip_depth:
             self._skip_depth -= 1
             return
         if tag in {"p", "div", "li", "tr", "h1", "h2", "h3", "h4"}:
@@ -289,32 +265,36 @@ class _RulesTextParser(HTMLParser):
 
 
 def extract_california_rule_text(raw_html: str, citation: RuleCitation) -> str:
+    raw_html = re.sub(r'<(nav|footer|header|script|style)\b[^>]*>.*?</\1>', '',
+                      raw_html, flags=re.I | re.S)
+    for heading in re.findall(r'<h1\b[^>]*>(.*?)</h1>', raw_html, re.I | re.S):
+        plain = re.sub(r'<[^>]+>', '', html.unescape(heading))
+        identity = re.match(r'\s*Rule\s+((?:10|[1-9])\.\d+(?:\.\d+)?)', plain, re.I)
+        if identity and identity[1] != citation.rule_number:
+            # A following rule heading may delimit concatenated content, but a
+            # wrong primary rule heading is never an identity match.
+            break
+        if identity:
+            break
+    else:
+        identity = None
+    if identity and identity[1] != citation.rule_number:
+        raise CaliforniaRulesError('California Courts response has conflicting rule identity.')
     body_html = _rule_body_html(raw_html, citation)
     parser = _RulesTextParser()
     parser.feed(body_html)
     parser.close()
     text = parser.text()
-    if not text:
-        return ""
-    start_patterns = [
-        rf"\bRule\s+{re.escape(citation.rule_number)}\b",
-        rf"\brule\s+{re.escape(citation.rule_number)}\b",
-        rf"\b{re.escape(citation.rule_number)}\.",
-    ]
-    start = -1
-    for pattern in start_patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match is not None:
-            start = match.start()
-            break
-    if start >= 0:
-        text = text[start:]
-    next_rule_pattern = rf"Rule\s+(?!{re.escape(citation.rule_number)}\b)(?:10|[1-9])\.\d+"
-    end_match = re.search(
-        rf"\n\s*(?:{next_rule_pattern}|Back to Top|Footer|Disclaimer)\b",
-        text,
-        re.IGNORECASE,
-    )
+    heading = re.search(rf'(?im)^Rule\s+{re.escape(citation.rule_number)}(?![\w]|\.\d)\.?[^\n]*\n', text)
+    if heading is None:
+        raise CaliforniaRulesError('California Courts response has no matching rule heading.')
+    content = text[heading.end():]
+    if (not re.search(r'<p\b', body_html, re.I) or not re.search(r'[A-Za-z]{2,}\s+[A-Za-z]{2,}', content)
+            or re.search(r'(?im)^\s*(?:page not found|access denied|no results|search results|'
+                         r'sorry[,!]|(?:this )?(?:rule|page) (?:could not be found|does not exist))', content)):
+        raise CaliforniaRulesError('California Courts response has no valid rule content.')
+    text = text[heading.start():]
+    end_match = re.search(r'\n\s*(?:Back to Top|Footer|Disclaimer)\b', text, re.I)
     if end_match is not None:
         text = text[:end_match.start()]
     return text.strip()
@@ -322,16 +302,22 @@ def extract_california_rule_text(raw_html: str, citation: RuleCitation) -> str:
 
 def _rule_body_html(raw_html: str, citation: RuleCitation) -> str:
     heading_re = re.compile(
-        rf"<h1\b[^>]*>.*?\bRule\s+{re.escape(citation.rule_number)}\b.*?</h1>",
+        rf"<h[1-4]\b[^>]*>\s*(?:<[^>]+>\s*)*Rule\s+{re.escape(citation.rule_number)}(?![\w]|\.\d)[^<]*(?:</[^>]+>\s*)*</h[1-4]>",
         re.IGNORECASE | re.DOTALL,
     )
     heading_match = heading_re.search(raw_html)
     if heading_match is None:
-        return raw_html
+        raise CaliforniaRulesError('California Courts response has no exact rule heading.')
     article_start = raw_html.rfind("<article", 0, heading_match.start())
     start = article_start if article_start >= 0 else heading_match.start()
     article_end = raw_html.find("</article>", heading_match.end())
     end = article_end + len("</article>") if article_end >= 0 else len(raw_html)
+    next_heading = re.search(
+        r'<h[1-4]\b[^>]*>\s*(?:<[^>]+>\s*)*Rule\s+(?:10|[1-9])\.\d+',
+        raw_html[heading_match.end():end], re.I,
+    )
+    if next_heading:
+        end = heading_match.end() + next_heading.start()
     return raw_html[start:end]
 
 

@@ -191,7 +191,8 @@ class AnswerRenderingTests(unittest.TestCase):
                 f'[Synthetic Opening](open-law-lens://prior-brief/{source.prior_brief_id}) '
                 'argues “children who witnessed the threats”.\n\n'
                 '***In re Caden C.* (2021) 11 Cal.5th 614**, 636; '
-                'Welf. & Inst. Code, § 300; Cal. Rules of Court, rule 8.1115. '
+                'Welf. & Inst. Code, §§ 300, 361.5; Cal. Rules of Court, rules 8.1115 and 5.112.1. '
+                '**Gov. Code § 815.6**; Probate Code § 100; Health and Safety Code § 1200. '
                 'https://example.invalid/source')
         for mode in ('brief', 'case', 'general', 'appeal'):
             with self.subTest(mode=mode):
@@ -212,8 +213,12 @@ class AnswerRenderingTests(unittest.TestCase):
                         weighted = [tag for tag in tags if tag.get_property('weight-set')]
                         effective = max(weighted, key=lambda tag: tag.get_priority())
                         self.assertEqual(effective.get_property('weight'), 700)
+                    self.assertEqual(len(obj._agent_statute_link_lookup), 5)
+                    self.assertEqual(len(obj._agent_rule_link_lookup), 2)
                     if mode in ('general', 'appeal'):
                         self.assertTrue(obj._agent_citation_link_lookup)
+                    else:
+                        self.assertFalse(obj._agent_citation_link_lookup)
                 for name in ('_agent_link_lookup', '_agent_citation_link_lookup',
                              '_agent_statute_link_lookup', '_agent_rule_link_lookup',
                              '_agent_external_url_link_lookup'):
@@ -268,6 +273,18 @@ class AnswerRenderingTests(unittest.TestCase):
         self.assertIn((0, 5, f'prior_brief:{target}'), spans)
         self.assertIn((0, 5, 'italic'), spans)
         self.assertIn((0, 14, 'bold'), spans)
+
+    def test_quoted_declaration_cannot_become_default_after_delimiters_removed(self):
+        declaration = 'All statutory references are to the Welfare and Institutions Code.'
+        for quoted in (f'“{declaration}”', f'> {declaration}', f'"{declaration}"'):
+            plan = prepare_answer(quoted + '\n\nsection 300', 'general', [],
+                                  _AgentAnswerTextFormatter().format,
+                                  OpenLawLensWindow._external_url_links)
+            self.assertFalse([s for s in plan.styles if s.kind == 'statute'])
+        plan = prepare_answer('All statutory references are to the **Welfare and Institutions Code**.\n\nsection 300',
+                              'general', [], _AgentAnswerTextFormatter().format,
+                              OpenLawLensWindow._external_url_links)
+        self.assertEqual(len([s for s in plan.styles if s.kind == 'statute']), 1)
 
     def test_prepared_quotes_links_and_unicode_offsets(self):
         source = CaseTextSource('', '', 'Synthetic Opening', '', '',

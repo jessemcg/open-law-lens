@@ -9,6 +9,35 @@ from .case_titles import normalize_case_title
 from .citation_model import official_citation_from_cluster
 from .rules import RuleLink, cited_rule_links
 from .statutes import StatuteLink, cited_statute_links
+from .citation_context import CitationContext, enactment_links
+
+
+def collect_authority_links(
+    text: str,
+    *,
+    context: CitationContext,
+    excluded_case_citations: Iterable[str] = (),
+    kinds: Iterable[str] = ('case', 'statute', 'rule'),
+    occupied_ranges: Iterable[tuple[int, int]] = (),
+) -> tuple[CitedCaseLink | StatuteLink | RuleLink, ...]:
+    """Collect pure, sorted, nonoverlapping targets in the rendered string."""
+    candidates = []
+    kinds = frozenset(kinds)
+    if 'case' in kinds:
+        candidates.extend(cited_case_links(text, excluded_citations=excluded_case_citations))
+    if 'statute' in kinds or 'rule' in kinds:
+        candidates.extend(link for link in enactment_links(text, context)
+                          if ('statute' if isinstance(link, StatuteLink) else 'rule') in kinds)
+    result = []
+    occupied = sorted(occupied_ranges)
+    for link in sorted(candidates, key=lambda v: (v.start_offset, -v.end_offset)):
+        a, b = link.start_offset, link.end_offset
+        if result and a < result[-1].end_offset:
+            continue
+        if any(a < end and b > start for start, end in occupied):
+            continue
+        result.append(link)
+    return tuple(result)
 
 
 REPORTER_CITATION_PATTERN = (
@@ -225,6 +254,8 @@ def cluster_citation_texts(cluster: dict[str, object] | None) -> list[str]:
 
 
 __all__ = [
+    "CitationContext",
+    "collect_authority_links",
     "CitedCaseLink",
     "CitationStyleSpan",
     "RuleLink",

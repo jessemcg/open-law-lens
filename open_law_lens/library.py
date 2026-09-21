@@ -588,7 +588,24 @@ def _normalize_raw_star_page_markers(display: DisplayText) -> DisplayText:
 def normalize_display_quote_stacks(display: DisplayText) -> DisplayText:
     if not display.text:
         return display
-    replacements = quote_stack_replacements(display.text)
+    return _replace_display_ranges(display, quote_stack_replacements(display.text))
+
+
+def normalize_display_parenthesis_spacing(display: DisplayText) -> DisplayText:
+    """Remove upstream inline padding after '(' without rewriting saved text.
+
+    CourtListener may already contain '( <cite>…' in its HTML; this is not
+    spacing added by our link tags. Translate every display anchor before links
+    are prepared. Preserve line breaks and empty parenthetical form fields.
+    """
+    replacements = [(m.start(), m.end(), '') for m in
+                    re.finditer(r'(?<=\()[ \t\u00a0]+(?=[^\s)])', display.text)]
+    return _replace_display_ranges(display, replacements)
+
+
+def _replace_display_ranges(
+    display: DisplayText, replacements: list[tuple[int, int, str]],
+) -> DisplayText:
     if not replacements:
         return display
     parts: list[str] = []
@@ -608,7 +625,7 @@ def normalize_display_quote_stacks(display: DisplayText) -> DisplayText:
                 translated += delta
                 continue
             if start < offset < end:
-                return start + max(0, min(offset - start, len(replacement)))
+                return translated - (offset - start) + min(offset - start, len(replacement))
         return translated
 
     return DisplayText(
@@ -640,7 +657,9 @@ def _normalize_opinion_display(
     *,
     infer_headings: bool = True,
 ) -> DisplayText:
-    normalized = _normalize_raw_star_page_markers(normalize_display_quote_stacks(display))
+    normalized = _normalize_raw_star_page_markers(
+        normalize_display_parenthesis_spacing(normalize_display_quote_stacks(display))
+    )
     style_spans = (
         infer_opinion_heading_spans(normalized.text, normalized.style_spans)
         if infer_headings
