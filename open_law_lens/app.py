@@ -8787,8 +8787,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             remove_button.set_tooltip_text("Remove from Research Cache")
             remove_button.set_sensitive(bool(statute_id))
             remove_button.connect("clicked", self._on_remove_cached_statute_clicked, statute_id, statute)
-            title_text = str(statute.get("title") or "Untitled statute")
-            citation_text = str(statute.get("citation") or "").strip()
+            masthead = statute_reader_masthead(statute)
+            title_text = masthead.title or "Untitled statute"
+            citation_text = masthead.metadata
             check = Gtk.CheckButton()
             check.set_tooltip_text("Make statute available to Cache Agent")
             check.set_active(self.client.cache.is_statute_agent_selected(statute_id))

@@ -92,6 +92,34 @@ class SidebarTests(unittest.TestCase):
         self.window.render(select_first=True)
         self.assertIn(self.window.case_list.get_selected_row()._open_law_lens_authority_type, ("statute", "rule"))
 
+    def test_statute_rows_use_code_name_and_section_without_repeating_citation(self):
+        examples = [
+            ({"title": "Welfare and Institutions Code section 300",
+              "citation": "Welf. & Inst. Code, § 300"},
+             ["Welfare and Institutions Code", "§ 300"]),
+            ({"code_label": "Civil Code", "section": "43.5",
+              "title": "Civil Code section 43.5", "citation": "Civ. Code, § 43.5"},
+             ["Civil Code", "§ 43.5"]),
+            ({"citation": "Pen. Code, § 1016.5"}, ["Penal Code", "§ 1016.5"]),
+            ({"title": "Legacy statute"}, ["Legacy statute"]),
+            ({}, ["Untitled statute"]),
+        ]
+        for payload, expected in examples:
+            with self.subTest(payload=payload):
+                statute = {"statute_id": "SYN:1", **payload}
+                original = dict(statute)
+                self.window._set_sidebar_authorities([], [statute], [])
+                row = next(r for r in rows(self.window)
+                           if getattr(r, "_open_law_lens_authority_type", "") == "statute")
+                labels = []
+                child = row.get_child().get_first_child().get_first_child()
+                while child is not None:
+                    labels.append(child.get_label())
+                    child = child.get_next_sibling()
+                self.assertEqual(labels, expected)
+                self.assertEqual(statute, original)
+                self.assertEqual(row._open_law_lens_authority_id, "SYN:1")
+
     def test_empty_and_single_groups(self):
         for keep in ((), ("case",), ("statute",), ("rule",), ("prior_brief",), ("agent_answer",), ("statute", "rule")):
             with self.subTest(keep=keep):

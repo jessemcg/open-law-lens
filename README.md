@@ -53,6 +53,8 @@ Or save it in the app menu under Settings. The Settings path writes a local
 - Research Cache sidebar grouped as **Statutes**, **Case Law**, **Prior Briefing**,
   and **Saved Answers**, in that order. Statutes includes all supported court
   rules; saved answers from every workflow remain answers, not legal authority.
+  Statute rows match the reader masthead: full code name with just `§ number`
+  beneath it, rather than repeating the code in an abbreviated citation.
   Empty groups are hidden. Tinted item rows, stronger counted heading bands, and
   4-pixel teal/blue/bronze/violet edges identify categories in light and dark
   appearances. Text and controls stay neutral; persistent selection outlines and
