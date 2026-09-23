@@ -536,43 +536,42 @@ period. If no pinpoint can be determined, it warns and leaves the clipboard
 untouched. Without a selection, it copies the full citation as before. Use
 ordinary **Copy** to copy selected prose.
 
-### Copy Trace
+### Operational metrics pilot
 
-The **Copy Trace** button in the Agent output header exports the current
-embedded Agent session for diagnostic review. It becomes available as soon as
-the run's Pi session JSONL is discovered — including for failed runs — and a
-click snapshots the session through the latest complete JSONL record, so it
-can be used while a session is still active and clicked again later to pick up
-newer records.
+Copy Trace is removed. **Answer**, **Session**, and **Save** remain. Workspace-local
+Pi JSONL remains the internal answer transport, with the existing session discovery,
+background rendering, and generation guards; it is not exported to the metrics archive.
+Old saved traces and private settings are untouched.
 
-The snapshot is written to private per-user XDG state and atomically replaces
-the previous one, so only a single latest snapshot is retained:
+All Pi-backed modes explicitly load the sibling `../PiRunMetrics/run-collector.ts`
+without changing models, prompts, web access, or tool restrictions. Workflow tags are
+`law`, `research_cache`, `prior_briefs`, `assess_argument`, and `subsequent_treatment`.
+Local **Search Briefs** launches no Pi process and creates no metric record.
+
+New sessions save content-free operational records inside this project:
 
 ```text
-$XDG_STATE_HOME/open-law-lens/traces/latest_trace.jsonl
+OpenLawLens/.run-metrics/runs/YYYY-MM-DD/<run-uuid>.jsonl
 ```
 
-falling back to `~/.local/state/open-law-lens/traces/latest_trace.jsonl` when
-`XDG_STATE_HOME` is unset. Set `OPEN_LAW_LENS_TRACE_PATH` to an absolute file
-path to publish the snapshot somewhere else, such as synchronized storage; a
-relative value is rejected. The destination directory is created with `0700`
-permissions and the snapshot file is `0600`. If a snapshot cannot be validated
-or written, the previous trace and the clipboard are left untouched.
+The entire `.run-metrics/` directory is Git-ignored. Directories/files remain private
+(`0700`/`0600`), but Dropbox may sync them because the project is under Dropbox;
+Git ignore is not a Dropbox exclusion. No prompts, answers, thinking, transcripts,
+tool arguments/results, or error prose are stored there. Jesse alone assesses quality.
 
-After publishing the snapshot, Copy Trace places the snapshot's absolute
-path on the clipboard — nothing else. Paste that path into a fresh Pi coding
-session and compose your own review request; the trace is meant as
-diagnostic evidence to review, not a conversation to resume.
+From the OpenLawLens directory, generate an on-demand batch report:
 
-The trace is the **full persisted Pi session JSONL**: user prompts, assistant
-thinking blocks when the provider supplies them, tool calls and results, final
-answers, model metadata, costs, and errors. It can contain confidential case
-material, so it stays in private local state by default — never in the
-repository, Research Cache, library, configuration, or logs — and it is not
-redacted, because redaction could remove the evidence needed to diagnose a
-failure. Reviewing the trace as a file is intentionally different from
-resuming or forking the Pi session: Open Law Lens never launches or forks Pi
-from the snapshot.
+```sh
+python3 ../PiRunMetrics/analyze_runs.py --root "$PWD/.run-metrics/runs" --app open-law-lens --days 14
+```
+
+Reports remain in private XDG state. An absolute `PI_RUN_METRICS_ROOT` overrides the
+archive path; `PI_RUN_METRICS_COLLECTOR` overrides the collector file. Missing collector
+code or telemetry failures warn without blocking research. Set `PI_RUN_METRICS_ENABLED=0`
+to disable collection. Restart the app to remove the button; new embedded sessions
+load the observer. Receiving computers need the sibling project and compatible Pi
+(offline tests use 0.87.1). Rollback never deletes archives. See
+[acceptance notes](docs/run-metrics-acceptance.md) and PiRunMetrics README for limits.
 
 ## Assess Legal Question
 
@@ -938,8 +937,8 @@ opinions remain in the durable Library.
   clipboard import primitives for recovery.
 - `scripts/open-law-lens-agent-vte.sh`: embedded Pi terminal launcher. It keeps
   unrelated extensions disabled with `--no-extensions`; closed-corpus modes
-  load no extension, while research-capable modes load only the user-level
-  `pi-web-access` extension.
+  load only the passive sibling metrics observer, while research-capable modes
+  also load the user-level `pi-web-access` extension.
 - `.pi/settings.json`: project-local fallback Pi provider and model.
 - `~/.pi/agent/npm/node_modules/pi-web-access/`: user-level web-access
   package explicitly loaded for research-capable Agent runs (or the equivalent

@@ -38,17 +38,12 @@ from . import APP_ID, APP_NAME
 from .agent import (
     CaseTextSource,
     QuoteTarget,
-    TraceSnapshotError,
     export_selected_authorities,
     extract_latest_pi_final_answer_from_jsonl,
     extract_quoted_phrases,
     find_latest_pi_session_log_for_cwd,
-    pi_session_log_matches_cwd,
     quote_match_spans,
-    reasoning_trace_path,
     resolved_agent_quote_spans,
-    snapshot_pi_session_jsonl,
-    trace_clipboard_text,
 )
 from .answer_rendering import PreparedAnswer, prepare_answer
 from .agent_commands import agent_cli_command
@@ -398,12 +393,16 @@ def build_agent_launch_env(
     workspace: Path,
     mode: str,
     profile: PiAgentProfile | None = None,
+    profile_key: str | None = None,
 ) -> dict[str, str]:
     pi_executable = find_pi_executable()
     env = {
         "OPEN_LAW_LENS_AGENT_PROMPT_FILE": str(prompt_path),
         "OPEN_LAW_LENS_AGENT_WORKSPACE": str(workspace),
         "OPEN_LAW_LENS_AGENT_MODE": mode,
+        "OPEN_LAW_LENS_AGENT_PROFILE_KEY": (
+            profile_key or AGENT_PROFILE_BY_MODE.get(mode, "unknown")
+        ),
         "OPEN_LAW_LENS_CACHE_DIR": str(workspace / "research-cache"),
         "OPEN_LAW_LENS_PROJECT_DIR": str(PROJECT_DIR),
         "OPEN_LAW_LENS_PI_BIN": pi_executable,
@@ -2136,7 +2135,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_answer_button: Gtk.ToggleButton | None = None
         self._agent_session_button: Gtk.ToggleButton | None = None
         self._agent_save_answer_button: Gtk.Button | None = None
-        self._agent_copy_trace_button: Gtk.Button | None = None
         self._agent_output_toggle_button: Gtk.Button | None = None
         self._agent_output_header: Gtk.Widget | None = None
         self._agent_subview_strip: Gtk.Widget | None = None
@@ -3827,20 +3825,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         tabs.set_hexpand(True)
         header.append(tabs)
         self._agent_subview_strip = tabs
-
-        self._agent_copy_trace_button = Gtk.Button(label="Copy Trace")
-        self._agent_copy_trace_button.add_css_class("flat")
-        self._agent_copy_trace_button.add_css_class("no-bold")
-        self._agent_copy_trace_button.set_valign(Gtk.Align.CENTER)
-        self._agent_copy_trace_button.set_tooltip_text(
-            "Refresh the latest full Agent session trace and copy its path "
-            "for pasting into a new Pi session"
-        )
-        self._agent_copy_trace_button.set_sensitive(False)
-        self._agent_copy_trace_button.connect(
-            "clicked", self._on_agent_copy_trace_clicked
-        )
-        tabs.append(self._agent_copy_trace_button)
 
         self._agent_save_answer_button = Gtk.Button(label="Save")
         self._agent_save_answer_button.add_css_class("flat")
@@ -6266,11 +6250,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._agent_save_answer_button.set_sensitive(
                 bool(self._agent_last_answer_text.strip())
                 and not getattr(self, "_agent_answer_finishing", False)
-            )
-        if self._agent_copy_trace_button is not None:
-            trace_source = self._agent_session_log_path
-            self._agent_copy_trace_button.set_sensitive(
-                trace_source is not None and trace_source.is_file()
             )
         if self._agent_answer_scroller is not None:
             self._agent_answer_scroller.set_visible(
@@ -10290,6 +10269,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 workspace,
                 mode,
                 profile,
+                profile_key=profile_key,
             )
         )
         argv = ["bash", str(AGENT_WRAPPER)]
@@ -10572,49 +10552,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if bold_tag is not None:
             bold_tag.set_priority(table.get_size() - 1)
         self._queue_agent_answer_height_update()
-
-    def _on_agent_copy_trace_clicked(self, _button: Gtk.Button) -> None:
-        workspace = self._agent_workspace_path
-        source = self._agent_session_log_path
-        if workspace is not None:
-            discovered = find_latest_pi_session_log_for_cwd(
-                workspace / "pi-sessions",
-                workspace,
-            )
-            if discovered is not None:
-                source = discovered
-                self._agent_session_log_path = discovered
-        if (
-            source is None
-            or workspace is None
-            or not source.is_file()
-            or not pi_session_log_matches_cwd(source, workspace)
-        ):
-            self._set_status(
-                "Copy Trace: no readable session trace for the current Agent run."
-            )
-            self._sync_agent_subviews()
-            return
-        try:
-            destination = reasoning_trace_path()
-        except ValueError as error:
-            self._set_status(f"Copy Trace: {error}")
-            return
-        try:
-            snapshot_pi_session_jsonl(source, destination)
-        except (TraceSnapshotError, OSError) as error:
-            self._set_status(
-                f"Copy Trace failed; previous trace preserved: {error}"
-            )
-            return
-        display = Gdk.Display.get_default()
-        if display is None:
-            self._set_status(
-                f"Agent trace saved to {destination}, but the clipboard was unavailable."
-            )
-            return
-        display.get_clipboard().set(trace_clipboard_text(destination))
-        self._set_status(f"Copied Agent trace path. Trace: {destination}")
 
     def _render_markdown_text(
         self,

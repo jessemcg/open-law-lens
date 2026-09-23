@@ -78,6 +78,7 @@ class AgentVteWrapperTests(unittest.TestCase):
             "printf '%s\\n' \"$@\" > \"$CAPTURE_ARGS\"\n"
             "printf '%s\\n' \"$PI_CODING_AGENT_SESSION_DIR\" >> \"$CAPTURE_ARGS\"\n"
             "printf '%s\\n' \"$PWD\" >> \"$CAPTURE_ARGS\"\n"
+            "printf '%s\\n' \"$PI_RUN_METRICS_ROOT\" \"$PI_RUN_METRICS_APP\" \"$PI_RUN_METRICS_WORKFLOW\" > \"$CAPTURE_ARGS.metrics\"\n"
         )
         executable.write_text(fake_script, encoding="utf-8")
         executable.chmod(0o755)
@@ -94,6 +95,7 @@ class AgentVteWrapperTests(unittest.TestCase):
         *,
         with_sibling_node: bool = False,
         profile: tuple[str, str, str] | None = None,
+        extra_env: dict[str, str] | None = None,
     ) -> tuple[list[str], str]:
         project, workspace, prompt = self._fixture(root)
         if mode in {"general", "appeal"}:
@@ -115,6 +117,9 @@ class AgentVteWrapperTests(unittest.TestCase):
                 "CAPTURE_ARGS": str(output),
             }
         )
+        for key in ("PI_RUN_METRICS_ROOT", "PI_RUN_METRICS_COLLECTOR", "PI_RUN_METRICS_ENABLED", "OPEN_LAW_LENS_AGENT_PROFILE_KEY"):
+            env.pop(key, None)
+        env.update(extra_env or {})
         if profile is not None:
             env.update(
                 {
@@ -128,6 +133,47 @@ class AgentVteWrapperTests(unittest.TestCase):
             capture_output=True, text=True,
         )
         return output.read_text(encoding="utf-8").splitlines(), completed.stderr
+
+    def test_metrics_all_pi_workflows_keep_tools_and_session_transport(self) -> None:
+        for mode, workflow in (("general", "law"), ("case", "research_cache"),
+                               ("brief", "prior_briefs"), ("appeal", "assess_argument"),
+                               ("general", "subsequent_treatment")):
+            with self.subTest(workflow=workflow), tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                collector = root / "PiRunMetrics" / "run-collector.ts"
+                collector.parent.mkdir()
+                collector.write_text("// synthetic observer\n")
+                args, _ = self._run(root, mode, extra_env={"OPEN_LAW_LENS_AGENT_PROFILE_KEY": workflow})
+                self.assertIn(collector, [Path(args[i + 1]).resolve() for i, arg in enumerate(args) if arg == "--extension"])
+                self.assertEqual(args.count("--extension"), 2 if mode in {"general", "appeal"} else 1)
+                self.assertIn("--no-extensions", args)
+                self.assertNotIn("--no-session", args)
+                self.assertEqual(args[args.index("--tools") + 1], "read,bash,grep,find,ls" + (",web_search" if mode in {"general", "appeal"} else ""))
+                metadata = (root / "pi-arguments.txt.metrics").read_text().splitlines()
+                self.assertEqual(metadata, [str(root / "project/.run-metrics/runs"), "open-law-lens", workflow])
+                self.assertEqual(args[-2], str(root / "workspace/pi-sessions"))
+
+    def test_metrics_override_disabled_and_missing(self) -> None:
+        for options in ({"PI_RUN_METRICS_ROOT": "/tmp/alternate metrics/runs", "PI_RUN_METRICS_ENABLED": "0"},
+                        {"PI_RUN_METRICS_COLLECTOR": "/nonexistent/observer.ts"},
+                        {"PI_RUN_METRICS_COLLECTOR": "relative.ts"}):
+            with self.subTest(options=options), tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                args, stderr = self._run(root, "brief", extra_env=options)
+                self.assertNotIn("--extension", args)
+                if options.get("PI_RUN_METRICS_ENABLED") == "0":
+                    self.assertNotIn("collector unavailable", stderr)
+                    self.assertEqual((root / "pi-arguments.txt.metrics").read_text().splitlines()[0], options["PI_RUN_METRICS_ROOT"])
+                else:
+                    self.assertIn("collector unavailable", stderr)
+
+    def test_metrics_archive_is_git_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            (root / ".gitignore").write_text((PROJECT_DIR / ".gitignore").read_text())
+            result = subprocess.run(["git", "check-ignore", ".run-metrics/runs/2099-01-01/test.jsonl"], cwd=root, capture_output=True)
+            self.assertEqual(result.returncode, 0)
 
     def test_research_mode_loads_skill_and_web_search(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

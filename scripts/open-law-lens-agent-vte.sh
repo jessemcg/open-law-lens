@@ -174,6 +174,42 @@ if [[ "$agent_mode" == "general" || "$agent_mode" == "appeal" ]]; then
   args+=(--extension "$extension")
   tools+=",web_search"
 fi
+# Passive observer for every Pi-backed mode; never grant extra model tools.
+metrics_project_root="$(cd "$project_dir" && pwd)"
+export PI_RUN_METRICS_ROOT="${PI_RUN_METRICS_ROOT:-$metrics_project_root/.run-metrics/runs}"
+export PI_RUN_METRICS_APP=open-law-lens
+workflow="${OPEN_LAW_LENS_AGENT_PROFILE_KEY:-}"
+if [[ -z "$workflow" ]]; then
+  case "$agent_mode" in
+    general) workflow=law ;;
+    case) workflow=research_cache ;;
+    brief) workflow=prior_briefs ;;
+    appeal) workflow=assess_argument ;;
+    *) workflow=unknown ;;
+  esac
+fi
+case "$workflow" in
+  law|research_cache|prior_briefs|assess_argument|subsequent_treatment) ;;
+  *) workflow=unknown ;;
+esac
+export PI_RUN_METRICS_WORKFLOW="$workflow"
+export PI_RUN_METRICS_REVISION="$(git -C "$metrics_project_root" rev-parse HEAD 2>/dev/null || true)"
+unset PI_RUN_METRICS_DIRTY
+if metrics_status="$(git -C "$metrics_project_root" status --porcelain --untracked-files=no 2>/dev/null)"; then
+  if [[ -n "$metrics_status" ]]; then
+    export PI_RUN_METRICS_DIRTY=1
+  else
+    export PI_RUN_METRICS_DIRTY=0
+  fi
+fi
+collector="${PI_RUN_METRICS_COLLECTOR:-$metrics_project_root/../PiRunMetrics/run-collector.ts}"
+if [[ "${PI_RUN_METRICS_ENABLED:-1}" != 0 ]]; then
+  if [[ "$collector" = /* && -r "$collector" ]]; then
+    args+=(--extension "$collector")
+  else
+    printf 'Pi run metrics: collector unavailable; continuing without collection.\n' >&2
+  fi
+fi
 args+=(--tools "$tools")
 
 cd "$workspace"
