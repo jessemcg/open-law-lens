@@ -75,6 +75,7 @@ class AgentVteWrapperTests(unittest.TestCase):
         output = root / "pi-arguments.txt"
         fake_script = (
             "#!/usr/bin/env bash\n"
+            "if [[ \"${*: -1}\" == --version ]]; then printf '0.87.1\\n'; exit 0; fi\n"
             "printf '%s\\n' \"$@\" > \"$CAPTURE_ARGS\"\n"
             "printf '%s\\n' \"$PI_CODING_AGENT_SESSION_DIR\" >> \"$CAPTURE_ARGS\"\n"
             "printf '%s\\n' \"$PWD\" >> \"$CAPTURE_ARGS\"\n"
@@ -119,6 +120,7 @@ class AgentVteWrapperTests(unittest.TestCase):
         )
         for key in ("PI_RUN_METRICS_ROOT", "PI_RUN_METRICS_COLLECTOR", "PI_RUN_METRICS_ENABLED", "OPEN_LAW_LENS_AGENT_PROFILE_KEY"):
             env.pop(key, None)
+        env['PI_RUN_METRICS_ENABLED'] = '0'
         env.update(extra_env or {})
         if profile is not None:
             env.update(
@@ -143,14 +145,14 @@ class AgentVteWrapperTests(unittest.TestCase):
                 collector = root / "PiRunMetrics" / "run-collector.ts"
                 collector.parent.mkdir()
                 collector.write_text("// synthetic observer\n")
-                args, _ = self._run(root, mode, extra_env={"OPEN_LAW_LENS_AGENT_PROFILE_KEY": workflow})
+                args, _ = self._run(root, mode, extra_env={"OPEN_LAW_LENS_AGENT_PROFILE_KEY": workflow, "PI_RUN_METRICS_COLLECTOR": str(collector), "PI_RUN_METRICS_ENABLED": "1"})
                 self.assertIn(collector, [Path(args[i + 1]).resolve() for i, arg in enumerate(args) if arg == "--extension"])
                 self.assertEqual(args.count("--extension"), 2 if mode in {"general", "appeal"} else 1)
                 self.assertIn("--no-extensions", args)
                 self.assertNotIn("--no-session", args)
                 self.assertEqual(args[args.index("--tools") + 1], "read,bash,grep,find,ls" + (",web_search" if mode in {"general", "appeal"} else ""))
                 metadata = (root / "pi-arguments.txt.metrics").read_text().splitlines()
-                self.assertEqual(metadata, [str(root / "project/.run-metrics/runs"), "open-law-lens", workflow])
+                self.assertEqual(metadata, [str(PROJECT_DIR / ".run-metrics/runs"), "open-law-lens", workflow])
                 self.assertEqual(args[-2], str(root / "workspace/pi-sessions"))
 
     def test_metrics_override_disabled_and_missing(self) -> None:
@@ -159,13 +161,13 @@ class AgentVteWrapperTests(unittest.TestCase):
                         {"PI_RUN_METRICS_COLLECTOR": "relative.ts"}):
             with self.subTest(options=options), tempfile.TemporaryDirectory() as d:
                 root = Path(d)
-                args, stderr = self._run(root, "brief", extra_env=options)
+                args, stderr = self._run(root, "brief", extra_env={"PI_RUN_METRICS_ENABLED": "1", **options})
                 self.assertNotIn("--extension", args)
                 if options.get("PI_RUN_METRICS_ENABLED") == "0":
-                    self.assertNotIn("collector unavailable", stderr)
+                    self.assertNotIn("collection incomplete or unavailable", stderr)
                     self.assertEqual((root / "pi-arguments.txt.metrics").read_text().splitlines()[0], options["PI_RUN_METRICS_ROOT"])
                 else:
-                    self.assertIn("collector unavailable", stderr)
+                    self.assertIn("collection incomplete or unavailable", stderr)
 
     def test_metrics_archive_is_git_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as d:

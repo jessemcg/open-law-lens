@@ -4,6 +4,10 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 const pkg = process.env.PI_METRICS_TEST_SDK || join(dirname(process.execPath), '../lib/node_modules/@earendil-works/pi-coding-agent');
+if (process.argv.slice(2).includes('--version')) {
+  console.log(JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8')).version);
+  process.exit(0);
+}
 const sdk = await import(pathToFileURL(join(pkg, 'dist/index.js')));
 const ai = await import(pathToFileURL(join(pkg, 'node_modules/@earendil-works/pi-ai/dist/index.js')));
 globalThis.fetch = () => { throw new Error('Network forbidden during metrics acceptance'); };

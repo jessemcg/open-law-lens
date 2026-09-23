@@ -175,9 +175,7 @@ if [[ "$agent_mode" == "general" || "$agent_mode" == "appeal" ]]; then
   tools+=",web_search"
 fi
 # Passive observer for every Pi-backed mode; never grant extra model tools.
-metrics_project_root="$(cd "$project_dir" && pwd)"
-export PI_RUN_METRICS_ROOT="${PI_RUN_METRICS_ROOT:-$metrics_project_root/.run-metrics/runs}"
-export PI_RUN_METRICS_APP=open-law-lens
+metrics_project_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 workflow="${OPEN_LAW_LENS_AGENT_PROFILE_KEY:-}"
 if [[ -z "$workflow" ]]; then
   case "$agent_mode" in
@@ -192,22 +190,21 @@ case "$workflow" in
   law|research_cache|prior_briefs|assess_argument|subsequent_treatment) ;;
   *) workflow=unknown ;;
 esac
-export PI_RUN_METRICS_WORKFLOW="$workflow"
-export PI_RUN_METRICS_REVISION="$(git -C "$metrics_project_root" rev-parse HEAD 2>/dev/null || true)"
-unset PI_RUN_METRICS_DIRTY
-if metrics_status="$(git -C "$metrics_project_root" status --porcelain --untracked-files=no 2>/dev/null)"; then
-  if [[ -n "$metrics_status" ]]; then
-    export PI_RUN_METRICS_DIRTY=1
-  else
-    export PI_RUN_METRICS_DIRTY=0
-  fi
+metrics_prefix=("$pi_path")
+[[ -z "$pi_node" ]] || metrics_prefix=("$pi_node" "$pi_path")
+metrics_values=()
+helper="$metrics_project_root/../PiRunMetrics/launch_adapter.py"
+if [[ -r "$helper" && -x /usr/bin/python3 ]]; then
+  mapfile -d '' -t metrics_values < <(/usr/bin/python3 "$helper" --shell \
+    --project "$metrics_project_root" --app open-law-lens --workflow "$workflow" -- "${metrics_prefix[@]}")
 fi
-collector="${PI_RUN_METRICS_COLLECTOR:-$metrics_project_root/../PiRunMetrics/run-collector.ts}"
-if [[ "${PI_RUN_METRICS_ENABLED:-1}" != 0 ]]; then
-  if [[ "$collector" = /* && -r "$collector" ]]; then
-    args+=(--extension "$collector")
-  else
-    printf 'Pi run metrics: collector unavailable; continuing without collection.\n' >&2
+if (( ${#metrics_values[@]} )); then
+  [[ -z "${metrics_values[0]}" ]] || args+=(--extension "${metrics_values[0]}")
+  for entry in "${metrics_values[@]:1}"; do export "$entry"; done
+else
+  unset PI_RUN_METRICS_APP PI_RUN_METRICS_WORKFLOW PI_RUN_METRICS_REVISION PI_RUN_METRICS_DIRTY PI_RUN_METRICS_PI_VERSION
+  if [[ "${PI_RUN_METRICS_ENABLED:-1}" != 0 ]]; then
+    printf 'Pi run metrics: collection incomplete or unavailable.\n' >&2
   fi
 fi
 args+=(--tools "$tools")

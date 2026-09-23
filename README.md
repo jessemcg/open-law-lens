@@ -1,5 +1,7 @@
 # Open Law Lens
 
+The five Pi workflows now share sibling `PiRunMetrics/launch_adapter.py` via system Python for bounded executable-only version/Git probes. Collection requires Pi >=0.87.1; unavailable/incompatible collection warns and fails open without upgrades. Source-project archive resolution ignores staged config roots and replaces inherited parent-app tags. Web/tool confinement, JSONL answer transport, generation guards and Save remain unchanged. New embedded launches use the adapter. Sibling **Pi Run Metrics** provides readiness, private reports and an existing-session PiPlanner request; it never launches models or migrates archives.
+
 <img src="open-law-lens-icon.png" alt="Open Law Lens icon" width="128" align="left">
 
 Open Law Lens is a practical legal research app for working with public legal

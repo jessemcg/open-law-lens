@@ -41,7 +41,7 @@ class RunMetricsSDKTests(unittest.TestCase):
                 captures = []
                 for variant in ('enabled', 'disabled', 'missing', 'unwritable'):
                     capture = root / f'capture-{variant}.json'
-                    env.pop('PI_RUN_METRICS_ROOT', None)
+                    env['PI_RUN_METRICS_ROOT'] = str(root / 'archive')
                     env.update(PI_RUN_METRICS_ENABLED='0' if variant == 'disabled' else '1',
                                PI_RUN_METRICS_COLLECTOR=str(root / 'missing.ts') if variant == 'missing' else str(collector),
                                PI_METRICS_TEST_CAPTURE=str(capture))
@@ -62,7 +62,8 @@ class RunMetricsSDKTests(unittest.TestCase):
                 if mode in {'general', 'appeal'}:
                     expected_tools.add('web_search')
                 self.assertEqual(set(captures[0]['tools']), expected_tools)
-                archive = project / '.run-metrics/runs'
+                archive = root / 'archive'
+                self.assertFalse((project / '.run-metrics').exists())
                 files = list(archive.glob('*/*.jsonl'))
                 self.assertEqual(len(files), 2)
                 records = []
