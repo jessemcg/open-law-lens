@@ -18,6 +18,7 @@ from open_law_lens.app import (
     AGENT_MODE_GENERAL,
     AGENT_MODE_ICONS,
     AGENT_PROFILE_BY_MODE,
+    AGENT_SUBVIEW_SESSION,
     QUERY_MODE_BRIEF_SEARCH,
     QUERY_MODE_LABELS,
     QUERY_MODE_PRESENTATION,
@@ -754,6 +755,74 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertTrue(row.homogeneous)
         self.assertTrue(entry.sensitive)
         self.assertIn("Law", entry.tooltip)
+
+    def test_followup_submission_reveals_session_and_clears_acknowledged_draft(self) -> None:
+        class FakeEntry:
+            def __init__(self, text: str = "") -> None:
+                self.text = text
+                self.visible = True
+                self.sensitive = True
+                self.tooltip = ""
+
+            def get_text(self) -> str:
+                return self.text
+
+            def set_text(self, text: str) -> None:
+                self.text = text
+
+            def set_visible(self, visible: bool) -> None:
+                self.visible = visible
+
+            def set_sensitive(self, sensitive: bool) -> None:
+                self.sensitive = sensitive
+
+            def set_tooltip_text(self, tooltip: str) -> None:
+                self.tooltip = tooltip
+
+        class FakeTerminal:
+            def __init__(self) -> None:
+                self.focused = False
+
+            def grab_focus(self) -> None:
+                self.focused = True
+
+        class FakeRow:
+            def set_homogeneous(self, _homogeneous: bool) -> None:
+                return None
+
+        entry = FakeEntry("And the father?")
+        terminal = FakeTerminal()
+        window = SimpleNamespace(
+            _agent_followup_generation=5,
+            _agent_followup_pending=True,
+            _agent_followup_entry=entry,
+            _agent_followup_draft="And the father?",
+            _agent_followup_endpoint=object(),
+            _agent_terminal_active=True,
+            _agent_terminal=terminal,
+            _agent_ask_row=FakeRow(),
+            _selected_agent_mode=AGENT_MODE_GENERAL,
+            _agent_followup_live_mode=AGENT_MODE_CASE,
+            subviews=[],
+            statuses=[],
+        )
+        window._set_agent_subview = lambda name: window.subviews.append(name)
+        window._set_composer_busy = lambda text: window.statuses.append(text)
+        window._agent_followup_session_active = lambda: True
+        window._live_agent_workflow_label = lambda: "Research Cache"
+        window._refresh_agent_followup_state = (
+            lambda: OpenLawLensWindow._refresh_agent_followup_state(window)
+        )
+
+        OpenLawLensWindow._on_agent_followup_result(  # type: ignore[arg-type]
+            window, 5, "And the father?", "busy", ""
+        )
+
+        self.assertEqual(window.subviews, [AGENT_SUBVIEW_SESSION])
+        self.assertTrue(terminal.focused)
+        self.assertEqual(entry.get_text(), "")
+        self.assertFalse(window._agent_followup_pending)
+        self.assertTrue(window.statuses)
 
     def test_status_dispatcher_routes_context_and_transient_feedback(self) -> None:
         window = SimpleNamespace(

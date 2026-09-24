@@ -364,10 +364,11 @@ inline without queueing or steering the current answer. A draft clears only once
 delivery is acknowledged; an ambiguous delivery is never replayed and instead
 tells you to inspect **Session** before retrying. Starting a new question,
 switching profiles, closing the window, or the session exiting invalidates the
-channel and cleans up the application-owned runtime directory. The prior
-formatted answer stays visible while the new one is generated, and identical
-repeated final answers still complete follow-up activity because turn identity
-is tracked independently of answer text.
+channel and cleans up the application-owned runtime directory. Immediately
+after submission the live **Session** is shown so the run can be watched for
+obvious problems; the view returns to the formatted **Answer** when the run
+finishes. Identical repeated final answers still complete follow-up activity
+because turn identity is tracked independently of answer text.
 
 The application-level D-Bus action `focus_agent_followup` reveals the composer
 and focuses the follow-up field without submitting. `submit_speech_agent_followup`

@@ -6588,7 +6588,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             if entry is not None and normalize_submit_text(entry.get_text()) == text:
                 entry.set_text("")
                 self._agent_followup_draft = ""
-            self._set_agent_subview(AGENT_SUBVIEW_ANSWER)
+            # Reveal the live Session immediately so the user can watch the
+            # follow-up run for obvious problems; the prepared answer switches
+            # back to the formatted Answer view when the run finishes.
+            self._set_agent_subview(AGENT_SUBVIEW_SESSION)
+            if self._agent_terminal is not None:
+                self._agent_terminal.grab_focus()
             self._set_composer_busy("Follow-up submitted—Agent is working…")
         elif error == "busy":
             self._set_composer_error(
