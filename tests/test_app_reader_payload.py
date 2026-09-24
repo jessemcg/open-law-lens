@@ -756,7 +756,7 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertTrue(entry.sensitive)
         self.assertIn("Law", entry.tooltip)
 
-    def test_followup_submission_reveals_session_and_clears_acknowledged_draft(self) -> None:
+    def test_followup_submission_reveals_session_and_keeps_question(self) -> None:
         class FakeEntry:
             def __init__(self, text: str = "") -> None:
                 self.text = text
@@ -820,9 +820,49 @@ class AppReaderPayloadTests(unittest.TestCase):
 
         self.assertEqual(window.subviews, [AGENT_SUBVIEW_SESSION])
         self.assertTrue(terminal.focused)
-        self.assertEqual(entry.get_text(), "")
+        self.assertEqual(entry.get_text(), "And the father?")
+        self.assertEqual(window._agent_followup_draft, "And the father?")
         self.assertFalse(window._agent_followup_pending)
         self.assertTrue(window.statuses)
+
+    def test_spoken_followup_replaces_existing_question(self) -> None:
+        class FakeEntry:
+            def __init__(self, text: str = "") -> None:
+                self.text = text
+
+            def get_text(self) -> str:
+                return self.text
+
+            def set_text(self, text: str) -> None:
+                self.text = text
+
+        entry = FakeEntry("And the father?")
+        submitted: list[str] = []
+        window = SimpleNamespace(
+            _agent_followup_entry=entry,
+            _agent_followup_draft="And the father?",
+            _agent_followup_pending=False,
+            _agent_followup_endpoint=object(),
+            _agent_terminal_active=True,
+        )
+        window._focus_agent_followup_entry = lambda: None
+        window._set_composer_error = lambda _text: None
+        window._agent_followup_session_active = lambda: True
+        window._submit_agent_followup = lambda text: submitted.append(text)
+
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as handle:
+            handle.write("What about the mother?\n")
+            source = Path(handle.name)
+        try:
+            with patch("open_law_lens.app.DEFAULT_SPEECH_QUESTION_FILE", source):
+                OpenLawLensWindow.submit_speech_followup(window)  # type: ignore[arg-type]
+        finally:
+            source.unlink()
+
+        self.assertEqual(submitted, ["What about the mother?"])
+        self.assertEqual(entry.get_text(), "What about the mother?")
 
     def test_status_dispatcher_routes_context_and_transient_feedback(self) -> None:
         window = SimpleNamespace(

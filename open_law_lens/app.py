@@ -6584,10 +6584,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return False
         self._agent_followup_pending = False
         if not error:
+            # Keep the submitted question visible in the input field, matching the
+            # initial-question field. It stays until a new question replaces it.
             entry = self._agent_followup_entry
-            if entry is not None and normalize_submit_text(entry.get_text()) == text:
-                entry.set_text("")
-                self._agent_followup_draft = ""
+            if entry is not None:
+                self._agent_followup_draft = entry.get_text()
             # Reveal the live Session immediately so the user can watch the
             # follow-up run for obvious problems; the prepared answer switches
             # back to the formatted Answer view when the run finishes.
@@ -6656,16 +6657,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 "Agent is still working; press Enter when it finishes."
             )
             return
-        entry = self._agent_followup_entry
-        existing = normalize_submit_text(entry.get_text()) if entry is not None else ""
-        if existing and existing != question:
-            self._set_composer_error(
-                "The follow-up box already holds a different draft; clear it or send it first."
-            )
-            return
         if text_transport_error(question):
             self._set_composer_error("That follow-up question is too long to send.")
             return
+        # A new spoken question replaces whatever the field currently holds,
+        # matching how the initial-question field behaves.
+        entry = self._agent_followup_entry
         if entry is not None:
             entry.set_text(question)
         self._submit_agent_followup(question)

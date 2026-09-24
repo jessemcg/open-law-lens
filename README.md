@@ -360,9 +360,10 @@ commands or control characters, or persists a prompt queue; dictation and typed
 text are sent literally with prompt-template expansion disabled. Pi marks the
 channel ready only after the initial run has settled and is idle. While the
 agent is working, the field still accepts a draft but submission is rejected
-inline without queueing or steering the current answer. A draft clears only once
-delivery is acknowledged; an ambiguous delivery is never replayed and instead
-tells you to inspect **Session** before retrying. Starting a new question,
+inline without queueing or steering the current answer. The submitted question
+stays in the field, like the new-question field, until a new question replaces
+it; an ambiguous delivery is never replayed and instead tells you to inspect
+**Session** before retrying. Starting a new question,
 switching profiles, closing the window, or the session exiting invalidates the
 channel and cleans up the application-owned runtime directory. Immediately
 after submission the live **Session** is shown so the run can be watched for
