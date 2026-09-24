@@ -18,6 +18,7 @@ from open_law_lens.app import (
     AGENT_MODE_GENERAL,
     AGENT_MODE_ICONS,
     AGENT_PROFILE_BY_MODE,
+    AGENT_SUBVIEW_ANSWER,
     AGENT_SUBVIEW_SESSION,
     QUERY_MODE_BRIEF_SEARCH,
     QUERY_MODE_LABELS,
@@ -863,6 +864,35 @@ class AppReaderPayloadTests(unittest.TestCase):
 
         self.assertEqual(submitted, ["What about the mother?"])
         self.assertEqual(entry.get_text(), "What about the mother?")
+
+    def test_focus_agent_followup_entry_expands_and_focuses(self) -> None:
+        class FakeEntry:
+            def __init__(self) -> None:
+                self.focused = False
+                self.selected: tuple[int, int] | None = None
+
+            def grab_focus(self) -> None:
+                self.focused = True
+
+            def select_region(self, start: int, end: int) -> None:
+                self.selected = (start, end)
+
+        entry = FakeEntry()
+        window = SimpleNamespace(
+            _agent_output_collapsed=True,
+            _agent_followup_entry=entry,
+            subviews=[],
+        )
+        window._set_agent_subview = lambda name: window.subviews.append(name)
+
+        # Regression: this used to call Focus's _set_ai_panel_visible, which does
+        # not exist here, so the follow-up D-Bus actions crashed with AttributeError.
+        OpenLawLensWindow._focus_agent_followup_entry(window)  # type: ignore[arg-type]
+
+        self.assertFalse(window._agent_output_collapsed)
+        self.assertEqual(window.subviews, [AGENT_SUBVIEW_ANSWER])
+        self.assertTrue(entry.focused)
+        self.assertEqual(entry.selected, (0, -1))
 
     def test_status_dispatcher_routes_context_and_transient_feedback(self) -> None:
         window = SimpleNamespace(

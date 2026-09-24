@@ -6623,7 +6623,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._refresh_agent_followup_state()
 
     def _focus_agent_followup_entry(self) -> None:
-        self._set_ai_panel_visible(True)
+        # This window has no `_set_ai_panel_visible`; the composer row is always
+        # visible, so just expand the Agent output panel before switching subviews.
+        self._agent_output_collapsed = False
         self._set_agent_subview(AGENT_SUBVIEW_ANSWER)
         if self._agent_followup_entry is not None:
             self._agent_followup_entry.grab_focus()
