@@ -38,6 +38,7 @@ from . import APP_ID, APP_NAME
 from .agent import (
     CaseTextSource,
     QuoteTarget,
+    count_pi_final_answers_from_jsonl,
     export_selected_authorities,
     extract_latest_pi_final_answer_from_jsonl,
     extract_quoted_phrases,
@@ -183,6 +184,19 @@ from .slip_opinions import (
     slip_metadata_from_display,
     slip_result_to_payload,
 )
+from .agent_followup import (
+    FollowUpBusy,
+    FollowUpClient,
+    FollowUpEndpoint,
+    FollowUpError,
+    FollowUpProtocolError,
+    FollowUpUnavailable,
+    FollowUpUncertain,
+    create_followup_runtime,
+    normalize_submit_text,
+    remove_followup_runtime,
+    text_transport_error,
+)
 from .speech import DEFAULT_SPEECH_QUESTION_FILE, normalize_speech_question_text
 from .storage import (
     SOURCE_PROVIDER_CALIFORNIA_COURTS,
@@ -214,6 +228,9 @@ from .web_import import ExtractedWebpage, extract_webpage_text
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 AGENT_WRAPPER = PROJECT_DIR / "scripts" / "open-law-lens-agent-vte.sh"
+AGENT_FOLLOWUP_EXTENSION = (
+    PROJECT_DIR / ".pi" / "extensions" / "open-law-lens-followup-bridge.ts"
+)
 READER_BG = "#ffffff"
 READER_FG = "#000000"
 READER_MASTHEAD_BG = "#f5f6f7"
@@ -2138,7 +2155,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_output_toggle_button: Gtk.Button | None = None
         self._agent_output_header: Gtk.Widget | None = None
         self._agent_subview_strip: Gtk.Widget | None = None
-        self._agent_submit_button: Gtk.Button | None = None
+        self._agent_ask_row: Gtk.Box | None = None
+        self._agent_followup_entry: Gtk.Entry | None = None
+        self._agent_followup_endpoint: FollowUpEndpoint | None = None
+        self._agent_followup_runtime_dir: Path | None = None
+        self._agent_followup_generation = 0
+        self._agent_followup_pending = False
+        self._agent_followup_draft = ""
+        self._agent_followup_live_mode = ""
+        self._agent_answer_turn_count = 0
         self._composer_spinner: Gtk.Spinner | None = None
         self._composer_message_label: Gtk.Label | None = None
         self._composer_message_is_error = False
@@ -3790,17 +3815,29 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         row.add_css_class("agent-ask-bar")
         row.set_hexpand(True)
+        row.set_homogeneous(True)
+        self._agent_ask_row = row
         self.agent_question_entry = Gtk.Entry()
         self.agent_question_entry.set_hexpand(True)
+        self.agent_question_entry.set_width_chars(12)
+        self.agent_question_entry.update_property(
+            [Gtk.AccessibleProperty.LABEL], ["New Agent question"]
+        )
         self.agent_question_entry.connect("activate", self._on_agent_launch)
         self.agent_question_entry.connect("changed", self._on_agent_question_changed)
         row.append(self.agent_question_entry)
-        submit = Gtk.Button(label="Ask")
-        submit.add_css_class("composer-submit-button")
-        submit.set_sensitive(False)
-        submit.connect("clicked", self._on_agent_launch)
-        row.append(submit)
-        self._agent_submit_button = submit
+        self._agent_followup_entry = Gtk.Entry()
+        self._agent_followup_entry.set_hexpand(True)
+        self._agent_followup_entry.set_width_chars(12)
+        self._agent_followup_entry.set_placeholder_text("Follow up…")
+        self._agent_followup_entry.update_property(
+            [Gtk.AccessibleProperty.LABEL], ["Agent follow-up question"]
+        )
+        self._agent_followup_entry.connect(
+            "activate", self._on_agent_followup_activate
+        )
+        self._agent_followup_entry.connect("changed", self._on_agent_followup_changed)
+        row.append(self._agent_followup_entry)
         composer.append(row)
 
         self._set_agent_mode(AGENT_MODE_GENERAL)
@@ -6416,12 +6453,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         presentation = self._scope_presentation()
         if hasattr(self, "agent_question_entry"):
             self.agent_question_entry.set_placeholder_text(presentation["placeholder"])
-        if self._agent_submit_button is not None:
-            self._agent_submit_button.set_label(presentation["submit"])
-            if hasattr(self, "agent_question_entry"):
-                self._agent_submit_button.set_sensitive(
-                    bool(self.agent_question_entry.get_text().strip())
-                )
+            self.agent_question_entry.set_tooltip_text(presentation["description"])
+        self._refresh_agent_followup_state()
         self._set_composer_idle()
         self._agent_mode_toggle_guard = True
         try:
@@ -6436,10 +6469,201 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._agent_mode_toggle_guard = False
 
     def _on_agent_question_changed(self, entry: Gtk.Entry) -> None:
-        if self._agent_submit_button is not None:
-            self._agent_submit_button.set_sensitive(bool(entry.get_text().strip()))
         if self._composer_message_is_error:
             self._set_composer_idle()
+
+    # -- live follow-up channel -----------------------------------------
+
+    def _agent_followup_session_active(self) -> bool:
+        return bool(
+            self._agent_active
+            and getattr(self, "_agent_followup_endpoint", None) is not None
+        )
+
+    def _live_agent_workflow_label(self) -> str:
+        mode = getattr(self, "_agent_followup_live_mode", "") or self._agent_mode
+        return QUERY_MODE_LABELS.get(mode, "Agent")
+
+    def _refresh_agent_followup_state(self) -> None:
+        entry = getattr(self, "_agent_followup_entry", None)
+        if entry is None:
+            return
+        brief_search = self._selected_agent_mode == QUERY_MODE_BRIEF_SEARCH
+        entry.set_visible(not brief_search)
+        row = getattr(self, "_agent_ask_row", None)
+        if row is not None:
+            row.set_homogeneous(not brief_search)
+        if brief_search:
+            return
+        if not self._agent_followup_session_active():
+            entry.set_sensitive(False)
+            entry.set_tooltip_text(
+                "Follow-ups are available after a question starts a live Agent session."
+            )
+            return
+        entry.set_sensitive(True)
+        workflow = self._live_agent_workflow_label()
+        entry.set_tooltip_text(
+            f"Enter continues the live {workflow} Pi conversation. "
+            "Available after the current question finishes."
+        )
+
+    def _on_agent_followup_changed(self, entry: Gtk.Entry) -> None:
+        self._agent_followup_draft = entry.get_text()
+
+    def _on_agent_followup_activate(self, _entry: Gtk.Entry) -> None:
+        if not self._agent_followup_session_active():
+            self._set_composer_error(
+                "Follow-ups are unavailable until a live Agent session starts."
+            )
+            return
+        if self._agent_followup_pending:
+            self._set_composer_error(
+                "Agent is still working; press Enter when it finishes."
+            )
+            return
+        entry = self._agent_followup_entry
+        if entry is None:
+            return
+        text = normalize_submit_text(entry.get_text())
+        if not text:
+            self._set_composer_error("Enter a follow-up question.")
+            return
+        if text_transport_error(text):
+            self._set_composer_error("That follow-up question is too long to send.")
+            return
+        self._submit_agent_followup(text)
+
+    def _submit_agent_followup(self, text: str) -> None:
+        endpoint = self._agent_followup_endpoint
+        if endpoint is None:
+            self._set_composer_error("Follow-ups are unavailable for this session.")
+            return
+        generation = self._agent_followup_generation
+        self._agent_followup_pending = True
+        self._set_composer_busy("Submitting follow-up…")
+        threading.Thread(
+            target=self._agent_followup_worker,
+            args=(endpoint, generation, text),
+            daemon=True,
+            name="oll-agent-followup",
+        ).start()
+
+    def _agent_followup_worker(
+        self,
+        endpoint: FollowUpEndpoint,
+        generation: int,
+        text: str,
+    ) -> None:
+        state = ""
+        error = ""
+        try:
+            state = FollowUpClient(endpoint).submit(text)
+        except FollowUpBusy:
+            error = "busy"
+        except FollowUpUncertain:
+            error = "uncertain"
+        except FollowUpUnavailable:
+            error = "unavailable"
+        except FollowUpProtocolError:
+            error = "protocol"
+        except FollowUpError:
+            error = "error"
+        GLib.idle_add(
+            self._on_agent_followup_result, generation, text, state, error
+        )
+
+    def _on_agent_followup_result(
+        self,
+        generation: int,
+        text: str,
+        state: str,
+        error: str,
+    ) -> bool:
+        if generation != self._agent_followup_generation:
+            return False
+        self._agent_followup_pending = False
+        if not error:
+            entry = self._agent_followup_entry
+            if entry is not None and normalize_submit_text(entry.get_text()) == text:
+                entry.set_text("")
+                self._agent_followup_draft = ""
+            self._set_agent_subview(AGENT_SUBVIEW_ANSWER)
+            self._set_composer_busy("Follow-up submitted—Agent is working…")
+        elif error == "busy":
+            self._set_composer_error(
+                "Agent is still working; press Enter when it finishes."
+            )
+        elif error == "uncertain":
+            self._set_composer_error(
+                "Could not confirm the follow-up. Check Session before retrying."
+            )
+        elif error == "unavailable":
+            self._invalidate_agent_followup()
+            self._set_composer_error(
+                "The follow-up channel for this session is no longer available."
+            )
+        else:
+            self._set_composer_error(
+                "The follow-up could not be delivered. Check Session before retrying."
+            )
+        self._refresh_agent_followup_state()
+        return False
+
+    def _invalidate_agent_followup(self) -> None:
+        self._agent_followup_generation += 1
+        self._agent_followup_endpoint = None
+        self._agent_followup_pending = False
+        self._refresh_agent_followup_state()
+
+    def _focus_agent_followup_entry(self) -> None:
+        self._set_ai_panel_visible(True)
+        self._set_agent_subview(AGENT_SUBVIEW_ANSWER)
+        if self._agent_followup_entry is not None:
+            self._agent_followup_entry.grab_focus()
+            self._agent_followup_entry.select_region(0, -1)
+
+    def submit_speech_followup(self) -> None:
+        try:
+            raw_question = DEFAULT_SPEECH_QUESTION_FILE.read_text(
+                encoding="utf-8", errors="ignore"
+            )
+        except FileNotFoundError:
+            self._set_composer_error(
+                f"Speech question file not found: {DEFAULT_SPEECH_QUESTION_FILE}"
+            )
+            return
+        except OSError as exc:
+            self._set_composer_error(f"Could not read speech question file: {exc}")
+            return
+        question = normalize_speech_question_text(raw_question)
+        if not question:
+            self._set_composer_error("Speech question file is empty.")
+            return
+        self._focus_agent_followup_entry()
+        if not self._agent_followup_session_active():
+            self._set_composer_error(
+                "Follow-ups are unavailable until a live Agent session starts."
+            )
+            return
+        if self._agent_followup_pending:
+            self._set_composer_error(
+                "Agent is still working; press Enter when it finishes."
+            )
+            return
+        entry = self._agent_followup_entry
+        existing = normalize_submit_text(entry.get_text()) if entry is not None else ""
+        if existing and existing != question:
+            self._set_composer_error(
+                "The follow-up box already holds a different draft; clear it or send it first."
+            )
+            return
+        if text_transport_error(question):
+            self._set_composer_error("That follow-up question is too long to send.")
+            return
+        if entry is not None:
+            entry.set_text(question)
+        self._submit_agent_followup(question)
 
     def _on_agent_mode_button_toggled(
         self,
@@ -10260,6 +10484,28 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if not AGENT_WRAPPER.is_file():
             self._set_status(f"Agent wrapper not found: {AGENT_WRAPPER}")
             return
+        self._agent_followup_live_mode = mode
+        self._agent_answer_turn_count = 0
+        self._agent_followup_pending = False
+        self._agent_followup_draft = ""
+        self._agent_followup_generation += 1
+        followup_runtime = None
+        if AGENT_FOLLOWUP_EXTENSION.is_file():
+            try:
+                followup_runtime = create_followup_runtime(
+                    generation=self._agent_followup_generation
+                )
+                self._agent_followup_endpoint = followup_runtime.endpoint
+                self._agent_followup_runtime_dir = followup_runtime.directory
+            except OSError:
+                followup_runtime = None
+                self._agent_followup_endpoint = None
+                self._agent_followup_runtime_dir = None
+        else:
+            self._agent_followup_endpoint = None
+            self._agent_followup_runtime_dir = None
+        if self._agent_followup_entry is not None:
+            self._agent_followup_entry.set_text("")
         env = os.environ.copy()
         profile = agent_profile_for_mode(load_config(), mode, profile_key)
         env.update(
@@ -10272,6 +10518,18 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 profile_key=profile_key,
             )
         )
+        if self._agent_followup_endpoint is not None:
+            env.update(
+                {
+                    "OPEN_LAW_LENS_AGENT_FOLLOWUP_SOCKET": str(
+                        self._agent_followup_endpoint.socket_path
+                    ),
+                    "OPEN_LAW_LENS_AGENT_FOLLOWUP_TOKEN": self._agent_followup_endpoint.token,
+                    "OPEN_LAW_LENS_AGENT_FOLLOWUP_RUNTIME_DIR": str(
+                        self._agent_followup_runtime_dir
+                    ),
+                }
+            )
         argv = ["bash", str(AGENT_WRAPPER)]
         try:
             self._agent_terminal.reset(True, True)
@@ -10296,6 +10554,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._set_agent_subview(AGENT_SUBVIEW_SESSION)
             self._start_agent_answer_polling()
             self._set_status(success_status)
+            self._refresh_agent_followup_state()
             self._agent_terminal.grab_focus()
         except Exception as exc:
             self._set_status(f"Unable to start embedded agent: {exc}")
@@ -10320,6 +10579,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _on_agent_exited(self, _terminal: Any, status: int) -> None:
         self._agent_pid = None
         self._agent_active = False
+        self._invalidate_agent_followup()
+        remove_followup_runtime(getattr(self, "_agent_followup_runtime_dir", None))
+        self._agent_followup_runtime_dir = None
         if getattr(self, "_agent_answer_poll_id", None) is not None:
             GLib.source_remove(self._agent_answer_poll_id)
             self._agent_answer_poll_id = None
@@ -10408,6 +10670,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_answer_working = True
         source = self._agent_session_log_path
         previous = self._agent_last_answer_text
+        previous_turn = self._agent_answer_turn_count
         mode = self._agent_mode
         sources = list(self._case_agent_text_sources)
 
@@ -10419,20 +10682,29 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 answer = strip_agent_legal_authority_backticks(
                     extract_latest_pi_final_answer_from_jsonl(path)
                 ) if path is not None else ""
+                turn_count = (
+                    count_pi_final_answers_from_jsonl(path) if path is not None else 0
+                )
+                new_turn = turn_count > previous_turn
                 plan = prepare_answer(
                     answer, mode, sources, _AgentAnswerTextFormatter().format,
                     OpenLawLensWindow._external_url_links,
-                ) if answer and answer != previous else None
-                GLib.idle_add(self._agent_answer_prepared, generation, path, answer, plan, None)
+                ) if answer and (answer != previous or new_turn) else None
+                GLib.idle_add(
+                    self._agent_answer_prepared,
+                    generation, path, answer, turn_count, plan, None,
+                )
             except Exception as exc:
-                GLib.idle_add(self._agent_answer_prepared, generation, source, "", None, str(exc))
+                GLib.idle_add(
+                    self._agent_answer_prepared, generation, source, "", 0, None, str(exc)
+                )
 
         threading.Thread(target=worker, daemon=True, name="oll-final-answer").start()
         return self._agent_active
 
     def _agent_answer_prepared(
         self, generation: int, path: Path | None, answer: str,
-        plan: PreparedAnswer | None, error: str | None,
+        turn_count: int, plan: PreparedAnswer | None, error: str | None,
     ) -> bool:
         if generation != getattr(self, "_agent_answer_generation", 0):
             return False
@@ -10463,6 +10735,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             except StopIteration:
                 self._agent_answer_render_id = None
                 self._agent_last_answer_text = answer
+                self._agent_answer_turn_count = max(
+                    self._agent_answer_turn_count, turn_count
+                )
                 if not self._agent_failure_visible:
                     self._set_agent_subview(AGENT_SUBVIEW_ANSWER)
                 # Let GTK lay out and paint the completed answer before stopping
@@ -10472,7 +10747,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 return False
             except Exception:
                 self._agent_answer_render_id = None
-                self._agent_answer_prepared(generation, path, "", None, "render failed")
+                self._agent_answer_prepared(
+                    generation, path, "", turn_count, None, "render failed"
+                )
                 return False
             return True
 
@@ -11806,6 +12083,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 pass
             self._agent_pid = None
         self._agent_active = False
+        self._invalidate_agent_followup()
+        remove_followup_runtime(getattr(self, "_agent_followup_runtime_dir", None))
+        self._agent_followup_runtime_dir = None
         self._sync_agent_subviews()
 
 
@@ -11892,6 +12172,22 @@ class OpenLawLensApp(Adw.Application):
         )
         self.add_action(submit_speech_brief_question)
 
+        focus_agent_followup = Gio.SimpleAction.new("focus_agent_followup", None)
+        focus_agent_followup.connect(
+            "activate",
+            self._on_focus_agent_followup,
+        )
+        self.add_action(focus_agent_followup)
+
+        submit_speech_agent_followup = Gio.SimpleAction.new(
+            "submit_speech_agent_followup", None
+        )
+        submit_speech_agent_followup.connect(
+            "activate",
+            self._on_submit_speech_agent_followup,
+        )
+        self.add_action(submit_speech_agent_followup)
+
     def _on_activate(self, _app: Adw.Application) -> None:
         install_bundled_icons = getattr(self, "_install_bundled_icon_path", None)
         if install_bundled_icons is not None:
@@ -11956,6 +12252,20 @@ class OpenLawLensApp(Adw.Application):
         _parameter: GLib.Variant | None,
     ) -> None:
         self._main_window().submit_speech_question(AGENT_MODE_BRIEF)
+
+    def _on_focus_agent_followup(
+        self,
+        _action: Gio.SimpleAction,
+        _parameter: GLib.Variant | None,
+    ) -> None:
+        self._main_window()._focus_agent_followup_entry()
+
+    def _on_submit_speech_agent_followup(
+        self,
+        _action: Gio.SimpleAction,
+        _parameter: GLib.Variant | None,
+    ) -> None:
+        self._main_window().submit_speech_followup()
 
     def _on_open_authority(
         self,

@@ -138,6 +138,15 @@ mkdir -p "$workspace/tmp" "$workspace/uv-cache" "$workspace/pi-sessions"
 mkdir -p "$workspace/.pi"
 cp -a "$project_dir/.pi/settings.json" "$workspace/.pi/"
 cp -a "$project_dir/.pi/SYSTEM.md" "$workspace/.pi/"
+# The live follow-up bridge is explicitly staged and loaded only when present;
+# it registers no model-facing tools and never widens the tool allowlist.
+followup_args=()
+bridge_extension="$project_dir/.pi/extensions/open-law-lens-followup-bridge.ts"
+if [[ -f "$bridge_extension" ]]; then
+  mkdir -p "$workspace/.pi/extensions"
+  cp -a "$bridge_extension" "$workspace/.pi/extensions/"
+  followup_args=(--extension "$workspace/.pi/extensions/open-law-lens-followup-bridge.ts")
+fi
 # The mandatory legal-researcher skill is preloaded into the workspace system
 # prompt for research modes so Pi starts researching immediately instead of
 # spending a turn reading the skill file. Do not copy the skills directory.
@@ -174,6 +183,7 @@ if [[ "$agent_mode" == "general" || "$agent_mode" == "appeal" ]]; then
   args+=(--extension "$extension")
   tools+=",web_search"
 fi
+args+=("${followup_args[@]}")
 # Passive observer for every Pi-backed mode; never grant extra model tools.
 metrics_project_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 workflow="${OPEN_LAW_LENS_AGENT_PROFILE_KEY:-}"

@@ -137,6 +137,32 @@ def extract_latest_pi_final_answer_from_jsonl(path: Path) -> str:
     return latest
 
 
+def count_pi_final_answers_from_jsonl(path: Path) -> int:
+    """Count finalized assistant text turns so identical answers still advance."""
+    count = 0
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return 0
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict) or payload.get("type") != "message":
+            continue
+        message = payload.get("message")
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        if message.get("stopReason") == "toolUse":
+            continue
+        if _pi_text_from_content(message.get("content")):
+            count += 1
+    return count
+
+
 def pi_session_log_matches_cwd(path: Path, cwd: Path) -> bool:
     wanted = str(cwd)
     try:

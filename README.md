@@ -337,7 +337,45 @@ and `Ctrl+Shift+G` to move forward and backward through occurrences across
 matching briefs. While a match is displayed, the reader toolbar's **Add prior
 brief to Research Cache** button (bookmark icon) saves that brief to the
 Research Cache without leaving the search; the button stays hidden once the
-brief is in the cache.
+brief is in the cache. In this mode the follow-up field is hidden and the
+local-search entry occupies the composer row; Enter runs the phrase search and
+the shared submit button is gone.
+
+### Live follow-ups
+
+The composer uses two equal-width fields. **New question…** starts a new agent
+query when you press Enter, using the currently selected scope and replacing the
+current conversation. **Follow up…** continues the live Pi conversation when you
+press Enter. It never invokes the new-query launcher, refreshes sources, or
+creates a replacement session. The field shows the live workflow (for example
+Law or Research Cache) in its tooltip, so changing the left-hand scope cannot
+silently retarget it, and it preserves the live session's launch context and
+restrictions rather than the currently selected scope.
+
+Follow-ups are delivered through an explicitly loaded, non-model-facing Pi
+extension that listens on a private Unix-domain socket under the machine-local
+runtime directory (`0700` directory, `0600` socket, random session token). The
+bridge never registers tools, reads transcripts or prompts, expands slash
+commands or control characters, or persists a prompt queue; dictation and typed
+text are sent literally with prompt-template expansion disabled. Pi marks the
+channel ready only after the initial run has settled and is idle. While the
+agent is working, the field still accepts a draft but submission is rejected
+inline without queueing or steering the current answer. A draft clears only once
+delivery is acknowledged; an ambiguous delivery is never replayed and instead
+tells you to inspect **Session** before retrying. Starting a new question,
+switching profiles, closing the window, or the session exiting invalidates the
+channel and cleans up the application-owned runtime directory. The prior
+formatted answer stays visible while the new one is generated, and identical
+repeated final answers still complete follow-up activity because turn identity
+is tracked independently of answer text.
+
+The application-level D-Bus action `focus_agent_followup` reveals the composer
+and focuses the follow-up field without submitting. `submit_speech_agent_followup`
+reads `/dev/shm/speech.txt`, normalizes it, and submits it through the same
+controller as Enter. The existing `submit_speech_law_question`,
+`submit_speech_cache_question`, and `submit_speech_brief_question` actions keep
+starting new sessions. A successful `gdbus` activation only means the app
+received the action; the app reports delivery acceptance or failure.
 
 Agent runtime settings, including the five per-query Pi model/reasoning
 profiles, prompt templates, appeal legal questions, and fact-pattern source,
@@ -905,6 +943,9 @@ opinions remain in the durable Library.
 
 - `open_law_lens/app.py`: GTK/Libadwaita app, reader, Research Cache, settings,
   and embedded Pi workflow.
+- `open_law_lens/agent_followup.py`: GTK-independent client and protocol types
+  for the bounded Unix-socket follow-up bridge, with typed busy/unavailable/
+  uncertain/protocol failures and application-owned runtime cleanup.
 - `open_law_lens/cli.py`: `open-law-lens` command dispatcher.
 - `open_law_lens/authority_passages.py`: bounded verified opinion-passage
   extraction backing `extract-case --find`.
@@ -939,8 +980,11 @@ opinions remain in the durable Library.
   clipboard import primitives for recovery.
 - `scripts/open-law-lens-agent-vte.sh`: embedded Pi terminal launcher. It keeps
   unrelated extensions disabled with `--no-extensions`; closed-corpus modes
-  load only the passive sibling metrics observer, while research-capable modes
-  also load the user-level `pi-web-access` extension.
+  load only the passive sibling metrics observer and the app-owned follow-up
+  bridge, while research-capable modes also load the user-level
+  `pi-web-access` extension.
+- `.pi/extensions/open-law-lens-followup-bridge.ts`: the explicitly staged,
+  non-model-facing live follow-up bridge; registers no tools.
 - `.pi/settings.json`: project-local fallback Pi provider and model.
 - `~/.pi/agent/npm/node_modules/pi-web-access/`: user-level web-access
   package explicitly loaded for research-capable Agent runs (or the equivalent

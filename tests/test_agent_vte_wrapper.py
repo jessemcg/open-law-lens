@@ -16,13 +16,24 @@ LEGAL_RESEARCHER_SKILL = (
 
 
 class AgentVteWrapperTests(unittest.TestCase):
-    def _fixture(self, root: Path) -> tuple[Path, Path, Path]:
+    def _fixture(
+        self, root: Path, *, with_bridge: bool = False
+    ) -> tuple[Path, Path, Path]:
         project = root / "project"
         workspace = root / "workspace"
         prompt = root / "prompt.txt"
         skill = project / ".pi" / "skills" / "legal-researcher" / "SKILL.md"
         skill.parent.mkdir(parents=True)
         skill.write_text("---\nname: legal-researcher\ndescription: Test.\n---\n", encoding="utf-8")
+        if with_bridge:
+            extension = (
+                project
+                / ".pi"
+                / "extensions"
+                / "open-law-lens-followup-bridge.ts"
+            )
+            extension.parent.mkdir(parents=True)
+            extension.write_text("// synthetic follow-up bridge\n", encoding="utf-8")
         (project / ".pi" / "settings.json").write_text(
             json.dumps(
                 {
@@ -97,8 +108,9 @@ class AgentVteWrapperTests(unittest.TestCase):
         with_sibling_node: bool = False,
         profile: tuple[str, str, str] | None = None,
         extra_env: dict[str, str] | None = None,
+        with_bridge: bool = False,
     ) -> tuple[list[str], str]:
-        project, workspace, prompt = self._fixture(root)
+        project, workspace, prompt = self._fixture(root, with_bridge=with_bridge)
         if mode in {"general", "appeal"}:
             self._install_web_access(root)
             self._install_computer_use(root)
@@ -154,6 +166,21 @@ class AgentVteWrapperTests(unittest.TestCase):
                 metadata = (root / "pi-arguments.txt.metrics").read_text().splitlines()
                 self.assertEqual(metadata, [str(PROJECT_DIR / ".run-metrics/runs"), "open-law-lens", workflow])
                 self.assertEqual(args[-2], str(root / "workspace/pi-sessions"))
+
+    def test_wrapper_loads_followup_bridge_without_widening_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args, _ = self._run(root, "case", with_bridge=True)
+            extensions = [
+                Path(args[i + 1]).name
+                for i, arg in enumerate(args)
+                if arg == "--extension"
+            ]
+            self.assertEqual(extensions, ["open-law-lens-followup-bridge.ts"])
+            self.assertIn("--no-extensions", args)
+            self.assertEqual(
+                args[args.index("--tools") + 1], "read,bash,grep,find,ls"
+            )
 
     def test_metrics_override_disabled_and_missing(self) -> None:
         for options in ({"PI_RUN_METRICS_ROOT": "/tmp/alternate metrics/runs", "PI_RUN_METRICS_ENABLED": "0"},
@@ -400,12 +427,14 @@ class AgentVteWrapperTests(unittest.TestCase):
             "computer-use-linux",
             "node_modules",
         }
-        self.assertFalse(
-            extensions.exists() and any(extensions.iterdir()),
-            "no first-party browser/Scholar recovery extensions may remain",
-        )
+        allowed = {"open-law-lens-followup-bridge.ts"}
         if extensions.exists():
             names = {p.name for p in extensions.iterdir()}
+            self.assertLessEqual(
+                names,
+                allowed,
+                "only the app-owned live follow-up bridge may remain",
+            )
             for vendored_name in vendored:
                 self.assertNotIn(vendored_name, names)
         system_prompt = (PROJECT_DIR / ".pi" / "SYSTEM.md").read_text(

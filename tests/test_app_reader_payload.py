@@ -330,6 +330,9 @@ class AppReaderPayloadTests(unittest.TestCase):
             def _poll_agent_answer(self) -> bool:
                 return False
 
+            def _invalidate_agent_followup(self) -> None:
+                return None
+
             def _set_agent_subview(self, subview: str) -> None:
                 self.subview = subview
 
@@ -364,6 +367,9 @@ class AppReaderPayloadTests(unittest.TestCase):
 
             def _poll_agent_answer(self) -> bool:
                 return False
+
+            def _invalidate_agent_followup(self) -> None:
+                return None
 
             def _sync_agent_subviews(self) -> None:
                 self.sync_count += 1
@@ -428,6 +434,7 @@ class AppReaderPayloadTests(unittest.TestCase):
             _agent_session_widget=SessionWidget(),
             _agent_subview_name="session",
             _agent_panel_height=240,
+            _agent_answer_turn_count=0,
             _update_agent_panel_height=lambda **_kwargs: None,
         )
         for key, value in extra.items():
@@ -690,12 +697,10 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(children[3].get_orientation(), Gtk.Orientation.VERTICAL)
         self.assertEqual(children[4].get_label(), QUERY_MODE_BRIEF_SEARCH)
 
-    def test_question_changes_update_submit_and_clear_inline_error(self) -> None:
-        submit = MagicMock()
+    def test_question_changes_clear_inline_error(self) -> None:
         idle = MagicMock()
         entry = SimpleNamespace(get_text=lambda: "  question  ")
         window = SimpleNamespace(
-            _agent_submit_button=submit,
             _composer_message_is_error=True,
             _set_composer_idle=idle,
         )
@@ -704,8 +709,51 @@ class AppReaderPayloadTests(unittest.TestCase):
             window, entry
         )
 
-        submit.set_sensitive.assert_called_once_with(True)
         idle.assert_called_once_with()
+
+    def test_followup_field_hides_for_local_brief_search(self) -> None:
+        class FakeEntry:
+            def __init__(self) -> None:
+                self.visible = True
+                self.sensitive = True
+                self.tooltip = ""
+
+            def set_visible(self, visible: bool) -> None:
+                self.visible = visible
+
+            def set_sensitive(self, sensitive: bool) -> None:
+                self.sensitive = sensitive
+
+            def set_tooltip_text(self, tooltip: str) -> None:
+                self.tooltip = tooltip
+
+        class FakeRow:
+            def __init__(self) -> None:
+                self.homogeneous = True
+
+            def set_homogeneous(self, homogeneous: bool) -> None:
+                self.homogeneous = homogeneous
+
+        entry = FakeEntry()
+        row = FakeRow()
+        window = SimpleNamespace(
+            _agent_followup_entry=entry,
+            _agent_ask_row=row,
+            _selected_agent_mode=QUERY_MODE_BRIEF_SEARCH,
+            _agent_followup_session_active=lambda: True,
+            _live_agent_workflow_label=lambda: "Law",
+        )
+
+        OpenLawLensWindow._refresh_agent_followup_state(window)  # type: ignore[arg-type]
+        self.assertFalse(entry.visible)
+        self.assertFalse(row.homogeneous)
+
+        window._selected_agent_mode = AGENT_MODE_GENERAL
+        OpenLawLensWindow._refresh_agent_followup_state(window)  # type: ignore[arg-type]
+        self.assertTrue(entry.visible)
+        self.assertTrue(row.homogeneous)
+        self.assertTrue(entry.sensitive)
+        self.assertIn("Law", entry.tooltip)
 
     def test_status_dispatcher_routes_context_and_transient_feedback(self) -> None:
         window = SimpleNamespace(

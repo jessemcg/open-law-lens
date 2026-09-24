@@ -8,6 +8,7 @@ from pathlib import Path
 
 from open_law_lens.agent import (
     CaseTextSource,
+    count_pi_final_answers_from_jsonl,
     pi_session_log_matches_cwd,
     export_selected_authorities,
     export_selected_cases,
@@ -75,6 +76,44 @@ class AgentTests(unittest.TestCase):
                 ],
             )
             self.assertEqual(extract_latest_pi_final_answer_from_jsonl(path), "final answer")
+            self.assertEqual(count_pi_final_answers_from_jsonl(path), 1)
+
+    def test_count_pi_final_answers_advances_for_identical_text(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "rollout.jsonl"
+            _write_jsonl(
+                path,
+                [
+                    {
+                        "type": "message",
+                        "message": {
+                            "role": "assistant",
+                            "stopReason": "stop",
+                            "content": [{"type": "text", "text": "same answer"}],
+                        },
+                    },
+                    {
+                        "type": "message",
+                        "message": {
+                            "role": "assistant",
+                            "stopReason": "toolUse",
+                            "content": [{"type": "text", "text": "intermediate"}],
+                        },
+                    },
+                    {
+                        "type": "message",
+                        "message": {
+                            "role": "assistant",
+                            "stopReason": "stop",
+                            "content": [{"type": "text", "text": "same answer"}],
+                        },
+                    },
+                ],
+            )
+            self.assertEqual(count_pi_final_answers_from_jsonl(path), 2)
+            self.assertEqual(
+                extract_latest_pi_final_answer_from_jsonl(path), "same answer"
+            )
 
     def test_find_latest_pi_session_log_for_cwd(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -32,6 +32,8 @@ class DbusCommandTests(unittest.TestCase):
                 "submit_speech_law_question",
                 "submit_speech_cache_question",
                 "submit_speech_brief_question",
+                "focus_agent_followup",
+                "submit_speech_agent_followup",
             },
         )
 

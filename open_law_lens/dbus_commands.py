@@ -36,6 +36,27 @@ DBUS_COMMAND_GROUPS = (
             ),
         ),
     ),
+    (
+        "Live Follow-up",
+        (
+            DbusCommand(
+                title="Focus live follow-up box",
+                description=(
+                    "Reveal the Agent composer and focus the follow-up question box "
+                    "without submitting."
+                ),
+                action_name="focus_agent_followup",
+            ),
+            DbusCommand(
+                title="Submit speech live follow-up",
+                description=(
+                    "Read /dev/shm/speech.txt and submit it to the current live "
+                    "Agent session."
+                ),
+                action_name="submit_speech_agent_followup",
+            ),
+        ),
+    ),
 )
 
 

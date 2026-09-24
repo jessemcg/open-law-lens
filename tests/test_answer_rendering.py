@@ -41,6 +41,7 @@ class CompletionWindow:
         self._agent_answer_poll_id = None
         self._agent_answer_generation = 0
         self._agent_answer_render_id = None
+        self._agent_answer_turn_count = 0
         self.views = []
         self.statuses = []
         self.applied = []
@@ -121,10 +122,10 @@ class AnswerRenderingTests(unittest.TestCase):
                 window._agent_active = False
                 window._poll_agent_answer()
                 self.assertTrue(window._agent_answer_recheck)
-                window._agent_answer_prepared(0, window._agent_session_log_path, '', None, None)
+                window._agent_answer_prepared(0, window._agent_session_log_path, '', 0, None, None)
                 self.assertEqual(len(targets), 2)
                 self.assertTrue(window._agent_answer_working)
-                window._agent_answer_prepared(0, window._agent_session_log_path, '', None, None)
+                window._agent_answer_prepared(0, window._agent_session_log_path, '', 0, None, None)
                 self.assertFalse(window._agent_answer_working)
                 self.assertFalse(window._agent_answer_finishing)
                 self.assertTrue(window._agent_failure_visible)
@@ -134,9 +135,9 @@ class AnswerRenderingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             window = CompletionWindow(Path(directory))
             window._agent_answer_working = True
-            window._agent_answer_prepared(0, window._agent_session_log_path, 'obsolete', PreparedAnswer('obsolete', ()), None)
+            window._agent_answer_prepared(0, window._agent_session_log_path, 'obsolete', 0, PreparedAnswer('obsolete', ()), None)
             window._stop_agent_answer_polling()
-            window._agent_answer_prepared(0, Path('/obsolete'), 'obsolete', PreparedAnswer('obsolete', ()), None)
+            window._agent_answer_prepared(0, Path('/obsolete'), 'obsolete', 0, PreparedAnswer('obsolete', ()), None)
             for _ in range(10):
                 GLib.MainContext.default().iteration(False)
             self.assertEqual(window._agent_last_answer_text, '')
@@ -153,7 +154,7 @@ class AnswerRenderingTests(unittest.TestCase):
                     raise ValueError('synthetic render failure')
                     yield
                 window._agent_answer_render_steps = broken
-                window._agent_answer_prepared(0, window._agent_session_log_path, 'text',
+                window._agent_answer_prepared(0, window._agent_session_log_path, 'text', 0,
                                               PreparedAnswer('text', ()), error)
                 pump_until(lambda: not window._agent_answer_working)
                 self.assertFalse(window._agent_answer_finishing)
