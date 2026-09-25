@@ -23,7 +23,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # type: ignore
+from gi.repository import Adw, Gdk, Gio, GLib, Graphene, Gsk, Gtk, Pango  # type: ignore
 
 Vte = None
 try:
@@ -2104,6 +2104,48 @@ list.research-cache.cache-high-contrast row:selected checkbutton.neutral-agent-c
 """
 
 
+class ComposerControls(Gtk.FlowBox):
+    """Wrap two FlowBox children without the grid's distributed column gaps."""
+
+    def _sizes(self) -> tuple[int, int, int, int]:
+        children = [self.get_child_at_index(index) for index in range(2)]
+        widths = [
+            child.measure(Gtk.Orientation.HORIZONTAL, -1).natural for child in children
+        ]
+        heights = [
+            child.measure(Gtk.Orientation.VERTICAL, widths[index]).natural
+            for index, child in enumerate(children)
+        ]
+        return widths[0], widths[1], heights[0], heights[1]
+
+    def do_measure(
+        self, orientation: Gtk.Orientation, for_size: int
+    ) -> tuple[int, int, int, int]:
+        first_width, second_width, first_height, second_height = self._sizes()
+        if orientation == Gtk.Orientation.HORIZONTAL:
+            return max(first_width, second_width), first_width + second_width, -1, -1
+        wrapped = for_size >= 0 and for_size < first_width + second_width
+        height = (
+            first_height + second_height + 2
+            if wrapped else max(first_height, second_height)
+        )
+        return height, height, -1, -1
+
+    def do_size_allocate(self, width: int, height: int, baseline: int) -> None:
+        first_width, second_width, first_height, second_height = self._sizes()
+        wrapped = width < first_width + second_width
+        first = self.get_child_at_index(0)
+        second = self.get_child_at_index(1)
+        first.allocate(first_width, first_height, -1, None)
+        position = Graphene.Point().init(
+            0 if wrapped else first_width,
+            first_height + 2 if wrapped else (first_height - second_height) / 2,
+        )
+        second.allocate(
+            second_width, second_height, -1, Gsk.Transform.new().translate(position)
+        )
+
+
 class OpenLawLensWindow(Adw.ApplicationWindow):
     def __init__(self, app: Adw.Application) -> None:
         super().__init__(application=app)
@@ -2482,9 +2524,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             box.research-composer {{
               padding: 2px;
             }}
-            label.research-heading {{
-              font-weight: 600;
-            }}
             label.composer-message {{
               min-height: 20px;
               font-size: 0.88rem;
@@ -2500,6 +2539,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
               border: none;
               box-shadow: none;
               background-image: none;
+              font-weight: normal;
+            }}
+            menubutton.composer-case-question > button {{
+              min-height: 28px;
+              padding: 4px 8px;
+              margin: 0;
               font-weight: normal;
             }}
             box.composer-scope-group > button.composer-scope-button.focus-ai-view-active,
@@ -3760,15 +3805,25 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         composer.add_css_class("research-composer")
         composer.set_hexpand(True)
 
-        heading_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        heading = Gtk.Label(label="Research", xalign=0)
-        heading.add_css_class("research-heading")
-        heading.set_hexpand(True)
-        heading_row.append(heading)
-        heading_row.append(self._build_appeal_issue_menu_button())
-        composer.append(heading_row)
+        controls = ComposerControls()
+        controls.set_selection_mode(Gtk.SelectionMode.NONE)
+        controls.set_homogeneous(False)
+        controls.set_min_children_per_line(1)
+        controls.set_max_children_per_line(2)
+        controls.set_column_spacing(6)
+        controls.set_row_spacing(2)
+        controls.set_halign(Gtk.Align.START)
+        controls.set_focusable(False)
+        strip = self._build_query_action_strip()
+        menu = self._build_appeal_issue_menu_button()
+        controls.insert(strip, -1)
+        controls.insert(menu, -1)
+        for index in range(2):
+            child = controls.get_child_at_index(index)
+            child.set_focusable(False)
+            child.set_halign(Gtk.Align.START)
 
-        composer.append(self._build_query_action_strip())
+        composer.append(controls)
 
         message_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         spinner = Gtk.Spinner()
@@ -3887,11 +3942,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         button = Gtk.MenuButton()
         button.set_child(
             OpenLawLensWindow._build_labeled_icon(
-                "cafe-symbolic", "Assess Legal Question…"
+                "cafe-symbolic", "Case Question"
             )
         )
         button.add_css_class("flat")
-        button.set_tooltip_text("Assess Legal Question")
+        button.add_css_class("composer-case-question")
+        button.update_property([Gtk.AccessibleProperty.LABEL], ["Case Question"])
+        button.set_tooltip_text(
+            "Assess a legal question using the current case or selected fact pattern."
+        )
         self._appeal_issue_menu_button = button
         self._refresh_appeal_issue_menu()
         return button

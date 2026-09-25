@@ -620,10 +620,11 @@ load the observer. Receiving computers need the sibling project and compatible P
 The Assess Legal Question workflow produces a neutral, decision-oriented
 California appellate assessment of a supplied legal question — similar to a
 bench memorandum written for the appellate court — rather than advocacy for
-either side. It is available from the visible **Assess Legal Question…** menu
-in the Research composer heading. The menu includes assessment actions for
-configured legal question presets, a custom assessment action, and a shortcut
-to edit the appeal legal question settings.
+either side. The **Case Question** menu beside **Search Briefs** assesses a legal
+question against the current-case SOCF or a configured alternative fact pattern.
+The menu includes assessment actions for configured legal question presets, a
+custom assessment action, and a shortcut to edit the appeal legal question
+settings.
 
 Presets and custom entries are neutral legal questions, not claims or
 arguments. The nine built-in dependency presets are questions such as "Did

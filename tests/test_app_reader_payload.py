@@ -699,6 +699,59 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(children[3].get_orientation(), Gtk.Orientation.VERTICAL)
         self.assertEqual(children[4].get_label(), QUERY_MODE_BRIEF_SEARCH)
 
+    def test_composer_places_case_question_after_intact_scope_strip(self) -> None:
+        class DummyWindow:
+            def _build_query_action_strip(self) -> Gtk.Widget:
+                return OpenLawLensWindow._build_query_action_strip(self)  # type: ignore[arg-type]
+
+            def _build_agent_mode_button(self, mode: str) -> Gtk.ToggleButton:
+                return Gtk.ToggleButton(label=QUERY_MODE_LABELS[mode])
+
+            def _build_appeal_issue_menu_button(self) -> Gtk.MenuButton:
+                return OpenLawLensWindow._build_appeal_issue_menu_button(self)  # type: ignore[arg-type]
+
+            def _refresh_appeal_issue_menu(self) -> None:
+                pass
+
+            def _set_agent_mode(self, mode: str) -> None:
+                self.mode = mode
+
+            def _on_agent_launch(self, *_args: object) -> None:
+                pass
+
+            def _on_agent_question_changed(self, *_args: object) -> None:
+                pass
+
+            def _on_agent_followup_activate(self, *_args: object) -> None:
+                pass
+
+            def _on_agent_followup_changed(self, *_args: object) -> None:
+                pass
+
+        window = DummyWindow()
+        composer = OpenLawLensWindow._build_agent_ask_bar(window)  # type: ignore[arg-type]
+        controls = composer.get_first_child()
+        self.assertIsInstance(controls, Gtk.FlowBox)
+        self.assertEqual(controls.get_selection_mode(), Gtk.SelectionMode.NONE)
+        self.assertEqual(controls.get_min_children_per_line(), 1)
+        self.assertEqual(controls.get_max_children_per_line(), 2)
+        strip_wrapper = controls.get_child_at_index(0)
+        menu_wrapper = controls.get_child_at_index(1)
+        self.assertIsNone(controls.get_child_at_index(2))
+        self.assertFalse(strip_wrapper.get_focusable())
+        self.assertFalse(menu_wrapper.get_focusable())
+        strip = strip_wrapper.get_child()
+        menu = menu_wrapper.get_child()
+        self.assertEqual([strip.get_first_child().get_label(),
+                          strip.get_first_child().get_next_sibling().get_label()],
+                         ["Law", "Research Cache"])
+        self.assertEqual(strip.get_last_child().get_label(), "Search Briefs")
+        self.assertIs(menu, window._appeal_issue_menu_button)
+        self.assertEqual(menu.get_child().get_last_child().get_text(), "Case Question")
+        self.assertIsInstance(controls.get_next_sibling(), Gtk.Box)  # status/help
+        self.assertIs(controls.get_next_sibling().get_next_sibling(), window._agent_ask_row)
+        self.assertEqual(window.mode, AGENT_MODE_GENERAL)
+
     def test_question_changes_clear_inline_error(self) -> None:
         idle = MagicMock()
         entry = SimpleNamespace(get_text=lambda: "  question  ")
@@ -3136,9 +3189,19 @@ class AppReaderPayloadTests(unittest.TestCase):
             def _refresh_appeal_issue_menu(self) -> None:
                 pass
 
-        button = OpenLawLensWindow._build_appeal_issue_menu_button(  # type: ignore[arg-type]
-            DummyWindow(),
-        )
+        accessible_labels: list[str] = []
+        update_property = Gtk.MenuButton.update_property
+
+        def record_label(button: Gtk.MenuButton, properties: list, values: list) -> None:
+            if properties == [Gtk.AccessibleProperty.LABEL]:
+                accessible_labels.extend(values)
+            update_property(button, properties, values)
+
+        with patch.object(Gtk.MenuButton, "update_property", record_label):
+            button = OpenLawLensWindow._build_appeal_issue_menu_button(  # type: ignore[arg-type]
+                DummyWindow(),
+            )
+        self.assertEqual(accessible_labels, ["Case Question"])
         icon_ref = resources.files("open_law_lens").joinpath(
             "icons",
             "hicolor",
@@ -3154,8 +3217,13 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertIsInstance(icon, Gtk.Image)
         self.assertEqual(icon.get_icon_name(), "cafe-symbolic")
         self.assertIsInstance(label, Gtk.Label)
-        self.assertEqual(label.get_text(), "Assess Legal Question…")
-        self.assertEqual(button.get_tooltip_text(), "Assess Legal Question")
+        self.assertEqual(label.get_text(), "Case Question")
+        self.assertEqual(button.get_property("accessible-role"), Gtk.AccessibleRole.BUTTON)
+        self.assertEqual(
+            button.get_tooltip_text(),
+            "Assess a legal question using the current case or selected fact pattern.",
+        )
+        self.assertTrue(button.has_css_class("composer-case-question"))
         self.assertTrue(icon_ref.is_file())
 
     def test_appeal_issue_menu_includes_custom_argument_action(self) -> None:
