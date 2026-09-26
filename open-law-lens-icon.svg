@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <title>Open Law Lens — law volume and magnifying lens</title>
+  <defs>
+    <linearGradient id="rounded-spine" x1="20" y1="0" x2="40" y2="0" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#b77c19"/><stop offset="0.48" stop-color="#f5c34c"/><stop offset="1" stop-color="#e5a50a"/>
+    </linearGradient>
+  </defs>
+  <g id="law-volume">
+    <path fill="#986a24" d="M32 12h58a6 6 0 0 1 6 6v92a6 6 0 0 1-6 6H32a12 12 0 0 1-12-12V24a12 12 0 0 1 12-12Z"/>
+    <path fill="#c98b20" d="M32 12h58a6 6 0 0 1 6 6v18H32a12 12 0 0 1 0-24Z"/>
+    <path fill="#f6f5f4" d="M34 16h54v16H34a8 8 0 0 1 0-16Z"/>
+    <path fill="#deddda" d="M32 26h56v6H34a8 8 0 0 1-8-8c1 1 3 2 6 2Z"/>
+    <path fill="#e9b33d" d="M32 30h58a6 6 0 0 1 6 6v70a6 6 0 0 1-6 6H32a12 12 0 0 1-12-12V24a12 12 0 0 0 12 6Z"/>
+    <path fill="url(#rounded-spine)" d="M20 24a12 12 0 0 0 12 6h8v82h-8a12 12 0 0 1-12-12Z"/>
+    <path fill="#a51d2d" d="M20 36q5 4 12 4h8v22h-8q-7 0-12-4Z"/>
+    <path fill="#3d3846" d="M20 82q5 4 12 4h8v12h-8q-7 0-12-4Z"/>
+  </g>
+  <g id="magnifying-lens">
+    <path fill="#3d3846" d="m91 86 24 24a7 7 0 0 1-10 10L81 96Z"/>
+    <path fill="#5e5c64" d="m91 84 24 24a7 7 0 0 1-10 10L81 94Z"/>
+    <circle cx="76" cy="78" r="28" fill="#241f31"/>
+    <circle cx="76" cy="75" r="28" fill="#3d3846"/>
+    <circle cx="76" cy="75" r="20" fill="#99c1f1"/>
+    <path fill="#c7e2f8" d="M56 75a20 20 0 0 1 40 0Z"/>
+    <path fill="#ffffff" d="M60 73a16 16 0 0 1 16-14v4a12 12 0 0 0-12 10Z"/>
+  </g>
+</svg>
