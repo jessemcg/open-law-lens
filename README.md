@@ -80,8 +80,8 @@ Or save it in the app menu under Settings. The Settings path writes a local
 - Selected-text launcher through `open-law-lens open-selected`.
 - Embedded Pi-only Agent workflow for legal research questions, selected-cache
   questions, and neutral legal question assessment.
-- Assess Legal Question from a current-case SOCF or another ODT/PDF fact
-  pattern, with configurable legal question presets and custom questions.
+- Assess a typed Case Question against the current-case SOCF or another ODT/PDF
+  fact pattern.
 
 ## Requirements
 
@@ -325,10 +325,10 @@ There are four main agent workflows:
 - Prior Briefs: ask a closed-corpus question across the indexed ODT prior-brief
   archive. This remains separate from Research Cache questions and does not use
   web search.
-- Assess Legal Question: assess a neutral legal question against an ODT or
-  PDF fact pattern. The app extracts the fact pattern into a temporary
-  workspace, launches Pi in Appeal mode, and directs it to research
-  California law through the preloaded Legal Researcher workflow.
+- Case Question: type the precise neutral legal question against an ODT or PDF
+  fact pattern. The app extracts the fact pattern into a temporary workspace,
+  launches Pi in Appeal mode, and directs it to research California law through
+  the preloaded Legal Researcher workflow.
 
 The separate **Search Briefs** scope performs a local, non-LLM exact-phrase
 search. It opens matching briefs newest-first in the main reader without adding
@@ -343,10 +343,12 @@ the shared submit button is gone.
 
 ### Live follow-ups
 
-The composer uses two equal-width fields. **New question…** starts a new agent
-query when you press Enter, using the currently selected scope and replacing the
-current conversation. **Follow up…** continues the live Pi conversation when you
-press Enter. It never invokes the new-query launcher, refreshes sources, or
+Law, Research Cache, and Prior Briefs use two equal-width composer fields;
+Search Briefs and Case Question show only the main input. **New question…**
+starts a new agent query when you press Enter, using the currently selected
+scope and replacing the current conversation. **Follow up…** continues the
+live Pi conversation when you press Enter. It never invokes the new-query
+launcher, refreshes sources, or
 creates a replacement session. The field shows the live workflow (for example
 Law or Research Cache) in its tooltip, so changing the left-hand scope cannot
 silently retarget it, and it preserves the live session's launch context and
@@ -380,7 +382,7 @@ starting new sessions. A successful `gdbus` activation only means the app
 received the action; the app reports delivery acceptance or failure.
 
 Agent runtime settings, including the five per-query Pi model/reasoning
-profiles, prompt templates, appeal legal questions, and fact-pattern source,
+profiles, prompt templates, and fact-pattern source,
 are available in the app Settings window. Subsequent Treatment has its own
 profile, independent of the Query Law profile. Each profile override is stored
 locally in the ignored `config.json` file, affects newly launched sessions,
@@ -620,18 +622,12 @@ load the observer. Receiving computers need the sibling project and compatible P
 The Assess Legal Question workflow produces a neutral, decision-oriented
 California appellate assessment of a supplied legal question — similar to a
 bench memorandum written for the appellate court — rather than advocacy for
-either side. The **Case Question** menu beside **Search Briefs** assesses a legal
-question against the current-case SOCF or a configured alternative fact pattern.
-The menu includes assessment actions for configured legal question presets, a
-custom assessment action, and a shortcut to edit the appeal legal question
-settings.
-
-Presets and custom entries are neutral legal questions, not claims or
-arguments. The nine built-in dependency presets are questions such as "Did
-substantial evidence support the challenged finding?" and "Did the juvenile
-court abuse its discretion in finding that the child welfare agency conducted
-an adequate Cal-ICWA inquiry under Welfare and Institutions Code section
-224.2?". The custom action accepts a multi-sentence question plus any
+either side. Select **Case Question** beside **Search Briefs**, enter the precise
+legal question in the composer box, and press Enter to assess it against the
+current-case SOCF or a configured alternative fact pattern. Like Search Briefs,
+this scope uses the full composer row rather than a follow-up box. There are no
+preset questions or question editors; the typed question is used as entered.
+Questions should be neutral, not claims or arguments. You can include
 issue-specific focus, for example:
 
 ```text

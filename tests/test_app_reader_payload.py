@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, Mock, patch
 from open_law_lens.app import (
     AGENT_ANSWER_HEIGHT_PADDING,
     AGENT_ANSWER_MIN_HEIGHT,
+    AGENT_MODE_APPEAL,
     AGENT_MODE_BRIEF,
     AGENT_MODE_CASE,
     AGENT_MODE_GENERAL,
@@ -32,7 +33,6 @@ from open_law_lens.app import (
     OpenLawLensApp,
     OpenLawLensWindow,
     agent_profile_for_mode,
-    appeal_issue_menu_label,
     build_agent_launch_env,
     build_case_reader_payload,
     case_reader_masthead,
@@ -707,12 +707,6 @@ class AppReaderPayloadTests(unittest.TestCase):
             def _build_agent_mode_button(self, mode: str) -> Gtk.ToggleButton:
                 return Gtk.ToggleButton(label=QUERY_MODE_LABELS[mode])
 
-            def _build_appeal_issue_menu_button(self) -> Gtk.MenuButton:
-                return OpenLawLensWindow._build_appeal_issue_menu_button(self)  # type: ignore[arg-type]
-
-            def _refresh_appeal_issue_menu(self) -> None:
-                pass
-
             def _set_agent_mode(self, mode: str) -> None:
                 self.mode = mode
 
@@ -736,18 +730,19 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(controls.get_min_children_per_line(), 1)
         self.assertEqual(controls.get_max_children_per_line(), 2)
         strip_wrapper = controls.get_child_at_index(0)
-        menu_wrapper = controls.get_child_at_index(1)
+        question_wrapper = controls.get_child_at_index(1)
         self.assertIsNone(controls.get_child_at_index(2))
         self.assertFalse(strip_wrapper.get_focusable())
-        self.assertFalse(menu_wrapper.get_focusable())
+        self.assertFalse(question_wrapper.get_focusable())
         strip = strip_wrapper.get_child()
-        menu = menu_wrapper.get_child()
+        question_button = question_wrapper.get_child()
         self.assertEqual([strip.get_first_child().get_label(),
                           strip.get_first_child().get_next_sibling().get_label()],
                          ["Law", "Research Cache"])
         self.assertEqual(strip.get_last_child().get_label(), "Search Briefs")
-        self.assertIs(menu, window._appeal_issue_menu_button)
-        self.assertEqual(menu.get_child().get_last_child().get_text(), "Case Question")
+        self.assertIsInstance(question_button, Gtk.ToggleButton)
+        self.assertEqual(question_button.get_label(), "Case Question")
+        self.assertTrue(question_button.has_css_class("composer-case-question"))
         self.assertIsInstance(controls.get_next_sibling(), Gtk.Box)  # status/help
         self.assertIs(controls.get_next_sibling().get_next_sibling(), window._agent_ask_row)
         self.assertEqual(window.mode, AGENT_MODE_GENERAL)
@@ -799,6 +794,11 @@ class AppReaderPayloadTests(unittest.TestCase):
             _live_agent_workflow_label=lambda: "Law",
         )
 
+        OpenLawLensWindow._refresh_agent_followup_state(window)  # type: ignore[arg-type]
+        self.assertFalse(entry.visible)
+        self.assertFalse(row.homogeneous)
+
+        window._selected_agent_mode = AGENT_MODE_APPEAL
         OpenLawLensWindow._refresh_agent_followup_state(window)  # type: ignore[arg-type]
         self.assertFalse(entry.visible)
         self.assertFalse(row.homogeneous)
@@ -2016,6 +2016,33 @@ class AppReaderPayloadTests(unittest.TestCase):
         search.assert_called_once_with("synthetic exact phrase")
         window._launch_agent_with_prompt.assert_not_called()
 
+    def test_case_question_enter_uses_typed_question_not_presets(self) -> None:
+        assess = MagicMock()
+        window = SimpleNamespace(
+            _selected_agent_mode=AGENT_MODE_APPEAL,
+            agent_question_entry=SimpleNamespace(
+                get_text=lambda: "  Did the court apply the right standard?  "
+            ),
+            _start_custom_appeal_issue_assessment=assess,
+            _start_brief_phrase_search=MagicMock(
+                side_effect=AssertionError("Must not search briefs")
+            ),
+        )
+        OpenLawLensWindow._on_agent_launch(window, None)
+        assess.assert_called_once_with("Did the court apply the right standard?")
+
+    def test_case_question_enter_requires_a_question(self) -> None:
+        status = MagicMock()
+        window = SimpleNamespace(
+            _selected_agent_mode=AGENT_MODE_APPEAL,
+            agent_question_entry=SimpleNamespace(get_text=lambda: "  "),
+            _set_status=status,
+            _start_custom_appeal_issue_assessment=MagicMock(),
+        )
+        OpenLawLensWindow._on_agent_launch(window, None)
+        status.assert_called_once_with("Enter a legal question to assess.")
+        window._start_custom_appeal_issue_assessment.assert_not_called()
+
     def test_agent_launch_env_configures_project_local_pi(self) -> None:
         class DummyCache:
             root = Path("/tmp/open-law-lens-cache")
@@ -3169,183 +3196,16 @@ class AppReaderPayloadTests(unittest.TestCase):
             [(Path("/tmp/prompt.txt"), Path("/tmp/workspace"), "appeal")],
         )
 
-    def test_appeal_issue_menu_label_uses_label_then_first_nonblank_line_and_truncates(self) -> None:
+    def test_case_question_scope_uses_bundled_cafe_icon(self) -> None:
+        self.assertEqual(AGENT_MODE_ICONS[AGENT_MODE_APPEAL], "cafe-symbolic")
         self.assertEqual(
-            appeal_issue_menu_label("Full argument text.", "  Short label  "),
-            "Short label",
+            QUERY_MODE_PRESENTATION[AGENT_MODE_APPEAL]["placeholder"],
+            "Enter the precise legal question for this case",
         )
-        self.assertEqual(
-            appeal_issue_menu_label("\n  First issue line.  \nSecond line."),
-            "First issue line.",
-        )
-        self.assertEqual(appeal_issue_menu_label("", max_length=12), "Untitled legal question")
-        self.assertEqual(
-            appeal_issue_menu_label("This issue description is too long", max_length=18),
-            "This issue desc...",
-        )
-
-    def test_appeal_issue_button_uses_bundled_cafe_icon(self) -> None:
-        class DummyWindow:
-            def _refresh_appeal_issue_menu(self) -> None:
-                pass
-
-        accessible_labels: list[str] = []
-        update_property = Gtk.MenuButton.update_property
-
-        def record_label(button: Gtk.MenuButton, properties: list, values: list) -> None:
-            if properties == [Gtk.AccessibleProperty.LABEL]:
-                accessible_labels.extend(values)
-            update_property(button, properties, values)
-
-        with patch.object(Gtk.MenuButton, "update_property", record_label):
-            button = OpenLawLensWindow._build_appeal_issue_menu_button(  # type: ignore[arg-type]
-                DummyWindow(),
-            )
-        self.assertEqual(accessible_labels, ["Case Question"])
-        icon_ref = resources.files("open_law_lens").joinpath(
-            "icons",
-            "hicolor",
-            "scalable",
-            "actions",
-            "cafe-symbolic.svg",
-        )
-
-        content = button.get_child()
-        self.assertIsInstance(content, Gtk.Box)
-        icon = content.get_first_child()
-        label = icon.get_next_sibling()
-        self.assertIsInstance(icon, Gtk.Image)
-        self.assertEqual(icon.get_icon_name(), "cafe-symbolic")
-        self.assertIsInstance(label, Gtk.Label)
-        self.assertEqual(label.get_text(), "Case Question")
-        self.assertEqual(button.get_property("accessible-role"), Gtk.AccessibleRole.BUTTON)
-        self.assertEqual(
-            button.get_tooltip_text(),
-            "Assess a legal question using the current case or selected fact pattern.",
-        )
-        self.assertTrue(button.has_css_class("composer-case-question"))
-        self.assertTrue(icon_ref.is_file())
-
-    def test_appeal_issue_menu_includes_custom_argument_action(self) -> None:
-        class DummyWindow:
-            def __init__(self) -> None:
-                self._appeal_issue_menu_button = None
-
-            def _on_custom_appeal_issue_clicked(self, *_args: object) -> None:
-                pass
-
-            def _on_appeal_issue_menu_item_clicked(self, *_args: object) -> None:
-                pass
-
-            def _on_appeal_issue_settings_clicked(self, *_args: object) -> None:
-                pass
-
-        def labels(widget: object) -> list[str]:
-            found: list[str] = []
-            child = widget.get_first_child() if hasattr(widget, "get_first_child") else None
-            while child is not None:
-                if isinstance(child, Gtk.Button):
-                    label = child.get_label()
-                    if label:
-                        found.append(label)
-                else:
-                    found.extend(labels(child))
-                child = child.get_next_sibling()
-            return found
-
-        def button_label_xaligns(widget: object) -> list[float]:
-            found: list[float] = []
-            child = widget.get_first_child() if hasattr(widget, "get_first_child") else None
-            while child is not None:
-                if isinstance(child, Gtk.Button) and isinstance(child.get_child(), Gtk.Label):
-                    found.append(child.get_child().get_xalign())
-                else:
-                    found.extend(button_label_xaligns(child))
-                child = child.get_next_sibling()
-            return found
-
-        window = DummyWindow()
-        window._appeal_issue_menu_button = Gtk.MenuButton()
-
-        with patch(
-            "open_law_lens.app.load_config",
-            return_value=AppConfig(
-                appeal_issue_presets=["Full argument one."],
-                appeal_issue_labels=["Short one"],
-            ),
-        ):
-            OpenLawLensWindow._refresh_appeal_issue_menu(window)  # type: ignore[arg-type]
-
-        popover = window._appeal_issue_menu_button.get_popover()
-        self.assertIsNotNone(popover)
-        assert popover is not None
-        self.assertEqual(
-            labels(popover),
-            [
-                "Assess custom legal question…",
-                "Short one",
-                "Edit legal questions…",
-            ],
-        )
-        self.assertEqual(button_label_xaligns(popover), [0.0, 0.0, 0.0])
-
-    def test_appeal_issue_by_index_uses_current_fact_pattern(self) -> None:
-        class DummyWindow:
-            def __init__(self) -> None:
-                self._appeal_fact_pattern_path_override = Path("/tmp/facts.odt")
-                self.statuses: list[str] = []
-                self.launches: list[tuple[str, Path]] = []
-
-            def _set_status(self, status: str) -> None:
-                self.statuses.append(status)
-
-            def _appeal_fact_pattern_path(self) -> Path | None:
-                return OpenLawLensWindow._appeal_fact_pattern_path(self)  # type: ignore[arg-type]
-
-            def start_appeal_issue_assessment(self, issue: str, fact_pattern_path: Path) -> bool:
-                self.launches.append((issue, fact_pattern_path))
-                return True
-
-        window = DummyWindow()
-
-        with (
-            patch("open_law_lens.app.load_config", return_value=AppConfig(appeal_issue_presets=["Issue one"])),
-            patch.object(Path, "is_file", return_value=True),
-        ):
-            OpenLawLensWindow._start_appeal_issue_assessment_by_index(  # type: ignore[arg-type]
-                window,
-                0,
-            )
-
-        self.assertEqual(window.launches, [("Issue one", Path("/tmp/facts.odt"))])
-
-    def test_appeal_issue_by_index_reports_missing_fact_pattern(self) -> None:
-        class DummyWindow:
-            def __init__(self) -> None:
-                self._appeal_fact_pattern_path_override = Path("/tmp/missing.odt")
-                self.statuses: list[str] = []
-
-            def _set_status(self, status: str) -> None:
-                self.statuses.append(status)
-
-            def _appeal_fact_pattern_path(self) -> Path | None:
-                return OpenLawLensWindow._appeal_fact_pattern_path(self)  # type: ignore[arg-type]
-
-            def start_appeal_issue_assessment(self, issue: str, fact_pattern_path: Path) -> bool:
-                raise AssertionError("assessment should not launch")
-
-        window = DummyWindow()
-
-        with (
-            patch("open_law_lens.app.load_config", return_value=AppConfig(appeal_issue_presets=["Issue one"])),
-            patch.object(Path, "is_file", return_value=False),
-        ):
-            OpenLawLensWindow._start_appeal_issue_assessment_by_index(  # type: ignore[arg-type]
-                window,
-                0,
-            )
-
-        self.assertEqual(window.statuses, ["Fact pattern file not found: /tmp/missing.odt"])
+        self.assertEqual(QUERY_MODE_LABELS[AGENT_MODE_APPEAL], "Case Question")
+        self.assertTrue(resources.files("open_law_lens").joinpath(
+            "icons", "hicolor", "scalable", "actions", "cafe-symbolic.svg"
+        ).is_file())
 
     def test_custom_appeal_issue_uses_current_fact_pattern(self) -> None:
         class DummyWindow:

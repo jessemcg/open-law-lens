@@ -69,11 +69,12 @@ def activate(app):
             width = next(widths)
         except StopIteration:
             for mode in (ui.AGENT_MODE_GENERAL, ui.AGENT_MODE_CASE,
-                         ui.AGENT_MODE_BRIEF, ui.QUERY_MODE_BRIEF_SEARCH):
+                         ui.AGENT_MODE_BRIEF, ui.QUERY_MODE_BRIEF_SEARCH,
+                         ui.AGENT_MODE_APPEAL):
                 owner._set_agent_mode(mode)
                 assert owner._selected_agent_mode == mode
                 assert owner._agent_mode_buttons[mode].get_active()
-                if mode == ui.QUERY_MODE_BRIEF_SEARCH:
+                if mode in (ui.QUERY_MODE_BRIEF_SEARCH, ui.AGENT_MODE_APPEAL):
                     assert not owner._agent_followup_entry.get_visible()
                 else:
                     assert owner._agent_followup_entry.get_visible()
@@ -113,7 +114,7 @@ def activate(app):
         assert abs(mb.get_height() - sb.get_height()) <= 1, (
             mb.get_height(), sb.get_height()
         )
-        assert owner._appeal_issue_menu_button.get_popover() is not None
+        assert owner._agent_mode_buttons[ui.AGENT_MODE_APPEAL].get_parent() is not None
         print(
             f"requested={width} allocated={cb.get_width():.0f} "
             f"strip={sb.get_width():.0f} flow={fb.get_width():.0f} "
