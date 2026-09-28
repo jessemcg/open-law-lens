@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,6 +28,7 @@ CONFIG_KEY_AGENT_RUNTIME_PROFILES = "agent_runtime_profiles"
 CONFIG_KEY_AGENT_RUNTIME_PROFILES_VERSION = "agent_runtime_profiles_version"
 CONFIG_KEY_READER_FONT_SIZE_PT = "reader_font_size_pt"
 CONFIG_KEY_READER_FONT_FAMILY = "reader_font_family"
+CONFIG_KEY_SEARCH_MATCH_COLOR = "search_match_color"
 CONFIG_KEY_DEFAULT_BARE_STATUTE_LAW_CODE = "default_bare_statute_law_code"
 ENV_CONCORDANCE_FILE = "OPEN_LAW_LENS_CONCORDANCE_FILE"
 AGENT_PROFILE_LAW = "law"
@@ -56,6 +58,7 @@ PI_THINKING_LEVELS: tuple[str, ...] = (
     "max",
 )
 DEFAULT_READER_FONT_SIZE_PT = 11
+DEFAULT_SEARCH_MATCH_COLOR = "#fff3b0"
 # Retired preference: retained only for backward-compatible config round trips.
 # No parser, lookup dispatcher, or reader may use this value to infer a code.
 DEFAULT_BARE_STATUTE_LAW_CODE = "WIC"
@@ -100,6 +103,8 @@ LEGACY_GENERAL_AGENT_PROMPT_SHA256ES = (
     "0d41e7db6fdb921685d704da391bbe8b2341118fae09f3a96e4534eba07210f0",
 )
 LEGACY_CASE_AGENT_PROMPT_SHA256ES = (
+    # Shipped default that excluded the checked SOCF from direct quotations.
+    "36d0d6e15501a0d0b8c9ec066b7e13826a5d4bc647b88e00d663263f9bd67586",
     "90bd5ba6984eb91b4b7c72c3a33617896ed2b6279ce3bdd5592f07f15fc73f9b",
     "58395b3951138bf6ebdc383a5f52366ca7f7c81e0fcd6b1b75b6095c36a5f3d8",
     "21f8d2e20a04a17942009d9bb12957263ed4461f58cf46d7d62e40aa8da7d604",
@@ -155,7 +160,7 @@ Answer only from the selected Research Cache materials and any current-case fact
 
 When current-case factual context is provided and the question calls for comparison, compare the current case with the selected authorities using legally significant facts, procedural posture, legal issues, and governing standards. Cite current-case facts with the record citations already present in the fact pattern. Do not cite local paths, filenames, or line numbers.
 
-In your answer, include short direct quotes from selected cases, statutes, and rules, and from selected prior briefs when useful. Do not use the current-case fact pattern or saved agent answers as the source of these quotes. Each quote should be only two to five words long, enclosed in quotation marks, and must include continuous phrases exactly as they appear in the source text. Put a full identifying case, statute, rule, or prior-brief title in the same paragraph as each quote; one identifier may support multiple quotes from the same source. Clearly label prior-brief quotations as prior advocacy rather than law.
+In your answer, include short direct quotes from selected cases, statutes, and rules, from selected prior briefs when useful, and from the checked current-case Statement of Case and Facts when it supplies facts relevant to the question. Do not use saved agent answers as the source of these quotes. Each quote should be only two to five words long, enclosed in quotation marks, and must include continuous phrases exactly as they appear in the source text. Put a full identifying case, statute, rule, prior-brief title, or "Statement of Case and Facts" in the same paragraph as each quote; one identifier may support multiple quotes from the same source. Clearly label prior-brief quotations as prior advocacy and Statement of Case and Facts quotations as factual context, not law. Quote the extracted SOCF text itself (not a source merely mentioned inside it) so the answer's direct quotes can link back to the Statement of Case and Facts in the reader.
 
 Question:
 {question}
@@ -401,6 +406,7 @@ class AppConfig:
     agent_runtime_profiles: dict[str, PiAgentProfile] = field(default_factory=dict)
     reader_font_size_pt: int = DEFAULT_READER_FONT_SIZE_PT
     reader_font_family: str = DEFAULT_READER_FONT_FAMILY
+    search_match_color: str = DEFAULT_SEARCH_MATCH_COLOR
     default_bare_statute_law_code: str = DEFAULT_BARE_STATUTE_LAW_CODE
 
 
@@ -410,6 +416,13 @@ def coerce_reader_font_size(value: Any, default: int = DEFAULT_READER_FONT_SIZE_
     except (TypeError, ValueError):
         return default
     return min(48, max(8, size))
+
+
+def normalize_search_color(value: Any, default: str) -> str:
+    """Accept opaque hex colors only; never put arbitrary config into GTK tags."""
+    if isinstance(value, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", value.strip()):
+        return value.strip().lower()
+    return default
 
 
 def normalize_reader_font_family(value: Any) -> str:
@@ -640,6 +653,9 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
         ),
         reader_font_size_pt=coerce_reader_font_size(raw.get(CONFIG_KEY_READER_FONT_SIZE_PT)),
         reader_font_family=normalize_reader_font_family(raw.get(CONFIG_KEY_READER_FONT_FAMILY)),
+        search_match_color=normalize_search_color(
+            raw.get(CONFIG_KEY_SEARCH_MATCH_COLOR), DEFAULT_SEARCH_MATCH_COLOR
+        ),
         default_bare_statute_law_code=normalize_bare_statute_law_code(
             raw.get(CONFIG_KEY_DEFAULT_BARE_STATUTE_LAW_CODE)
         ),
@@ -701,6 +717,9 @@ def save_config(config: AppConfig, path: Path = CONFIG_PATH) -> None:
         },
         CONFIG_KEY_READER_FONT_SIZE_PT: coerce_reader_font_size(config.reader_font_size_pt),
         CONFIG_KEY_READER_FONT_FAMILY: normalize_reader_font_family(config.reader_font_family),
+        CONFIG_KEY_SEARCH_MATCH_COLOR: normalize_search_color(
+            config.search_match_color, DEFAULT_SEARCH_MATCH_COLOR
+        ),
         CONFIG_KEY_DEFAULT_BARE_STATUTE_LAW_CODE: normalize_bare_statute_law_code(
             config.default_bare_statute_law_code
         ),

@@ -32,6 +32,7 @@ from open_law_lens.app import (
     LinkPressState,
     OpenLawLensApp,
     OpenLawLensWindow,
+    SettingsWindow,
     agent_profile_for_mode,
     build_agent_launch_env,
     build_case_reader_payload,
@@ -79,6 +80,33 @@ from open_law_lens.web_import import ExtractedWebpage
 
 
 class AppReaderPayloadTests(unittest.TestCase):
+    def test_search_color_picker_and_live_tag_refresh(self) -> None:
+        row, control = SettingsWindow._build_search_color_row(
+            "Search Match Color", "#1280ab"
+        )
+        self.assertIsNotNone(row)
+        self.assertEqual(
+            SettingsWindow._search_color_value(control, "#fff3b0"), "#1280ab"
+        )
+        tags = [Mock() for _ in range(4)]
+        window = SimpleNamespace(
+            _research_cache_generation=0, _case_load_generation=0,
+            _reader_find_tag=tags[0], _reader_brief_search_tag=tags[1],
+            _reader_find_current_tag=tags[2], _reader_brief_search_current_tag=tags[3],
+            _install_css=Mock(), _refresh_current_case_context=Mock(),
+            _load_cached_cases=Mock(), _refresh_case_suggestion_index_async=Mock(),
+            _set_status=Mock(),
+        )
+        with (
+            patch("open_law_lens.app.load_config", return_value=AppConfig(
+                search_match_color="#1280ab"
+            )),
+            patch("open_law_lens.app.CourtListenerClient.default", return_value=Mock()),
+        ):
+            OpenLawLensWindow.reload_settings(window)  # type: ignore[arg-type]
+        for tag in tags:
+            tag.set_property.assert_called_once_with("background", "#1280ab")
+
     def test_application_registers_brief_search_shortcut(self) -> None:
         app = OpenLawLensApp()
 
@@ -1842,6 +1870,46 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertIs(window._pending_quote_target, target)
         self.assertIs(window.case_list.selected, window.case_list.row)
 
+    def test_socf_quote_opens_matching_reader_and_rejects_changed_case(self) -> None:
+        target = QuoteTarget(
+            phrase="did not interview", cluster_id="", opinion_id="",
+            title="Statement of Case and Facts", citation="Current-case factual context",
+            text_path="/case/SOCF.odt", offset=10, end_offset=27,
+            authority_type="socf",
+        )
+
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.path = Path("/case/SOCF.odt")
+                self._pending_quote_target = None
+                self._reader_text = ""
+                self.opened = False
+                self.status = ""
+
+            def _refresh_current_case_context(self) -> CurrentCaseSocf:
+                return CurrentCaseSocf("Case", Path("/case"), self.path)
+
+            def _quote_target_is_selected(self, _target: QuoteTarget) -> bool:
+                return False
+
+            def _open_current_case_socf(self) -> None:
+                self.opened = True
+
+            def _set_status(self, message: str) -> None:
+                self.status = message
+
+        window = DummyWindow()
+        OpenLawLensWindow._open_quote_target(window, target)  # type: ignore[arg-type]
+        self.assertTrue(window.opened)
+        self.assertIs(window._pending_quote_target, target)
+        window.path = Path("/other/SOCF.odt")
+        window.opened = False
+        window._pending_quote_target = None
+        OpenLawLensWindow._open_quote_target(window, target)  # type: ignore[arg-type]
+        self.assertFalse(window.opened)
+        self.assertIsNone(window._pending_quote_target)
+        self.assertIn("no longer the current case", window.status)
+
     def test_link_release_requires_same_target_without_drag(self) -> None:
         class DummyView:
             def __init__(self, dragged: bool) -> None:
@@ -2848,14 +2916,17 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(window.compose_args[2], fact_export)
         self.assertTrue(window.compose_args[3])
         self.assertEqual(window.compose_args[4], "")
-        idle_add.assert_called_once_with(
+        idle_add.assert_called_once()
+        args = idle_add.call_args.args
+        self.assertEqual(args[:3], (
             window._finish_case_agent_prepare,
             Path("/tmp/prompt.txt"),
             Path("/tmp/workspace"),
-            ["source"],
-            True,
-            "",
-        )
+        ))
+        self.assertEqual(args[3][0], "source")
+        self.assertEqual(args[3][1].authority_type, "socf")
+        self.assertEqual(args[3][1].text_path, str(fact_export.source_path))
+        self.assertEqual(args[4:], (True, ""))
 
     def test_case_agent_worker_does_not_export_unchecked_socf(self) -> None:
         authority_export = SimpleNamespace(
@@ -2974,14 +3045,18 @@ class AppReaderPayloadTests(unittest.TestCase):
                 True,
             )
 
-        idle_add.assert_called_once_with(
+        idle_add.assert_called_once()
+        args = idle_add.call_args.args
+        self.assertEqual(args[:3], (
             window._finish_case_agent_prepare,
             Path("/tmp/prompt.txt"),
             Path("/tmp/workspace"),
-            [],
-            True,
-            "",
-        )
+        ))
+        self.assertEqual(len(args[3]), 1)
+        self.assertEqual(args[3][0].authority_type, "socf")
+        self.assertEqual(args[3][0].text_path, str(fact_export.source_path))
+        self.assertEqual(args[3][0].text, fact_export.text)
+        self.assertEqual(args[4:], (True, ""))
 
     def test_agent_launch_env_passes_pi_node_runtime_when_available(self) -> None:
         class DummyCache:

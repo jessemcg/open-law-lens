@@ -103,6 +103,7 @@ from .config import (
     DEFAULT_CASE_AGENT_PROMPT_TEMPLATE,
     DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE,
     DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
+    DEFAULT_SEARCH_MATCH_COLOR,
     PiAgentProfile,
     concordance_file_path,
     coerce_reader_font_size,
@@ -110,6 +111,7 @@ from .config import (
     load_config,
     normalize_bare_statute_law_code,
     normalize_reader_font_family,
+    normalize_search_color,
     reader_font_css,
     READER_FONT_FAMILY_OPTIONS,
     save_config,
@@ -1080,6 +1082,11 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.reader_font_family_row.set_selected(selected_index)
         self.general_settings_expander.add_row(self.reader_font_family_row)
 
+        self.search_match_color_row, self.search_match_color_control = self._build_search_color_row(
+            "Search Match Color", config.search_match_color
+        )
+        self.general_settings_expander.add_row(self.search_match_color_row)
+
         self.concordance_row = Adw.EntryRow(title="Concordance file")
         self.concordance_row.set_text(config.concordance_file_path)
         self._add_concordance_row_buttons()
@@ -1741,6 +1748,45 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.parent_window._appeal_fact_pattern_path_override = None
         self._refresh_appeal_fact_pattern_entry()
 
+    @staticmethod
+    def _build_search_color_row(title: str, color: str) -> tuple[Gtk.Widget, Gtk.Widget]:
+        rgba = Gdk.RGBA()
+        rgba.parse(color)
+        dialog_cls = getattr(Gtk, "ColorDialog", None)
+        button_cls = getattr(Gtk, "ColorDialogButton", None)
+        if dialog_cls is not None and button_cls is not None:
+            row = Adw.ActionRow(title=title)
+            dialog = dialog_cls()
+            dialog.set_with_alpha(False)
+            control = button_cls.new(dialog)
+        elif hasattr(Gtk, "ColorButton"):
+            row = Adw.ActionRow(title=title)
+            control = Gtk.ColorButton()
+            control.set_use_alpha(False)
+        else:
+            entry = Adw.EntryRow(title=title)
+            entry.set_text(color)
+            return entry, entry
+        control.add_css_class("flat")
+        control.set_rgba(rgba)
+        row.add_suffix(control)
+        row.set_activatable_widget(control)
+        return row, control
+
+    @staticmethod
+    def _search_color_value(control: Gtk.Widget, default: str) -> str:
+        if hasattr(control, "get_rgba"):
+            rgba = control.get_rgba()
+            if rgba is not None:
+                return normalize_search_color(
+                    "#{:02x}{:02x}{:02x}".format(
+                        *(round(channel * 255) for channel in (rgba.red, rgba.green, rgba.blue))
+                    ), default
+                )
+        if hasattr(control, "get_text"):
+            return normalize_search_color(control.get_text(), default)
+        return default
+
     def _on_save_clicked(self, _button: Gtk.Button) -> None:
         token = self.token_row.get_text().strip()
         concordance_path = self.concordance_row.get_text().strip()
@@ -1788,6 +1834,9 @@ class SettingsWindow(Adw.ApplicationWindow):
                 int(round(self.reader_font_size_row.get_value()))
             ),
             reader_font_family=normalize_reader_font_family(reader_font_family),
+            search_match_color=self._search_color_value(
+                self.search_match_color_control, DEFAULT_SEARCH_MATCH_COLOR
+            ),
             default_bare_statute_law_code=normalize_bare_statute_law_code(
                 bare_statute_law_code
             ),
@@ -3344,22 +3393,23 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             background="#fff0a6",
             foreground="#1f1f1f",
         )
+        search_colors = load_config()
         self._reader_find_tag = self.reader_buffer.create_tag(
             "reader-find-match",
-            background="#fff3b0",
+            background=search_colors.search_match_color,
         )
         self._reader_find_current_tag = self.reader_buffer.create_tag(
             "reader-find-current-match",
-            background="#ffd35a",
+            background=search_colors.search_match_color,
             weight=Pango.Weight.BOLD,
         )
         self._reader_brief_search_tag = self.reader_buffer.create_tag(
             "reader-brief-search-match",
-            background="#fff3b0",
+            background=search_colors.search_match_color,
         )
         self._reader_brief_search_current_tag = self.reader_buffer.create_tag(
             "reader-brief-search-current-match",
-            background="#ffd35a",
+            background=search_colors.search_match_color,
             weight=Pango.Weight.BOLD,
         )
         self.reader_header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -4469,6 +4519,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._clear_current_case_outline()
         self._set_reader_busy(False)
         self._reader_text = ""
+        if self._pending_quote_target is not None and self._pending_quote_target.authority_type == "socf":
+            self._pending_quote_target = None
         self.reader_buffer.set_text(message)
         self._set_status(f"Unable to load current-case SOCF: {message}")
         return False
@@ -6752,6 +6804,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._research_cache_generation += 1
         self._case_load_generation += 1
         self._install_css()
+        colors = load_config()
+        for tag, color in (
+            (self._reader_find_tag, colors.search_match_color),
+            (self._reader_brief_search_tag, colors.search_match_color),
+            (self._reader_find_current_tag, colors.search_match_color),
+            (self._reader_brief_search_current_tag, colors.search_match_color),
+        ):
+            if tag is not None:
+                tag.set_property("background", color)
         self._refresh_current_case_context()
         self._load_cached_cases()
         self._refresh_case_suggestion_index_async(force=True)
@@ -10211,7 +10272,17 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 self._finish_case_agent_prepare,
                 prompt_path,
                 workspace,
-                export.text_sources,
+                export.text_sources + (
+                    [CaseTextSource(
+                        cluster_id="",
+                        opinion_id="",
+                        title="Statement of Case and Facts",
+                        citation="Current-case factual context",
+                        text_path=str(current_case_export.source_path),
+                        text=current_case_export.text,
+                        authority_type="socf",
+                    )] if current_case_export is not None else []
+                ),
                 current_case_export is not None,
                 warning if current_case_selected and current_case_export is None else "",
             )
@@ -11592,6 +11663,17 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return False
 
     def _open_quote_target(self, target: QuoteTarget) -> None:
+        if target.authority_type == "socf":
+            resolved = self._refresh_current_case_context()
+            if resolved is None or str(resolved.path) != target.text_path:
+                self._set_status("Quoted Statement of Case and Facts is no longer the current case.")
+                return
+            if self._quote_target_is_selected(target) and self._reader_text:
+                self._highlight_reader_quote_target(target)
+                return
+            self._pending_quote_target = target
+            self._open_current_case_socf()
+            return
         if target.authority_type == "prior_brief":
             if self._quote_target_is_selected(target) and self._reader_text:
                 self._highlight_reader_quote_target(target)
@@ -11793,6 +11875,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return None
 
     def _quote_target_is_selected(self, target: QuoteTarget) -> bool:
+        if target.authority_type == "socf":
+            return bool(
+                self._reader_position_key == ("socf", self._current_case_name)
+                and self._current_case_socf_path is not None
+                and str(self._current_case_socf_path) == target.text_path
+            )
         if target.authority_type == "prior_brief":
             return bool(
                 self._selected_prior_brief is not None

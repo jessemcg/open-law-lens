@@ -76,7 +76,9 @@ Or save it in the app menu under Settings. The Settings path writes a local
 - Reader links for cited cases, statutes, and rules.
 - Named Research Cache sets.
 - Exact-phrase search across the indexed prior-brief archive, with newest-first
-  reader navigation through matches.
+  reader navigation through matches. Settings → General Settings offers one
+  color picker for all search matches in the reader Find bar and Search Briefs;
+  the current match is additionally bold. Saved manual highlights retain their own color.
 - Selected-text launcher through `open-law-lens open-selected`.
 - Embedded Pi-only Agent workflow for legal research questions, selected-cache
   questions, and neutral legal question assessment.
@@ -321,7 +323,9 @@ There are four main agent workflows:
   marked authorities as legal authority and the SOCF as factual context,
   allowing comparisons such as which marked case is most analogous to the
   current case. A checked SOCF can also be used by itself for a factual Cache
-  question.
+  question. Short exact quotations from the checked SOCF are linked to the
+  Statement of Case and Facts reader, like quotations from marked authorities;
+  the SOCF remains factual context, not legal authority.
 - Prior Briefs: ask a closed-corpus question across the indexed ODT prior-brief
   archive. This remains separate from Research Cache questions and does not use
   web search.

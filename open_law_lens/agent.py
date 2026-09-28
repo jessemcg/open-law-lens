@@ -361,6 +361,8 @@ def _source_authority_key(source: CaseTextSource) -> tuple[str, str] | None:
         return ("rule", source.rule_id)
     if source.authority_type == "prior_brief" and source.prior_brief_id:
         return ("prior_brief", source.prior_brief_id)
+    if source.authority_type == "socf" and source.text_path:
+        return ("socf", source.text_path)
     return None
 
 
@@ -417,16 +419,13 @@ def _authority_citation_hints(
         if key is not None:
             hints.append(_CitationHint(match.start(), match.end(), key))
     for source in sources:
-        if source.authority_type != "prior_brief" or not source.prior_brief_id:
+        if source.authority_type not in {"prior_brief", "socf"}:
+            continue
+        key = _source_authority_key(source)
+        if key is None or not source.title:
             continue
         for match in re.finditer(re.escape(source.title), text, flags=re.IGNORECASE):
-            hints.append(
-                _CitationHint(
-                    match.start(),
-                    match.end(),
-                    ("prior_brief", source.prior_brief_id),
-                )
-            )
+            hints.append(_CitationHint(match.start(), match.end(), key))
     return sorted(hints, key=lambda hint: hint.start_offset)
 
 
@@ -713,8 +712,10 @@ def export_selected_authorities(
         "prior_briefs": manifest_prior_briefs,
         "instructions": (
             "Use only these selected Open Law Lens Research Cache materials. "
-            "Quote exact continuous phrases only from selected cases, statutes, rules, and "
-            "prior briefs. "
+            "Within this manifest, quote exact continuous phrases only from selected "
+            "cases, statutes, rules, and prior briefs. A separately checked current-case "
+            "Statement of Case and Facts may also be quoted as factual context when "
+            "provided in the runtime prompt. "
             "Saved agent answers are prior analysis for context, not legal authority or a "
             "source of direct quotations. Prior briefs are prior advocacy, not legal authority; "
             "they may be quoted only when clearly identified as prior briefing."

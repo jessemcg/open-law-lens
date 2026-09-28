@@ -185,6 +185,34 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(target.cluster_id, "42")
         self.assertEqual(target.offset, 25)
 
+    def test_checked_socf_quote_resolves_to_its_own_reader(self) -> None:
+        source = CaseTextSource(
+            cluster_id="", opinion_id="", title="Statement of Case and Facts",
+            citation="Current-case factual context", text_path="/case/SOCF.odt",
+            text="The agency did not interview the grandmother.", authority_type="socf",
+        )
+        answer = 'Statement of Case and Facts reports “did not interview” the grandmother.'
+        spans = resolved_agent_quote_spans(answer, [source])
+        self.assertEqual(len(spans), 1)
+        self.assertIsNotNone(spans[0].target)
+        self.assertEqual(spans[0].target.authority_type, "socf")
+        self.assertEqual(spans[0].target.text_path, "/case/SOCF.odt")
+
+    def test_socf_title_disambiguates_quote_shared_with_authority(self) -> None:
+        socf = CaseTextSource(
+            cluster_id="", opinion_id="", title="Statement of Case and Facts",
+            citation="Current-case factual context", text_path="/case/SOCF.odt",
+            text="The agency failed to act promptly.", authority_type="socf",
+        )
+        case = CaseTextSource(
+            cluster_id="42", opinion_id="10", title="Example", citation="1 Cal. 2",
+            text_path="/tmp/case.txt", text="The agency failed to act promptly.",
+        )
+        answer = 'The Statement of Case and Facts says “failed to act promptly.”'
+        spans = resolved_agent_quote_spans(answer, [case, socf])
+        self.assertEqual(spans[0].target.authority_type, "socf")
+        self.assertIsNone(resolve_quote_target("failed to act promptly", [case, socf]))
+
     def test_quote_match_spans_tolerate_observed_display_differences(self) -> None:
         source = (
             'Mother\'s "emotions [were] out of control." She "couldn\'t relax" '

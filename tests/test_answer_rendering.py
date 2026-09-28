@@ -287,6 +287,20 @@ class AnswerRenderingTests(unittest.TestCase):
                               OpenLawLensWindow._external_url_links)
         self.assertEqual(len([s for s in plan.styles if s.kind == 'statute']), 1)
 
+    def test_prepared_cache_answer_links_socf_quote(self):
+        source = CaseTextSource('', '', 'Statement of Case and Facts',
+                                'Current-case factual context', '/case/SOCF.odt',
+                                'The agency did not interview the grandmother.',
+                                authority_type='socf')
+        text = ('# Family Inquiry\n*Missing interview*\n\n'
+                'The Statement of Case and Facts says “did not interview” the grandmother.')
+        plan = prepare_answer(text, 'case', [source], _AgentAnswerTextFormatter().format,
+                              OpenLawLensWindow._external_url_links)
+        quote = next(s for s in plan.styles if s.kind == 'quote')
+        self.assertEqual(plan.text[quote.start:quote.end], 'did not interview')
+        self.assertEqual(quote.target.authority_type, 'socf')
+        self.assertEqual(quote.target.text_path, '/case/SOCF.odt')
+
     def test_prepared_quotes_links_and_unicode_offsets(self):
         source = CaseTextSource('', '', 'Synthetic Opening', '', '',
             'Résumé: children who witnessed the threats qualify.',

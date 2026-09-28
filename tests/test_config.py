@@ -26,6 +26,7 @@ from open_law_lens.config import (
     DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
     DEFAULT_READER_FONT_FAMILY,
     DEFAULT_READER_FONT_SIZE_PT,
+    DEFAULT_SEARCH_MATCH_COLOR,
     PiAgentProfile,
     READER_FONT_FAMILY_OPTIONS,
     load_config,
@@ -63,7 +64,21 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.appeal_issue_labels, list(DEFAULT_APPEAL_ISSUE_LABELS))
             self.assertEqual(config.reader_font_size_pt, DEFAULT_READER_FONT_SIZE_PT)
             self.assertEqual(config.reader_font_family, DEFAULT_READER_FONT_FAMILY)
+            self.assertEqual(config.search_match_color, DEFAULT_SEARCH_MATCH_COLOR)
             self.assertEqual(config.default_bare_statute_law_code, DEFAULT_BARE_STATUTE_LAW_CODE)
+
+    def test_search_match_color_round_trip_and_reject_invalid_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            save_config(AppConfig(search_match_color="#12AB34"), path)
+            config = load_config(path)
+            self.assertEqual(config.search_match_color, "#12ab34")
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            self.assertNotIn("current_search_match_color", raw)
+            raw["search_match_color"] = "red; background: black"
+            path.write_text(json.dumps(raw), encoding="utf-8")
+            config = load_config(path)
+            self.assertEqual(config.search_match_color, DEFAULT_SEARCH_MATCH_COLOR)
 
     def test_save_and_load_settings(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
