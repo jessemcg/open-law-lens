@@ -29,6 +29,7 @@ CONFIG_KEY_AGENT_RUNTIME_PROFILES_VERSION = "agent_runtime_profiles_version"
 CONFIG_KEY_READER_FONT_SIZE_PT = "reader_font_size_pt"
 CONFIG_KEY_READER_FONT_FAMILY = "reader_font_family"
 CONFIG_KEY_SEARCH_MATCH_COLOR = "search_match_color"
+CONFIG_KEY_LINKED_TEXT_COLOR = "linked_text_color"
 CONFIG_KEY_DEFAULT_BARE_STATUTE_LAW_CODE = "default_bare_statute_law_code"
 ENV_CONCORDANCE_FILE = "OPEN_LAW_LENS_CONCORDANCE_FILE"
 AGENT_PROFILE_LAW = "law"
@@ -59,6 +60,7 @@ PI_THINKING_LEVELS: tuple[str, ...] = (
 )
 DEFAULT_READER_FONT_SIZE_PT = 11
 DEFAULT_SEARCH_MATCH_COLOR = "#fff3b0"
+DEFAULT_LINKED_TEXT_COLOR = "#fff0a6"
 # Retired preference: retained only for backward-compatible config round trips.
 # No parser, lookup dispatcher, or reader may use this value to infer a code.
 DEFAULT_BARE_STATUTE_LAW_CODE = "WIC"
@@ -407,6 +409,7 @@ class AppConfig:
     reader_font_size_pt: int = DEFAULT_READER_FONT_SIZE_PT
     reader_font_family: str = DEFAULT_READER_FONT_FAMILY
     search_match_color: str = DEFAULT_SEARCH_MATCH_COLOR
+    linked_text_color: str = DEFAULT_LINKED_TEXT_COLOR
     default_bare_statute_law_code: str = DEFAULT_BARE_STATUTE_LAW_CODE
 
 
@@ -656,6 +659,9 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
         search_match_color=normalize_search_color(
             raw.get(CONFIG_KEY_SEARCH_MATCH_COLOR), DEFAULT_SEARCH_MATCH_COLOR
         ),
+        linked_text_color=normalize_search_color(
+            raw.get(CONFIG_KEY_LINKED_TEXT_COLOR), DEFAULT_LINKED_TEXT_COLOR
+        ),
         default_bare_statute_law_code=normalize_bare_statute_law_code(
             raw.get(CONFIG_KEY_DEFAULT_BARE_STATUTE_LAW_CODE)
         ),
@@ -719,6 +725,9 @@ def save_config(config: AppConfig, path: Path = CONFIG_PATH) -> None:
         CONFIG_KEY_READER_FONT_FAMILY: normalize_reader_font_family(config.reader_font_family),
         CONFIG_KEY_SEARCH_MATCH_COLOR: normalize_search_color(
             config.search_match_color, DEFAULT_SEARCH_MATCH_COLOR
+        ),
+        CONFIG_KEY_LINKED_TEXT_COLOR: normalize_search_color(
+            config.linked_text_color, DEFAULT_LINKED_TEXT_COLOR
         ),
         CONFIG_KEY_DEFAULT_BARE_STATUTE_LAW_CODE: normalize_bare_statute_law_code(
             config.default_bare_statute_law_code

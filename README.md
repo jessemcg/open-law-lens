@@ -78,7 +78,9 @@ Or save it in the app menu under Settings. The Settings path writes a local
 - Exact-phrase search across the indexed prior-brief archive, with newest-first
   reader navigation through matches. Settings → General Settings offers one
   color picker for all search matches in the reader Find bar and Search Briefs;
-  the current match is additionally bold. Saved manual highlights retain their own color.
+  the current match is additionally bold. A separate Linked Text Color picker
+  controls the reader highlight for phrases opened from the upper answer panel.
+  Saved manual highlights retain their own color.
 - Selected-text launcher through `open-law-lens open-selected`.
 - Embedded Pi-only Agent workflow for legal research questions, selected-cache
   questions, and neutral legal question assessment.

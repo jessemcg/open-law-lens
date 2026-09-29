@@ -88,24 +88,33 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(
             SettingsWindow._search_color_value(control, "#fff3b0"), "#1280ab"
         )
-        tags = [Mock() for _ in range(4)]
+        linked_row, linked_control = SettingsWindow._build_search_color_row(
+            "Linked Text Color", "#aa4433"
+        )
+        self.assertIsNotNone(linked_row)
+        self.assertEqual(
+            SettingsWindow._search_color_value(linked_control, "#fff0a6"), "#aa4433"
+        )
+        tags = [Mock() for _ in range(5)]
         window = SimpleNamespace(
             _research_cache_generation=0, _case_load_generation=0,
             _reader_find_tag=tags[0], _reader_brief_search_tag=tags[1],
             _reader_find_current_tag=tags[2], _reader_brief_search_current_tag=tags[3],
+            _reader_highlight_tag=tags[4],
             _install_css=Mock(), _refresh_current_case_context=Mock(),
             _load_cached_cases=Mock(), _refresh_case_suggestion_index_async=Mock(),
             _set_status=Mock(),
         )
         with (
             patch("open_law_lens.app.load_config", return_value=AppConfig(
-                search_match_color="#1280ab"
+                search_match_color="#1280ab", linked_text_color="#aa4433"
             )),
             patch("open_law_lens.app.CourtListenerClient.default", return_value=Mock()),
         ):
             OpenLawLensWindow.reload_settings(window)  # type: ignore[arg-type]
-        for tag in tags:
+        for tag in tags[:4]:
             tag.set_property.assert_called_once_with("background", "#1280ab")
+        tags[4].set_property.assert_called_once_with("background", "#aa4433")
 
     def test_application_registers_brief_search_shortcut(self) -> None:
         app = OpenLawLensApp()

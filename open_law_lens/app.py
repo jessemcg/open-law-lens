@@ -103,6 +103,7 @@ from .config import (
     DEFAULT_CASE_AGENT_PROMPT_TEMPLATE,
     DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE,
     DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
+    DEFAULT_LINKED_TEXT_COLOR,
     DEFAULT_SEARCH_MATCH_COLOR,
     PiAgentProfile,
     concordance_file_path,
@@ -1086,6 +1087,10 @@ class SettingsWindow(Adw.ApplicationWindow):
             "Search Match Color", config.search_match_color
         )
         self.general_settings_expander.add_row(self.search_match_color_row)
+        self.linked_text_color_row, self.linked_text_color_control = self._build_search_color_row(
+            "Linked Text Color", config.linked_text_color
+        )
+        self.general_settings_expander.add_row(self.linked_text_color_row)
 
         self.concordance_row = Adw.EntryRow(title="Concordance file")
         self.concordance_row.set_text(config.concordance_file_path)
@@ -1836,6 +1841,9 @@ class SettingsWindow(Adw.ApplicationWindow):
             reader_font_family=normalize_reader_font_family(reader_font_family),
             search_match_color=self._search_color_value(
                 self.search_match_color_control, DEFAULT_SEARCH_MATCH_COLOR
+            ),
+            linked_text_color=self._search_color_value(
+                self.linked_text_color_control, DEFAULT_LINKED_TEXT_COLOR
             ),
             default_bare_statute_law_code=normalize_bare_statute_law_code(
                 bare_statute_law_code
@@ -3384,32 +3392,32 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             "reader-citation-italic",
             style=Pango.Style.ITALIC,
         )
+        reader_colors = load_config()
         self._reader_highlight_tag = self.reader_buffer.create_tag(
             "agent-quote-highlight",
-            background="#fff0a6",
+            background=reader_colors.linked_text_color,
         )
         self._reader_saved_highlight_tag = self.reader_buffer.create_tag(
             "reader-saved-highlight",
             background="#fff0a6",
             foreground="#1f1f1f",
         )
-        search_colors = load_config()
         self._reader_find_tag = self.reader_buffer.create_tag(
             "reader-find-match",
-            background=search_colors.search_match_color,
+            background=reader_colors.search_match_color,
         )
         self._reader_find_current_tag = self.reader_buffer.create_tag(
             "reader-find-current-match",
-            background=search_colors.search_match_color,
+            background=reader_colors.search_match_color,
             weight=Pango.Weight.BOLD,
         )
         self._reader_brief_search_tag = self.reader_buffer.create_tag(
             "reader-brief-search-match",
-            background=search_colors.search_match_color,
+            background=reader_colors.search_match_color,
         )
         self._reader_brief_search_current_tag = self.reader_buffer.create_tag(
             "reader-brief-search-current-match",
-            background=search_colors.search_match_color,
+            background=reader_colors.search_match_color,
             weight=Pango.Weight.BOLD,
         )
         self.reader_header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -6806,6 +6814,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._install_css()
         colors = load_config()
         for tag, color in (
+            (self._reader_highlight_tag, colors.linked_text_color),
             (self._reader_find_tag, colors.search_match_color),
             (self._reader_brief_search_tag, colors.search_match_color),
             (self._reader_find_current_tag, colors.search_match_color),
