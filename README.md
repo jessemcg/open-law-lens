@@ -588,6 +588,12 @@ ordinary **Copy** to copy selected prose.
 
 ### Operational metrics pilot
 
+The no-observer shell fallback now clears inherited build/capability tags too,
+without claiming new OpenLawLens observations or loaded-code provenance. Existing
+five-workflow wrapper/installed offline-SDK acceptance remains separate from the
+[other-app expansion and per-host checklist](../PiRunMetrics/docs/observation-contract.md).
+No research/database/model/prompt behavior or private settings changes.
+
 Copy Trace is removed. **Answer**, **Session**, and **Save** remain. Workspace-local
 Pi JSONL remains the internal answer transport, with the existing session discovery,
 background rendering, and generation guards; it is not exported to the metrics archive.

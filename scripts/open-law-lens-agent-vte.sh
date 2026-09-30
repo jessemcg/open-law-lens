@@ -212,7 +212,7 @@ if (( ${#metrics_values[@]} )); then
   [[ -z "${metrics_values[0]}" ]] || args+=(--extension "${metrics_values[0]}")
   for entry in "${metrics_values[@]:1}"; do export "$entry"; done
 else
-  unset PI_RUN_METRICS_APP PI_RUN_METRICS_WORKFLOW PI_RUN_METRICS_REVISION PI_RUN_METRICS_DIRTY PI_RUN_METRICS_PI_VERSION
+  unset PI_RUN_METRICS_APP PI_RUN_METRICS_WORKFLOW PI_RUN_METRICS_REVISION PI_RUN_METRICS_DIRTY PI_RUN_METRICS_PI_VERSION PI_RUN_METRICS_BUILD_PROVENANCE PI_RUN_METRICS_LAUNCH_CONFIGURATION
   if [[ "${PI_RUN_METRICS_ENABLED:-1}" != 0 ]]; then
     printf 'Pi run metrics: collection incomplete or unavailable.\n' >&2
   fi
