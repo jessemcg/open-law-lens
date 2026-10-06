@@ -1,5 +1,16 @@
 # Open Law Lens
 
+## Machine-local runtime
+
+From this checkout provision `../UvEnvironments/project-env sync OpenLawLens`
+(managed Python 3.13, Home/Work/Laptop), then execute
+`../UvEnvironments/project-env run OpenLawLens open-law-lens app`.
+Before any uv examples below, source `../UvEnvironments/terminal.sh OpenLawLens`
+in a dedicated project subshell and stop on failure. It verifies runtime, selects
+the local absolute environment and disables automatic sync/downloads. Never source
+it globally; cross-project commands must use the callee helper identity.
+See ../UvEnvironments/README.md for explicit disposable test environments.
+
 The five Pi workflows now share sibling `PiRunMetrics/launch_adapter.py` via system Python for bounded executable-only version/Git probes. Collection requires Pi >=0.87.1; unavailable/incompatible collection warns and fails open without upgrades. Source-project archive resolution ignores staged config roots and replaces inherited parent-app tags. Web/tool confinement, JSONL answer transport, generation guards and Save remain unchanged. New embedded launches use the adapter. Sibling **Pi Run Metrics** provides readiness, private reports and an existing-session PiPlanner request; it never launches models or migrates archives.
 
 <img src="open-law-lens-icon.svg" alt="Open Law Lens icon" width="128" align="left">
@@ -49,7 +60,9 @@ Or save it in the app menu under Settings. The Settings path writes a local
 ## Features
 
 - GTK4/Libadwaita desktop app with a quiet reader-focused interface.
-- Citation lookup for California cases through CourtListener.
+- Citation lookup for California cases through CourtListener. Concordance
+  autocomplete appears before the slower saved-case index finishes loading;
+  submitting a statute never synchronously scans the case library on GTK.
 - California statute and California Rules of Court lookup.
 - Pinned Current Case SOCF and brief-prep Markdown reports above the Research Cache, with per-case SOCF agent-context selection.
 - Research Cache sidebar grouped as **Statutes**, **Case Law**, **Prior Briefing**,
@@ -106,7 +119,8 @@ sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 poppler-utils
 Install or sync the Python environment with:
 
 ```bash
-uv sync
+../UvEnvironments/project-env sync OpenLawLens
+source ../UvEnvironments/terminal.sh OpenLawLens || exit
 ```
 
 ### Install and Authorize Pi
@@ -268,6 +282,20 @@ requires a matching section body and rejects conflicting identity or navigation
 alone before authority caching. Failures retain nonzero CLI exit and `ok: false`.
 Previously cached bad authorities are not deleted or migrated; handle those
 manually rather than assuming this update repairs existing saved research.
+
+When LegInfo blocks direct retrieval with HTTP 403 or its browser-verification
+page, statute lookup makes one bounded attempt in the **current default HTTPS
+browser**, resolved through the same Gio launcher as Scholar recovery. It opens
+only the requested official section, verifies the exact browser window, selected
+document, code and section, and copies and validates the substantive text before
+Research Cache insertion. No model, alternate source, browser executable/profile,
+or durable case-library import is involved. This temporarily uses the browser and
+regular clipboard. Scholar and statute recovery share a nonblocking desktop lock.
+Human-verification controls are left untouched; complete a displayed challenge
+and retry if instructed. Missing desktop support, changed tabs, incomplete copies,
+and mismatched statutes fail with an explanation and no authority-cache write.
+Other HTTP/network errors do not trigger browser retries. Restart the GUI to load
+the update. See [LegInfo browser acceptance](docs/leginfo-browser-validation.md).
 
 Uncited `--cluster-id` extraction reconciles against the durable Library before
 any fallback. When the requested CourtListener cluster is unpaginated, Open Law
@@ -470,7 +498,7 @@ the wrapper fails before any model work with a concise diagnostic.
 Pi remains in a private disposable workspace rather than using the source tree
 as its working directory. Agent-facing Open Law Lens commands explicitly select
 the installed project with this canonical prefix:
-`uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync open-law-lens ...`.
+`"$OPEN_LAW_LENS_PROJECT_DIR/../UvEnvironments/project-env" run OpenLawLens open-law-lens ...`.
 This keeps command resolution deterministic without exposing the project tree
 through ordinary workspace discovery.
 

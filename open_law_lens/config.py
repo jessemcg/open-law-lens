@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .agent_commands import AGENT_CLI_COMMAND_PREFIX, normalize_agent_prompt_commands
+from .agent_commands import AGENT_CLI_COMMAND_PREFIX, normalize_agent_prompt_commands, legacy_prompt_fingerprint_text
 
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -566,14 +566,14 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
         CONFIG_KEY_GENERAL_AGENT_PROMPT_TEMPLATE,
         DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE,
     )
-    prompt_hash = hashlib.sha256(str(general_agent_prompt).strip().encode()).hexdigest()
+    prompt_hash = hashlib.sha256(legacy_prompt_fingerprint_text(str(general_agent_prompt).strip()).encode()).hexdigest()
     if prompt_hash in LEGACY_GENERAL_AGENT_PROMPT_SHA256ES:
         general_agent_prompt = DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE
     case_agent_prompt = raw.get(
         CONFIG_KEY_CASE_AGENT_PROMPT_TEMPLATE,
         DEFAULT_CASE_AGENT_PROMPT_TEMPLATE,
     )
-    case_prompt_hash = hashlib.sha256(str(case_agent_prompt).strip().encode()).hexdigest()
+    case_prompt_hash = hashlib.sha256(legacy_prompt_fingerprint_text(str(case_agent_prompt).strip()).encode()).hexdigest()
     if (
         case_prompt_hash in LEGACY_CASE_AGENT_PROMPT_SHA256ES
         or "current-case factual context exported into this workspace."
@@ -585,7 +585,7 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
         DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE,
     )
     brief_prompt_hash = hashlib.sha256(
-        normalize_agent_prompt_commands(str(brief_agent_prompt).strip()).encode()
+        legacy_prompt_fingerprint_text(normalize_agent_prompt_commands(str(brief_agent_prompt).strip())).encode()
     ).hexdigest()
     if brief_prompt_hash in LEGACY_BRIEF_AGENT_PROMPT_SHA256ES:
         brief_agent_prompt = DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE
@@ -601,12 +601,12 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
         ),
     )
     later_treatment_prompt_hash = hashlib.sha256(
-        str(later_treatment_agent_prompt).strip().encode()
+        legacy_prompt_fingerprint_text(str(later_treatment_agent_prompt).strip()).encode()
     ).hexdigest()
     if later_treatment_prompt_hash in LEGACY_LATER_TREATMENT_AGENT_PROMPT_SHA256ES:
         later_treatment_agent_prompt = DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE
     appeal_prompt_hash = hashlib.sha256(
-        str(appeal_issue_agent_prompt).strip().encode()
+        legacy_prompt_fingerprint_text(str(appeal_issue_agent_prompt).strip()).encode()
     ).hexdigest()
     if (
         appeal_prompt_hash in LEGACY_APPEAL_ISSUE_AGENT_PROMPT_SHA256ES

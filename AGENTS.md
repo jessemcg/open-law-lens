@@ -1,5 +1,15 @@
 # Repository Guidelines
 
+## Machine-local runtime
+
+Read ../UvEnvironments/README.md. Provision `../UvEnvironments/project-env sync OpenLawLens`
+(managed Python 3.13, all hosts); execute `../UvEnvironments/project-env run OpenLawLens COMMAND`.
+Before uv examples below, source `../UvEnvironments/terminal.sh OpenLawLens` in a
+dedicated project subshell and stop on failure; it disables automatic sync/downloads.
+Cross-project commands must select the callee identity explicitly. Agent command
+prefixes use the helper; historical default fingerprints keep their historical prefix
+solely for in-memory recognition. Never rewrite private settings as a migration step.
+
 ## Project Structure & Module Organization
 - `open_law_lens/` is the Python package.
 - `open_law_lens/app.py` is the GTK/Libadwaita desktop app, including the citation lookup UI, cached-case browser, opinion reader, settings dialog, and embedded Pi terminal workflow. The Agent composer uses two equal-width fields: a new-query entry that keeps the selected scope and replaces the conversation, and a live follow-up entry that continues the same Pi session. Local Search Briefs hides the follow-up field and uses the row for its non-agentic exact-phrase search; the shared Ask/Search button is removed in favor of Enter. Case Question is likewise a single-entry composer scope: Enter assesses the typed legal question against the configured fact pattern. Preset selection and question editors are retired; legacy preset config is retained only for inert round trips.
@@ -9,6 +19,7 @@
 - `open_law_lens/california_codes.py` owns all 29 LegInfo identifiers, CSM labels, and aliases. `statutes.py` derives its public tables from it; do not add independent alias lists. Bare lookup inputs never default to WIC or another code. The old bare-number preference is retired (config field retained only for inert compatibility); neither parsing nor lookup dispatch nor reader linking may use it.
 - `citation_links.collect_authority_links` is the widget/network/cache-free common collector. Its immutable `CitationContext` and enactment recognition live in `citation_context.py`. Compute offsets on rendered text, independently per opinion before translating offsets; never leak separate-opinion declarations into another opinion or into an answer. Protect occupied quote/prior-brief/external navigation spans. Inferred/list targets must be fully qualified. Keep the explicit active Juvenile Division 3 membership snapshot and rule 5.502(36) source provenance together; never expand inference to all Title Five rules or by subject matter.
 - `statutes.py` and `rules.py` must reject unsupported/conflicting citations, truncated numbers, and government pages without matching substantive bodies before authority-cache writes. Rule slugs replace every dot. Enactment fetches remain bounded, on demand, and transient: no durable library imports, historical conversion, prefetch, alternate sources, or cleanup of old cached records. Reader metadata keeps only the section/rule label, without the retired current-official-text notice.
+- `leginfo_browser.py` owns the one-attempt default-HTTPS-browser fallback for LegInfo HTTP 403/browser-verification responses. Reuse Scholar's Gio launcher, confined `ComputerUseMCPClient`, `RecoveryLock`, and bounded regular-clipboard reader; never hardcode a browser or bypass a human challenge. Require the official current-section URL in the exact frame's address bar, selected-document title, copied code header/section and substantive body with enactment end note before returning text. Browser text has `retrieval_mode: browser_clipboard` and empty `source_html`, never fabricated source HTML. No alternate sources, durable imports, settings writes, or retries for unrelated HTTP/network failures. Keep GUI generation guards and the shared nonblocking recovery lock through copy validation. `tests/preview_leginfo_browser.py` uses only temporary state for live acceptance.
 - Case/answer preparation and shared-reader link scans run in workers; GTK tag application uses bounded idle batches. The reader generation invalidates pending work at navigation/lookup start and window close; check it before publishing fetched enactments, separately from the Research Cache generation. Keep typed link maps cleared on content replacement and Markdown emphasis intact. `tests/preview_enactment_links.py` is an isolated synthetic desktop acceptance harness with on-click government fetches; never point it at production state.
 - `open_law_lens/client.py` owns CourtListener API access and opinion-text extraction. Lexical and semantic search rows must pass local court/publication checks with exclusions and non-exhaustiveness diagnostics. Upstream totals are not delivered/in-scope counts. Do not fetch replacement pages automatically. `case-search --compact` is opt-in and caps snippets at 1,200 characters; retain complete JSON and default snippet compatibility.
 - `open_law_lens/cache.py` owns local JSON cache layout and citation normalization.
@@ -31,7 +42,7 @@
 - `pyproject.toml` and `uv.lock` define the Python 3.13 uv environment. Keep them synchronized when changing dependencies.
 
 ## Build, Test, and Development Commands
-- `uv sync`: install dependencies into the project-managed environment.
+- `../UvEnvironments/project-env sync OpenLawLens`: explicitly provision locked local dependencies.
 - `uv run open-law-lens app`: launch the GTK app.
 - `uv run open-law-lens lookup-citation "576 U.S. 644"`: exercise the citation lookup CLI.
 - `uv run open-law-lens show-library`: inspect saved library cases.
@@ -81,7 +92,7 @@
 ## Desktop Launcher Notes
 - Shared desktop files live outside this repo in `/home/jesse/Dropbox/MCGLAW/config_files/Desktop_Files`.
 - The current launcher pair is `com.mcglaw.OpenLawLens.desktop` and `launch-open-law-lens.sh`.
-- Keep the launcher pointing at `uv run --project /home/jesse/Dropbox/MCGLAW/config_files/scripts/PROJECTS/OpenLawLens open-law-lens app` unless the package entry point changes.
+- Keep the launcher using `UvEnvironments/project-env run OpenLawLens open-law-lens app`, without dependency synchronization.
 - If launcher behavior changes, validate the desktop file with `desktop-file-validate` and the script with `bash -n`.
 
 ## Commit & Pull Request Guidelines

@@ -231,6 +231,8 @@ def cited_statute_links(text: str) -> list[StatuteLink]:
 def fetch_leginfo_statute(citation: StatuteCitation, *, timeout: float = 30.0) -> dict[str, Any]:
     url = statute_url(citation.law_code, citation.section)
     request = Request(url, headers={"User-Agent": "OpenLawLens/0.1"}, method="GET")
+    browser_reason = ""
+    raw_html = ""
     try:
         with urlopen(request, timeout=timeout) as response:
             body = response.read(4 * 1024 * 1024 + 1)
@@ -238,12 +240,25 @@ def fetch_leginfo_statute(citation: StatuteCitation, *, timeout: float = 30.0) -
                 raise LegInfoError('LegInfo response exceeds the size limit.')
             raw_html = body.decode("utf-8", errors="replace")
     except HTTPError as exc:
-        raise LegInfoError(f"LegInfo returned HTTP {exc.code}") from exc
+        exc.close()
+        if exc.code != 403:
+            raise LegInfoError(f"LegInfo returned HTTP {exc.code}") from exc
+        browser_reason = "LegInfo blocked the direct request (HTTP 403)."
     except URLError as exc:
         raise LegInfoError(f"Unable to reach LegInfo: {exc.reason}") from exc
     except TimeoutError as exc:
         raise LegInfoError("LegInfo request timed out.") from exc
-    text = extract_leginfo_text(raw_html, citation)
+    if re.search(r'<title\b[^>]*>\s*Just a moment(?:\.{3}|…)\s*</title>', raw_html, re.I):
+        browser_reason = "LegInfo requires browser verification."
+    if browser_reason:
+        from .leginfo_browser import recover_leginfo_text
+        try:
+            text = recover_leginfo_text(citation)
+        except LegInfoError as exc:
+            raise LegInfoError(f"{browser_reason} {exc}") from exc
+        raw_html = ""  # Plain browser text is never represented as original HTML.
+    else:
+        text = extract_leginfo_text(raw_html, citation)
     if not text:
         raise LegInfoError(f"Could not extract text for {statute_display_citation(citation)}")
     return {
@@ -255,6 +270,7 @@ def fetch_leginfo_statute(citation: StatuteCitation, *, timeout: float = 30.0) -
         "title": statute_title(citation),
         "source_url": url,
         "source_html": raw_html,
+        "retrieval_mode": "browser_clipboard" if browser_reason else "direct_http",
         "text": text,
     }
 

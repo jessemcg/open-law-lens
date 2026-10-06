@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from open_law_lens.agent_commands import AGENT_CLI_COMMAND_PREFIX
+from open_law_lens.agent_commands import AGENT_CLI_COMMAND_PREFIX, legacy_prompt_fingerprint_text
 from open_law_lens.config import (
     AGENT_PROFILE_LAW,
     AGENT_PROFILE_PRIOR_BRIEFS,
@@ -872,7 +872,7 @@ In the final answer, use normal legal prose for case names, statutes, rules, and
 
 End with a rating line exactly in this form:
 Rating: Strong, Medium, Weak, or Frivolous""".replace("$OLL", AGENT_CLI_COMMAND_PREFIX)
-        prompt_hash = hashlib.sha256(previous_default.strip().encode()).hexdigest()
+        prompt_hash = hashlib.sha256(legacy_prompt_fingerprint_text(previous_default.strip()).encode()).hexdigest()
         self.assertIn(prompt_hash, LEGACY_APPEAL_ISSUE_AGENT_PROMPT_SHA256ES)
         self.assertNotEqual(previous_default, DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE)
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -934,7 +934,7 @@ In the final answer, use normal legal prose for case names, statutes, rules, and
 
 End with a rating line exactly in this form:
 Rating: Strong, Medium, Weak, or Frivolous"""
-        prompt_hash = hashlib.sha256(legacy_prompt.strip().encode()).hexdigest()
+        prompt_hash = hashlib.sha256(legacy_prompt_fingerprint_text(legacy_prompt.strip()).encode()).hexdigest()
         self.assertIn(prompt_hash, LEGACY_APPEAL_ISSUE_AGENT_PROMPT_SHA256ES)
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "config.json"

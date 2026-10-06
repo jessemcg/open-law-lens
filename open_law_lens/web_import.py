@@ -112,7 +112,7 @@ def extract_webpage_text(url: str, *, require_https: bool = False) -> ExtractedW
     try:
         import trafilatura
     except ImportError as exc:
-        raise RuntimeError("URL extraction requires trafilatura. Run `uv sync` to install dependencies.") from exc
+        raise RuntimeError("URL extraction requires trafilatura. Provision explicitly with `project-env sync OpenLawLens`.") from exc
 
     text = trafilatura.extract(
         html,

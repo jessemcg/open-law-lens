@@ -457,8 +457,8 @@ class AgentVteWrapperTests(unittest.TestCase):
         self.assertIn("missing record citation only where it affects", text)
         self.assertIn("material gaps in\n  the available legal sources", text)
         self.assertIn(
-            'uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync '
-            "open-law-lens <command>",
+            '"$OPEN_LAW_LENS_PROJECT_DIR/../UvEnvironments/project-env" '
+            "run OpenLawLens open-law-lens <command>",
             text,
         )
 

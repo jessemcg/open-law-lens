@@ -3097,6 +3097,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 *load_concordance_statute_suggestions(configured_path),
                 *load_concordance_rule_suggestions(configured_path),
             ]
+        # Publish the inexpensive concordance before parsing saved opinions.
+        # Both callbacks run on GTK; the expensive library scan stays here in
+        # the worker and must never be repeated by the Enter handler.
+        GLib.idle_add(self._publish_concordance_suggestions, concordance_suggestions)
         library_suggestions = case_suggestions_from_library(self.client.library)
         return merge_case_suggestions(
             concordance_suggestions,
@@ -3123,11 +3127,28 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return
         GLib.idle_add(self._finish_case_suggestion_index_refresh, suggestions)
 
+    def _citation_entry_has_focus(self) -> bool:
+        # GTK4 focuses the GtkText child, not necessarily its GtkEntry wrapper.
+        focused = self.get_focus()
+        while focused is not None:
+            if focused is self.citation_entry:
+                return True
+            focused = focused.get_parent()
+        return False
+
+    def _publish_concordance_suggestions(self, suggestions: list[CaseSuggestion]) -> bool:
+        self._case_suggestions = merge_case_suggestions(suggestions, self._case_suggestions)
+        if self._citation_entry_has_focus():
+            self._show_case_completion(matching_case_suggestions(
+                self.citation_entry.get_text().strip(), self._case_suggestions,
+            ))
+        return False
+
     def _finish_case_suggestion_index_refresh(self, suggestions: list[CaseSuggestion]) -> bool:
         self._case_suggestions = suggestions
         self._case_suggestions_loaded = True
         self._case_suggestion_refresh_pending = False
-        if self.citation_entry.has_focus():
+        if self._citation_entry_has_focus():
             query = self.citation_entry.get_text().strip()
             self._show_case_completion(matching_case_suggestions(query, self._case_suggestions))
         return False
@@ -3137,7 +3158,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return
         if not self._case_suggestions_loaded:
             self._refresh_case_suggestion_index_async()
-            return
         query = self.citation_entry.get_text().strip()
         matches = matching_case_suggestions(query, self._case_suggestions)
         self._show_case_completion(matches)
@@ -3349,7 +3369,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return False
 
     def _lookup_text_from_entry(self, entry_text: str) -> str:
-        self._refresh_case_suggestion_index()
+        # A fully qualified enactment is already deterministic. Do not wait for
+        # unrelated opinion parsing or let a partial suggestion resolve it to
+        # a different section. Use only the current in-memory index otherwise.
+        if parse_statute_citation(entry_text) is not None or parse_rule_citation(entry_text) is not None:
+            return entry_text
+        self._refresh_case_suggestion_index_async()
         return resolve_case_lookup_text(entry_text, self._case_suggestions) or entry_text
 
     def _build_right_side(self) -> Gtk.Widget:

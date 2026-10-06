@@ -161,6 +161,18 @@ def launch_scholar_url(url: str) -> tuple[str, str]:
     host = (parsed.hostname or "").casefold()
     if host != SCHOLAR_NETLOC and not host.endswith("." + SCHOLAR_NETLOC):
         raise ScholarBrowserError("Scholar launch requires a scholar.google.com URL.")
+    return launch_default_https_url(url)
+
+
+def launch_default_https_url(url: str) -> tuple[str, str]:
+    """Bounded Gio launch shared by validated official-source recovery callers.
+
+    Callers restrict the destination to their own source and authority identity.
+    No browser executable, profile or application ID is hardcoded.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        raise ScholarBrowserError("Default-browser launch requires an HTTPS URL.")
     name, desktop_id = resolve_default_https_handler()
     try:
         subprocess.run(
@@ -176,7 +188,7 @@ def launch_scholar_url(url: str) -> tuple[str, str]:
         raise ScholarBrowserError("Default-browser launch timed out.") from exc
     except (OSError, subprocess.CalledProcessError) as exc:
         raise ScholarBrowserError(
-            "The default https handler could not launch the Scholar URL."
+            "The default https handler could not launch the requested URL."
         ) from exc
     return name, desktop_id
 

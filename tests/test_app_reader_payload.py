@@ -6966,7 +6966,7 @@ Opinion text.
             )
 
         prefix = (
-            'uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync '
+            '"$OPEN_LAW_LENS_PROJECT_DIR/../UvEnvironments/project-env" run OpenLawLens '
             "open-law-lens "
         )
         # One citation-graph command.
