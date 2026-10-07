@@ -24,6 +24,7 @@ from .client import (
     official_california_reporter_citation,
 )
 from .config import concordance_file_path
+from .citation_model import bare_official_citation
 from .external_import import imported_case_name_from_text, normalize_official_citation
 from .library import DurableCaseMatch
 from .quality import official_pagination_quality
@@ -128,6 +129,9 @@ def resolve_case_input(value: str, client: CourtListenerClient) -> tuple[str, li
     query = re.sub(r"\s+", " ", value).strip()
     if not query:
         raise ValueError("Case citation or query is required.")
+    canonical = bare_official_citation(query)
+    if canonical is not None:
+        return canonical, []
     resolved = resolve_case_lookup_text(query, _case_suggestions(client))
     if resolved:
         return resolved, []

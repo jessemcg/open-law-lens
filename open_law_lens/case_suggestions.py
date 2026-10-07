@@ -156,7 +156,9 @@ def make_official_case_suggestion(text: str, *, source: str = "") -> CaseSuggest
     )
 
 
-def load_concordance_case_suggestions(path: Path) -> list[CaseSuggestion]:
+def load_concordance_case_suggestions(path: Path | None) -> list[CaseSuggestion]:
+    if path is None:
+        return []
     try:
         handle = path.open(encoding="utf-8", errors="ignore", newline="")
     except OSError:
@@ -210,7 +212,9 @@ def make_statute_suggestion(
     )
 
 
-def load_concordance_statute_suggestions(path: Path) -> list[CaseSuggestion]:
+def load_concordance_statute_suggestions(path: Path | None) -> list[CaseSuggestion]:
+    if path is None:
+        return []
     try:
         handle = path.open(encoding="utf-8", errors="ignore", newline="")
     except OSError:
@@ -256,7 +260,9 @@ def make_rule_suggestion(
     )
 
 
-def load_concordance_rule_suggestions(path: Path) -> list[CaseSuggestion]:
+def load_concordance_rule_suggestions(path: Path | None) -> list[CaseSuggestion]:
+    if path is None:
+        return []
     try:
         handle = path.open(encoding="utf-8", errors="ignore", newline="")
     except OSError:
@@ -297,10 +303,10 @@ def _cluster_citations(cluster: dict[str, object]) -> list[str]:
 def case_suggestions_from_library(library: CaseLibrary) -> list[CaseSuggestion]:
     suggestions: list[CaseSuggestion] = []
     seen_labels: set[str] = set()
-    for cluster in library.saved_clusters():
+    for cluster in library.saved_clusters(touch_access=False):
         displays = [
             display
-            for opinion_id in library.read_case_opinion_ids(cluster_id_from_cluster(cluster))
+            for opinion_id in library.read_case_opinion_ids(cluster_id_from_cluster(cluster), touch_access=False)
             if (display := library.read_opinion_display(opinion_id)) is not None
         ]
         if not official_pagination_quality(cluster, displays).eligible:

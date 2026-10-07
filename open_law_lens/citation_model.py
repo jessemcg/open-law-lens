@@ -49,6 +49,18 @@ def normalized_reporter(value: str) -> str:
     return re.sub(r"\s+", "", value.strip()).casefold()
 
 
+def bare_official_citation(text: str) -> str | None:
+    """Conservative whole-input fast path; never strip a supplied case identity."""
+    match = OFFICIAL_CITATION_RE.fullmatch(text.strip())
+    if match is None:
+        return None
+    reporter = OFFICIAL_REPORTERS.get(normalized_reporter(match.group("reporter")))
+    volume, page = match.group("volume"), match.group("page")
+    if reporter is None or int(volume) <= 0 or int(page) <= 0:
+        return None
+    return official_citation_from_parts((volume, reporter, page))
+
+
 def official_citation_parts_from_text(text: str) -> tuple[str, str, str] | None:
     match = OFFICIAL_CITATION_RE.search(text)
     if match is None:

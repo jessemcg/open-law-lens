@@ -1266,13 +1266,13 @@ class CaseLibrary:
                 (normalized, cluster_id, stored_citation),
             )
 
-    def read_cluster(self, cluster_id: str) -> dict[str, Any] | None:
+    def read_cluster(self, cluster_id: str, *, touch_access: bool = True) -> dict[str, Any] | None:
         with self.connection() as conn:
             row = conn.execute(
                 "SELECT cluster_json FROM cases WHERE cluster_id = ?",
                 (cluster_id,),
             ).fetchone()
-            if row is not None:
+            if row is not None and touch_access:
                 conn.execute(
                     "UPDATE cases SET last_accessed = ? WHERE cluster_id = ?",
                     (_utc_now(), cluster_id),
@@ -1455,13 +1455,13 @@ class CaseLibrary:
                 (_json_dumps(merged), _utc_now(), cluster_id),
             )
 
-    def read_case_opinion_ids(self, cluster_id: str) -> list[str]:
+    def read_case_opinion_ids(self, cluster_id: str, *, touch_access: bool = True) -> list[str]:
         with self.connection() as conn:
             row = conn.execute(
                 "SELECT opinion_ids_json FROM cases WHERE cluster_id = ?",
                 (cluster_id,),
             ).fetchone()
-            if row is not None:
+            if row is not None and touch_access:
                 conn.execute(
                     "UPDATE cases SET last_accessed = ? WHERE cluster_id = ?",
                     (_utc_now(), cluster_id),
@@ -1499,10 +1499,10 @@ class CaseLibrary:
             )
         return entries
 
-    def saved_clusters(self) -> list[dict[str, Any]]:
+    def saved_clusters(self, *, touch_access: bool = True) -> list[dict[str, Any]]:
         clusters: list[dict[str, Any]] = []
         for entry in self.list_case_entries():
-            cluster = self.read_cluster(str(entry.get("cluster_id", "")))
+            cluster = self.read_cluster(str(entry.get("cluster_id", "")), touch_access=touch_access)
             if cluster is not None:
                 clusters.append(cluster)
         return clusters
