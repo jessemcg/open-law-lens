@@ -21,6 +21,7 @@ from open_law_lens.app import (
     AGENT_PROFILE_BY_MODE,
     AGENT_SUBVIEW_ANSWER,
     AGENT_SUBVIEW_SESSION,
+    ComposerControls,
     QUERY_MODE_BRIEF_SEARCH,
     QUERY_MODE_LABELS,
     QUERY_MODE_PRESENTATION,
@@ -716,7 +717,7 @@ class AppReaderPayloadTests(unittest.TestCase):
             "system-search-symbolic",
         )
 
-    def test_query_scope_strip_separates_local_brief_search(self) -> None:
+    def test_query_scope_strip_has_four_consecutive_modes(self) -> None:
         class DummyWindow:
             def _build_agent_mode_button(self, mode: str) -> Gtk.ToggleButton:
                 return Gtk.ToggleButton(label=mode)
@@ -731,27 +732,33 @@ class AppReaderPayloadTests(unittest.TestCase):
             child = child.get_next_sibling()
 
         self.assertEqual(
-            [button.get_label() for button in children[:3]],
-            [AGENT_MODE_GENERAL, AGENT_MODE_CASE, AGENT_MODE_BRIEF],
+            [button.get_label() for button in children],
+            [AGENT_MODE_GENERAL, AGENT_MODE_CASE, AGENT_MODE_BRIEF,
+             QUERY_MODE_BRIEF_SEARCH],
         )
-        self.assertEqual(len(children), 5)
-        self.assertIsInstance(children[3], Gtk.Separator)
-        self.assertEqual(children[3].get_orientation(), Gtk.Orientation.VERTICAL)
-        self.assertEqual(children[4].get_label(), QUERY_MODE_BRIEF_SEARCH)
+        self.assertEqual(len(children), 4)
+        self.assertTrue(all(isinstance(child, Gtk.ToggleButton) for child in children))
 
     def test_composer_places_case_question_after_intact_scope_strip(self) -> None:
         class DummyWindow:
             def _build_query_action_strip(self) -> Gtk.Widget:
                 return OpenLawLensWindow._build_query_action_strip(self)  # type: ignore[arg-type]
 
-            def _build_agent_mode_button(self, mode: str) -> Gtk.ToggleButton:
-                return Gtk.ToggleButton(label=QUERY_MODE_LABELS[mode])
+            _build_agent_mode_button = OpenLawLensWindow._build_agent_mode_button
+            _build_labeled_icon = staticmethod(OpenLawLensWindow._build_labeled_icon)
+            _on_agent_mode_button_toggled = OpenLawLensWindow._on_agent_mode_button_toggled
+            _set_agent_mode = OpenLawLensWindow._set_agent_mode
+            _scope_presentation = OpenLawLensWindow._scope_presentation
+            _refresh_agent_followup_state = OpenLawLensWindow._refresh_agent_followup_state
 
-            def _set_agent_mode(self, mode: str) -> None:
-                self.mode = mode
-
-            def _on_agent_launch(self, *_args: object) -> None:
-                pass
+            def __init__(self) -> None:
+                self._agent_mode_buttons = {}
+                self._selected_agent_mode = AGENT_MODE_GENERAL
+                self._agent_mode_toggle_guard = False
+                self._agent_followup_session_active = Mock(return_value=False)
+                self._set_composer_idle = Mock()
+                self._clear_brief_search_session = Mock()
+                self._on_agent_launch = Mock()
 
             def _on_agent_question_changed(self, *_args: object) -> None:
                 pass
@@ -766,6 +773,8 @@ class AppReaderPayloadTests(unittest.TestCase):
         composer = OpenLawLensWindow._build_agent_ask_bar(window)  # type: ignore[arg-type]
         controls = composer.get_first_child()
         self.assertIsInstance(controls, Gtk.FlowBox)
+        self.assertTrue(controls.has_css_class("composer-controls"))
+        self.assertFalse(controls.get_focusable())
         self.assertEqual(controls.get_selection_mode(), Gtk.SelectionMode.NONE)
         self.assertEqual(controls.get_min_children_per_line(), 1)
         self.assertEqual(controls.get_max_children_per_line(), 2)
@@ -776,16 +785,141 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertFalse(question_wrapper.get_focusable())
         strip = strip_wrapper.get_child()
         question_button = question_wrapper.get_child()
-        self.assertEqual([strip.get_first_child().get_label(),
-                          strip.get_first_child().get_next_sibling().get_label()],
-                         ["Law", "Research Cache"])
-        self.assertEqual(strip.get_last_child().get_label(), "Search Briefs")
+        self.assertEqual(
+            [strip.get_first_child().get_child().get_last_child().get_text(),
+             strip.get_first_child().get_next_sibling().get_child().get_last_child().get_text()],
+            ["Law", "Research Cache"],
+        )
+        self.assertEqual(strip.get_last_child().get_child().get_last_child().get_text(),
+                         "Search Briefs")
         self.assertIsInstance(question_button, Gtk.ToggleButton)
-        self.assertEqual(question_button.get_label(), "Case Question")
-        self.assertTrue(question_button.has_css_class("composer-case-question"))
+        self.assertEqual(question_button.get_child().get_last_child().get_text(),
+                         "Case Question")
+        self.assertFalse(question_button.has_css_class("composer-case-question"))
+        self.assertEqual(len(window._agent_mode_buttons), 5)
+        for button in window._agent_mode_buttons.values():
+            self.assertIsInstance(button, Gtk.ToggleButton)
+            self.assertTrue(button.has_css_class("composer-scope-button"))
         self.assertIsInstance(controls.get_next_sibling(), Gtk.Box)  # status/help
         self.assertIs(controls.get_next_sibling().get_next_sibling(), window._agent_ask_row)
-        self.assertEqual(window.mode, AGENT_MODE_GENERAL)
+        self.assertEqual(window._selected_agent_mode, AGENT_MODE_GENERAL)
+        for mode, button in window._agent_mode_buttons.items():
+            with self.subTest(mode=mode):
+                button.emit("clicked")
+                self.assertEqual(window._selected_agent_mode, mode)
+                self.assertEqual(
+                    [name for name, item in window._agent_mode_buttons.items()
+                     if item.get_active()],
+                    [mode],
+                )
+                self.assertEqual(
+                    [name for name, item in window._agent_mode_buttons.items()
+                     if item.has_css_class("focus-ai-view-active")],
+                    [mode],
+                )
+                self.assertEqual(
+                    window._agent_followup_entry.get_visible(),
+                    mode not in (QUERY_MODE_BRIEF_SEARCH, AGENT_MODE_APPEAL),
+                )
+                # Clicking the selected mode cannot leave all five inactive.
+                button.emit("clicked")
+                self.assertTrue(button.get_active())
+                self.assertEqual(
+                    sum(item.get_active() for item in window._agent_mode_buttons.values()),
+                    1,
+                )
+                window._on_agent_launch.assert_not_called()
+
+    def test_composer_css_scopes_wrapper_reset_and_uniform_button_states(self) -> None:
+        import cairo
+        from gi.repository import Adw
+
+        Adw.init()
+
+        def paint(widget: Gtk.Widget) -> bytes:
+            surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 100, 40)
+            Gtk.render_background(widget.get_style_context(), cairo.Context(surface),
+                                  0, 0, 100, 40)
+            surface.flush()
+            offset = 20 * surface.get_stride() + 50 * 4
+            return bytes(surface.get_data()[offset:offset + 4])
+
+        controls = ComposerControls()
+        controls.add_css_class("composer-controls")
+        strip = Gtk.Box()
+        controls.insert(strip, -1)
+        buttons = []
+        for index in range(5):
+            button = Gtk.ToggleButton(label="Mode")
+            button.add_css_class("flat")
+            button.add_css_class("composer-scope-button")
+            if index < 4:
+                strip.append(button)
+            else:
+                controls.insert(button, -1)
+            buttons.append(button)
+        unrelated = Gtk.FlowBox()
+        unrelated.insert(Gtk.Button(label="Unrelated"), -1)
+        unrelated_wrapper = unrelated.get_child_at_index(0)
+        unrelated_wrapper.set_state_flags(Gtk.StateFlags.PRELIGHT, True)
+        original_hover = paint(unrelated_wrapper)
+        original_padding = unrelated_wrapper.get_style_context().get_padding()
+        owner = SimpleNamespace(_css_provider=None)
+        try:
+            with patch("open_law_lens.app.load_config", return_value=AppConfig()):
+                OpenLawLensWindow._install_css(owner)  # type: ignore[arg-type]
+            for index in range(2):
+                wrapper = controls.get_child_at_index(index)
+                for flags in (Gtk.StateFlags.NORMAL, Gtk.StateFlags.PRELIGHT,
+                              Gtk.StateFlags.ACTIVE, Gtk.StateFlags.SELECTED,
+                              Gtk.StateFlags.SELECTED | Gtk.StateFlags.PRELIGHT):
+                    wrapper.set_state_flags(flags, True)
+                    self.assertEqual(paint(wrapper), bytes(4))
+                    padding = wrapper.get_style_context().get_padding()
+                    self.assertEqual((padding.left, padding.right), (0, 0))
+                    self.assertEqual((padding.top, padding.bottom),
+                                     (original_padding.top, original_padding.bottom))
+                    border = wrapper.get_style_context().get_border()
+                    self.assertEqual((border.top, border.right, border.bottom, border.left),
+                                     (0, 0, 0, 0))
+            self.assertEqual(paint(unrelated_wrapper), original_hover)
+            padding = unrelated_wrapper.get_style_context().get_padding()
+            self.assertEqual((padding.top, padding.right, padding.bottom, padding.left),
+                             (original_padding.top, original_padding.right,
+                              original_padding.bottom, original_padding.left))
+            for selected in (False, True):
+                colors = []
+                for flags in (Gtk.StateFlags.NORMAL, Gtk.StateFlags.PRELIGHT,
+                              Gtk.StateFlags.ACTIVE):
+                    for button in buttons:
+                        if selected:
+                            button.add_css_class("focus-ai-view-active")
+                        else:
+                            button.remove_css_class("focus-ai-view-active")
+                        button.set_state_flags(flags, True)
+                    samples = [paint(button) for button in buttons]
+                    self.assertTrue(all(sample == samples[0] for sample in samples))
+                    colors.append(samples[0])
+                if selected:
+                    self.assertEqual(colors[0], colors[1])
+                    self.assertEqual(colors[0], colors[2])
+                    self.assertGreater(colors[0][3], 0)
+                else:
+                    self.assertNotEqual(colors[0], colors[1])  # native local hover
+            for button in buttons:
+                button.set_state_flags(Gtk.StateFlags.FOCUSED | Gtk.StateFlags.FOCUS_VISIBLE,
+                                       True)
+                snapshot = Gtk.Snapshot()
+                snapshot.render_focus(button.get_style_context(), 0, 0, 100, 40)
+                outline = snapshot.to_node()
+                self.assertIsNotNone(outline)
+                self.assertEqual(list(outline.get_widths()), [2] * 4)
+                self.assertTrue(all(color.alpha > 0 for color in outline.get_colors()))
+        finally:
+            if owner._css_provider is not None:
+                Gtk.StyleContext.remove_provider_for_display(
+                    Gdk.Display.get_default(), owner._css_provider
+                )
 
     def test_question_changes_clear_inline_error(self) -> None:
         idle = MagicMock()

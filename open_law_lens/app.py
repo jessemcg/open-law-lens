@@ -2455,7 +2455,18 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             label.composer-message.error {{
               color: @error_color;
             }}
-            box.composer-scope-group > button.composer-scope-button {{
+            flowbox.composer-controls > flowboxchild,
+            flowbox.composer-controls > flowboxchild:hover,
+            flowbox.composer-controls > flowboxchild:active,
+            flowbox.composer-controls > flowboxchild:selected {{
+              padding-left: 0;
+              padding-right: 0;
+              background-color: transparent;
+              background-image: none;
+              border: none;
+              box-shadow: none;
+            }}
+            flowbox.composer-controls button.composer-scope-button {{
               min-height: 28px;
               padding: 4px 8px;
               margin: 0;
@@ -2464,20 +2475,17 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
               background-image: none;
               font-weight: normal;
             }}
-            button.composer-case-question {{
-              min-height: 28px;
-              padding: 4px 8px;
-              margin: 0;
-              font-weight: normal;
+            /* Keep keyboard focus distinct from the selected-mode fill. */
+            flowbox.composer-controls button.composer-scope-button:focus:focus-visible {{
+              outline: 2px solid @accent_color;
+              outline-offset: -2px;
             }}
-            box.composer-scope-group > button.composer-scope-button.focus-ai-view-active,
-            box.composer-scope-group > button.composer-scope-button.focus-ai-view-active:hover {{
+            flowbox.composer-controls button.composer-scope-button.focus-ai-view-active,
+            flowbox.composer-controls button.composer-scope-button.focus-ai-view-active:hover,
+            flowbox.composer-controls button.composer-scope-button.focus-ai-view-active:active {{
               background-color: alpha(@window_fg_color, 0.12);
               color: @window_fg_color;
               background-image: none;
-            }}
-            separator.composer-scope-separator {{
-              margin: 5px 3px;
             }}
             button.composer-submit-button {{
               min-width: 72px;
@@ -2717,12 +2725,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         strip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         strip.add_css_class("composer-scope-group")
         strip.set_halign(Gtk.Align.START)
-        for mode in (AGENT_MODE_GENERAL, AGENT_MODE_CASE, AGENT_MODE_BRIEF):
+        for mode in (
+            AGENT_MODE_GENERAL, AGENT_MODE_CASE, AGENT_MODE_BRIEF,
+            QUERY_MODE_BRIEF_SEARCH,
+        ):
             strip.append(self._build_agent_mode_button(mode))
-        divider = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
-        divider.add_css_class("composer-scope-separator")
-        strip.append(divider)
-        strip.append(self._build_agent_mode_button(QUERY_MODE_BRIEF_SEARCH))
         return strip
 
     def _build_sidebar(self) -> Gtk.Widget:
@@ -3755,6 +3762,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         composer.set_hexpand(True)
 
         controls = ComposerControls()
+        controls.add_css_class("composer-controls")
         controls.set_selection_mode(Gtk.SelectionMode.NONE)
         controls.set_homogeneous(False)
         controls.set_min_children_per_line(1)
@@ -3765,7 +3773,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         controls.set_focusable(False)
         strip = self._build_query_action_strip()
         case_question = self._build_agent_mode_button(AGENT_MODE_APPEAL)
-        case_question.add_css_class("composer-case-question")
         controls.insert(strip, -1)
         controls.insert(case_question, -1)
         for index in range(2):
