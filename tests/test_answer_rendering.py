@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from gi.repository import GLib
 
-from open_law_lens.agent import CaseTextSource
+from open_law_lens.agent import CaseTextSource, PiSessionSnapshot
 from open_law_lens.answer_rendering import PreparedAnswer, prepare_answer
 from open_law_lens.app import Gdk, Gtk, OpenLawLensWindow, _AgentAnswerTextFormatter
 
@@ -84,12 +84,15 @@ class AnswerRenderingTests(unittest.TestCase):
                 calls.append(threading.get_ident())
                 entered.set()
                 release.wait(2)
-                return '# Synthetic Final Answer\n*Ready to read*\n\nBody.'
+                return PiSessionSnapshot(response_id='a1', status='stop',
+                                         answer='# Synthetic Final Answer\n*Ready to read*\n\nBody.',
+                                         answer_id='a1', answer_request_id='implicit:0',
+                                         successful_answer_count=1)
 
             beats = []
             timer = GLib.timeout_add(5, lambda: (beats.append(time.monotonic()), True)[1])
             try:
-                with patch('open_law_lens.app.extract_latest_pi_final_answer_from_jsonl', side_effect=extract):
+                with patch('open_law_lens.app.PiSessionSnapshotCache.read', side_effect=extract):
                     started = time.monotonic()
                     self.assertFalse(window._poll_agent_answer())
                     self.assertLess(time.monotonic() - started, 0.1)

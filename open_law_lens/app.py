@@ -38,9 +38,9 @@ from . import APP_ID, APP_NAME
 from .agent import (
     CaseTextSource,
     QuoteTarget,
-    count_pi_final_answers_from_jsonl,
+    PiSessionSnapshot,
+    PiSessionSnapshotCache,
     export_selected_authorities,
-    extract_latest_pi_final_answer_from_jsonl,
     extract_quoted_phrases,
     find_latest_pi_session_log_for_cwd,
     quote_match_spans,
@@ -2126,6 +2126,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_followup_draft = ""
         self._agent_followup_live_mode = ""
         self._agent_answer_turn_count = 0
+        self._agent_answer_eligible = False
+        self._agent_waiting_after_turn = -1
+        self._agent_answer_snapshot = PiSessionSnapshot()
+        self._agent_answer_failure_status = ""
         self._composer_spinner: Gtk.Spinner | None = None
         self._composer_message_label: Gtk.Label | None = None
         self._composer_message_is_error = False
@@ -3987,7 +3991,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return
         if (
             getattr(self, "_agent_active", False)
-            and not getattr(self, "_agent_last_answer_text", "").strip()
+            and (not getattr(self, "_agent_last_answer_text", "").strip()
+                 or not getattr(self, "_agent_answer_eligible", False))
         ):
             self._set_composer_message("Agent is running…", busy=True)
             return
@@ -6230,10 +6235,17 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             )
         if self._agent_subview_strip is not None:
             self._agent_subview_strip.set_visible(has_agent_output)
+        if getattr(self, "_agent_answer_button", None) is not None:
+            self._agent_answer_button.set_label(
+                "Previous Answer" if self._agent_last_answer_text
+                and not getattr(self, "_agent_answer_eligible", False) else "Answer"
+            )
         if self._agent_save_answer_button is not None:
             self._agent_save_answer_button.set_sensitive(
                 bool(self._agent_last_answer_text.strip())
+                and getattr(self, "_agent_answer_eligible", False)
                 and not getattr(self, "_agent_answer_finishing", False)
+                and not getattr(self, "_agent_followup_pending", False)
             )
         if self._agent_answer_scroller is not None:
             self._agent_answer_scroller.set_visible(
@@ -6366,6 +6378,18 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._set_agent_subview(subview_name)
 
     def _on_save_agent_answer_clicked(self, _button: Gtk.Button) -> None:
+        if (not getattr(self, "_agent_answer_eligible", False)
+                or getattr(self, "_agent_answer_finishing", False)
+                or getattr(self, "_agent_followup_pending", False)):
+            self._set_status("Current request has no completed answer to save. Review Session.")
+            return
+        cache = getattr(self, "_agent_snapshot_cache", None)
+        path = self._agent_session_log_path
+        if cache is None or path is None or not cache.is_current(path, self._agent_answer_snapshot):
+            self._agent_answer_eligible = False
+            self._sync_agent_subviews()
+            self._set_status("Session changed; wait for a completed current answer before saving.")
+            return
         text = strip_agent_legal_authority_backticks(self._agent_last_answer_text).strip()
         if not text:
             self._set_status("No agent final answer to save.")
@@ -6494,7 +6518,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._set_composer_error("Follow-ups are unavailable for this session.")
             return
         generation = self._agent_followup_generation
+        self._agent_followup_after_turn = self._agent_answer_turn_count
         self._agent_followup_pending = True
+        self._sync_agent_subviews()
         self._set_composer_busy("Submitting follow-up…")
         threading.Thread(
             target=self._agent_followup_worker,
@@ -6537,6 +6563,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if generation != self._agent_followup_generation:
             return False
         self._agent_followup_pending = False
+        if not error or error == "uncertain":
+            self._agent_waiting_after_turn = getattr(
+                self, "_agent_followup_after_turn", self._agent_answer_turn_count
+            )
+            self._agent_answer_eligible = False
+            self._sync_agent_subviews()
         if not error:
             # Keep the submitted question visible in the input field, matching the
             # initial-question field. It stays until a new question replaces it.
@@ -10367,6 +10399,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return
         self._agent_followup_live_mode = mode
         self._agent_answer_turn_count = 0
+        self._agent_answer_eligible = False
+        self._agent_waiting_after_turn = -1
+        self._agent_answer_snapshot = PiSessionSnapshot()
+        self._agent_answer_failure_status = ""
         self._agent_followup_pending = False
         self._agent_followup_draft = ""
         self._agent_followup_generation += 1
@@ -10472,9 +10508,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         except ValueError:
             exit_code = None
         if exit_code == 0:
-            self._agent_failure_visible = False
+            # JSONL completion, not a shell exit, authorizes Answer/Save.
             self._sync_agent_subviews()
-            self._set_status("Embedded agent session ended.")
+            if not self._agent_failure_visible:
+                self._set_status("Embedded agent session ended.")
             return
         self._agent_failure_visible = True
         self._set_agent_subview(AGENT_SUBVIEW_SESSION)
@@ -10526,6 +10563,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             GLib.source_remove(self._agent_answer_poll_id)
             self._agent_answer_poll_id = None
         self._agent_session_log_path = None
+        self._agent_snapshot_cache = PiSessionSnapshotCache()
+        self._agent_answer_eligible = False
 
     def _start_agent_answer_polling(self) -> None:
         self._stop_agent_answer_polling()
@@ -10550,8 +10589,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         generation = getattr(self, "_agent_answer_generation", 0)
         self._agent_answer_working = True
         source = self._agent_session_log_path
+        cache = getattr(self, "_agent_snapshot_cache", None)
+        if cache is None:
+            cache = self._agent_snapshot_cache = PiSessionSnapshotCache()
         previous = self._agent_last_answer_text
         previous_turn = self._agent_answer_turn_count
+        previous_answer_id = getattr(self, "_agent_answer_snapshot", PiSessionSnapshot()).answer_id
         mode = self._agent_mode
         sources = list(self._case_agent_text_sources)
 
@@ -10560,20 +10603,17 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 path = source or find_latest_pi_session_log_for_cwd(
                     workspace / "pi-sessions", workspace,
                 )
-                answer = strip_agent_legal_authority_backticks(
-                    extract_latest_pi_final_answer_from_jsonl(path)
-                ) if path is not None else ""
-                turn_count = (
-                    count_pi_final_answers_from_jsonl(path) if path is not None else 0
-                )
-                new_turn = turn_count > previous_turn
+                snapshot = cache.read(path) if path is not None else PiSessionSnapshot()
+                answer = strip_agent_legal_authority_backticks(snapshot.answer)
+                turn_count = snapshot.successful_answer_count
+                new_turn = turn_count != previous_turn or snapshot.answer_id != previous_answer_id
                 plan = prepare_answer(
                     answer, mode, sources, _AgentAnswerTextFormatter().format,
                     OpenLawLensWindow._external_url_links,
                 ) if answer and (answer != previous or new_turn) else None
                 GLib.idle_add(
                     self._agent_answer_prepared,
-                    generation, path, answer, turn_count, plan, None,
+                    generation, path, answer, turn_count, plan, None, snapshot,
                 )
             except Exception as exc:
                 GLib.idle_add(
@@ -10586,11 +10626,51 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _agent_answer_prepared(
         self, generation: int, path: Path | None, answer: str,
         turn_count: int, plan: PreparedAnswer | None, error: str | None,
+        snapshot: PiSessionSnapshot | None = None,
     ) -> bool:
         if generation != getattr(self, "_agent_answer_generation", 0):
             return False
         self._agent_session_log_path = path
+        completion_changed = False
+        if snapshot is not None:
+            state_changed = snapshot != getattr(self, "_agent_answer_snapshot", None)
+            previously_eligible = getattr(self, "_agent_answer_eligible", False)
+            if turn_count < self._agent_answer_turn_count:
+                # A truncated/replaced log starts a new count domain, not an
+                # impossible requirement to surpass the previous file's count.
+                self._agent_waiting_after_turn = -1
+            self._agent_answer_turn_count = turn_count
+            self._agent_answer_snapshot = snapshot
+            self._agent_answer_eligible = (
+                snapshot.current_completed
+                and turn_count > getattr(self, "_agent_waiting_after_turn", -1)
+            )
+            completion_changed = self._agent_answer_eligible and (state_changed or not previously_eligible)
+            if self._agent_answer_eligible:
+                self._agent_failure_visible = False
+                self._agent_answer_failure_status = ""
+                self._agent_waiting_after_turn = -1
+            else:
+                if state_changed or previously_eligible:
+                    self._set_agent_subview(AGENT_SUBVIEW_SESSION)
+                failures = {
+                    "aborted": "Agent cancelled. Review Session; partial output is not final.",
+                    "error": "Agent response failed. Review Session; partial output is not final.",
+                    "length": "Agent output limit reached. Review Session; partial output is not final.",
+                }
+                if snapshot.status in failures:
+                    self._agent_failure_visible = True
+                    self._agent_answer_failure_status = failures[snapshot.status]
+                    if state_changed or previously_eligible or not self._agent_active:
+                        self._set_status(self._agent_answer_failure_status)
+                elif not self._agent_active:
+                    self._agent_failure_visible = True
+                    self._agent_answer_failure_status = "No completed current agent answer. Review Session."
+                    self._set_agent_subview(AGENT_SUBVIEW_SESSION)
+                    self._set_status(self._agent_answer_failure_status)
+            self._sync_agent_subviews()
         if error is not None:
+            self._agent_answer_eligible = False
             self._agent_answer_working = False
             self._agent_answer_finishing = False
             self._agent_answer_recheck = False
@@ -10599,6 +10679,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._set_status("Unable to prepare agent answer. Review the Session output.")
             return False
         if plan is None:
+            if completion_changed and answer:
+                self._set_agent_subview(AGENT_SUBVIEW_ANSWER)
             self._finish_agent_answer_work(generation)
             return False
         self._agent_answer_finishing = True
@@ -10616,10 +10698,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             except StopIteration:
                 self._agent_answer_render_id = None
                 self._agent_last_answer_text = answer
-                self._agent_answer_turn_count = max(
-                    self._agent_answer_turn_count, turn_count
-                )
-                if not self._agent_failure_visible:
+                self._agent_answer_turn_count = turn_count
+                if not self._agent_failure_visible and getattr(self, "_agent_answer_eligible", False):
                     self._set_agent_subview(AGENT_SUBVIEW_ANSWER)
                 # Let GTK lay out and paint the completed answer before stopping
                 # the finishing indicator. The generation check also guards this idle.
@@ -10645,7 +10725,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._agent_answer_recheck = False
             self._poll_agent_answer()
             return
+        was_finishing = getattr(self, "_agent_answer_finishing", False)
         self._agent_answer_finishing = False
+        if was_finishing and self._agent_failure_visible:
+            # Preparing a reference answer, or an exit recheck of a cached
+            # failure, must not leave GTK showing a permanent preparing spinner.
+            self._set_status(getattr(self, "_agent_answer_failure_status", "")
+                             or "Agent did not produce a completed current answer. Review Session.")
         if not self._agent_active and not self._agent_last_answer_text and not self._agent_failure_visible:
             self._agent_failure_visible = True
             self._set_agent_subview(AGENT_SUBVIEW_SESSION)

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -111,56 +112,120 @@ def _pi_text_from_content(content: Any) -> str:
     return "\n".join(parts).strip()
 
 
-def extract_latest_pi_final_answer_from_jsonl(path: Path) -> str:
-    latest = ""
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return ""
-    for line in lines:
-        if not line.strip():
-            continue
+@dataclass(frozen=True)
+class PiSessionSnapshot:
+    request_id: str = "implicit:0"
+    response_id: str = ""
+    status: str = "pending"
+    answer: str = ""
+    answer_id: str = ""
+    answer_request_id: str = ""
+    successful_answer_count: int = 0
+    partial_record: bool = False
+
+    @property
+    def current_completed(self) -> bool:
+        return bool(
+            self.status == "stop" and self.answer_id
+            and self.answer_id == self.response_id
+            and self.answer_request_id == self.request_id
+            and not self.partial_record
+        )
+
+
+class PiSessionSnapshotCache:
+    """Single-worker cache: no opens on unchanged polls; one streaming pass on change.
+
+    A trailing non-newline record is never accepted, even if valid JSON. It is
+    retried on the next file change. Replacements/truncations rebuild all state.
+    Each window generation owns its own instance, so stale workers cannot poison
+    the replacement session's cache.
+    """
+
+    def __init__(self) -> None:
+        self._key: tuple[object, ...] | None = None
+        self._snapshot = PiSessionSnapshot()
+
+    def is_current(self, path: Path, snapshot: PiSessionSnapshot) -> bool:
+        """Cheap fail-closed Save guard if the log changed since the worker read."""
         try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(payload, dict) or payload.get("type") != "message":
-            continue
-        message = payload.get("message")
-        if not isinstance(message, dict) or message.get("role") != "assistant":
-            continue
-        if message.get("stopReason") == "toolUse":
-            continue
-        text = _pi_text_from_content(message.get("content"))
-        if text:
-            latest = text
-    return latest
+            stat = path.stat()
+            return (snapshot is self._snapshot and snapshot.current_completed
+                    and self._key == (str(path), stat.st_dev, stat.st_ino,
+                                      stat.st_size, stat.st_mtime_ns))
+        except OSError:
+            return False
+
+    def read(self, path: Path) -> PiSessionSnapshot:
+        try:
+            stat = path.stat()
+            key = (str(path), stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+            if key == self._key:
+                return self._snapshot
+            request = "implicit:0"
+            response = answer = answer_id = answer_request = ""
+            status = "pending"
+            count = 0
+            partial = False
+            with path.open("rb") as handle:
+                opened = os.fstat(handle.fileno())
+                for ordinal, line in enumerate(handle, 1):
+                    if not line.endswith(b"\n"):
+                        partial = True
+                        break
+                    try:
+                        payload = json.loads(line)
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        # Malformed complete records must not leave an earlier
+                        # answer eligible for the current request.
+                        status = "unknown"
+                        response = ""
+                        continue
+                    if not isinstance(payload, dict) or payload.get("type") != "message":
+                        continue
+                    message = payload.get("message")
+                    if not isinstance(message, dict):
+                        continue
+                    identity = str(payload.get("id") or f"ordinal:{ordinal}")
+                    if message.get("role") == "user":
+                        request, response, status = identity, "", "pending"
+                    elif message.get("role") == "assistant":
+                        response = identity
+                        reason = message.get("stopReason")
+                        status = reason if isinstance(reason, str) else "unknown"
+                        content = message.get("content")
+                        tool_calls = isinstance(content, list) and any(
+                            isinstance(item, dict) and item.get("type") in {"toolCall", "tool_call"}
+                            for item in content
+                        )
+                        text = _pi_text_from_content(content)
+                        if status == "stop" and text and not tool_calls:
+                            answer, answer_id, answer_request = text, identity, request
+                            count += 1
+                        elif status == "stop":
+                            status = "unknown"
+            snapshot = PiSessionSnapshot(request, response, status, answer, answer_id,
+                                         answer_request, count, partial)
+            after = path.stat()
+            opened_key = (str(path), opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns)
+            after_key = (str(path), after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+            self._key = key if key == opened_key == after_key else None
+            if self._key is None:
+                snapshot = replace(snapshot, partial_record=True)
+            self._snapshot = snapshot
+            return snapshot
+        except OSError:
+            self._key = None
+            self._snapshot = PiSessionSnapshot(status="error")
+            return self._snapshot
+
+
+def extract_latest_pi_final_answer_from_jsonl(path: Path) -> str:
+    return PiSessionSnapshotCache().read(path).answer
 
 
 def count_pi_final_answers_from_jsonl(path: Path) -> int:
-    """Count finalized assistant text turns so identical answers still advance."""
-    count = 0
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return 0
-    for line in lines:
-        if not line.strip():
-            continue
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(payload, dict) or payload.get("type") != "message":
-            continue
-        message = payload.get("message")
-        if not isinstance(message, dict) or message.get("role") != "assistant":
-            continue
-        if message.get("stopReason") == "toolUse":
-            continue
-        if _pi_text_from_content(message.get("content")):
-            count += 1
-    return count
+    return PiSessionSnapshotCache().read(path).successful_answer_count
 
 
 def pi_session_log_matches_cwd(path: Path, cwd: Path) -> bool:

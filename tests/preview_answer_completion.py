@@ -40,18 +40,18 @@ answer = '# Synthetic Completion Responsiveness\n*Formatting without blocking*\n
                                   'content': [{'type': 'text', 'text': answer}]}}
 ]) + '\n')
 
-original = ui.extract_latest_pi_final_answer_from_jsonl
+original = ui.PiSessionSnapshotCache.read
 main_thread = threading.get_ident()
 calls = 0
 
 
-def delayed(path):
+def delayed(cache, path):
     global calls
     assert threading.get_ident() != main_thread
     calls += 1
     if calls == 1:
         time.sleep(float(os.environ.get('OLL_COMPLETION_PREVIEW_DELAY', '8')))
-    return original(path)
+    return original(cache, path)
 
 
 class Preview(ui.OpenLawLensWindow):
@@ -103,7 +103,7 @@ def blocked(*args, **kwargs):
     raise AssertionError('Network forbidden in completion preview')
 
 
-with patch.object(socket.socket, 'connect', blocked), patch.object(ui, 'extract_latest_pi_final_answer_from_jsonl', delayed):
+with patch.object(socket.socket, 'connect', blocked), patch.object(ui.PiSessionSnapshotCache, 'read', delayed):
     app = ui.Adw.Application(application_id='com.mcglaw.OpenLawLens.CompletionPreview',
                             flags=Gio.ApplicationFlags.NON_UNIQUE)
     app.connect('activate', activate)

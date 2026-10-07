@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 import unittest
 
-from open_law_lens.agent import extract_latest_pi_final_answer_from_jsonl
+from open_law_lens.agent import extract_latest_pi_final_answer_from_jsonl, PiSessionSnapshotCache
 import test_agent_vte_wrapper as wrapper_tests
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -53,7 +53,13 @@ class RunMetricsSDKTests(unittest.TestCase):
                     if variant in {'missing', 'unwritable'}:
                         self.assertIn('Pi run metrics:', result.stderr)
                     data = json.loads(capture.read_text())
-                    self.assertEqual(extract_latest_pi_final_answer_from_jsonl(Path(data['session_file'])), data['answer'])
+                    session_path = Path(data['session_file'])
+                    self.assertEqual(extract_latest_pi_final_answer_from_jsonl(session_path), data['answer'])
+                    snapshot = PiSessionSnapshotCache().read(session_path)
+                    self.assertTrue(snapshot.current_completed)
+                    self.assertEqual(snapshot.successful_answer_count, 2)
+                    self.assertEqual(snapshot.answer_id, snapshot.response_id)
+                    self.assertEqual(snapshot.answer_request_id, snapshot.request_id)
                     data.pop('session_file')
                     captures.append(data)
                 for capture in captures[1:]:

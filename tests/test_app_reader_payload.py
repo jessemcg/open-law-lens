@@ -395,7 +395,7 @@ class AppReaderPayloadTests(unittest.TestCase):
             "Embedded agent failed with exit code 2. Review the Session output.",
         )
 
-    def test_agent_successful_exit_uses_normal_ended_status(self) -> None:
+    def test_zero_exit_does_not_clear_incomplete_response_failure(self) -> None:
         class DummyWindow:
             def __init__(self) -> None:
                 self._agent_pid = 42
@@ -426,9 +426,9 @@ class AppReaderPayloadTests(unittest.TestCase):
 
         self.assertIsNone(window._agent_pid)
         self.assertFalse(window._agent_active)
-        self.assertFalse(window._agent_failure_visible)
+        self.assertTrue(window._agent_failure_visible)
         self.assertEqual(window.sync_count, 1)
-        self.assertEqual(window.status, "Embedded agent session ended.")
+        self.assertEqual(window.status, "")
 
     def _make_session_sync_window(
         self,
@@ -486,6 +486,9 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertTrue(window._agent_session_widget.visible)
         self.assertFalse(window._agent_save_answer_button.sensitive)
         window._agent_last_answer_text = "Synthetic answer"
+        OpenLawLensWindow._sync_agent_subviews(window)
+        self.assertFalse(window._agent_save_answer_button.sensitive)
+        window._agent_answer_eligible = True
         OpenLawLensWindow._sync_agent_subviews(window)
         self.assertTrue(window._agent_save_answer_button.sensitive)
 
@@ -885,6 +888,8 @@ class AppReaderPayloadTests(unittest.TestCase):
         terminal = FakeTerminal()
         window = SimpleNamespace(
             _agent_followup_generation=5,
+            _agent_answer_turn_count=1,
+            _sync_agent_subviews=lambda: None,
             _agent_followup_pending=True,
             _agent_followup_entry=entry,
             _agent_followup_draft="And the father?",
@@ -5252,6 +5257,10 @@ Opinion text.
                     "`Cal. Rules of Court, rule 8.204`."
                 )
                 self._agent_mode = "appeal"
+                self._agent_answer_eligible = True
+                self._agent_session_log_path = Path('/synthetic/session.jsonl')
+                self._agent_answer_snapshot = object()
+                self._agent_snapshot_cache = SimpleNamespace(is_current=lambda *_args: True)
                 self._clusters = [{"id": "visible-case"}]
                 self._statutes = [{"statute_id": "VISIBLE:300"}]
                 self._rules = [{"rule_id": "VISIBLE:8.204"}]
