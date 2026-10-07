@@ -33,9 +33,18 @@ mode-specific discovery ceilings and the Route B verification floor remain intac
   not. Do not batch recoveries into shell loops or run them concurrently.
   Independent baseline extractions can still run in the same tool round.
 - Keep complete JSON stdout and separate stderr. Never merge `2>&1` into a
-  JSON parser or pipe a result through `head`/`tail`. For full opinions, save
-  stdout to a unique private workspace file and read the necessary slices;
-  for focused work retain the whole compact `--find` payload and diagnostics.
+  JSON parser or pipe a result through `head`/`tail`. Keep compact `--find`
+  preferred for narrow propositions. When full-case inspection is needed, use
+  `extract-case "<citation>" --output-dir "$OPEN_LAW_LENS_AGENT_WORKSPACE/case-unique"`
+  with an absolute NEW directory inside the declared private workspace. Read
+  metadata.json (including warnings/pagination) and manifest.json, then the
+  ordered lossless part-0001.txt files through the required source coverage,
+  including late exceptions and adverse discussion. Each part is at most
+  32 KiB UTF-8 and 1,500 lines; concatenation exactly reproduces the text.
+  Metadata or grep alone is not full inspection; chunk numbers are never
+  reporter pinpoints. Inspect structured failures; export does not turn an
+  unpaginated baseline into verified authority. For focused work retain the
+  whole compact `--find` payload and diagnostics.
   Preserve the baseline before recovery so an interrupted command cannot erase
   usable authority. Temporary research JSON is not a final deliverable.
 - Announce the authority and the two-minute recovery budget before the call.

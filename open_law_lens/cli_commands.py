@@ -21,7 +21,7 @@ CLI_COMMANDS: tuple[CliCommand, ...] = (
     CliCommand(
         name="extract-case",
         title="Extract Case",
-        description="Look up a case citation, case-like query, or CourtListener cluster ID and print JSON. Use --find QUERY (repeatable short source phrases, not semantic questions) for bounded verified passages instead of full text. Add --recover-official --timeout 120 --progress for one sequential default-browser Google Scholar recovery when official pagination is missing. Keep complete JSON stdout separate from stderr progress; bound the entire command externally too.",
+        description="Look up a case citation, case-like query, or CourtListener cluster ID and print JSON. Use --find QUERY (repeatable short source phrases, not semantic questions) for bounded verified passages instead of full text. Add --recover-official --timeout 120 --progress for one sequential default-browser Google Scholar recovery when official pagination is missing. Keep complete JSON stdout separate from stderr progress; bound the entire command externally too. For full inspection, --output-dir ABSOLUTE_NEW_DIRECTORY exports private lossless bounded source parts plus metadata/manifest; mutually exclusive with --find and --text.",
         example='project-env run OpenLawLens open-law-lens extract-case "13 Cal.4th 952" --recover-official --timeout 120 --progress --find "presumed father"',
     ),
     CliCommand(
@@ -123,7 +123,7 @@ CLI_COMMANDS: tuple[CliCommand, ...] = (
     CliCommand(
         name="extract-brief",
         title="Extract Prior Brief",
-        description="Print metadata and full text for an indexed prior brief ID.",
+        description="Print metadata and full text for an indexed prior brief ID. Use --output-dir ABSOLUTE_NEW_DIRECTORY for private lossless bounded parts and metadata/manifest; read every part before relying on the brief. Mutually exclusive with --text.",
         example="project-env run OpenLawLens open-law-lens extract-brief <brief_id>",
     ),
     CliCommand(

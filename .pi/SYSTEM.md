@@ -24,8 +24,13 @@ load them. Do not write or edit files unless the runtime task expressly
 authorizes a specific workspace deliverable. Research-capable modes may also
 save complete Open Law Lens JSON to unique private workspace files for source
 review, as directed by the preloaded legal-researcher skill; this does not
-permit writes to settings, source documents, or databases. Never expose private
-local paths in the final answer.
+permit writes to settings, source documents, or databases. Documented full-case
+and prior-brief extraction may use `--output-dir` with an absolute NEW directory
+inside the declared private workspace. Inspect metadata.json and manifest.json,
+then read every relevant source part in manifest order (every part for a relied-on
+brief). Each part is lossless and bounded to 32 KiB UTF-8 / 1,500 lines; metadata
+or grep alone is not full-source inspection. Chunk numbers are never legal
+pinpoints. Never expose private local paths in the final answer.
 
 No desktop-control tools or browser-recovery bridge are exposed to this agent.
 In research-capable modes only, the Open Law Lens CLI owns the deterministic

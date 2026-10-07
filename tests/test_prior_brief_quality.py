@@ -43,10 +43,29 @@ class PriorBriefQualityTests(unittest.TestCase):
                         self.assertEqual((profile.provider, profile.model, profile.thinking),
                                          ('fireworks', 'unchanged', 'high'))
 
+    def test_pre_artifact_default_upgrades_without_writing_settings(self):
+        previous = (Path(__file__).with_name('fixtures') / 'prior_brief_prompt_pre_artifacts.txt').read_text().strip()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'config.json'
+            for suffix in ('', '\nMy customized instruction.'):
+                raw = {'brief_agent_prompt_template': previous.replace('$OLL', AGENT_CLI_COMMAND_PREFIX) + suffix,
+                       'agent_runtime_profiles_version': 2,
+                       'agent_runtime_profiles': {'prior_briefs': {
+                           'provider': 'fireworks', 'model': 'unchanged', 'thinking': 'high'}}}
+                path.write_text(json.dumps(raw))
+                before = path.read_bytes()
+                loaded = load_config(path)
+                expected = raw['brief_agent_prompt_template'] if suffix else DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE
+                self.assertEqual(loaded.brief_agent_prompt_template, expected)
+                self.assertEqual(path.read_bytes(), before)
+                self.assertEqual(loaded.agent_runtime_profiles['prior_briefs'].model, 'unchanged')
+
     def test_prompt_contracts(self):
         prompt = DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE.format(
             question='Synthetic question', brief_database='/tmp/synthetic.sqlite3', brief_count=5)
         for text in ('until EOF', 'grep is navigation', 'disposable agent workspace only',
+                     '--output-dir', 'read EVERY part in manifest order', '32 KiB UTF-8',
+                     'Chunk numbers are not legal pinpoints', 'Fetch each selected document once',
                      'strongest directly relevant brief first', 'the opening brief argues',
                      'nondependent-person eligibility', 'has_more: false',
                      'never insert brackets', 'Do not browse the web',

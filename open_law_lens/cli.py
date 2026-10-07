@@ -267,6 +267,20 @@ def _strip_recovery_reason(reason: str) -> str:
     return _re.sub(r"\s+", " ", reason or "").strip()
 
 
+def _export_source_result(payload: dict[str, Any], destination: str) -> int:
+    from .source_artifacts import export_source_artifacts
+
+    try:
+        exported = export_source_artifacts(
+            payload, destination, workspace=os.environ.get("OPEN_LAW_LENS_AGENT_WORKSPACE") or None,
+        )
+    except (OSError, ValueError, RuntimeError) as exc:
+        _print_json({"ok": False, "export_status": "failed", "error": str(exc)})
+        return 1
+    _print_json(exported)
+    return 0
+
+
 def _cmd_extract_case(args: argparse.Namespace) -> int:
     find_queries = [str(query).strip() for query in (getattr(args, "find", None) or [])]
     find_queries = [query for query in find_queries if query]
@@ -281,7 +295,11 @@ def _cmd_extract_case(args: argparse.Namespace) -> int:
                 refresh=getattr(args, "refresh", False),
             )
         elif not str(getattr(args, "value", "") or "").strip():
-            print("Case citation, query, or --cluster-id is required.", file=sys.stderr)
+            if getattr(args, "output_dir", None):
+                _print_json({"ok": False, "export_status": "failed",
+                             "error": "Case citation, query, or --cluster-id is required."})
+            else:
+                print("Case citation, query, or --cluster-id is required.", file=sys.stderr)
             return 1
         else:
             result = extract_authority(
@@ -290,6 +308,9 @@ def _cmd_extract_case(args: argparse.Namespace) -> int:
                 refresh=getattr(args, "refresh", False),
             )
     except (CourtListenerError, LegInfoError, CaliforniaRulesError, ValueError, RuntimeError) as exc:
+        if getattr(args, "output_dir", None):
+            _print_json({"ok": False, "export_status": "failed", "error": str(exc)})
+            return 1
         if text_mode:
             print(str(exc), file=sys.stderr)
             return 1
@@ -322,6 +343,8 @@ def _cmd_extract_case(args: argparse.Namespace) -> int:
             timeout=getattr(args, "timeout", None),
         )
 
+    if getattr(args, "output_dir", None):
+        return _export_source_result(result.to_json(), args.output_dir)
     return _print_case_result(result, find_queries, text_mode)
 
 
@@ -834,10 +857,18 @@ def _cmd_search_briefs(args: argparse.Namespace) -> int:
 
 
 def _cmd_extract_brief(args: argparse.Namespace) -> int:
-    brief = PriorBriefLibrary.default().read(args.brief_id)
-    if brief is None:
-        print(f"Prior brief not found: {args.brief_id}", file=sys.stderr)
+    try:
+        brief = PriorBriefLibrary.default().read(args.brief_id)
+        if brief is None:
+            raise ValueError(f"Prior brief not found: {args.brief_id}")
+    except (OSError, ValueError, RuntimeError) as exc:
+        if getattr(args, "output_dir", None):
+            _print_json({"ok": False, "export_status": "failed", "error": str(exc)})
+        else:
+            print(str(exc), file=sys.stderr)
         return 1
+    if getattr(args, "output_dir", None):
+        return _export_source_result(brief.to_json(), args.output_dir)
     if args.text:
         print(brief.text)
     else:
@@ -1053,6 +1084,10 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="QUERY",
         help="return bounded verified passages matching QUERY instead of full text; repeatable",
     )
+    extract_case_output.add_argument(
+        "--output-dir", metavar="ABSOLUTE_NEW_DIRECTORY",
+        help="export full source as lossless private bounded text parts",
+    )
     extract_case_parser.set_defaults(func=_cmd_extract_case)
 
     slip_parser = subparsers.add_parser(
@@ -1249,7 +1284,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="extract an indexed prior brief by ID",
     )
     extract_brief_parser.add_argument("brief_id")
-    extract_brief_parser.add_argument("--text", action="store_true")
+    extract_brief_output = extract_brief_parser.add_mutually_exclusive_group()
+    extract_brief_output.add_argument("--text", action="store_true")
+    extract_brief_output.add_argument(
+        "--output-dir", metavar="ABSOLUTE_NEW_DIRECTORY",
+        help="export full source as lossless private bounded text parts",
+    )
     extract_brief_parser.set_defaults(func=_cmd_extract_brief)
 
     show_briefs_parser = subparsers.add_parser(
@@ -1328,6 +1368,14 @@ def main(argv: list[str] | None = None) -> int:
     if not hasattr(args, "func"):
         parser.print_help()
         return 2
+    if getattr(args, "output_dir", None) is not None:
+        from .source_artifacts import validate_destination
+
+        try:
+            validate_destination(args.output_dir, os.environ.get("OPEN_LAW_LENS_AGENT_WORKSPACE") or None)
+        except ValueError as exc:
+            _print_json({"ok": False, "export_status": "failed", "error": str(exc)})
+            return 1
     previous_cache_dir = os.environ.get("OPEN_LAW_LENS_CACHE_DIR")
     isolated = pi_cli_cache_isolation_path(getattr(args, "command", ""), os.environ)
     if isolated:
@@ -1340,7 +1388,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return int(args.func(args))
     except (CourtListenerError, LegInfoError, CaliforniaRulesError, SlipOpinionError, ValueError, RuntimeError) as exc:
-        print(str(exc), file=sys.stderr)
+        if getattr(args, "output_dir", None):
+            _print_json({"ok": False, "export_status": "failed", "error": str(exc)})
+        else:
+            print(str(exc), file=sys.stderr)
+        return 1
+    except Exception as exc:
+        if not getattr(args, "output_dir", None):
+            raise
+        _print_json({"ok": False, "export_status": "failed", "error": str(exc)})
         return 1
     finally:
         if isolated:

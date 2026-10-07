@@ -177,6 +177,7 @@ Selected authority count: {case_count}"""
 
 # Exact command-normalized shipped defaults only; never overwrite custom prose.
 LEGACY_BRIEF_AGENT_PROMPT_SHA256ES = frozenset({
+    "297e1a021b9524782833663f344813702ba5082ee6e9589c29d24ab7f5086838",
     "18c2b0d10563d82210d49c7b2d0659bf74dc4241deac6f6eae75f67d3c569531",
 })
 
@@ -191,8 +192,8 @@ Use short discriminating all searches or specific phrase searches; default to 5â
 After a strong hit, search only to fill an identified gap, inspect contrary discussion, or find companion briefing. Stop when additional results merely repeat the same proposition; broader user requests may justify continued research. Preserve complete search JSON, full IDs, source links, document types, and date provenance. Never clip JSON with head/tail, suppress extraction errors, or replace complete metadata with shortened IDs. Search errors are errors, not evidence of absence. The returned count is the number delivered; limit is the effective bound and has_more indicates additional matches for that query. has_more: false means all matches for that query were returned, NOT that every relevant document was found.
 
 Fetch each selected brief once with:
-`$OLL extract-brief <brief_id>`
-Temporary extraction files are authorized inside the disposable agent workspace only. Inspect the complete extracted text of every relied-on brief in bounded read chunks until EOF, continuing whenever output is truncated. Fetching is not reading; grep is navigation, not full-source verification. Check late qualifications and contrary passages before answering. If complete inspection cannot be finished, omit reliance or explicitly disclose the inspection limitation.
+`$OLL extract-brief <brief_id> --output-dir "$OPEN_LAW_LENS_AGENT_WORKSPACE/brief-<brief_id>"`
+The absolute output directory must be new and inside the disposable agent workspace. Fetch each selected document once; the CLI exports metadata.json, manifest.json and ordered lossless part-0001.txt files, each at most 32 KiB UTF-8 and 1,500 lines. Read metadata and the manifest, then read EVERY part in manifest order until EOF before relying on that brief. Concatenating all parts exactly reproduces the source. Fetching is not reading; metadata or grep is navigation, not full inspection. Chunk numbers are not legal pinpoints. Check late qualifications and contrary passages before answering. If export fails, inspect the structured error; never repeat extraction merely to work around clipped JSON. If complete inspection cannot be finished, omit reliance or explicitly disclose the inspection limitation. Temporary extraction files are authorized inside the disposable agent workspace only.
 
 Identify every discussed source with the exact Markdown link returned by search, in this form: `[Exact indexed title](open-law-lens://prior-brief/<brief_id>)`. Put that linked title close to the discussion and any quote from that brief. Include useful direct quotes of only two to ten words (2â€“10), copied as exact continuous phrases and each associated with its source link. Paraphrase longer passages; never insert brackets, alter wording, or join separated fragments inside an exact quotation.
 
