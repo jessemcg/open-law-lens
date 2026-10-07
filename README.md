@@ -253,6 +253,25 @@ returned matches, and omissions; `unmatched_queries` means genuinely absent,
 not omitted by output limits. `match_count` counts only contained verified
 matches. Oversized matches are omitted, never advertised partially.
 
+For full-case or prior-brief inspection, export lossless bounded source artifacts:
+
+```bash
+uv run open-law-lens extract-case "13 Cal.4th 952" --output-dir /absolute/new/case-source
+uv run open-law-lens extract-brief <brief_id> --output-dir /absolute/new/brief-source
+```
+
+The absolute destination must be new, with existing parents and no symlink
+traversal. Embedded runs confine it to the declared private agent workspace.
+Exports create private `metadata.json`, `manifest.json`, and ordered
+`part-0001.txt` files (at most 32 KiB UTF-8 / 1,500 lines each). Concatenation
+exactly reproduces the source, including whitespace and late exceptions. Stdout
+returns complete bounded status/location/count JSON without the body. Metadata
+retains all provenance, warnings and pagination; chunk numbers are never legal
+pinpoints. Failures return nonzero structured JSON without leaving incomplete
+artifacts or overwriting existing files. `--output-dir` is mutually exclusive
+with `--text` and `--find`; existing default JSON/text/passage modes are unchanged.
+Keep compact `--find` preferred for narrow propositions.
+
 `pinpoint_status` is `available`, `ambiguous`, or `unavailable`. Only a single
 coherent official reporter sequence supplies pages; mixed/descending markers
 leave page fields empty. The opinion-level `official_pagination` flag does not
@@ -507,8 +526,17 @@ matching, and text/link preparation run in a background worker; GTK inserts and
 formatting are applied in short main-loop batches. **Preparing final answer…**
 keeps its spinner active after the agent exits until formatting and layout have
 been handed back to GTK. Stale work from a replaced session or closed window is
-ignored. Failures leave the Session output available rather than keeping a
-spinner running forever. See [completion validation](docs/answer-completion-responsiveness.md).
+ignored. Only assistant text ending with `stopReason: stop`, without tool calls,
+is a completed answer for the current request. Cancellation, provider errors,
+output limits and unknown/pending statuses retain Session, never promote partial
+text into Answer, and disable Save (also enforced in the save handler). Earlier
+completed output remains labeled **Previous Answer** for reference; later success
+restores normal Save. A zero process exit cannot override an incomplete response.
+One cached streaming snapshot replaces independent answer/count log scans;
+unchanged polls perform no JSON parsing and preserve Answer/Session navigation.
+Failures leave the Session output available rather than keeping a spinner running
+forever. See [completion validation](docs/answer-completion-responsiveness.md) and
+[run reliability/efficiency validation](docs/run-efficiency-validation.md).
 
 Live and saved answers render nested bold/italic Markdown (including italic
 case names inside bold citations) without showing delimiter stars. Citation
@@ -1053,6 +1081,10 @@ The revised default ranks direct briefing first, attributes advocacy, distinguis
 child/adult/nondependent contexts and trial burdens from appellate review, requires
 complete selected-source inspection, and limits exact linked quotes to 2–10 words.
 Temporary extractions are permitted only inside the disposable agent workspace.
+The shipped Prior Brief default fetches each selected document once with
+`extract-brief --output-dir`, then reads every source part in manifest order before
+reliance; metadata and grep are not full inspection. Long-source delivery is
+lossless and bounded, not an automatic summary or a claim of source-token savings.
 Searches should be short and gap-driven; `--match any` ORs individual tokens,
 including split citation numbers. Prefer `all` or a specific `phrase` search.
 
