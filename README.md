@@ -1076,8 +1076,23 @@ These paths are ignored by Git in this repository.
 
 ## Prior Brief quality and search coverage
 
-Prior Brief answers recommend documents, not independently verified current law.
-The revised default ranks direct briefing first, attributes advocacy, distinguishes
+Prior Brief answers locate or recommend documents, not independently verified current law.
+The default distinguishes document lookup from research/comparison. For a request
+such as “find the most recent brief arguing X,” it starts with a short substantive
+newest-first search, verifies the newest plausible match, and stops once no
+plausible newer retrieved candidate remains unresolved. Normally only one search
+and up to two gap-driven refinements are needed; further searching requires a
+specific uncertainty that could change the selected document. Exact wording is
+required only when expressly requested. Different legal duties remain distinct.
+The answer should be one linked title, document type/date, and a sentence or two
+explaining the match—not a ranked survey or unsolicited current-case comparison.
+Tied/uncertain dates may require limited alternatives; file-date fallbacks remain
+explicit, never represented as filing dates. An attached fact pattern is read only
+when needed for the requested lookup or comparison. Full-source verification is
+still required; this is a prompt-level stopping rule, not a hard tool-call cap or
+a guaranteed latency bound. No model/reasoning setting is changed.
+
+For research/comparison, the default ranks direct briefing first, attributes advocacy, distinguishes
 child/adult/nondependent contexts and trial burdens from appellate review, requires
 complete selected-source inspection, and limits exact linked quotes to 2–10 words.
 Temporary extractions are permitted only inside the disposable agent workspace.

@@ -60,6 +60,63 @@ class PriorBriefQualityTests(unittest.TestCase):
                 self.assertEqual(path.read_bytes(), before)
                 self.assertEqual(loaded.agent_runtime_profiles['prior_briefs'].model, 'unchanged')
 
+    def test_pre_lookup_default_upgrades_read_only_with_profiles_preserved(self):
+        previous = (Path(__file__).with_name('fixtures') /
+                    'prior_brief_prompt_pre_lookup.txt').read_text().strip()
+        prefixes = (AGENT_CLI_COMMAND_PREFIX, 'uv run open-law-lens',
+                    'uv run --no-sync open-law-lens',
+                    'uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync open-law-lens')
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'config.json'
+            for prefix in prefixes:
+                for suffix in ('', '\nMy customized lookup instruction.'):
+                    with self.subTest(prefix=prefix, customized=bool(suffix)):
+                        raw = {
+                            'brief_agent_prompt_template': previous.replace('$OLL', prefix) + suffix,
+                            'agent_runtime_profiles_version': 2,
+                            'agent_runtime_profiles': {'prior_briefs': {
+                                'provider': 'fireworks', 'model': 'unchanged', 'thinking': 'high'}},
+                        }
+                        path.write_text(json.dumps(raw))
+                        before = path.read_bytes()
+                        loaded = load_config(path)
+                        expected = (previous.replace('$OLL', AGENT_CLI_COMMAND_PREFIX) + suffix
+                                    if suffix else DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE)
+                        self.assertEqual(loaded.brief_agent_prompt_template, expected)
+                        self.assertEqual(path.read_bytes(), before)
+                        profile = loaded.agent_runtime_profiles['prior_briefs']
+                        self.assertEqual((profile.provider, profile.model, profile.thinking),
+                                         ('fireworks', 'unchanged', 'high'))
+
+    def test_lookup_contract_is_distinct_from_comparison_and_keeps_verification(self):
+        prompt = DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE.format(
+            question='Find the most recent brief arguing an inquiry failure.',
+            brief_database='/tmp/synthetic.sqlite3', brief_count=5)
+        lookup = prompt.split('DOCUMENT LOOKUP:', 1)[1].split('RESEARCH OR COMPARISON:', 1)[0]
+        for text in (
+            '--match all --limit 5 --sort newest',
+            "Match the substance of the argument, not the user's exact wording",
+            'Resolve plausible newer candidates before selecting an older one',
+            'at most one or two targeted refinements for a concrete gap',
+            'Stop when the requested document is verified',
+            'Return one linked title, document type/date',
+            'No ranked list, supporting or contrasting briefs',
+            'Do not read or compare the selected current-case fact pattern merely',
+            'dates are tied or genuinely unresolved',
+            'file-date fallback',
+            'initial inquiry versus further inquiry',
+            'No directory listings',
+            'Do not inspect SQL',
+        ):
+            self.assertIn(text, lookup)
+        self.assertIn('Follow-ups may change the scope', prompt)
+        shared = prompt.split('SOURCE VERIFICATION AND ANSWER RULES (both scopes):', 1)[1]
+        self.assertIn('read EVERY part in manifest order until EOF', shared)
+        self.assertIn('single-result answer rule above takes precedence', shared)
+        self.assertIn('A lookup does not require a quote', shared)
+        self.assertIn('For research or comparison only', shared)
+        self.assertIn('open-law-lens://prior-brief/<brief_id>', shared)
+
     def test_prompt_contracts(self):
         prompt = DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE.format(
             question='Synthetic question', brief_database='/tmp/synthetic.sqlite3', brief_count=5)
