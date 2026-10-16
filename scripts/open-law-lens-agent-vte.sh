@@ -51,7 +51,34 @@ if [[ -z "$project_dir" || ! -f "$project_dir/.pi/settings.json" ]]; then
   printf 'Open Law Lens project Pi settings not found: %s\n' "$project_dir/.pi/settings.json" >&2
   exit 2
 fi
-if [[ ! -s "$project_dir/.pi/SYSTEM.md" ]]; then
+# Resolve the workflow independently of execution mode (Law and Treatment both
+# use general). Fixed resources only: never read skill paths from configuration.
+workflow="${OPEN_LAW_LENS_AGENT_PROFILE_KEY:-}"
+if [[ -z "$workflow" ]]; then
+  case "$agent_mode" in
+    general) workflow=law ;;
+    case) workflow=research_cache ;;
+    brief) workflow=prior_briefs ;;
+    appeal) workflow=assess_argument ;;
+  esac
+fi
+case "$agent_mode:$workflow" in
+  general:law) workflow_name=law-question ;;
+  case:research_cache) workflow_name=research-cache ;;
+  brief:prior_briefs) workflow_name=prior-briefs ;;
+  appeal:assess_argument) workflow_name=case-assessment ;;
+  general:subsequent_treatment) workflow_name=subsequent-treatment ;;
+  *)
+    printf 'Invalid Open Law Lens mode/workflow pair: %s / %s. Use a supported workflow.\n' "$agent_mode" "$workflow" >&2
+    exit 2
+    ;;
+esac
+workflow_skill="$project_dir/.pi/skills/$workflow_name/SKILL.md"
+if [[ ! -r "$workflow_skill" || ! -s "$workflow_skill" ]]; then
+  printf 'Required Open Law Lens workflow skill unreadable or empty: %s. Restore the app resources.\n' "$workflow_skill" >&2
+  exit 2
+fi
+if [[ ! -r "$project_dir/.pi/SYSTEM.md" || ! -s "$project_dir/.pi/SYSTEM.md" ]]; then
   printf 'Open Law Lens project Pi system prompt not found or empty: %s\n' \
     "$project_dir/.pi/SYSTEM.md" >&2
   exit 2
@@ -114,8 +141,8 @@ extension="${OPEN_LAW_LENS_WEB_ACCESS_EXTENSION:-$pi_agent_dir/npm/node_modules/
 package_json="$(dirname "$extension")/package.json"
 computer_use_linux_js="$pi_agent_dir/npm/node_modules/@agent-sh/computer-use-linux/npm/bin/computer-use-linux.js"
 if [[ "$agent_mode" == "general" || "$agent_mode" == "appeal" ]]; then
-  if [[ ! -f "$skill" ]]; then
-    printf 'Legal researcher skill not found: %s\n' "$skill" >&2
+  if [[ ! -r "$skill" || ! -s "$skill" ]]; then
+    printf 'Legal researcher skill unreadable or empty: %s. Restore the app resources.\n' "$skill" >&2
     exit 2
   fi
   if [[ ! -f "$extension" || ! -f "$package_json" ]]; then
@@ -147,13 +174,14 @@ if [[ -f "$bridge_extension" ]]; then
   cp -a "$bridge_extension" "$workspace/.pi/extensions/"
   followup_args=(--extension "$workspace/.pi/extensions/open-law-lens-followup-bridge.ts")
 fi
-# The mandatory legal-researcher skill is preloaded into the workspace system
-# prompt for research modes so Pi starts researching immediately instead of
-# spending a turn reading the skill file. Do not copy the skills directory.
+# Rebuilt from the shared base above on EVERY launch, including reused workspaces.
+# Preload all required instructions; no skill discovery or model turn is needed.
 if [[ "$agent_mode" == "general" || "$agent_mode" == "appeal" ]]; then
   printf '\n' >> "$workspace/.pi/SYSTEM.md"
   cat "$skill" >> "$workspace/.pi/SYSTEM.md"
 fi
+printf '\n' >> "$workspace/.pi/SYSTEM.md"
+cat "$workflow_skill" >> "$workspace/.pi/SYSTEM.md"
 export TMPDIR="$workspace/tmp"
 export UV_CACHE_DIR="$workspace/uv-cache"
 export PI_CODING_AGENT_SESSION_DIR="$workspace/pi-sessions"
@@ -186,20 +214,6 @@ fi
 args+=("${followup_args[@]}")
 # Passive observer for every Pi-backed mode; never grant extra model tools.
 metrics_project_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-workflow="${OPEN_LAW_LENS_AGENT_PROFILE_KEY:-}"
-if [[ -z "$workflow" ]]; then
-  case "$agent_mode" in
-    general) workflow=law ;;
-    case) workflow=research_cache ;;
-    brief) workflow=prior_briefs ;;
-    appeal) workflow=assess_argument ;;
-    *) workflow=unknown ;;
-  esac
-fi
-case "$workflow" in
-  law|research_cache|prior_briefs|assess_argument|subsequent_treatment) ;;
-  *) workflow=unknown ;;
-esac
 metrics_prefix=("$pi_path")
 [[ -z "$pi_node" ]] || metrics_prefix=("$pi_node" "$pi_path")
 metrics_values=()

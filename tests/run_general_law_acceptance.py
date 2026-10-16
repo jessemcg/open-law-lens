@@ -1,8 +1,9 @@
 """Opt-in paid acceptance against pre-staged source trees and public fixtures.
 
 Usage: python tests/run_general_law_acceptance.py STAGE_ROOT FIXTURE_ROOT
-STAGE_ROOT must contain baseline/ and candidate/ source snapshots with usable
-.venv links; FIXTURE_ROOT contains public-library.sqlite3, public-cache/, and
+STAGE_ROOT must contain baseline/ and candidate/ source snapshots provisioned
+with paired disposable project-env project/environment overrides; never .venv
+links or production environments. FIXTURE_ROOT contains public-library.sqlite3, public-cache/, and
 LegInfo CODE-SECTION.json HTTP fixtures. See docs/general-law-quality-acceptance.md.
 Never pass a real user library/cache here. This runner neither obtains credentials
 nor changes profiles: Pi uses existing auth with an explicit model and high.
@@ -21,7 +22,7 @@ STAGES = Path(sys.argv[1]).resolve()
 FIXTURES = Path(sys.argv[2]).resolve()
 sys.path.insert(0, str(STAGES / "candidate"))
 from open_law_lens.pi_runtime import pi_command, _pi_rpc_command, _pi_rpc_response
-from open_law_lens.config import DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE
+from open_law_lens.agent_prompts import law_request
 
 QUESTION = """Public hypothetical: In a pending California juvenile dependency case,
 a parent seeks a long-term restraining order under Welfare and Institutions Code
@@ -74,7 +75,10 @@ for variant in ("baseline", "candidate"):
         shutil.copy2(Path(__file__).with_name("general_law_fixture_io.py"), hooks / "fixture_io.py")
         (hooks / "sitecustomize.py").write_text("from fixture_io import install\ninstall()\n")
         system = (project / ".pi/SYSTEM.md").read_text() + "\n" + (project / ".pi/skills/legal-researcher/SKILL.md").read_text()
-        prompt = DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE.format(question=QUESTION) + FIXTURE_NOTICE
+        workflow_skill = project / '.pi/skills/law-question/SKILL.md'
+        if workflow_skill.exists():
+            system += '\n' + workflow_skill.read_text()
+        prompt = law_request(QUESTION) + FIXTURE_NOTICE
         env = os.environ.copy()
         env.update({"OPEN_LAW_LENS_PROJECT_DIR": str(project),
                     "OPEN_LAW_LENS_CONFIG": str(run / "config.json"),

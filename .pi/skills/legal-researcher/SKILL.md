@@ -226,46 +226,14 @@ before finalizing:
    the answer to the extracted enactment. Never state the unsupported judicial
    proposition or silently present the answer as complete.
 
-For subsequent-treatment work, follow the Subsequent Treatment ceiling below.
-Describe only supported treatment, such as followed, distinguished, limited,
-extended, or criticized.
+### Subsequent Treatment scope
 
-### Subsequent Treatment mode ceiling
-
-Subsequent Treatment runs are discovery-bounded. The runtime prompt supplies
-the exact commands; use them and stop when the bounds are reached:
-
-- Run the supplied `published-citing-cases` command exactly once. If it fails,
-  returns no useful leads, or the cluster id is a local `external-*` id, do not
-  retry the graph.
-- Run at most two non-paginated `case-search` searches, using the supplied
-  exact official-citation phrase search and, only if still needed, the exact
-  case-name search. Never retry network timeouts, paginate with `--next`,
-  broaden or rewrite queries, use `--semantic`, or run additional searches. The
-  one-time transient SQLite `database is locked` retry above remains allowed.
-- Never use `web_search` in Subsequent Treatment mode — not for discovery, not
-  for citation or metadata gaps, and not as an official-copy fallback.
-- Three to five verified cases is a ceiling and a preference, not a quota. Use
-  fewer when only fewer can be verified and disclose incomplete coverage.
-- Extract selected cases with the supplied compact `extract-case --find`
-  commands in parallel in the same tool round; check `official_pagination`,
-  `source_url`, and `warnings`. For each unpaginated selected case, run exactly
-  one sequential recovery-enabled extraction (`--recover-official --timeout
-  120 --progress`) and let the command perform its single Scholar attempt.
-  Apply the execution-failure circuit breaker above; "each" never requires
-  probing a known broken desktop again. Never call
-  `extract-slip-opinion`, `lookup-citation`, Scholar, browser tools, alternate
-  opinion sites, or `web_search` yourself for pagination, metadata, or copies.
-- If a recovery returns no qualifying copy, is blocked, times out, or fails
-  validation, rely on the best unpaginated baseline the extraction returned,
-  disclose the missing official pagination, and link the case name or citation
-  to the returned `source_url`; if no URL was returned, say so.
-- Omit any treatment characterization the extracted text does not support, and
-  omit a case whose lead cannot be verified through bounded sources.
-
-This mode-specific ceiling supersedes the general discovery allowance in step 5
-for Subsequent Treatment runs; the global verification floor and the
-official-copy recovery contract still apply.
+For Subsequent Treatment, follow the preloaded subsequent-treatment workflow
+skill's discovery ceiling and the request's exact commands. That ceiling
+supersedes the general discovery allowance above; shared verification, bounded
+execution, and one-attempt official-copy recovery still apply. Never use
+`web_search` in that workflow. Describe only supported treatment and continue
+with useful verified baselines and disclosed limitations when recovery fails.
 
 ## Web-search fallback
 
@@ -384,16 +352,8 @@ the extracted sources:
 
 ## Answer requirements
 
-- For Appeal Issue research, make the required H1 title issue-specific: name
-  the specific appellate issue in no more than 10 words, such as
-  `# Cal-ICWA Inquiry`. Do not use a generic H1 title such as `# Assessment` or
-  `# Issue Assessment`.
-- For Appeal Issue research, treat the supplied fact pattern as the complete
-  factual record. Base the factual analysis only on that text. Do not speculate
-  that unprovided facts or a more complete record could alter the assessment,
-  and do not add a generic record-completeness caveat. Identify a concrete
-  ambiguity, contradiction, or missing record citation only where it affects
-  the analysis.
+- Follow the shared system's title/subtitle limits. For Case Assessment,
+  follow the preloaded case-assessment skill's structure and factual-record rules.
 - Confine research to California state law unless the question requires federal
   law.
 - Distinguish controlling authority, persuasive authority, and prior advocacy.

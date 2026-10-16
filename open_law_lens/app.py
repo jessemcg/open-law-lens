@@ -4,7 +4,6 @@ import contextlib
 import json
 import os
 import re
-import shlex
 import signal
 import shutil
 import sqlite3
@@ -47,7 +46,6 @@ from .agent import (
     resolved_agent_quote_spans,
 )
 from .answer_rendering import PreparedAnswer, prepare_answer
-from .agent_commands import agent_cli_command
 from .authority_resolver import first_authority_candidate
 from .cache import cluster_id_from_cluster
 from .cli_commands import CLI_COMMANDS
@@ -98,11 +96,6 @@ from .config import (
     AGENT_PROFILE_RESEARCH_CACHE,
     AGENT_PROFILE_SUBSEQUENT_TREATMENT,
     AppConfig,
-    DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
-    DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE,
-    DEFAULT_CASE_AGENT_PROMPT_TEMPLATE,
-    DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE,
-    DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
     DEFAULT_LINKED_TEXT_COLOR,
     DEFAULT_SEARCH_MATCH_COLOR,
     PiAgentProfile,
@@ -117,6 +110,7 @@ from .config import (
     READER_FONT_FAMILY_OPTIONS,
     save_config,
 )
+from . import agent_prompts
 from .current_case import (
     CurrentCaseDocument,
     CurrentCaseError,
@@ -165,7 +159,10 @@ from .pi_runtime import (
     find_pi_executable,
     find_pi_node_executable,
 )
-from .prior_briefs import PriorBrief, PriorBriefError, PriorBriefLibrary
+from .prior_briefs import (
+    DEFAULT_PRIOR_BRIEFS_DIR, PriorBrief, PriorBriefError, PriorBriefLibrary,
+    prior_briefs_dir,
+)
 from .quality import official_pagination_quality
 from .reader_highlights import (
     ReaderHighlight,
@@ -1019,10 +1016,9 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.set_title("Settings")
         self.set_default_size(900, 760)
         self.set_modal(False)
-        self._settings_page_keys: dict[Gtk.ListBoxRow, str] = {}
-        self._settings_stack: Gtk.Stack | None = None
         config = load_config()
         self._original_pi_profiles = dict(config.agent_runtime_profiles)
+        self._pending_pi_profiles = dict(self._original_pi_profiles)
         self._pi_profile_model_rows: dict[str, Adw.ComboRow] = {}
         self._pi_profile_thinking_rows: dict[str, Adw.ComboRow] = {}
         self._pi_profile_model_options: dict[str, list[PiModel | None]] = {}
@@ -1038,26 +1034,45 @@ class SettingsWindow(Adw.ApplicationWindow):
         toolbar_view = Adw.ToolbarView()
         header = Adw.HeaderBar()
         header.set_title_widget(Adw.WindowTitle(title="Settings"))
+        header.add_css_class("flat")
+        save_button = Gtk.Button(label="Save")
+        save_button.add_css_class("flat")
+        save_button.connect("clicked", self._on_save_clicked)
+        header.pack_end(save_button)
         toolbar_view.add_top_bar(header)
 
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        root.set_margin_top(12)
+        root.set_margin_top(18)
         root.set_margin_bottom(12)
-        root.set_margin_start(12)
-        root.set_margin_end(12)
+        root.set_margin_start(18)
+        root.set_margin_end(18)
         root.set_vexpand(True)
 
-        general_settings_group = Adw.PreferencesGroup()
-        self.general_settings_expander = Adw.ExpanderRow(
-            title="General Settings",
-            subtitle="CourtListener, display, lookup, concordance, and agent runtime.",
-        )
-        self.general_settings_expander.set_expanded(False)
-        general_settings_group.add(self.general_settings_expander)
+        # Like Focus, every category is a row in ONE shared boxed list.
+        # Creating a PreferencesGroup per row would instead make separate cards.
+        categories_group = Adw.PreferencesGroup()
+        categories_group.add_css_class("list-stack")
+        categories_group.set_hexpand(True)
+        root.append(categories_group)
+
+        self.settings_categories: dict[str, Adw.ExpanderRow] = {}
+        for title, subtitle in (
+            ("General", "CourtListener and source locations"),
+            ("Display", "Case view font and size"),
+            ("Highlights", "Search matches and linked text"),
+            ("Agent Models", "Independent models and reasoning for five workflows"),
+        ):
+            category = Adw.ExpanderRow(title=title, subtitle=subtitle)
+            category.set_expanded(False)
+            categories_group.add(category)
+            self.settings_categories[title] = category
+        general = self.settings_categories["General"]
+        display = self.settings_categories["Display"]
+        highlights = self.settings_categories["Highlights"]
 
         self.token_row = self._build_token_row()
         self.token_row.set_text(config.courtlistener_token)
-        self.general_settings_expander.add_row(self.token_row)
+        general.add_row(self.token_row)
 
         reader_font_adjustment = Gtk.Adjustment(
             value=config.reader_font_size_pt,
@@ -1071,7 +1086,7 @@ class SettingsWindow(Adw.ApplicationWindow):
             adjustment=reader_font_adjustment,
         )
         self.reader_font_size_row.set_digits(0)
-        self.general_settings_expander.add_row(self.reader_font_size_row)
+        display.add_row(self.reader_font_size_row)
 
         self.reader_font_family_values = [name for name, _css in READER_FONT_FAMILY_OPTIONS]
         self.reader_font_family_row = Adw.ComboRow(title="Case View Font")
@@ -1081,67 +1096,77 @@ class SettingsWindow(Adw.ApplicationWindow):
         except ValueError:
             selected_index = 0
         self.reader_font_family_row.set_selected(selected_index)
-        self.general_settings_expander.add_row(self.reader_font_family_row)
+        display.add_row(self.reader_font_family_row)
 
         self.search_match_color_row, self.search_match_color_control = self._build_search_color_row(
             "Search Match Color", config.search_match_color
         )
-        self.general_settings_expander.add_row(self.search_match_color_row)
+        highlights.add_row(self.search_match_color_row)
         self.linked_text_color_row, self.linked_text_color_control = self._build_search_color_row(
             "Linked Text Color", config.linked_text_color
         )
-        self.general_settings_expander.add_row(self.linked_text_color_row)
+        highlights.add_row(self.linked_text_color_row)
 
         self.concordance_row = Adw.EntryRow(title="Concordance file")
         self.concordance_row.set_text(config.concordance_file_path)
         self._add_concordance_row_buttons()
-        self.general_settings_expander.add_row(self.concordance_row)
+        general.add_row(self.concordance_row)
 
-        root.append(general_settings_group)
+        self.prior_briefs_folder_row = Adw.EntryRow(title="Prior Briefs Folder")
+        self.prior_briefs_folder_row.set_text(
+            config.prior_briefs_folder or str(DEFAULT_PRIOR_BRIEFS_DIR)
+        )
+        choose_folder_button = Gtk.Button(icon_name="folder-open-symbolic")
+        choose_folder_button.add_css_class("flat")
+        choose_folder_button.set_tooltip_text("Choose Prior Briefs Folder")
+        choose_folder_button.connect("clicked", self._on_choose_prior_briefs_folder)
+        self.prior_briefs_folder_row.add_suffix(choose_folder_button)
+        reset_folder_button = Gtk.Button(icon_name="view-refresh-symbolic")
+        reset_folder_button.add_css_class("flat")
+        reset_folder_button.set_tooltip_text("Use default Prior Briefs Folder")
+        reset_folder_button.connect("clicked", self._on_reset_prior_briefs_folder)
+        self.prior_briefs_folder_row.add_suffix(reset_folder_button)
+        general.add_row(self.prior_briefs_folder_row)
+        folder_hint = (
+            "Save to apply; then Update Prior Brief Library. Includes ODT files "
+            "in subfolders; original files stay in place."
+        )
+        override = os.environ.get("OPEN_LAW_LENS_PRIOR_BRIEFS_DIR")
+        if override:
+            folder_hint += f" Environment override currently takes precedence: {override}"
+        self.prior_briefs_folder_hint = Gtk.Label(label=folder_hint, xalign=0, wrap=True)
+        self.prior_briefs_folder_hint.add_css_class("dim-label")
+        self.prior_briefs_folder_hint.set_margin_start(12)
+        self.prior_briefs_folder_hint.set_margin_end(12)
+        self.prior_briefs_folder_hint.set_margin_top(6)
+        self.prior_briefs_folder_hint.set_margin_bottom(6)
+        general.add_row(self.prior_briefs_folder_hint)
 
-        split = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
-        split.set_hexpand(True)
-        split.set_vexpand(True)
-        split.set_shrink_start_child(False)
-        split.set_shrink_end_child(False)
-        split.set_resize_start_child(False)
-        split.set_resize_end_child(True)
-
-        page_list = Gtk.ListBox()
-        page_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
-        page_list.add_css_class("navigation-sidebar")
-        page_list.connect("row-selected", self._on_settings_page_row_selected)
-
-        page_list_scroller = Gtk.ScrolledWindow()
-        page_list_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        page_list_scroller.set_min_content_width(220)
-        page_list_scroller.set_child(page_list)
-
-        settings_stack = Gtk.Stack()
-        settings_stack.set_hexpand(True)
-        settings_stack.set_vexpand(True)
-        settings_stack.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
-        self._settings_stack = settings_stack
-
-        appeal_group = Adw.PreferencesGroup(title="Appeal Legal Question Assessment")
         appeal_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         appeal_box.set_margin_top(8)
         appeal_box.set_margin_bottom(8)
         appeal_box.set_margin_start(8)
         appeal_box.set_margin_end(8)
 
-        file_label = Gtk.Label(label="Fact pattern ODT or PDF", xalign=0)
-        file_label.add_css_class("dim-label")
+        file_label = Gtk.Label(label="Case Question Fact Pattern", xalign=0)
         appeal_box.append(file_label)
+        fact_hint = Gtk.Label(
+            label="ODT or PDF · Applies immediately to this window only; not saved. "
+                  "Reset uses Current Case SOCF.",
+            xalign=0, wrap=True,
+        )
+        fact_hint.add_css_class("dim-label")
+        appeal_box.append(fact_hint)
 
         file_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self.appeal_fact_pattern_entry = Gtk.Entry()
         self.appeal_fact_pattern_entry.set_hexpand(True)
+        self.appeal_fact_pattern_entry.set_editable(False)
         self.appeal_fact_pattern_entry.set_placeholder_text("Current case SOCF ODT")
         file_row.append(self.appeal_fact_pattern_entry)
         choose_fact_button = Gtk.Button(icon_name="document-open-symbolic")
         choose_fact_button.add_css_class("flat")
-        choose_fact_button.set_tooltip_text("Choose fact pattern")
+        choose_fact_button.set_tooltip_text("Choose File — fact pattern")
         choose_fact_button.connect("clicked", self._on_choose_appeal_fact_pattern)
         file_row.append(choose_fact_button)
         reset_fact_button = Gtk.Button(icon_name="view-refresh-symbolic")
@@ -1151,117 +1176,29 @@ class SettingsWindow(Adw.ApplicationWindow):
         file_row.append(reset_fact_button)
         appeal_box.append(file_row)
 
-        appeal_group.add(appeal_box)
-        appeal_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        appeal_page.set_margin_top(12)
-        appeal_page.set_margin_bottom(12)
-        appeal_page.set_margin_start(12)
-        appeal_page.set_margin_end(12)
-        appeal_page.append(appeal_group)
-        appeal_scroller = Gtk.ScrolledWindow()
-        appeal_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        appeal_scroller.set_vexpand(True)
-        appeal_scroller.set_child(appeal_page)
+        general.add_row(appeal_box)
         self._refresh_appeal_fact_pattern_entry()
-        agent_models_page = self._build_agent_models_settings_page()
-
-        (
-            general_prompt_page,
-            self.general_agent_prompt_buffer,
-        ) = self._build_prompt_settings_page(
-            "General California Law Prompt",
-            "Prompt",
-            config.general_agent_prompt_template,
-        )
-        (
-            case_prompt_page,
-            self.case_agent_prompt_buffer,
-        ) = self._build_prompt_settings_page(
-            "Marked Research Cache Authorities Prompt",
-            "Prompt",
-            config.case_agent_prompt_template,
-        )
-        (
-            brief_prompt_page,
-            self.brief_agent_prompt_buffer,
-        ) = self._build_prompt_settings_page(
-            "Prior Brief Agent Prompt",
-            "Prompt",
-            config.brief_agent_prompt_template,
-        )
-        (
-            appeal_prompt_page,
-            self.appeal_issue_agent_prompt_buffer,
-        ) = self._build_prompt_settings_page(
-            "Legal Question Assessment Prompt",
-            "Prompt",
-            config.appeal_issue_agent_prompt_template,
-        )
-        (
-            later_treatment_prompt_page,
-            self.later_treatment_agent_prompt_buffer,
-        ) = self._build_prompt_settings_page(
-            "Subsequent Treatment Prompt",
-            "Prompt",
-            config.later_treatment_agent_prompt_template,
+        self.settings_categories["Agent Models"].add_row(
+            self._build_agent_models_settings_page()
         )
 
-        pages = [
-            ("agent_models", "Agent Models", agent_models_page),
-            ("appeal", "Appeal Legal Questions", appeal_scroller),
-            ("general_prompt", "General Prompt", general_prompt_page),
-            ("cache_prompt", "Research Cache Prompt", case_prompt_page),
-            ("brief_prompt", "Prior Brief Prompt", brief_prompt_page),
-            ("appeal_prompt", "Appeal Prompt", appeal_prompt_page),
-            ("later_treatment_prompt", "Subsequent Treatment Prompt", later_treatment_prompt_page),
-        ]
-        first_row: Gtk.ListBoxRow | None = None
-        for key, title, page in pages:
-            row = Gtk.ListBoxRow()
-            row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            row_box.set_margin_top(8)
-            row_box.set_margin_bottom(8)
-            row_box.set_margin_start(12)
-            row_box.set_margin_end(12)
-            label = Gtk.Label(label=title, xalign=0)
-            row_box.append(label)
-            row.set_child(row_box)
-            page_list.append(row)
-            self._settings_page_keys[row] = key
-            if first_row is None:
-                first_row = row
-            settings_stack.add_named(page, key)
-
-        if first_row is not None:
-            settings_stack.set_visible_child_name(self._settings_page_keys[first_row])
-
-            def _select_first_row() -> bool:
-                if first_row.get_parent() is page_list:
-                    page_list.select_row(first_row)
-                return False
-
-            GLib.idle_add(_select_first_row)
-
-        split.set_start_child(page_list_scroller)
-        split.set_end_child(settings_stack)
-        root.append(split)
-
-        buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        buttons.set_halign(Gtk.Align.END)
-        save_button = Gtk.Button(label="Save Settings")
-        save_button.connect("clicked", self._on_save_clicked)
-        buttons.append(save_button)
-        root.append(buttons)
-
-        self.status_label = Gtk.Label(label="", xalign=0)
+        self.status_label = Gtk.Label(label="", xalign=0, wrap=True)
         self.status_label.add_css_class("dim-label")
-        root.append(self.status_label)
-
-        toolbar_view.set_content(root)
+        # Feedback stays visible even when the long model category is expanded.
+        feedback = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        feedback.set_margin_start(12)
+        feedback.set_margin_end(12)
+        feedback.set_margin_bottom(6)
+        feedback.append(self.status_label)
+        toolbar_view.add_bottom_bar(feedback)
+        self.settings_scroller = Gtk.ScrolledWindow()
+        self.settings_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.settings_scroller.set_child(root)
+        toolbar_view.set_content(self.settings_scroller)
         self.set_content(toolbar_view)
         self._load_pi_models()
 
-    def _build_agent_models_settings_page(self) -> Gtk.ScrolledWindow:
+    def _build_agent_models_settings_page(self) -> Gtk.Box:
         page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         page_box.set_margin_top(12)
         page_box.set_margin_bottom(12)
@@ -1326,49 +1263,7 @@ class SettingsWindow(Adw.ApplicationWindow):
             self._pi_profile_thinking_rows[key] = thinking_row
             page_box.append(group)
 
-        scrolled = Gtk.ScrolledWindow()
-        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scrolled.set_vexpand(True)
-        scrolled.set_child(page_box)
-        return scrolled
-
-    def _build_prompt_settings_page(
-        self,
-        title: str,
-        label: str,
-        text: str,
-    ) -> tuple[Gtk.ScrolledWindow, Gtk.TextBuffer]:
-        page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        page_box.set_margin_top(12)
-        page_box.set_margin_bottom(12)
-        page_box.set_margin_start(12)
-        page_box.set_margin_end(12)
-        page_box.set_vexpand(True)
-
-        title_label = Gtk.Label(label=title, xalign=0)
-        title_label.add_css_class("title-3")
-        page_box.append(title_label)
-
-        prompt_group = Adw.PreferencesGroup()
-        prompt_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        prompt_box.set_vexpand(True)
-        prompt_box.set_margin_top(8)
-        prompt_box.set_margin_bottom(8)
-        prompt_box.set_margin_start(8)
-        prompt_box.set_margin_end(8)
-        prompt_label = Gtk.Label(label=label, xalign=0)
-        prompt_label.add_css_class("dim-label")
-        prompt_box.append(prompt_label)
-        prompt_scroller, buffer = self._build_prompt_editor(text)
-        prompt_box.append(prompt_scroller)
-        prompt_group.add(prompt_box)
-        page_box.append(prompt_group)
-
-        scrolled = Gtk.ScrolledWindow()
-        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scrolled.set_vexpand(True)
-        scrolled.set_child(page_box)
-        return scrolled, buffer
+        return page_box
 
     def _on_settings_close_request(self, *_args: object) -> bool:
         self._pi_model_closed = True
@@ -1532,8 +1427,9 @@ class SettingsWindow(Adw.ApplicationWindow):
         desired_profiles = (
             self._selected_pi_profiles()
             if self._pi_profiles_ready
-            else dict(self._original_pi_profiles)
+            else dict(self._pending_pi_profiles)
         )
+        self._pending_pi_profiles = dict(desired_profiles)
         self._pi_model_generation += 1
         generation = self._pi_model_generation
         for row in self._pi_profile_model_rows.values():
@@ -1575,6 +1471,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         if self._pi_model_closed or generation != self._pi_model_generation:
             return False
         self.pi_model_refresh_button.set_sensitive(True)
+        self._pending_pi_profiles = dict(desired_profiles)
         self._pi_runtime_catalog = catalog
         self._pi_profiles_ready = catalog is not None and not error
         if catalog is None or error:
@@ -1667,17 +1564,6 @@ class SettingsWindow(Adw.ApplicationWindow):
             )
         return False
 
-    def _on_settings_page_row_selected(
-        self,
-        _list_box: Gtk.ListBox,
-        row: Gtk.ListBoxRow | None,
-    ) -> None:
-        if row is None or self._settings_stack is None:
-            return
-        key = self._settings_page_keys.get(row)
-        if key:
-            self._settings_stack.set_visible_child_name(key)
-
     def _build_token_row(self) -> Adw.EntryRow:
         password_row_cls = getattr(Adw, "PasswordEntryRow", None)
         if password_row_cls is not None:
@@ -1691,28 +1577,6 @@ class SettingsWindow(Adw.ApplicationWindow):
         if callable(set_visibility):
             set_visibility(False)
         return row
-
-    def _build_prompt_editor(self, text: str) -> tuple[Gtk.ScrolledWindow, Gtk.TextBuffer]:
-        buffer = Gtk.TextBuffer()
-        buffer.set_text(text)
-        view = Gtk.TextView(buffer=buffer)
-        view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
-        view.set_left_margin(8)
-        view.set_right_margin(8)
-        view.set_top_margin(8)
-        view.set_bottom_margin(8)
-        scroller = Gtk.ScrolledWindow()
-        scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        scroller.set_min_content_height(260)
-        scroller.set_vexpand(True)
-        scroller.set_hexpand(True)
-        scroller.set_child(view)
-        return scroller, buffer
-
-    def _prompt_text(self, buffer: Gtk.TextBuffer) -> str:
-        start = buffer.get_start_iter()
-        end = buffer.get_end_iter()
-        return buffer.get_text(start, end, True)
 
     def _refresh_appeal_fact_pattern_entry(self) -> None:
         if self.parent_window._appeal_fact_pattern_path_override is not None:
@@ -1795,43 +1659,38 @@ class SettingsWindow(Adw.ApplicationWindow):
     def _on_save_clicked(self, _button: Gtk.Button) -> None:
         token = self.token_row.get_text().strip()
         concordance_path = self.concordance_row.get_text().strip()
+        previous_config = load_config()
+        folder = self.prior_briefs_folder_row.get_text().strip()
+        if folder == str(DEFAULT_PRIOR_BRIEFS_DIR):
+            folder = ""
+        folder_changed = folder != previous_config.prior_briefs_folder
+        if folder_changed and folder:
+            try:
+                path = Path(folder).expanduser()
+                if not path.is_absolute() or not path.is_dir() or not os.access(path, os.R_OK | os.X_OK):
+                    raise ValueError("Folder must exist, be readable, and have an absolute path.")
+                folder = str(path.resolve())
+            except (OSError, RuntimeError, ValueError) as exc:
+                self.status_label.set_text(f"Unable to set Prior Briefs Folder: {exc}")
+                return
         selected_font_family_index = int(self.reader_font_family_row.get_selected())
         if 0 <= selected_font_family_index < len(self.reader_font_family_values):
             reader_font_family = self.reader_font_family_values[selected_font_family_index]
         else:
             reader_font_family = load_config().reader_font_family
         # Preserve retired settings during round trips without exposing them.
-        previous_config = load_config()
         bare_statute_law_code = previous_config.default_bare_statute_law_code
         agent_runtime_profiles = (
             self._selected_pi_profiles()
             if self._pi_profiles_ready
-            else dict(self._original_pi_profiles)
+            else dict(self._pending_pi_profiles)
         )
         profiles_changed = agent_runtime_profiles != self._original_pi_profiles
         config = AppConfig(
             courtlistener_token=token,
             concordance_file_path=concordance_path,
-            general_agent_prompt_template=(
-                self._prompt_text(self.general_agent_prompt_buffer).strip()
-                or DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE
-            ),
-            case_agent_prompt_template=(
-                self._prompt_text(self.case_agent_prompt_buffer).strip()
-                or DEFAULT_CASE_AGENT_PROMPT_TEMPLATE
-            ),
-            brief_agent_prompt_template=(
-                self._prompt_text(self.brief_agent_prompt_buffer).strip()
-                or DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE
-            ),
-            appeal_issue_agent_prompt_template=(
-                self._prompt_text(self.appeal_issue_agent_prompt_buffer).strip()
-                or DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
-            ),
-            later_treatment_agent_prompt_template=(
-                self._prompt_text(self.later_treatment_agent_prompt_buffer).strip()
-                or DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE
-            ),
+            prior_briefs_folder=folder,
+            retired_prompt_settings=previous_config.retired_prompt_settings,
             appeal_issue_presets=previous_config.appeal_issue_presets,
             appeal_issue_labels=previous_config.appeal_issue_labels,
             agent_runtime_profiles=agent_runtime_profiles,
@@ -1855,12 +1714,39 @@ class SettingsWindow(Adw.ApplicationWindow):
             self.status_label.set_text(f"Unable to save settings: {exc}")
             return
         self._original_pi_profiles = dict(agent_runtime_profiles)
+        self.prior_briefs_folder_row.set_text(folder or str(DEFAULT_PRIOR_BRIEFS_DIR))
         self.parent_window.reload_settings()
-        self.status_label.set_text(
-            "Settings saved. Agent model profiles apply to new sessions."
-            if profiles_changed
-            else "Settings saved."
-        )
+        messages = ["Settings saved."]
+        if folder_changed:
+            messages.append("Use Update Prior Brief Library to index the selected folder.")
+        if profiles_changed:
+            messages.append("Agent model profiles apply to new sessions.")
+        self.status_label.set_text(" ".join(messages))
+
+    def _on_choose_prior_briefs_folder(self, _button: Gtk.Button) -> None:
+        file_dialog_cls = getattr(Gtk, "FileDialog", None)
+        if file_dialog_cls is None:
+            self.status_label.set_text("Folder chooser is unavailable in this GTK version.")
+            return
+        dialog = file_dialog_cls(title="Choose Prior Briefs Folder")
+        try:
+            initial = Path(self.prior_briefs_folder_row.get_text()).expanduser()
+            if initial.is_dir():
+                dialog.set_initial_folder(Gio.File.new_for_path(str(initial)))
+        except (OSError, RuntimeError, ValueError):
+            pass
+        dialog.select_folder(self, None, self._on_prior_briefs_folder_chosen)
+
+    def _on_prior_briefs_folder_chosen(self, dialog: Any, result: Gio.AsyncResult) -> None:
+        try:
+            file = dialog.select_folder_finish(result)
+        except GLib.Error:
+            return
+        if file is not None and (path := file.get_path()):
+            self.prior_briefs_folder_row.set_text(path)
+
+    def _on_reset_prior_briefs_folder(self, _button: Gtk.Button) -> None:
+        self.prior_briefs_folder_row.set_text(str(DEFAULT_PRIOR_BRIEFS_DIR))
 
     def _add_concordance_row_buttons(self) -> None:
         add_suffix = getattr(self.concordance_row, "add_suffix", None)
@@ -2710,11 +2596,21 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def _build_menu_button(self) -> Gtk.MenuButton:
         menu = Gio.Menu()
-        menu.append("Keyboard Shortcuts", "win.show_shortcuts")
-        menu.append("CLI Commands", "win.show_cli_commands")
-        menu.append("D-Bus Commands", "win.show_dbus_commands")
-        menu.append("Update Prior Brief Library", "win.update_brief_library")
-        menu.append("Settings", "win.settings")
+        for entries in (
+            (("Update Prior Brief Library", "win.update_brief_library"),),
+            (
+                ("Settings", "win.settings"),
+                ("Keyboard Shortcuts", "win.show_shortcuts"),
+            ),
+            (
+                ("CLI Commands", "win.show_cli_commands"),
+                ("D-Bus Commands", "win.show_dbus_commands"),
+            ),
+        ):
+            section = Gio.Menu()
+            for label, action in entries:
+                section.append(label, action)
+            menu.append_section(None, section)
         button = Gtk.MenuButton(icon_name="open-menu-symbolic")
         button.set_tooltip_text("Menu")
         button.set_menu_model(menu)
@@ -5210,42 +5106,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         cluster_id: str,
         target_citation: str,
     ) -> str:
-        command = agent_cli_command(
-            f"published-citing-cases --cluster-id {cluster_id} --limit 10 --json"
-        )
-        target_title = cluster_short_title(cluster)
-
-        def exact_phrase_search_command(query_text: str) -> str:
-            phrase = json.dumps(query_text.strip(), ensure_ascii=False)
-            return agent_cli_command(f"case-search {shlex.quote(phrase)} --limit 10 --compact")
-
-        citation_search_command = exact_phrase_search_command(target_citation)
-        case_name_search_command = exact_phrase_search_command(target_title)
-        compact_extract_command = agent_cli_command(
-            'extract-case --cluster-id <cluster_id> --find "<term>" --find "<term>"'
-        )
-        recover_official_extract_command = agent_cli_command(
-            'extract-case "<official citation>" --recover-official --timeout 120'
-            ' --progress --find "<term>"'
-        )
-        full_extract_command = agent_cli_command(
-            "extract-case --cluster-id <cluster_id>"
-        )
-        config = load_config()
-        return self._format_agent_prompt(
-            config.later_treatment_agent_prompt_template,
-            DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
-            {
-                "target_title": target_title,
-                "target_citation": target_citation,
-                "cluster_id": cluster_id,
-                "published_citing_cases_command": command,
-                "citation_search_command": citation_search_command,
-                "case_name_search_command": case_name_search_command,
-                "compact_extract_command": compact_extract_command,
-                "recover_official_extract_command": recover_official_extract_command,
-                "full_extract_command": full_extract_command,
-            },
+        return agent_prompts.treatment_request(
+            cluster_short_title(cluster), cluster_id, target_citation,
         )
 
     def _reader_selection_pinpoint_citation(self, start_offset: int, end_offset: int) -> str:
@@ -5837,11 +5699,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         ).start()
 
     def _brief_phrase_search_worker(self, query: str, generation: int) -> None:
+        library = self.prior_briefs
         try:
-            sync_result = self.prior_briefs.sync()
+            sync_result = library.sync()
             groups = [
                 PriorBriefPhraseGroup(brief=brief, spans=spans)
-                for brief in self.prior_briefs.search_phrase_briefs(query)
+                for brief in library.search_phrase_briefs(query)
                 if (spans := tuple(quote_match_spans(brief.text, query)))
             ]
             GLib.idle_add(
@@ -6873,6 +6736,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def reload_settings(self) -> None:
         self.client = CourtListenerClient.default()
+        previous_briefs = getattr(self, "prior_briefs", None)
+        folder_changed = (
+            previous_briefs is not None
+            and previous_briefs.source_dir.resolve() != prior_briefs_dir()
+        )
+        if folder_changed:
+            self.prior_briefs = PriorBriefLibrary.default()
+            self._clear_brief_search_session()
         self._research_cache_generation += 1
         self._case_load_generation += 1
         self._install_css()
@@ -6889,7 +6760,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._refresh_current_case_context()
         self._load_cached_cases()
         self._refresh_case_suggestion_index_async(force=True)
-        self._set_status("Settings saved.")
+        self._set_status(
+            "Prior Briefs Folder changed. Use Update Prior Brief Library to index it."
+            if folder_changed else "Settings saved."
+        )
 
     def _on_open_settings(self, _action: Gio.SimpleAction, _parameter: GLib.Variant | None) -> None:
         if self._settings_window is None:
@@ -6965,11 +6839,16 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         _parameter: GLib.Variant | None,
     ) -> None:
         self._set_status("Updating Prior Brief Library...")
+        library = self.prior_briefs
         self._start_background_worker(
-            self.prior_briefs.sync,
-            on_success=self._finish_prior_brief_library_update,
-            on_error=lambda exc: self._set_status(
-                f"Unable to update Prior Brief Library: {exc}"
+            library.sync,
+            on_success=lambda result: (
+                self._finish_prior_brief_library_update(result)
+                if self.prior_briefs is library else None
+            ),
+            on_error=lambda exc: (
+                self._set_status(f"Unable to update Prior Brief Library: {exc}")
+                if self.prior_briefs is library else None
             ),
             handled_exceptions=(PriorBriefError, OSError, ValueError),
         )
@@ -9765,17 +9644,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return "Saved to Library with official reporter pagination."
         return "Loaded with official reporter pagination."
 
-    def _format_agent_prompt(
-        self,
-        template: str,
-        fallback: str,
-        values: dict[str, object],
-    ) -> str:
-        try:
-            return template.format_map(values).strip()
-        except (KeyError, ValueError):
-            return fallback.format_map(values).strip()
-
     def _compose_general_agent_prompt(
         self,
         question: str,
@@ -9783,20 +9651,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         current_case_selected: bool = False,
         current_case_warning: str = "",
     ) -> str:
-        config = load_config()
-        prompt = self._format_agent_prompt(
-            config.general_agent_prompt_template,
-            DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE,
-            {"question": question},
+        return agent_prompts.law_request(
+            question, current_case_export, current_case_selected, current_case_warning,
         )
-        if not current_case_selected:
-            return prompt
-        context = OpenLawLensWindow._compose_current_case_context(
-            current_case_export,
-            True,
-            current_case_warning,
-        )
-        return f"{prompt}\n\n{context}"
 
     def _compose_case_agent_prompt(
         self,
@@ -9806,23 +9663,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         current_case_selected: bool = False,
         current_case_warning: str = "",
     ) -> str:
-        config = load_config()
-        prompt = self._format_agent_prompt(
-            config.case_agent_prompt_template,
-            DEFAULT_CASE_AGENT_PROMPT_TEMPLATE,
-            {
-                "question": question,
-                "case_manifest": str(export.manifest_path),
-                "case_dir": str(export.case_dir),
-                "case_count": getattr(export, "authority_count", export.case_count),
-            },
+        return agent_prompts.cache_request(
+            question, export, current_case_export, current_case_selected, current_case_warning,
         )
-        context = OpenLawLensWindow._compose_current_case_context(
-            current_case_export,
-            current_case_selected,
-            current_case_warning,
-        )
-        return f"{prompt}\n\n{context}"
 
     def _compose_brief_agent_prompt(
         self,
@@ -9833,22 +9676,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         current_case_selected: bool = False,
         current_case_warning: str = "",
     ) -> str:
-        config = load_config()
-        prompt = self._format_agent_prompt(
-            config.brief_agent_prompt_template,
-            DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE,
-            {
-                "question": question,
-                "brief_database": str(database_path),
-                "brief_count": brief_count,
-            },
+        return agent_prompts.briefs_request(
+            question, database_path, brief_count,
+            current_case_export, current_case_selected, current_case_warning,
         )
-        context = OpenLawLensWindow._compose_current_case_context(
-            current_case_export,
-            current_case_selected,
-            current_case_warning,
-        )
-        return f"{prompt}\n\n{context}"
 
     @staticmethod
     def _compose_current_case_context(
@@ -9856,44 +9687,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         selected: bool,
         warning: str = "",
     ) -> str:
-        heading = "Current-case factual context for this run:\n"
-        if not selected:
-            return (
-                f"{heading}Not selected. Answer without assuming facts about the current case."
-            )
-        if current_case_export is None:
-            reason = warning.strip() or "Current case SOCF was not available."
-            return (
-                f"{heading}Unavailable: {reason}\n"
-                "Do not guess about the current case. If the question requires current-case "
-                "facts, explain that the selected factual context is unavailable."
-            )
-        return (
-            f"{heading}This material is within the authorized scope. Treat it as facts, not "
-            "legal authority. Read the extracted text before applying or comparing legal "
-            "authority to the current case. Cite facts with record citations already present "
-            "in the text; do not cite local paths, filenames, or line numbers.\n"
-            f"Extracted fact-pattern text: {current_case_export.text_path}\n"
-            f"Copied source file: {current_case_export.source_copy_path}"
-        )
+        return agent_prompts.current_case_context(current_case_export, selected, warning)
 
     def _compose_appeal_issue_agent_prompt(
         self,
         issue: str,
         export: FactPatternExport,
     ) -> str:
-        config = load_config()
-        return self._format_agent_prompt(
-            config.appeal_issue_agent_prompt_template,
-            DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
-            {
-                "issue": issue,
-                "fact_pattern_path": str(export.text_path),
-                "fact_pattern_source_path": str(export.source_copy_path),
-                "fact_pattern_original_path": str(export.source_path),
-                "fact_pattern_source_name": export.source_path.name,
-            },
-        )
+        return agent_prompts.assessment_request(issue, export)
 
     def _write_prompt_file(self, prompt: str) -> Path:
         handle = tempfile.NamedTemporaryFile(
@@ -10124,14 +9925,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         current_case_selected: bool,
         current_case_warning: str,
     ) -> None:
+        library = self.prior_briefs
         try:
-            sync_result = self.prior_briefs.sync()
+            sync_result = library.sync()
             if sync_result.errors:
                 raise PriorBriefError("; ".join(sync_result.errors[:3]))
-            if self.prior_briefs.count() == 0:
+            if library.count() == 0:
                 raise PriorBriefError("The Prior Brief Library is empty.")
             workspace = self._create_agent_workspace()
-            snapshot_path = self.prior_briefs.backup(workspace / "prior_briefs.sqlite3")
+            snapshot_path = library.backup(workspace / "prior_briefs.sqlite3")
             current_case_export: FactPatternExport | None = None
             warning = current_case_warning
             if current_case_selected and current_case is not None:
@@ -10142,7 +9944,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                     )
                 except (FactPatternError, OSError) as exc:
                     warning = str(exc)
-            briefs = self.prior_briefs.list_briefs()
+            briefs = library.list_briefs()
             text_sources = [
                 CaseTextSource(
                     cluster_id="",

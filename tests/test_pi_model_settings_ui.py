@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -60,6 +61,7 @@ def model_window(
         _pi_profile_thinking_options={},
         _pi_profile_adjustment_notes={},
         _original_pi_profiles=dict(original or {}),
+        _pending_pi_profiles=dict(original or {}),
         pi_model_refresh_button=FakeButton(),
     )
     window._selected_pi_model = lambda key: SettingsWindow._selected_pi_model(  # type: ignore[arg-type]
@@ -98,6 +100,44 @@ class PiModelSettingsUiTests(unittest.TestCase):
             AGENT_PROFILE_TITLES[AGENT_PROFILE_SUBSEQUENT_TREATMENT],
             "Subsequent Treatment",
         )
+
+    def test_layout_has_only_one_app_scroller_and_no_prompt_editors(self):
+        source = inspect.getsource(SettingsWindow)
+        for retired in ('Gtk.Stack', 'Gtk.Paned', '_settings_page_keys',
+                        '_build_prompt_editor', 'prompt_buffer', 'navigation-sidebar'):
+            self.assertNotIn(retired, source)
+        self.assertEqual(source.count('= Gtk.ScrolledWindow()'), 1)
+        self.assertIn('Gtk.Button(label="Save")', source)
+        self.assertIn('retired_prompt_settings=previous_config.retired_prompt_settings', source)
+        self.assertNotIn('set_expanded(True)', source)
+
+    def test_categories_share_one_boxed_preferences_group(self):
+        source = inspect.getsource(SettingsWindow.__init__)
+        self.assertEqual(source.count('Adw.PreferencesGroup()'), 1)
+        self.assertEqual(source.count('root.append(categories_group)'), 1)
+        self.assertLess(source.index('root.append(categories_group)'),
+                        source.index('for title, subtitle in'))
+        category_loop = source.split('for title, subtitle in', 1)[1].split(
+            'general = self.settings_categories', 1)[0]
+        self.assertIn('categories_group.add(category)', category_loop)
+        self.assertNotIn('Adw.PreferencesGroup()', category_loop)
+        self.assertNotIn('root.append(', category_loop)
+
+    def test_close_invalidates_pending_model_generation(self):
+        window = model_window()
+        SettingsWindow._on_settings_close_request(window)
+        self.assertTrue(window._pi_model_closed)
+        self.assertEqual(window._pi_model_generation, 2)
+        SettingsWindow._finish_pi_model_load(window, 1, None, 'stale', {})
+        self.assertFalse(window.pi_model_refresh_button.sensitive)
+
+    def test_failure_keeps_unsaved_profile_snapshot_for_retry_or_save(self):
+        saved = PiAgentProfile('synthetic', 'saved', 'high')
+        draft = PiAgentProfile('synthetic', 'draft', 'low')
+        window = model_window({'law': saved})
+        self._finish(window, None, 'Synthetic failure', {'law': draft})
+        self.assertEqual(window._pending_pi_profiles, {'law': draft})
+        self.assertEqual(window._original_pi_profiles, {'law': saved})
 
     def setUp(self) -> None:
         self.sol = PiModel(

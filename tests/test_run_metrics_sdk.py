@@ -6,6 +6,9 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from types import SimpleNamespace
+
+from open_law_lens import agent_prompts
 
 from open_law_lens.agent import extract_latest_pi_final_answer_from_jsonl, PiSessionSnapshotCache
 import test_agent_vte_wrapper as wrapper_tests
@@ -25,6 +28,24 @@ class RunMetricsSDKTests(unittest.TestCase):
             with self.subTest(workflow=workflow), tempfile.TemporaryDirectory() as d:
                 root = Path(d)
                 project, workspace, prompt = helper._fixture(root)
+                for resource in (PROJECT / '.pi').rglob('*.md'):
+                    if resource.name not in {'SKILL.md', 'SYSTEM.md'}:
+                        continue
+                    target = project / resource.relative_to(PROJECT)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(resource.read_bytes())
+                export = SimpleNamespace(text_path=workspace / 'facts.txt',
+                    source_copy_path=workspace / 'facts.odt', source_path=Path('/synthetic/facts.odt'),
+                    manifest_path=workspace / 'manifest.json', case_dir=workspace / 'authorities', authority_count=2)
+                literal = 'CANARY initial {literal} /skill:not-expanded é'
+                requests = {
+                    'law': agent_prompts.law_request(literal, export, True),
+                    'research_cache': agent_prompts.cache_request(literal, export, export, True),
+                    'prior_briefs': agent_prompts.briefs_request(literal, workspace / 'briefs.sqlite3', 7),
+                    'assess_argument': agent_prompts.assessment_request(literal, export),
+                    'subsequent_treatment': agent_prompts.treatment_request(literal, '42', '10 Cal.App.5th 25'),
+                }
+                prompt.write_text(requests[workflow])
                 if mode in {'general', 'appeal'}:
                     web = helper._install_web_access(root)
                     (web / 'index.ts').write_text('export default function(pi) { pi.registerTool({name:"web_search", label:"Synthetic web", description:"Synthetic", parameters:{type:"object",properties:{}}, execute:async()=>({content:[],details:{}})}); }')
@@ -61,6 +82,30 @@ class RunMetricsSDKTests(unittest.TestCase):
                     self.assertEqual(snapshot.answer_id, snapshot.response_id)
                     self.assertEqual(snapshot.answer_request_id, snapshot.request_id)
                     data.pop('session_file')
+                    # Follow-ups stay in the original session's preloaded workflow,
+                    # with no new skill selection or prompt-template expansion.
+                    skill_names = {'law': 'law-question', 'research_cache': 'research-cache',
+                        'prior_briefs': 'prior-briefs', 'assess_argument': 'case-assessment',
+                        'subsequent_treatment': 'subsequent-treatment'}
+                    systems = []
+                    for context in data['contexts']:
+                        # Current Pi normalizes systemPrompt into transcript system
+                        # messages before calling a provider; keep older SDK support.
+                        text = context.get('systemPrompt', '')
+                        if not text:
+                            for message in context['messages']:
+                                if message['role'] != 'system':
+                                    continue
+                                content = message.get('content', '')
+                                text += content if isinstance(content, str) else ''.join(
+                                    block.get('text', '') for block in content)
+                                text += ''.join(section for section in message.get('sections', {}).values()
+                                                if isinstance(section, str))
+                        systems.append(text)
+                        self.assertEqual(text.count(f'name: {skill_names[workflow]}\n'), 1)
+                        self.assertEqual(text.count('name: legal-researcher\n'), int(mode in {'general', 'appeal'}))
+                    self.assertEqual(systems[0], systems[-1])
+                    self.assertIn(literal, json.dumps(data['contexts'], ensure_ascii=False))
                     captures.append(data)
                 for capture in captures[1:]:
                     self.assertEqual(captures[0], capture)

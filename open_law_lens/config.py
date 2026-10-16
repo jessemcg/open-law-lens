@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -9,19 +8,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .agent_commands import AGENT_CLI_COMMAND_PREFIX, normalize_agent_prompt_commands, legacy_prompt_fingerprint_text
-
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 CONFIG_PATH = Path(os.environ.get("OPEN_LAW_LENS_CONFIG", str(PROJECT_DIR / "config.json")))
 CONFIG_KEY_COURTLISTENER_TOKEN = "courtlistener_token"
 CONFIG_KEY_CONCORDANCE_FILE_PATH = "concordance_file_path"
-CONFIG_KEY_GENERAL_AGENT_PROMPT_TEMPLATE = "general_agent_prompt_template"
-CONFIG_KEY_CASE_AGENT_PROMPT_TEMPLATE = "case_agent_prompt_template"
-CONFIG_KEY_BRIEF_AGENT_PROMPT_TEMPLATE = "brief_agent_prompt_template"
-CONFIG_KEY_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE = "appeal_issue_agent_prompt_template"
-CONFIG_KEY_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE = "subsequent_treatment_agent_prompt_template"
-CONFIG_KEY_LEGACY_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE = "later_treatment_agent_prompt_template"
+CONFIG_KEY_PRIOR_BRIEFS_FOLDER = "prior_briefs_folder"
+# Opaque, inactive compatibility data. Never interpret, normalize, or insert defaults.
+RETIRED_PROMPT_KEYS: tuple[str, ...] = (
+    "general_agent_prompt_template",
+    "case_agent_prompt_template",
+    "brief_agent_prompt_template",
+    "appeal_issue_agent_prompt_template",
+    "subsequent_treatment_agent_prompt_template",
+    "later_treatment_agent_prompt_template",
+)
 CONFIG_KEY_APPEAL_ISSUE_PRESETS = "appeal_issue_presets"
 CONFIG_KEY_APPEAL_ISSUE_LABELS = "appeal_issue_labels"
 CONFIG_KEY_AGENT_RUNTIME_PROFILES = "agent_runtime_profiles"
@@ -45,18 +46,10 @@ AGENT_PROFILE_KEYS: tuple[str, ...] = (
     AGENT_PROFILE_SUBSEQUENT_TREATMENT,
 )
 # Version 2 introduced the independent Subsequent Treatment profile. Legacy
-# configs (version absent or 1) have it cloned once from the Query Law profile
-# when loading; version 2 or newer treats an absent entry as an intentional
-# Use Pi defaults selection.
+# configs clone Query Law once; version 2 absent means Use Pi defaults.
 AGENT_RUNTIME_PROFILES_VERSION = 2
 PI_THINKING_LEVELS: tuple[str, ...] = (
-    "off",
-    "minimal",
-    "low",
-    "medium",
-    "high",
-    "xhigh",
-    "max",
+    "off", "minimal", "low", "medium", "high", "xhigh", "max",
 )
 DEFAULT_READER_FONT_SIZE_PT = 11
 DEFAULT_SEARCH_MATCH_COLOR = "#fff3b0"
@@ -94,138 +87,6 @@ LEGACY_READER_FONT_FAMILY_ALIASES: dict[str, str] = {
     "Source Sans 3": "Lato",
 }
 
-LEGACY_GENERAL_AGENT_PROMPT_SHA256ES = (
-    "a168fd313f71015a9a730bd2912aba0d1a9e51bfdeb28ecdaed039707e07d92a",
-    "50a9928018ec7d3b06b322db9e5a211e56c7a155b09537d1f7057906fb6a14e4",
-    "5d787ed00945b45a32f60026679908a718fc7d174080951f5f3bbe5e70921dc6",
-    "e8da4e994bce96bd6acc337c1361fa225adf62a6cc5f5044ff42ed17c1d14aec",
-    # Historical default that retained case-search/extract-case workflow text.
-    "34f68d9555ec52349ee41209d9e3a85359b1b71613a141df01c1caef9156ac59",
-    # Prompt as stored on disk before the workflow text moved into the skill.
-    "0d41e7db6fdb921685d704da391bbe8b2341118fae09f3a96e4534eba07210f0",
-)
-LEGACY_CASE_AGENT_PROMPT_SHA256ES = (
-    # Shipped default that excluded the checked SOCF from direct quotations.
-    "36d0d6e15501a0d0b8c9ec066b7e13826a5d4bc647b88e00d663263f9bd67586",
-    "90bd5ba6984eb91b4b7c72c3a33617896ed2b6279ce3bdd5592f07f15fc73f9b",
-    "58395b3951138bf6ebdc383a5f52366ca7f7c81e0fcd6b1b75b6095c36a5f3d8",
-    "21f8d2e20a04a17942009d9bb12957263ed4461f58cf46d7d62e40aa8da7d604",
-    "5c11542ccdffaef4e88e0fa568bc1dc9b35204cb3d4cf2d1983db829217596a9",
-    "b34a8f1ffb8ae9e574c5caf791739d2745ed330013c420b85fb30c384d15123f",
-    "11b5512669311cff769c62e9e91f7ed27ef2793042a2807584375d36fba64cdb",
-    "e33c90f7bb6f972b9ed934f155420a51c51dd8e64b613ca41cbda250fe37847a",
-)
-LEGACY_APPEAL_ISSUE_AGENT_PROMPT_SHA256ES = (
-    "395b6ae8e9fb01913bc839e5715e0c499c9714708561beba9841ea3487dbb1ce",
-    "b57fb338bb6148eaa4937be89de687884b1f42f2ef2d966d9d4a21cb3816d338",
-    "89f0c0d29553434588a1060de8d979d91c9a15ca27b214ee16ff3498209b6089",
-    "825b58f274b81af60c7fdd0fb2a55e9a6ad43c8bbd31f6d51f0c632d2c7a5599",
-    "cc5c2ba125d0ee0ff42d65db1b58f0d9e7fc281ad1a12d3693f82caca551af24",
-    "148e132f9bf9440d84437f2116cb2f2bcc7bbc4654d1508d2644ea8a9dbb3614",
-    "5efdaaf4380c89a75ed1073d8a6476511cd59d58c54837e6d741f8dfa386e8a2",
-    # Retained case-search-first research paragraph before the skill's route
-    # gate was aligned into the Appeal prompt.
-    "6e12830dcbf441e0a75670284678eeeebe193d27e33574eeed87f01a1af461bb",
-    # Default that still referred to the removed Tavily/direct-HTTP Scholar
-    # official-copy cascade.
-    "cb07bcae20bd7e440cf1bb061f2abba0fa8b7a58fe008d1c7edc17739a78b2ab",
-    # Immediately preceding tracked default, framed as advocacy with a
-    # Strong/Medium/Weak/Frivolous rating line.
-    "a6826775cff0c970339ba4153aa1cf72f15904b9047032f3beee7f3ecd2adec8",
-    # Older stored local prompt with generic Scholar/web-search guidance and an
-    # argument-strength rating, predating the routed research workflow.
-    "dee4354a0630d199daf29e40ead8fb1d3dc44feb4ae248309b4adfc3b9bddc3b",
-)
-LEGACY_LATER_TREATMENT_AGENT_PROMPT_SHA256ES = (
-    # Bounded discovery default before explicit execution/JSON failure rules.
-    "ad5d943b604828e7ded91cf31ccc3cdf09eb1d5b3e8ae40e7e85b96dd57b3070",
-    "e73fc8abadd94b2affb966c126dfb0c2416e0fc86c1994baa486b01deb5d1834",
-    "53b08107f87f27b6cd70b895eef4d43522ca311e4c2f40f47aa6cd92b640469e",
-    # Immediately preceding tracked default, with judgment-based case-search
-    # recovery and an unconditional official-citation requirement.
-    "f159d1a8fbe1f02f3ece3e82d0a4f7f49770f1a58f3a29929c8846176104af08",
-    # Older stored local prompt that explicitly allowed Scholar, California
-    # Courts, and Codex web search as official-copy/citation fallbacks.
-    "b43665a83f9b32a9cca092b06ddd7aa8b00d4dabf3a510d0d6a834b7afca1a00",
-)
-
-DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens General California Law Agent.
-
-Answer only legal questions about California law. Confine research to California state law unless the user's question explicitly requires federal law.
-
-Question:
-{question}"""
-
-DEFAULT_CASE_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens Marked Research Cache Agent.
-
-Answer only from the selected Research Cache materials and any current-case factual context explicitly selected for this run. Do not use web browsing or unselected Open Law Lens materials. Treat cases, statutes, and rules as legal authority. Treat prior briefs as prior advocacy that may supply argument language but is not legal authority. Treat any current-case fact pattern as factual context only, not as legal authority. Treat saved agent answers as prior analysis for context only, not as legal authority. If the exported materials do not answer the question, say that plainly.
-
-When current-case factual context is provided and the question calls for comparison, compare the current case with the selected authorities using legally significant facts, procedural posture, legal issues, and governing standards. Cite current-case facts with the record citations already present in the fact pattern. Do not cite local paths, filenames, or line numbers.
-
-In your answer, include short direct quotes from selected cases, statutes, and rules, from selected prior briefs when useful, and from the checked current-case Statement of Case and Facts when it supplies facts relevant to the question. Do not use saved agent answers as the source of these quotes. Each quote should be only two to five words long, enclosed in quotation marks, and must include continuous phrases exactly as they appear in the source text. Put a full identifying case, statute, rule, prior-brief title, or "Statement of Case and Facts" in the same paragraph as each quote; one identifier may support multiple quotes from the same source. Clearly label prior-brief quotations as prior advocacy and Statement of Case and Facts quotations as factual context, not law. Quote the extracted SOCF text itself (not a source merely mentioned inside it) so the answer's direct quotes can link back to the Statement of Case and Facts in the reader.
-
-Question:
-{question}
-
-Selected authority manifest:
-{case_manifest}
-
-Selected authority text directory:
-{case_dir}
-
-Selected authority count: {case_count}"""
-
-# Exact command-normalized shipped defaults only; never overwrite custom prose.
-LEGACY_BRIEF_AGENT_PROMPT_SHA256ES = frozenset({
-    "f6c46f15603431e00e1b26d1b2e4df6cdbc427953cafeb8fe0d4b531ce01702b",
-    "297e1a021b9524782833663f344813702ba5082ee6e9589c29d24ab7f5086838",
-    "18c2b0d10563d82210d49c7b2d0659bf74dc4241deac6f6eae75f67d3c569531",
-})
-
-DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens Prior Brief Agent.
-
-Answer only from the indexed prior brief archive and any current-case factual context explicitly selected for this run. Do not browse the web, research CourtListener, or treat prior advocacy as legal authority. Use the Open Law Lens CLI iteratively to find candidate briefs, then inspect the full text of every brief relied upon.
-
-Choose the scope from the user's latest request: locating a document is not researching or comparing arguments. A request to find a brief (including the most recent brief making an argument) is a document lookup unless the user also asks for analysis or comparison. Follow-ups may change the scope. Do not announce this classification or turn a lookup into a research report.
-
-DOCUMENT LOOKUP:
-- Start immediately with `$OLL search-briefs "<short issue terms>" --match all --limit 5 --sort newest` for a recency request. No directory listings, environment inspection, database-schema reconnaissance, or direct SQLite queries; use the documented CLI.
-- Match the substance of the argument, not the user's exact wording, unless the user expressly requests an exact phrase. A changed heading or standard-of-review formulation does not by itself make the argument different. Use short issue terms broad enough to retrieve alternative formulations, not the entire requested sentence. Distinguish genuinely different duties or issues (for example initial inquiry versus further inquiry).
-- Review candidate metadata/snippets newest-first, then fully inspect the newest plausible match using the extraction rules below. Snippets locate candidates but do not verify them. Resolve plausible newer candidates before selecting an older one; do not read older supporting briefs once the newest match is verified.
-- Normally use one search, with at most one or two targeted refinements for a concrete gap: no relevant hit, a plausible newer candidate, a date ambiguity, or an unresolved substantive distinction. A restrictive exact-phrase hit alone does not establish substantive recency; broaden once if needed. Expand beyond this only to resolve an identified uncertainty that could change the selected document, never to collect examples or repeatedly confirm the same result. Do not inspect SQL to seek exhaustive certainty.
-- Stop when the requested document is verified and no plausible newer candidate in the retrieved results remains unresolved. `has_more` alone does not justify reading older matches after a verified newest match; it also does not establish archive-wide completeness. If uncertainty remains, state it briefly rather than claiming a definitive latest filing.
-- Return one linked title, document type/date, and one or two sentences explaining why it matches. Include at most one useful short exact quote. No ranked list, supporting or contrasting briefs, legal survey, joinders, or current-case comparison unless requested. If dates are tied or genuinely unresolved, give only the necessary alternatives and a brief explanation. State a file-date fallback when applicable; do not present it as a verified filing date or prefer an older exact-wording match over a newer substantive match.
-- Do not read or compare the selected current-case fact pattern merely because it was attached. Use it only when the user's request requires those facts to identify the document or expressly asks for comparison.
-
-RESEARCH OR COMPARISON:
-Start immediately with the documented CLI commands, not startup reconnaissance:
-`$OLL search-briefs "<terms>" --match all --limit 5`
-Use short discriminating all searches or specific phrase searches; default to 5–10 candidates. Reserve any for a few meaningful alternatives: it ORs individual tokens, including split citation numbers (213.5 becomes 213 OR 5). Use --match phrase when adjacency matters. Use `--sort newest` when recency matters.
-After a strong hit, search only to fill an identified gap, inspect contrary discussion, or find companion briefing. Stop when additional results merely repeat the same proposition; broader user requests may justify continued research. Preserve complete search JSON, full IDs, source links, document types, and date provenance. Never clip JSON with head/tail, suppress extraction errors, or replace complete metadata with shortened IDs. Search errors are errors, not evidence of absence. The returned count is the number delivered; limit is the effective bound and has_more indicates additional matches for that query. has_more: false means all matches for that query were returned, NOT that every relevant document was found.
-
-SOURCE VERIFICATION AND ANSWER RULES (both scopes):
-Fetch each selected brief once with:
-`$OLL extract-brief <brief_id> --output-dir "$OPEN_LAW_LENS_AGENT_WORKSPACE/brief-<brief_id>"`
-The absolute output directory must be new and inside the disposable agent workspace. Fetch each selected document once; the CLI exports metadata.json, manifest.json and ordered lossless part-0001.txt files, each at most 32 KiB UTF-8 and 1,500 lines. Read metadata and the manifest, then read EVERY part in manifest order until EOF before relying on that brief. Concatenating all parts exactly reproduces the source. Fetching is not reading; metadata or grep is navigation, not full inspection. Chunk numbers are not legal pinpoints. Check late qualifications and contrary passages before answering. If export fails, inspect the structured error; never repeat extraction merely to work around clipped JSON. If complete inspection cannot be finished, omit reliance or explicitly disclose the inspection limitation. Temporary extraction files are authorized inside the disposable agent workspace only.
-
-Identify every discussed source with the exact Markdown link returned by search, in this form: `[Exact indexed title](open-law-lens://prior-brief/<brief_id>)`. Put that linked title close to the discussion and any quote from that brief. When quoting, use only two to ten words (2–10), copied as exact continuous phrases and each associated with its source link. A lookup does not require a quote; research/comparison answers should include useful short quotes. Paraphrase longer passages; never insert brackets, alter wording, or join separated fragments inside an exact quotation.
-
-For research or comparison only, lead with ranked document recommendations: strongest directly relevant brief first, then genuinely useful supporting or contrasting documents. For document lookups, the single-result answer rule above takes precedence. Summarize arguments rather than writing an unqualified legal opinion. Explicitly attribute propositions: the opening brief argues, the respondent concedes, the brief cites. Identify contrary authority as reported by the brief; do not declare which view currently controls or what a litigant must show as independently verified law.
-
-Keep dependent-child inclusion, adult protection, nondependent-person eligibility, trial burden of proof, and appellate review distinct. Do not transfer standards between these contexts without source support and qualification. Label weaker contextual sources accurately, and do not count repetitive companion documents as independent support.
-
-State search limitations narrowly: the strongest match I found; I did not locate a reply in this indexed snapshot. Do not turn no retrieved result into archive-wide absence or claim exhaustive coverage.
-
-Distinguish opening briefs, reply briefs, respondent's briefs, oppositions, Phoenix H. memos, and other documents. For a request for the most recent document, use the indexed document date and explain when it is a file-date fallback.
-
-Question:
-{question}
-
-Prior brief database snapshot:
-{brief_database}
-
-Indexed brief count: {brief_count}""".replace("$OLL", AGENT_CLI_COMMAND_PREFIX)
-
 DEFAULT_APPEAL_ISSUE_PRESETS: tuple[str, ...] = (
     "Did substantial evidence support the challenged finding?",
     "Did the trial court abuse its discretion in making the challenged order?",
@@ -234,11 +95,8 @@ DEFAULT_APPEAL_ISSUE_PRESETS: tuple[str, ...] = (
     "If error occurred, was it prejudicial under the applicable appellate standard?",
 )
 
-# Exact legacy preset statements that upgrade to the neutral legal-question
-# wording. Matching is per entry and exact, so genuine custom entries are
-# preserved and list order and labels are untouched.
+# Inert preset compatibility only; never used to populate the composer.
 LEGACY_APPEAL_ISSUE_PRESET_REPLACEMENTS: dict[str, str] = {
-    # Generic tracked defaults through this release.
     "Substantial evidence does not support the challenged finding.": (
         "Did substantial evidence support the challenged finding?"
     ),
@@ -255,8 +113,6 @@ LEGACY_APPEAL_ISSUE_PRESET_REPLACEMENTS: dict[str, str] = {
     "The error was prejudicial and not harmless under the applicable appellate standard.": (
         "If error occurred, was it prejudicial under the applicable appellate standard?"
     ),
-    # Dependency-specific local presets with embedded outcome-anchoring case
-    # citations removed; statutory references stay to define the question.
     "Substantial evidence did not support the order asserting dependency jurisdiction over the child[ren] under Welfare and Institutions Code section 300.": (
         "Did substantial evidence support the juvenile court's exercise of "
         "dependency jurisdiction over the child or children under Welfare and "
@@ -300,101 +156,9 @@ LEGACY_APPEAL_ISSUE_PRESET_REPLACEMENTS: dict[str, str] = {
     ),
 }
 DEFAULT_APPEAL_ISSUE_LABELS: tuple[str, ...] = (
-    "Substantial evidence",
-    "Abuse of discretion",
-    "Wrong legal standard",
-    "Due process",
-    "Prejudice",
+    "Substantial evidence", "Abuse of discretion", "Wrong legal standard",
+    "Due process", "Prejudice",
 )
-
-DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens Legal Question Assessment Agent.
-
-Prepare an objective California appellate assessment of the legal question below, in the manner of a bench memorandum written for an appellate court deciding that question. You are not an advocate for any party. Do not presume an answer from the wording of the question, and do not treat the question's phrasing as indicating the outcome.
-
-Read the extracted fact-pattern text first:
-{fact_pattern_path}
-
-Original fact-pattern file:
-{fact_pattern_source_path}
-
-Record citation format for final answers:
-- Cite factual claims using record citations from the fact-pattern text, the way an appellate lawyer would, such as `(CT 335-343.)`, `(RT 6, 34; CT 140, 190.)`, or `(RT 22-34; CRT 17-22; CT 295-301.)`.
-- Do not cite local paths, extracted-text filenames, raw file pages, or line numbers in the final answer. Use those only as internal search leads.
-- Put record citations in the same sentence or paragraph as the factual claim they support.
-- Combine multiple record citations into one parenthetical only when they support the same point.
-- If the fact-pattern text does not include a usable record citation for an important fact, say that the citation is missing or uncertain instead of inventing one.
-
-Treat the supplied fact pattern as the complete factual record for this assessment. Base the factual analysis only on facts it contains. Do not speculate that unprovided facts or a more complete record could alter the assessment, and do not add a generic record-completeness caveat. If the supplied text is internally ambiguous, contradictory, or lacks a usable record citation, identify that specific issue only where it affects the analysis.
-
-Legal question to decide:
-{issue}
-
-Research current California law by following the Legal Researcher workflow preloaded into this workspace, including its command routing, authority-verification rules, and official-copy recovery. Do not restate or duplicate that workflow here. Disclose any concrete verification gap rather than inventing support, and lower confidence accordingly when a material gap remains.
-
-If the question embeds an issue-specific focus or instruction, address it expressly. For example, when a Cal-ICWA inquiry question asks about the significance of no one claiming ancestry with a particular tribe, analyze that point directly rather than answering the inquiry question only in general.
-
-Write the assessment as a concise bench memorandum. After the system-required title and subtitle, structure the answer with these sections:
-- Question Presented
-- Short Answer
-- Governing Law/Standard of Review
-- Analysis
-- Conclusion
-
-Apply the law neutrally to the supplied facts, and address the strongest material reasoning supporting each possible answer, including the reasoning that does not favor the premise implicit in the question. Address preservation, prejudice, harmless error, and remedy where they are legally material to the question, not as a mechanical checklist.
-
-Answer the question directly, even when the answer is adverse to the position a party might have advanced. If a binary answer is not supportable on the law and record, state the best available disposition and the material uncertainty that prevents a binary answer.
-
-In the final answer, use normal legal prose for case names, statutes, rules, and citations.
-
-End the answer with these two lines exactly in this form:
-Conclusion: <direct answer to the legal question>
-Confidence: <High, Medium, or Low> — <brief basis tied to the law and record>
-
-Calibrate Confidence to the stated conclusion only; it is not argument strength, a party's likelihood of success, or generic model certainty. High: controlling law and the material record strongly point in the same direction, with no meaningful unresolved conflict. Medium: one conclusion is better supported, but a substantial counterargument, factual ambiguity, or authority tension remains. Low: the issue is close or unsettled, or a material source or record ambiguity prevents a firm conclusion."""
-
-DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE = """You are the Open Law Lens Subsequent Treatment Agent.
-
-Analyze how subsequent published California cases treated the currently viewed case. Discovery and extraction are hard-bounded: follow the fixed workflow below exactly and stop where it says to stop. Use only the Open Law Lens commands supplied in this prompt. Never use generic web search, Pi `web_search`, Google Scholar, California Courts pages, or alternate opinion sites, and never manually call `extract-slip-opinion` or `lookup-citation`, to discover later cases or to obtain pagination, reporter metadata, links, or official copies. Never orchestrate Scholar or any browser step yourself.
-
-Target case: {target_title}
-Target official citation: {target_citation}
-CourtListener cluster id: {cluster_id}
-
-Apply the preloaded Legal Researcher's bounded execution rules to every supplied command: bash tool `timeout: 180`, complete JSON stdout, separate stderr, saved baselines, and short source phrases for passage matching (not semantic questions). Temporary JSON may be saved only in the private workspace. Announce each recovery's two-minute budget. After an unexplained abort or desktop-readiness failure, suspend further Scholar attempts for this run, including other selected cases; continue from verified baselines and disclose the actual failure, never an invented no-display diagnosis. These rules do not expand the discovery ceiling below.
-
-Discovery limits:
-1. Run this citing-cases command exactly once:
-{published_citing_cases_command}
-
-2. If that command fails, returns no useful leads, or the cluster id is a local external id, run at most these two non-paginated CourtListener searches and no others. First, one exact official-citation phrase search:
-{citation_search_command}
-
-3. Only if still needed, one exact case-name search:
-{case_name_search_command}
-
-Do not retry network timeouts, paginate with `--next`, broaden or rewrite queries, use semantic search, or invoke any web search. The only permitted retry is the single retry of one command that fails with a transient SQLite `database is locked` error. If bounded discovery still yields no usable leads, stop and report that subsequent-treatment coverage is limited or unavailable; do not continue searching.
-
-Treat search results as leads only. Select the most significant published subsequent California cases. Three to five cases is a ceiling and a preference, not a quota: use fewer when only fewer can be verified, and disclose incomplete CourtListener coverage in the final answer. Never use unpublished cases as controlling treatment.
-
-Extraction for the selected cases:
-- Issue compact baseline extractions for independent selected cases in parallel in the same tool round:
-{compact_extract_command}
-
-- Inspect `official_pagination`, `source_url`, and `warnings` in each result.
-- For each selected case that still lacks official pagination, make exactly one sequential recovery-enabled extraction, letting Open Law Lens perform its internal baseline and single Scholar attempt:
-{recover_official_extract_command}
-Use the selected case's known official citation in that template. Only if no usable citation is known, replace the citation argument with `--cluster-id <cluster_id>`; choose one identity form, not two attempts. Skip recovery entirely for an already paginated Library reconciliation, even if its durable identifier differs from the requested cluster.
-
-- If compact passages are inadequate for a relied-on case, you may perform one ordinary full extraction for it:
-{full_extract_command}
-Never run a second recovery attempt for the same case.
-
-Citation, fallback, and disclosure rules:
-- A supplied pinpoint or a page quoted by another opinion is not independently verified. Check query accounting and match-level pages; empty phrase matches or ambiguous excerpt pagination never authorize another recovery.
-- Rely on the best citation returned by the bounded sources; do not delay the answer to hunt for an official reporter citation they did not return. State plainly when a citation remains uncertain.
-- If a recovery returns no qualifying copy, is blocked, times out, or fails validation, immediately rely on the best unpaginated baseline Open Law Lens returned, disclose the missing official pagination, and link the case name or citation to the `source_url` that extraction returned. When no source URL was returned, say so; do not search elsewhere for one.
-
-For each selected subsequent case, explain how it used the target case: agreed with it, distinguished it, limited it, extended it to a different fact pattern, criticized it, or used it in another identifiable way. Omit any treatment characterization the extracted text does not support rather than inferring one. If a citation lead exists but no bounded source produced verifiable text, omit that case and disclose the gap. Keep the answer concise. In the final answer, use normal legal prose for case names and citations; reserve backticks for CLI commands, file paths, and other literal technical text."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -408,17 +172,10 @@ class PiAgentProfile:
 class AppConfig:
     courtlistener_token: str = ""
     concordance_file_path: str = ""
-    general_agent_prompt_template: str = DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE
-    case_agent_prompt_template: str = DEFAULT_CASE_AGENT_PROMPT_TEMPLATE
-    brief_agent_prompt_template: str = DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE
-    appeal_issue_agent_prompt_template: str = DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
-    later_treatment_agent_prompt_template: str = DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE
-    appeal_issue_presets: list[str] = field(
-        default_factory=lambda: list(DEFAULT_APPEAL_ISSUE_PRESETS)
-    )
-    appeal_issue_labels: list[str] = field(
-        default_factory=lambda: list(DEFAULT_APPEAL_ISSUE_LABELS)
-    )
+    prior_briefs_folder: str = ""
+    retired_prompt_settings: dict[str, Any] = field(default_factory=dict, repr=False)
+    appeal_issue_presets: list[str] = field(default_factory=lambda: list(DEFAULT_APPEAL_ISSUE_PRESETS))
+    appeal_issue_labels: list[str] = field(default_factory=lambda: list(DEFAULT_APPEAL_ISSUE_LABELS))
     agent_runtime_profiles: dict[str, PiAgentProfile] = field(default_factory=dict)
     reader_font_size_pt: int = DEFAULT_READER_FONT_SIZE_PT
     reader_font_family: str = DEFAULT_READER_FONT_FAMILY
@@ -484,10 +241,7 @@ def normalize_appeal_issue_labels(value: Any, presets: list[str]) -> list[str]:
         len(presets) == len(DEFAULT_APPEAL_ISSUE_PRESETS)
         and all(left == right for left, right in zip(presets, DEFAULT_APPEAL_ISSUE_PRESETS))
     )
-    if (
-        value is None
-        and presets_are_defaults
-    ):
+    if value is None and presets_are_defaults:
         return list(DEFAULT_APPEAL_ISSUE_LABELS)
     raw_labels = value if isinstance(value, list) else []
     labels = [str(item or "").strip() for item in raw_labels[: len(presets)]]
@@ -507,11 +261,7 @@ def normalize_agent_runtime_profiles(value: Any) -> dict[str, PiAgentProfile]:
         model = str(raw_profile.get("model") or "").strip()
         thinking = str(raw_profile.get("thinking") or "").strip().lower()
         if provider and model and thinking in PI_THINKING_LEVELS:
-            profiles[key] = PiAgentProfile(
-                provider=provider,
-                model=model,
-                thinking=thinking,
-            )
+            profiles[key] = PiAgentProfile(provider=provider, model=model, thinking=thinking)
     return profiles
 
 
@@ -527,32 +277,19 @@ def migrate_agent_runtime_profiles(
     raw_profiles: Any,
     schema_version: int = 1,
 ) -> dict[str, PiAgentProfile]:
-    """Apply one-time profile-schema migrations (version 1 -> 2).
-
-    Legacy configurations (schema version below 2) never stored a Subsequent
-    Treatment profile because that workflow reused the Query Law profile.
-    Clone the valid Query Law profile into the new key so existing installs
-    keep their configured model and reasoning effort. A preexisting (even
-    invalid) raw entry means the configuration already knew about the key and
-    must not be overwritten. Version 2 or newer with an absent entry is an
-    intentional Use Pi defaults selection and is left untouched.
-    """
+    """Clone legacy Query Law once, without overriding known/default selections."""
     if schema_version >= AGENT_RUNTIME_PROFILES_VERSION:
         return profiles
     if AGENT_PROFILE_SUBSEQUENT_TREATMENT in profiles:
         return profiles
-    if isinstance(raw_profiles, dict) and (
-        AGENT_PROFILE_SUBSEQUENT_TREATMENT in raw_profiles
-    ):
+    if isinstance(raw_profiles, dict) and AGENT_PROFILE_SUBSEQUENT_TREATMENT in raw_profiles:
         return profiles
     law_profile = profiles.get(AGENT_PROFILE_LAW)
     if law_profile is None:
         return profiles
     migrated = dict(profiles)
     migrated[AGENT_PROFILE_SUBSEQUENT_TREATMENT] = PiAgentProfile(
-        provider=law_profile.provider,
-        model=law_profile.model,
-        thinking=law_profile.thinking,
+        provider=law_profile.provider, model=law_profile.model, thinking=law_profile.thinking,
     )
     return migrated
 
@@ -566,119 +303,38 @@ def reader_font_css(font_family: str) -> str:
 
 
 def load_config(path: Path = CONFIG_PATH) -> AppConfig:
+    """Read settings only; retired prompt JSON stays opaque, including both aliases."""
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return AppConfig()
-    except (json.JSONDecodeError, OSError):
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
         return AppConfig()
     if not isinstance(raw, dict):
         return AppConfig()
     token = raw.get(CONFIG_KEY_COURTLISTENER_TOKEN, "")
     concordance_path = os.environ.get(ENV_CONCORDANCE_FILE, raw.get(CONFIG_KEY_CONCORDANCE_FILE_PATH, ""))
-    general_agent_prompt = raw.get(
-        CONFIG_KEY_GENERAL_AGENT_PROMPT_TEMPLATE,
-        DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE,
-    )
-    prompt_hash = hashlib.sha256(legacy_prompt_fingerprint_text(str(general_agent_prompt).strip()).encode()).hexdigest()
-    if prompt_hash in LEGACY_GENERAL_AGENT_PROMPT_SHA256ES:
-        general_agent_prompt = DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE
-    case_agent_prompt = raw.get(
-        CONFIG_KEY_CASE_AGENT_PROMPT_TEMPLATE,
-        DEFAULT_CASE_AGENT_PROMPT_TEMPLATE,
-    )
-    case_prompt_hash = hashlib.sha256(legacy_prompt_fingerprint_text(str(case_agent_prompt).strip()).encode()).hexdigest()
-    if (
-        case_prompt_hash in LEGACY_CASE_AGENT_PROMPT_SHA256ES
-        or "current-case factual context exported into this workspace."
-        in str(case_agent_prompt)
-    ):
-        case_agent_prompt = DEFAULT_CASE_AGENT_PROMPT_TEMPLATE
-    brief_agent_prompt = raw.get(
-        CONFIG_KEY_BRIEF_AGENT_PROMPT_TEMPLATE,
-        DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE,
-    )
-    brief_prompt_hash = hashlib.sha256(
-        legacy_prompt_fingerprint_text(normalize_agent_prompt_commands(str(brief_agent_prompt).strip())).encode()
-    ).hexdigest()
-    if brief_prompt_hash in LEGACY_BRIEF_AGENT_PROMPT_SHA256ES:
-        brief_agent_prompt = DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE
-    appeal_issue_agent_prompt = raw.get(
-        CONFIG_KEY_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
-        DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE,
-    )
-    later_treatment_agent_prompt = raw.get(
-        CONFIG_KEY_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
-        raw.get(
-            CONFIG_KEY_LEGACY_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
-            DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE,
-        ),
-    )
-    later_treatment_prompt_hash = hashlib.sha256(
-        legacy_prompt_fingerprint_text(str(later_treatment_agent_prompt).strip()).encode()
-    ).hexdigest()
-    if later_treatment_prompt_hash in LEGACY_LATER_TREATMENT_AGENT_PROMPT_SHA256ES:
-        later_treatment_agent_prompt = DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE
-    appeal_prompt_hash = hashlib.sha256(
-        legacy_prompt_fingerprint_text(str(appeal_issue_agent_prompt).strip()).encode()
-    ).hexdigest()
-    if (
-        appeal_prompt_hash in LEGACY_APPEAL_ISSUE_AGENT_PROMPT_SHA256ES
-        or (
-            "Open Law Lens Appeal Issue Assessment Agent" in str(appeal_issue_agent_prompt)
-            and "missing record facts that could change the assessment" in str(appeal_issue_agent_prompt)
-        )
-    ):
-        appeal_issue_agent_prompt = DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
-    appeal_issue_presets = normalize_appeal_issue_presets(
-        raw.get(CONFIG_KEY_APPEAL_ISSUE_PRESETS)
-    )
+    appeal_issue_presets = normalize_appeal_issue_presets(raw.get(CONFIG_KEY_APPEAL_ISSUE_PRESETS))
     return AppConfig(
         courtlistener_token=str(token).strip(),
         concordance_file_path=str(concordance_path).strip(),
-        general_agent_prompt_template=(
-            normalize_agent_prompt_commands(str(general_agent_prompt).strip())
-            or DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE
+        prior_briefs_folder=(
+            raw[CONFIG_KEY_PRIOR_BRIEFS_FOLDER].strip()
+            if isinstance(raw.get(CONFIG_KEY_PRIOR_BRIEFS_FOLDER), str) else ""
         ),
-        case_agent_prompt_template=(
-            normalize_agent_prompt_commands(str(case_agent_prompt).strip())
-            or DEFAULT_CASE_AGENT_PROMPT_TEMPLATE
-        ),
-        brief_agent_prompt_template=(
-            normalize_agent_prompt_commands(str(brief_agent_prompt).strip())
-            or DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE
-        ),
-        appeal_issue_agent_prompt_template=(
-            normalize_agent_prompt_commands(str(appeal_issue_agent_prompt).strip())
-            or DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
-        ),
-        later_treatment_agent_prompt_template=(
-            normalize_agent_prompt_commands(str(later_treatment_agent_prompt).strip())
-            or DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE
-        ),
+        retired_prompt_settings={key: raw[key] for key in RETIRED_PROMPT_KEYS if key in raw},
         appeal_issue_presets=appeal_issue_presets,
         appeal_issue_labels=normalize_appeal_issue_labels(
-            raw.get(CONFIG_KEY_APPEAL_ISSUE_LABELS),
-            appeal_issue_presets,
+            raw.get(CONFIG_KEY_APPEAL_ISSUE_LABELS), appeal_issue_presets,
         ),
         agent_runtime_profiles=migrate_agent_runtime_profiles(
             normalize_agent_runtime_profiles(raw.get(CONFIG_KEY_AGENT_RUNTIME_PROFILES)),
             raw.get(CONFIG_KEY_AGENT_RUNTIME_PROFILES),
-            stored_agent_runtime_profiles_version(
-                raw.get(CONFIG_KEY_AGENT_RUNTIME_PROFILES_VERSION)
-            ),
+            stored_agent_runtime_profiles_version(raw.get(CONFIG_KEY_AGENT_RUNTIME_PROFILES_VERSION)),
         ),
         reader_font_size_pt=coerce_reader_font_size(raw.get(CONFIG_KEY_READER_FONT_SIZE_PT)),
         reader_font_family=normalize_reader_font_family(raw.get(CONFIG_KEY_READER_FONT_FAMILY)),
-        search_match_color=normalize_search_color(
-            raw.get(CONFIG_KEY_SEARCH_MATCH_COLOR), DEFAULT_SEARCH_MATCH_COLOR
-        ),
-        linked_text_color=normalize_search_color(
-            raw.get(CONFIG_KEY_LINKED_TEXT_COLOR), DEFAULT_LINKED_TEXT_COLOR
-        ),
-        default_bare_statute_law_code=normalize_bare_statute_law_code(
-            raw.get(CONFIG_KEY_DEFAULT_BARE_STATUTE_LAW_CODE)
-        ),
+        search_match_color=normalize_search_color(raw.get(CONFIG_KEY_SEARCH_MATCH_COLOR), DEFAULT_SEARCH_MATCH_COLOR),
+        linked_text_color=normalize_search_color(raw.get(CONFIG_KEY_LINKED_TEXT_COLOR), DEFAULT_LINKED_TEXT_COLOR),
+        default_bare_statute_law_code=normalize_bare_statute_law_code(raw.get(CONFIG_KEY_DEFAULT_BARE_STATUTE_LAW_CODE)),
     )
 
 
@@ -693,42 +349,12 @@ def save_config(config: AppConfig, path: Path = CONFIG_PATH) -> None:
     data: dict[str, Any] = {
         CONFIG_KEY_COURTLISTENER_TOKEN: config.courtlistener_token.strip(),
         CONFIG_KEY_CONCORDANCE_FILE_PATH: config.concordance_file_path.strip(),
-        CONFIG_KEY_GENERAL_AGENT_PROMPT_TEMPLATE: (
-            normalize_agent_prompt_commands(config.general_agent_prompt_template.strip())
-            or DEFAULT_GENERAL_AGENT_PROMPT_TEMPLATE
-        ),
-        CONFIG_KEY_CASE_AGENT_PROMPT_TEMPLATE: (
-            normalize_agent_prompt_commands(config.case_agent_prompt_template.strip())
-            or DEFAULT_CASE_AGENT_PROMPT_TEMPLATE
-        ),
-        CONFIG_KEY_BRIEF_AGENT_PROMPT_TEMPLATE: (
-            normalize_agent_prompt_commands(config.brief_agent_prompt_template.strip())
-            or DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE
-        ),
-        CONFIG_KEY_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE: (
-            normalize_agent_prompt_commands(
-                config.appeal_issue_agent_prompt_template.strip()
-            )
-            or DEFAULT_APPEAL_ISSUE_AGENT_PROMPT_TEMPLATE
-        ),
-        CONFIG_KEY_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE: (
-            normalize_agent_prompt_commands(
-                config.later_treatment_agent_prompt_template.strip()
-            )
-            or DEFAULT_LATER_TREATMENT_AGENT_PROMPT_TEMPLATE
-        ),
+        CONFIG_KEY_PRIOR_BRIEFS_FOLDER: config.prior_briefs_folder.strip(),
         CONFIG_KEY_APPEAL_ISSUE_PRESETS: appeal_issue_presets,
-        CONFIG_KEY_APPEAL_ISSUE_LABELS: normalize_appeal_issue_labels(
-            appeal_issue_labels,
-            appeal_issue_presets,
-        ),
+        CONFIG_KEY_APPEAL_ISSUE_LABELS: normalize_appeal_issue_labels(appeal_issue_labels, appeal_issue_presets),
         CONFIG_KEY_AGENT_RUNTIME_PROFILES_VERSION: AGENT_RUNTIME_PROFILES_VERSION,
         CONFIG_KEY_AGENT_RUNTIME_PROFILES: {
-            key: {
-                "provider": profile.provider,
-                "model": profile.model,
-                "thinking": profile.thinking,
-            }
+            key: {"provider": profile.provider, "model": profile.model, "thinking": profile.thinking}
             for key, profile in config.agent_runtime_profiles.items()
             if key in AGENT_PROFILE_KEYS
             and profile.provider.strip()
@@ -737,16 +363,11 @@ def save_config(config: AppConfig, path: Path = CONFIG_PATH) -> None:
         },
         CONFIG_KEY_READER_FONT_SIZE_PT: coerce_reader_font_size(config.reader_font_size_pt),
         CONFIG_KEY_READER_FONT_FAMILY: normalize_reader_font_family(config.reader_font_family),
-        CONFIG_KEY_SEARCH_MATCH_COLOR: normalize_search_color(
-            config.search_match_color, DEFAULT_SEARCH_MATCH_COLOR
-        ),
-        CONFIG_KEY_LINKED_TEXT_COLOR: normalize_search_color(
-            config.linked_text_color, DEFAULT_LINKED_TEXT_COLOR
-        ),
-        CONFIG_KEY_DEFAULT_BARE_STATUTE_LAW_CODE: normalize_bare_statute_law_code(
-            config.default_bare_statute_law_code
-        ),
+        CONFIG_KEY_SEARCH_MATCH_COLOR: normalize_search_color(config.search_match_color, DEFAULT_SEARCH_MATCH_COLOR),
+        CONFIG_KEY_LINKED_TEXT_COLOR: normalize_search_color(config.linked_text_color, DEFAULT_LINKED_TEXT_COLOR),
+        CONFIG_KEY_DEFAULT_BARE_STATUTE_LAW_CODE: normalize_bare_statute_law_code(config.default_bare_statute_law_code),
     }
+    data.update({key: config.retired_prompt_settings[key] for key in RETIRED_PROMPT_KEYS if key in config.retired_prompt_settings})
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:

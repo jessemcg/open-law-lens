@@ -314,11 +314,7 @@ class PriorBriefAppTests(unittest.TestCase):
         self.assertEqual(opened, [target])
 
     def test_brief_prompt_includes_snapshot_and_optional_socf_state(self) -> None:
-        window = type(
-            "Window",
-            (),
-            {"_format_agent_prompt": OpenLawLensWindow._format_agent_prompt},
-        )()
+        window = SimpleNamespace()
         with patch("open_law_lens.app.load_config", return_value=AppConfig()):
             prompt = OpenLawLensWindow._compose_brief_agent_prompt(  # type: ignore[arg-type]
                 window,

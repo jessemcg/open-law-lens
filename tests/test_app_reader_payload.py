@@ -117,6 +117,80 @@ class AppReaderPayloadTests(unittest.TestCase):
             tag.set_property.assert_called_once_with("background", "#1280ab")
         tags[4].set_property.assert_called_once_with("background", "#aa4433")
 
+    def test_settings_reload_switches_brief_folder_and_invalidates_phrase_results(self) -> None:
+        old = SimpleNamespace(source_dir=Path('/tmp/old-archive'))
+        new = SimpleNamespace(source_dir=Path('/tmp/new-archive'))
+        window = SimpleNamespace(
+            prior_briefs=old, _clear_brief_search_session=Mock(),
+            _research_cache_generation=0, _case_load_generation=0,
+            _reader_find_tag=None, _reader_brief_search_tag=None,
+            _reader_find_current_tag=None, _reader_brief_search_current_tag=None,
+            _reader_highlight_tag=None,
+            _install_css=Mock(), _refresh_current_case_context=Mock(),
+            _load_cached_cases=Mock(), _refresh_case_suggestion_index_async=Mock(),
+            _set_status=Mock(),
+        )
+        with (
+            patch('open_law_lens.app.prior_briefs_dir', return_value=new.source_dir),
+            patch('open_law_lens.app.PriorBriefLibrary.default', return_value=new) as factory,
+            patch('open_law_lens.app.CourtListenerClient.default'),
+            patch('open_law_lens.app.load_config', return_value=AppConfig()),
+        ):
+            OpenLawLensWindow.reload_settings(window)
+            self.assertIs(window.prior_briefs, new)
+            window._clear_brief_search_session.assert_called_once()
+            self.assertIn('Update Prior Brief Library', window._set_status.call_args.args[0])
+            OpenLawLensWindow.reload_settings(window)
+            factory.assert_called_once()
+            window._clear_brief_search_session.assert_called_once()
+
+    def test_old_folder_update_callbacks_do_not_report_on_new_folder(self) -> None:
+        library = Mock()
+        window = SimpleNamespace(prior_briefs=library, _set_status=Mock(),
+            _start_background_worker=Mock(), _finish_prior_brief_library_update=Mock())
+        OpenLawLensWindow._on_update_brief_library(window, None, None)
+        args, callbacks = window._start_background_worker.call_args
+        self.assertEqual(args, (library.sync,))
+        window.prior_briefs = Mock()
+        callbacks['on_success'](Mock())
+        callbacks['on_error'](OSError('Synthetic old-folder error'))
+        window._finish_prior_brief_library_update.assert_not_called()
+        window._set_status.assert_called_once_with('Updating Prior Brief Library...')
+
+    def test_phrase_worker_keeps_one_library_when_settings_change_mid_search(self) -> None:
+        old, new = Mock(), Mock()
+        old.sync.return_value = SimpleNamespace(errors=())
+        old.search_phrase_briefs.return_value = []
+        window = SimpleNamespace(prior_briefs=old, _finish_brief_phrase_search=Mock(),
+                                 _finish_brief_phrase_search_error=Mock())
+        old.sync.side_effect = lambda: (
+            setattr(window, 'prior_briefs', new), SimpleNamespace(errors=()))[1]
+        with patch('open_law_lens.app.GLib.idle_add'):
+            OpenLawLensWindow._brief_phrase_search_worker(window, 'phrase', 1)
+        old.search_phrase_briefs.assert_called_once_with('phrase')
+        new.search_phrase_briefs.assert_not_called()
+
+    def test_brief_agent_preparation_keeps_one_library_during_folder_change(self) -> None:
+        old, new = Mock(), Mock()
+        brief = SimpleNamespace(title='Old brief', document_date='', source_path='/tmp/old.odt',
+                                text='Pinned old corpus', brief_id='a' * 64)
+        old.count.return_value = 1
+        old.list_briefs.return_value = [brief]
+        old.backup.return_value = Path('/tmp/workspace/prior_briefs.sqlite3')
+        window = SimpleNamespace(prior_briefs=old,
+            _create_agent_workspace=Mock(return_value=Path('/tmp/workspace')),
+            _compose_brief_agent_prompt=Mock(return_value='literal question'),
+            _write_prompt_file=Mock(return_value=Path('/tmp/prompt.txt')),
+            _finish_brief_agent_prepare=Mock(), _set_status=Mock())
+        old.sync.side_effect = lambda: (
+            setattr(window, 'prior_briefs', new), SimpleNamespace(errors=()))[1]
+        with patch('open_law_lens.app.GLib.idle_add') as publish:
+            OpenLawLensWindow._prepare_brief_agent_worker(window, 'Question?', None, False, '')
+        old.backup.assert_called_once()
+        old.list_briefs.assert_called_once()
+        new.backup.assert_not_called()
+        self.assertEqual(publish.call_args.args[3][0].text, 'Pinned old corpus')
+
     def test_application_registers_brief_search_shortcut(self) -> None:
         app = OpenLawLensApp()
 
@@ -2357,20 +2431,9 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertEqual(env["OPEN_LAW_LENS_PI_MODEL"], "gemini-3.6-flash")
         self.assertEqual(env["OPEN_LAW_LENS_PI_THINKING"], "high")
 
-    def test_case_agent_prompt_adds_current_case_context_to_custom_prompt(self) -> None:
+    def test_case_agent_request_ignores_retired_prompt_and_adds_context(self) -> None:
         class DummyWindow:
-            def _format_agent_prompt(
-                self,
-                template: str,
-                fallback: str,
-                values: dict[str, object],
-            ) -> str:
-                return OpenLawLensWindow._format_agent_prompt(  # type: ignore[arg-type]
-                    self,
-                    template,
-                    fallback,
-                    values,
-                )
+            pass
 
         authority_export = SimpleNamespace(
             manifest_path=Path("/tmp/workspace/selected_authorities/manifest.json"),
@@ -2387,7 +2450,7 @@ class AppReaderPayloadTests(unittest.TestCase):
 
         with patch(
             "open_law_lens.app.load_config",
-            return_value=AppConfig(case_agent_prompt_template="Custom cache prompt: {question}"),
+            return_value=AppConfig(retired_prompt_settings={"case_agent_prompt_template": "Custom cache prompt: {question}"}),
         ):
             prompt = OpenLawLensWindow._compose_case_agent_prompt(  # type: ignore[arg-type]
                 DummyWindow(),
@@ -2397,27 +2460,16 @@ class AppReaderPayloadTests(unittest.TestCase):
                 True,
             )
 
-        self.assertIn("Custom cache prompt: Which case is most analogous?", prompt)
-        self.assertIn("within the authorized scope", prompt)
-        self.assertIn("Treat it as facts, not legal authority", prompt)
+        self.assertIn("Question:\nWhich case is most analogous?", prompt)
+        self.assertNotIn("Custom cache prompt", prompt)
+        self.assertIn("Selected; available.", prompt)
         self.assertIn(str(fact_export.text_path), prompt)
         self.assertIn(str(fact_export.source_copy_path), prompt)
-        self.assertIn("do not cite local paths", prompt)
+        self.assertNotIn("do not cite local paths", prompt)
 
     def test_general_agent_prompt_adds_socf_only_when_selected(self) -> None:
         class DummyWindow:
-            def _format_agent_prompt(
-                self,
-                template: str,
-                fallback: str,
-                values: dict[str, object],
-            ) -> str:
-                return OpenLawLensWindow._format_agent_prompt(  # type: ignore[arg-type]
-                    self,
-                    template,
-                    fallback,
-                    values,
-                )
+            pass
 
         fact_export = FactPatternExport(
             source_path=Path("/case/SOCF/B123456_SOCF_JM.odt"),
@@ -2427,7 +2479,7 @@ class AppReaderPayloadTests(unittest.TestCase):
         )
         with patch(
             "open_law_lens.app.load_config",
-            return_value=AppConfig(general_agent_prompt_template="Custom law prompt: {question}"),
+            return_value=AppConfig(retired_prompt_settings={"general_agent_prompt_template": "Custom law prompt: {question}"}),
         ):
             without_context = OpenLawLensWindow._compose_general_agent_prompt(  # type: ignore[arg-type]
                 DummyWindow(),
@@ -2440,24 +2492,15 @@ class AppReaderPayloadTests(unittest.TestCase):
                 True,
             )
 
-        self.assertEqual(without_context, "Custom law prompt: What law applies?")
+        self.assertIn("Question:\nWhat law applies?", without_context)
+        self.assertIn("Not selected.", without_context)
+        self.assertNotIn("Custom law prompt", without_context + with_context)
         self.assertIn(str(fact_export.text_path), with_context)
-        self.assertIn("Treat it as facts, not legal authority", with_context)
+        self.assertIn("Selected; available.", with_context)
 
     def test_case_agent_prompt_marks_socf_as_not_selected(self) -> None:
         class DummyWindow:
-            def _format_agent_prompt(
-                self,
-                template: str,
-                fallback: str,
-                values: dict[str, object],
-            ) -> str:
-                return OpenLawLensWindow._format_agent_prompt(  # type: ignore[arg-type]
-                    self,
-                    template,
-                    fallback,
-                    values,
-                )
+            pass
 
         authority_export = SimpleNamespace(
             manifest_path=Path("/tmp/manifest.json"),
@@ -2921,18 +2964,7 @@ class AppReaderPayloadTests(unittest.TestCase):
 
     def test_case_agent_prompt_reports_missing_current_case_context(self) -> None:
         class DummyWindow:
-            def _format_agent_prompt(
-                self,
-                template: str,
-                fallback: str,
-                values: dict[str, object],
-            ) -> str:
-                return OpenLawLensWindow._format_agent_prompt(  # type: ignore[arg-type]
-                    self,
-                    template,
-                    fallback,
-                    values,
-                )
+            pass
 
         authority_export = SimpleNamespace(
             manifest_path=Path("/tmp/manifest.json"),
@@ -2951,8 +2983,8 @@ class AppReaderPayloadTests(unittest.TestCase):
                 "SOCF ODT not found",
             )
 
-        self.assertIn("Unavailable: SOCF ODT not found", prompt)
-        self.assertIn("Do not guess about the current case", prompt)
+        self.assertIn("Selected; unavailable: SOCF ODT not found", prompt)
+        self.assertNotIn("Do not guess about the current case", prompt)
 
     def test_case_agent_finish_uses_context_aware_status(self) -> None:
         class DummyWindow:
@@ -3238,20 +3270,9 @@ class AppReaderPayloadTests(unittest.TestCase):
         )
         self.assertNotIn("OPEN_LAW_LENS_PI_THINKING", env)
 
-    def test_appeal_issue_prompt_includes_legal_question_fact_pattern_and_contract(self) -> None:
+    def test_appeal_issue_request_includes_legal_question_and_fact_pattern(self) -> None:
         class DummyWindow:
-            def _format_agent_prompt(
-                self,
-                template: str,
-                fallback: str,
-                values: dict[str, object],
-            ) -> str:
-                return OpenLawLensWindow._format_agent_prompt(  # type: ignore[arg-type]
-                    self,
-                    template,
-                    fallback,
-                    values,
-                )
+            pass
 
         window = DummyWindow()
         export = FactPatternExport(
@@ -3284,27 +3305,10 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertNotIn("case-search", prompt)
         self.assertNotIn("extract-case", prompt)
         self.assertNotIn("Scholar", prompt)
-        self.assertIn("Record citation format for final answers:", prompt)
-        self.assertIn("Do not cite local paths", prompt)
-        self.assertIn("(RT 6, 34; CT 140, 190.)", prompt)
-        self.assertIn(
-            "Treat the supplied fact pattern as the complete factual record",
-            prompt,
-        )
-        self.assertIn(
-            "do not add a generic record-completeness caveat",
-            prompt,
-        )
-        self.assertIn(
-            "identify that specific issue only where it affects the analysis",
-            prompt,
-        )
-        self.assertIn("use normal legal prose for case names", prompt)
-        self.assertIn("Conclusion: <direct answer to the legal question>", prompt)
-        self.assertIn(
-            "Confidence: <High, Medium, or Low> — <brief basis tied to the law and record>",
-            prompt,
-        )
+        self.assertIn(str(export.source_copy_path), prompt)
+        self.assertIn(str(export.source_path), prompt)
+        self.assertNotIn("Record citation format", prompt)
+        self.assertNotIn("Confidence:", prompt)
         self.assertNotIn("Rating: Strong, Medium, Weak, or Frivolous", prompt)
         self.assertNotIn("Use Frivolous only when", prompt)
 
@@ -6649,6 +6653,28 @@ Opinion text.
 
         self.assertIs(selected, item)
 
+    def test_hamburger_menu_orders_actions_in_three_separated_sections(self) -> None:
+        menu_button = OpenLawLensWindow._build_menu_button(SimpleNamespace())
+        menu = menu_button.get_menu_model()
+        self.assertEqual(menu.get_n_items(), 3)
+        sections = []
+        for index in range(menu.get_n_items()):
+            self.assertIsNone(menu.get_item_attribute_value(index, "label"))
+            section = menu.get_item_link(index, "section")
+            self.assertIsNotNone(section)
+            sections.append([
+                (section.get_item_attribute_value(item, "label").get_string(),
+                 section.get_item_attribute_value(item, "action").get_string())
+                for item in range(section.get_n_items())
+            ])
+        self.assertEqual(sections, [
+            [("Update Prior Brief Library", "win.update_brief_library")],
+            [("Settings", "win.settings"),
+             ("Keyboard Shortcuts", "win.show_shortcuts")],
+            [("CLI Commands", "win.show_cli_commands"),
+             ("D-Bus Commands", "win.show_dbus_commands")],
+        ])
+
     def test_research_cache_clear_action_lives_in_sidebar_header_not_menu(self) -> None:
         class DummyWindow:
             pass
@@ -6673,8 +6699,10 @@ Opinion text.
         menu_button = OpenLawLensWindow._build_menu_button(DummyWindow())  # type: ignore[arg-type]
         menu = menu_button.get_menu_model()
         labels = [
-            menu.get_item_attribute_value(index, "label").get_string()
-            for index in range(menu.get_n_items())
+            section.get_item_attribute_value(index, "label").get_string()
+            for section_index in range(menu.get_n_items())
+            for section in [menu.get_item_link(section_index, "section")]
+            for index in range(section.get_n_items())
         ]
         self.assertNotIn("Clear Research Cache", labels)
         self.assertNotIn("Find Official Text", labels)
@@ -7082,18 +7110,7 @@ Opinion text.
 
     def test_later_treatment_agent_prompt_uses_published_citing_cases_command(self) -> None:
         class DummyWindow:
-            def _format_agent_prompt(
-                self,
-                template: str,
-                fallback: str,
-                values: dict[str, object],
-            ) -> str:
-                return OpenLawLensWindow._format_agent_prompt(  # type: ignore[arg-type]
-                    self,
-                    template,
-                    fallback,
-                    values,
-                )
+            pass
 
         window = DummyWindow()
         with patch("open_law_lens.app.load_config", return_value=AppConfig()):
@@ -7136,40 +7153,19 @@ Opinion text.
             prompt,
         )
         self.assertIn(
-            f"{prefix}extract-case --cluster-id <cluster_id>\n",
+            f"{prefix}extract-case --cluster-id <cluster_id>",
             prompt,
         )
         self.assertEqual(prompt.count("--recover-official"), 1)
         self.assertEqual(prompt.count("--timeout 120"), 1)
-        self.assertIn("timeout: 180", prompt)
-        self.assertIn("replace the citation argument with `--cluster-id <cluster_id>`", prompt)
-        self.assertIn("choose one identity form, not two attempts", prompt)
-        self.assertIn("suspend further Scholar attempts", prompt)
-        # Bounded preference, prohibitions, and linked fallback requirements.
-        self.assertIn("Three to five cases is a ceiling and a preference, not a quota", prompt)
-        self.assertIn("use fewer when only fewer can be verified", prompt)
-        self.assertIn("Never use generic web search, Pi `web_search`", prompt)
-        self.assertIn("never manually call `extract-slip-opinion` or `lookup-citation`", prompt)
-        self.assertIn("Never orchestrate Scholar or any browser step yourself", prompt)
-        self.assertIn("link the case name or citation to the `source_url`", prompt)
+        # Reusable instructions are preloaded resources, not request data.
+        self.assertNotIn("timeout: 180", prompt)
+        self.assertNotIn("Never use generic web search", prompt)
         self.assertIn("Target official citation: 10 Cal.App.5th 25", prompt)
-        self.assertIn("agreed with it, distinguished it, limited it", prompt)
-        self.assertIn("use normal legal prose for case names and citations", prompt)
 
     def test_later_treatment_agent_prompt_quotes_punctuated_titles(self) -> None:
         class DummyWindow:
-            def _format_agent_prompt(
-                self,
-                template: str,
-                fallback: str,
-                values: dict[str, object],
-            ) -> str:
-                return OpenLawLensWindow._format_agent_prompt(  # type: ignore[arg-type]
-                    self,
-                    template,
-                    fallback,
-                    values,
-                )
+            pass
 
         window = DummyWindow()
         with patch("open_law_lens.app.load_config", return_value=AppConfig()):
@@ -7338,19 +7334,6 @@ Opinion text.
 
             def _set_agent_mode(self, mode: str) -> None:
                 self.selected_modes.append(mode)
-
-            def _format_agent_prompt(
-                self,
-                template: str,
-                fallback: str,
-                values: dict[str, object],
-            ) -> str:
-                return OpenLawLensWindow._format_agent_prompt(  # type: ignore[arg-type]
-                    self,
-                    template,
-                    fallback,
-                    values,
-                )
 
             def _launch_agent_with_prompt(
                 self,

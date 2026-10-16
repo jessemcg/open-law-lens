@@ -59,5 +59,9 @@ try {
   assert.equal(calls, 4);
   assert.equal(session.getLastAssistantText(), 'CANARY synthetic final answer');
   const capture = {contexts, tools: session.getActiveToolNames(), answer: session.getLastAssistantText(), session_file: sessionManager.getSessionFile()};
-  writeFileSync(process.env.PI_METRICS_TEST_CAPTURE, JSON.stringify(capture, (key, val) => key === 'timestamp' ? 0 : val));
+  // SDK tool-result wall time varies even with an identical synthetic read.
+  // Normalize only timing fields; prompts, tool arguments/results and sources
+  // must still compare byte-for-byte across passive-observer variants.
+  writeFileSync(process.env.PI_METRICS_TEST_CAPTURE, JSON.stringify(capture,
+    (key, val) => key === 'timestamp' || key === 'durationMs' ? 0 : val));
 } finally { session.dispose(); }

@@ -20,7 +20,7 @@ from unittest.mock import patch
 
 PROJECT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT))
-from open_law_lens.config import DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE
+from open_law_lens.agent_prompts import briefs_request
 from open_law_lens.agent_commands import AGENT_CLI_COMMAND_PREFIX
 from open_law_lens.prior_briefs import PriorBriefLibrary, PriorBriefExtraction
 from open_law_lens.pi_runtime import pi_command
@@ -85,7 +85,7 @@ def main():
     summaries = []
     spent = 0.0
     for case, question in QUESTIONS.items():
-        for variant, template in (('baseline', old), ('candidate', DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE)):
+        for variant, template in (('baseline', old), ('candidate', None)):
             if spent > 0.5:
                 raise SystemExit('Completed-cost safety stop; inspect existing runs, no substitution.')
             run = output / f'{case}-{variant}'
@@ -106,13 +106,18 @@ def main():
                 'OPEN_LAW_LENS_CACHE_DIR': str(run / 'cache'),
                 'XDG_STATE_HOME': str(run / 'state'),
             })
-            prompt = template.format(question=question, brief_database=run / 'briefs.sqlite3', brief_count=corpus.count())
+            system = (PROJECT / '.pi/SYSTEM.md').read_text()
+            if template is None:
+                system += '\n' + (PROJECT / '.pi/skills/prior-briefs/SKILL.md').read_text()
+                prompt = briefs_request(question, run / 'briefs.sqlite3', corpus.count())
+            else:
+                prompt = template.format(question=question, brief_database=run / 'briefs.sqlite3', brief_count=corpus.count())
             command = [*pi_command(), '--offline', '--no-session', '--no-extensions',
                        '--no-skills', '--no-context-files', '--no-prompt-templates',
                        '--no-themes', '--tools', 'bash,read', '--provider', 'fireworks',
                        '--model', 'accounts/fireworks/models/deepseek-v4p1-flash',
                        '--thinking', 'high', '--mode', 'json', '--system-prompt',
-                       (PROJECT / '.pi/SYSTEM.md').read_text(), '-p', prompt]
+                       system, '-p', prompt]
             started = time.monotonic()
             with (run / 'events.jsonl').open('w') as out, (run / 'stderr.log').open('w') as err:
                 try:

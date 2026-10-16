@@ -25,6 +25,10 @@ class AgentVteWrapperTests(unittest.TestCase):
         skill = project / ".pi" / "skills" / "legal-researcher" / "SKILL.md"
         skill.parent.mkdir(parents=True)
         skill.write_text("---\nname: legal-researcher\ndescription: Test.\n---\n", encoding="utf-8")
+        for name in ("law-question", "research-cache", "prior-briefs", "case-assessment", "subsequent-treatment"):
+            workflow_skill = project / ".pi" / "skills" / name / "SKILL.md"
+            workflow_skill.parent.mkdir(parents=True)
+            workflow_skill.write_text(f"---\nname: {name}\ndescription: Test.\n---\n")
         if with_bridge:
             extension = (
                 project
@@ -447,20 +451,15 @@ class AgentVteWrapperTests(unittest.TestCase):
     def test_appeal_skill_requires_issue_specific_heading_and_complete_record(
         self,
     ) -> None:
-        text = LEGAL_RESEARCHER_SKILL.read_text(encoding="utf-8")
+        text = " ".join((PROJECT_DIR / ".pi/skills/case-assessment/SKILL.md").read_text().split())
 
-        self.assertIn("For Appeal Issue research", text)
+        self.assertIn("Case Assessment", text)
         self.assertIn("make the required H1 title issue-specific", text)
         self.assertIn("`# Assessment`", text)
-        self.assertIn("treat the supplied fact pattern as the complete", text)
+        self.assertIn("Treat the supplied fact pattern as the complete", text)
         self.assertIn("do not add a generic record-completeness caveat", text)
-        self.assertIn("missing record citation only where it affects", text)
-        self.assertIn("material gaps in\n  the available legal sources", text)
-        self.assertIn(
-            '"$OPEN_LAW_LENS_PROJECT_DIR/../UvEnvironments/project-env" '
-            "run OpenLawLens open-law-lens <command>",
-            text,
-        )
+        self.assertIn("only where it affects the analysis", text)
+        self.assertIn("verification gap", text)
 
     def test_skill_contract_case_floor_and_audit_and_no_h1_h2_conflict(
         self,
@@ -561,8 +560,10 @@ class AgentVteWrapperTests(unittest.TestCase):
         # heading for the Appeal answer.
         self.assertIn("# Specific Issue Title", system)
         self.assertIn("*Short disposition*", system)
-        self.assertIn("make the required H1 title issue-specific", text)
-        self.assertIn("`# Cal-ICWA Inquiry`", text)
+        assessment = " ".join((PROJECT_DIR / ".pi/skills/case-assessment/SKILL.md").read_text().split())
+        self.assertIn("make the required H1 title issue-specific", assessment)
+        self.assertIn("`# Cal-ICWA Inquiry Adequacy`", assessment)
+        self.assertNotIn("no more than 10 words", text + assessment)
         self.assertNotIn("level-two", text)
         self.assertNotIn("`## Cal-ICWA Inquiry`", text)
         self.assertNotIn("`## Assessment`", text)

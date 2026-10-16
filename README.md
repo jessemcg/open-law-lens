@@ -89,7 +89,7 @@ Or save it in the app menu under Settings. The Settings path writes a local
 - Reader links for cited cases, statutes, and rules.
 - Named Research Cache sets.
 - Exact-phrase search across the indexed prior-brief archive, with newest-first
-  reader navigation through matches. Settings → General Settings offers one
+  reader navigation through matches. Settings → Highlights offers one
   color picker for all search matches in the reader Find bar and Search Briefs;
   the current match is additionally bold. A separate Linked Text Color picker
   controls the reader highlight for phrases opened from the upper answer panel.
@@ -169,7 +169,7 @@ computer-use-linux doctor
 
 The Settings window lists the models currently authorized in Pi and lets each
 user choose a separate model and reasoning effort for Query Law, Query Research
-Cache, Query Prior Briefs, and Assess Legal Question. These personal overrides are
+Cache, Query Prior Briefs, Assess Legal Question, and Subsequent Treatment. These personal overrides are
 stored in the ignored local `config.json` and apply to newly launched sessions.
 Choosing **Use Pi defaults** leaves that workflow on Pi's merged user and
 project defaults. Pi credentials remain in the user's home Pi configuration,
@@ -360,9 +360,9 @@ intentional design choice. The CLI path keeps the app more responsive, easier to
 install, and less dependent on extra runtime services while still tying legal
 authority lookup to CourtListener APIs and the app's local cache/library model.
 
-There are four main agent workflows:
+There are five Pi-backed workflows (plus local Search Briefs):
 
-- Law: ask a California legal research question. The default prompt directs
+- Law: ask a California legal research question. The app-owned instructions direct
   Pi to search and extract authority through Open Law Lens CLI commands. If
   the pinned current-case SOCF is checked, the app also exports it as factual
   context for that question.
@@ -382,6 +382,8 @@ There are four main agent workflows:
   fact pattern. The app extracts the fact pattern into a temporary workspace,
   launches Pi in Appeal mode, and directs it to research California law through
   the preloaded Legal Researcher workflow.
+- Subsequent Treatment: analyze verified later published cases treating the
+  currently viewed case, within the fixed discovery and recovery ceilings below.
 
 The separate **Search Briefs** scope performs a local, non-LLM exact-phrase
 search. It opens matching briefs newest-first in the main reader without adding
@@ -434,13 +436,80 @@ controller as Enter. The existing `submit_speech_law_question`,
 starting new sessions. A successful `gdbus` activation only means the app
 received the action; the app reports delivery acceptance or failure.
 
-Agent runtime settings, including the five per-query Pi model/reasoning
-profiles, prompt templates, and fact-pattern source,
-are available in the app Settings window. Subsequent Treatment has its own
-profile, independent of the Query Law profile. Each profile override is stored
-locally in the ignored `config.json` file, affects newly launched sessions,
-and can independently be set to **Use Pi defaults**. **Search Briefs** is
-local and does not launch Pi.
+### Settings and app-owned instructions
+
+Settings is one page with **one shared boxed list**, matching Focus: all four
+independently expandable categories are rows within that list, not separate
+cards. Categories are initially collapsed: **General** (masked CourtListener
+token, concordance file, Prior Briefs Folder, and Case Question Fact Pattern),
+**Display** (case font and size), **Highlights** (search-match and linked-text
+colors), and **Agent Models**.
+Multiple categories can remain open. There is one outer scrollbar, no sidebar,
+and a flat **Save** button in the header with visible save/error feedback.
+Persistent preferences are saved only explicitly; closing discards unsaved edits.
+Expansion state is transient. Choosing/resetting a fact pattern still immediately
+changes only the running window's session-local override, not `config.json`.
+Assessment always includes that selected fact pattern irrespective of the
+ordinary current-case SOCF checkmark. The General control explicitly identifies
+this immediate, window-only behavior; moving it does not make it persistent.
+
+**General → Prior Briefs Folder** is persistent: choose or type an existing,
+readable absolute directory, then **Save**. Reset restores the displayed default
+`OpenLawLens/prior_briefs` (also requiring Save). Closing without Save discards
+folder edits. Use **Update Prior Brief Library** to index ODT files recursively;
+existing Search Briefs/Prior Briefs query-time updates also remain available.
+Saving a folder never indexes, moves, copies or deletes the original documents.
+Each nondefault folder gets its own app-managed SQLite index and folder-scoped
+brief IDs; switching back reuses that folder's index. The default directory keeps
+its existing `library/prior_briefs.sqlite3` and IDs. Old indexes are not migrated
+or deleted. Missing/unreadable folders or incomplete directory scans fail without
+clearing indexed entries or creating an unintended source directory.
+
+The `OPEN_LAW_LENS_PRIOR_BRIEFS_DIR` environment override takes precedence over
+the saved folder; `OPEN_LAW_LENS_PRIOR_BRIEFS_DB` still explicitly pins an index.
+The GUI, CLI and newly prepared agent snapshots use the same resolver. Existing
+agent sessions keep their original snapshot; changing Settings never retargets
+follow-ups. See [source-location validation](docs/settings-source-locations.md).
+
+Agent Models retains five independent workflow model/reasoning profiles and
+asynchronous refresh. Subsequent Treatment is independent of Law. Profiles are
+stored locally in ignored `config.json`, apply to new sessions, and can each use
+**Use Pi defaults**. Unavailable models and values during discovery failure are
+preserved. **Search Briefs** remains local and launches no Pi.
+
+There are **no prompt editors or skill pickers**. New sessions automatically get
+`.pi/SYSTEM.md`, shared Legal Researcher when applicable, and exactly one fixed
+app-owned workflow skill. The launcher preloads every required file in that order;
+it does not ask the model to discover/read a skill. Missing/empty instruction
+files or an invalid workflow/mode pair produce a launch error, without disabling
+ordinary settings or non-agent features. Request builders in
+`open_law_lens/agent_prompts.py` supply only the literal question, exported
+paths/counts/status, target identity, and shell-quoted command strings.
+
+| Workflow key | Mode | Workflow skill | Legal Researcher |
+|---|---|---|---|
+| `law` | `general` | `law-question` | Yes |
+| `research_cache` | `case` | `research-cache` | No |
+| `prior_briefs` | `brief` | `prior-briefs` | No |
+| `assess_argument` | `appeal` | `case-assessment` | Yes |
+| `subsequent_treatment` | `general` | `subsequent-treatment` | Yes |
+
+The five old prompt JSON keys and legacy `later_treatment_agent_prompt_template`
+alias remain **opaque, inactive compatibility data**, including original key
+presence, whitespace, non-string JSON and both treatment aliases. Former custom
+prompts no longer influence new runs. Load is read-only; an explicit later
+Settings save retains those values without normalization, interpolation, alias
+selection, or historical-default upgrades. Fresh configurations acquire no prompt
+keys. No deployment migration or private-settings cleanup occurs. Saved answers
+and existing sessions are not rewritten or relabeled. Follow-ups keep their
+original session instructions and corpus even if the composer scope changes.
+
+Restart the GUI and start a **new Agent session** for this update; do not interrupt
+an existing session. Rollback restores prior code/resources, whose prompt settings
+remain available without reverse migration. No dependency synchronization,
+case/library/cache migration, or answer regeneration is required. See
+[workflow instruction and Settings validation](docs/workflow-instructions-validation.md)
+for the shipped-prompt mapping, isolated checks, and limitations.
 
 Law, Subsequent Treatment, and Assess Legal Question runs are research-capable.
 The launcher preloads the tracked legal-researcher skill into the disposable
@@ -465,8 +534,8 @@ already known. Pi's `web_search` remains available only for unresolved,
 open-ended verification after those deterministic fallbacks. This agent-facing
 web search is separate from the confined default-browser Scholar official-copy
 recovery described below, and is never used to retrieve an official reporter
-copy. Research Cache and Prior Brief runs load no skill and no web extension
-and remain closed-corpus workflows.
+copy. Research Cache and Prior Brief runs preload only their own workflow skill, not
+Legal Researcher or a web extension, and remain closed-corpus workflows.
 
 All research-capable modes also follow the skill's bounded execution contract:
 180-second bash tool deadlines, sequential 120-second recovery with progress,
@@ -502,10 +571,10 @@ CourtListener/slip baseline with a disclosed pagination limitation — never
 another source search — and unsupported treatment characterizations are
 omitted rather than inferred.
 
-The immediately preceding exact shipped Subsequent Treatment default upgrades
-in memory on config load; customized prompts and all model profiles are
-preserved, and no settings file is rewritten. Start a fresh Agent session for
-the skill/system updates and restart the GUI for generated-command changes.
+The detailed Subsequent Treatment ceiling belongs to its preloaded workflow
+skill; Legal Researcher delegates to it without a duplicate ceiling. Commands
+remain Python-generated runtime inputs. Old prompt settings are retained but
+inactive; none are upgraded in memory or rewritten during deployment.
 
 The wrapper also resolves `uv` deterministically before launching Pi. It uses
 the validated `OPEN_LAW_LENS_UV_BIN` override, then `uv` on `PATH`, then
@@ -712,7 +781,7 @@ ODT or PDF. ODT files are read directly; PDF extraction uses the system
 
 When an assessment starts, the app copies the source fact pattern into a
 temporary agent workspace, writes an extracted text file, and launches Pi in
-the embedded terminal. The default assessment prompt asks Pi to act as an
+the embedded terminal. The app-owned Case Assessment skill asks Pi to act as an
 objective California appellate court deciding the supplied legal question, not
 as an advocate for either side, and not to presume an answer from the
 question's wording. It treats the selected fact pattern as the complete
@@ -1110,12 +1179,12 @@ query**, not all relevant archive documents. No automatic pagination, reindexing
 ranking change, or schema migration is involved. Python callers can use
 `PriorBriefLibrary.search_page()`; `search()` still returns the same list shape.
 
-Only an exact known shipped Prior Brief default (including normalized legacy CLI
-prefixes) upgrades in memory on configuration load. Customized prompts and all
-model/reasoning profiles survive; no deployment step rewrites `config.json`.
-Normal user-initiated Settings saves behave as before. Reload application code
-and launch a new Agent session to receive revised defaults; existing sessions
-are unchanged. Prompt requirements are not runtime enforcement: see
+Prior Brief instructions now belong to `.pi/skills/prior-briefs/SKILL.md`.
+No historical or customized prompt is upgraded or interpreted on load; all old
+prompt values survive as inactive compatibility data. No deployment step rewrites
+`config.json`. Reload application code and launch a new Agent session to receive
+the app-owned instructions; existing sessions are unchanged. Instruction
+requirements are not runtime enforcement: see
 [Prior Brief acceptance results](docs/prior-brief-quality-acceptance.md) for
 observed behavioral failures and validation limits.
 

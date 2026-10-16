@@ -16,6 +16,19 @@ from open_law_lens.launch_request import (
 
 
 class LaunchRequestTests(unittest.TestCase):
+    def test_agent_request_file_preserves_literal_input_without_template_expansion(self):
+        from open_law_lens.agent_prompts import law_request
+        from open_law_lens.app import OpenLawLensWindow
+
+        question = '  {broken} "quotes" é /skill:not-expanded\n$(false)  '
+        request = law_request(question)
+        with tempfile.TemporaryDirectory() as directory:
+            with patch('tempfile.tempdir', directory):
+                path = OpenLawLensWindow._write_prompt_file(object(), request)
+            self.assertEqual(path.parent, Path(directory))
+            self.assertEqual(path.read_text(encoding='utf-8'), request)
+            self.assertIn(question, path.read_text(encoding='utf-8'))
+
     def test_write_and_pop_open_authority_request(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             with patch.dict(os.environ, {"OPEN_LAW_LENS_REQUEST_DIR": temp_dir}):

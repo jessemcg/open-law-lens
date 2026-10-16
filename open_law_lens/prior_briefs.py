@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Any, Iterator, Literal, Mapping
 from xml.etree import ElementTree
 
+from .config import load_config
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PRIOR_BRIEFS_DIR = PROJECT_ROOT / "prior_briefs"
@@ -70,20 +72,32 @@ class PriorBriefError(RuntimeError):
 
 def prior_briefs_dir() -> Path:
     value = os.environ.get("OPEN_LAW_LENS_PRIOR_BRIEFS_DIR")
-    return Path(value).expanduser() if value else DEFAULT_PRIOR_BRIEFS_DIR
+    value = value or load_config().prior_briefs_folder
+    if value:
+        return Path(value).expanduser().resolve()
+    return DEFAULT_PRIOR_BRIEFS_DIR.resolve()
 
 
-def prior_briefs_db_path() -> Path:
+def prior_briefs_db_path(source_dir: Path | None = None) -> Path:
     value = os.environ.get("OPEN_LAW_LENS_PRIOR_BRIEFS_DB")
-    return Path(value).expanduser() if value else DEFAULT_PRIOR_BRIEFS_DB
+    if value:
+        return Path(value).expanduser()
+    source_dir = (source_dir or prior_briefs_dir()).resolve()
+    if source_dir == DEFAULT_PRIOR_BRIEFS_DIR.resolve():
+        return DEFAULT_PRIOR_BRIEFS_DB
+    # Keep each archive's index separate; never repoint or clear the old index.
+    key = hashlib.sha256(str(source_dir).encode("utf-8")).hexdigest()
+    return DEFAULT_PRIOR_BRIEFS_DB.with_name(f"prior_briefs-{key}.sqlite3")
 
 
 def _utc_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
-def brief_id_for_relative_path(relative_path: str) -> str:
+def brief_id_for_relative_path(relative_path: str, namespace: str = "") -> str:
     normalized = relative_path.replace("\\", "/").casefold()
+    if namespace:
+        normalized = namespace + "\0" + normalized
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
@@ -568,10 +582,13 @@ class PriorBriefSyncResult:
 class PriorBriefLibrary:
     source_dir: Path
     path: Path
+    id_namespace: str = ""
 
     @classmethod
     def default(cls) -> "PriorBriefLibrary":
-        library = cls(prior_briefs_dir(), prior_briefs_db_path())
+        source = prior_briefs_dir()
+        namespace = "" if source == DEFAULT_PRIOR_BRIEFS_DIR.resolve() else str(source)
+        library = cls(source, prior_briefs_db_path(source), namespace)
         library.ensure()
         return library
 
@@ -650,12 +667,22 @@ class PriorBriefLibrary:
                 )
 
     def sync(self) -> PriorBriefSyncResult:
-        self.ensure()
-        self.source_dir.mkdir(parents=True, exist_ok=True)
+        if not self.source_dir.is_dir():
+            raise PriorBriefError(f"Prior Briefs Folder is unavailable: {self.source_dir}")
+        if not os.access(self.source_dir, os.R_OK | os.X_OK):
+            raise PriorBriefError(f"Prior Briefs Folder is not readable: {self.source_dir}")
+
+        def scan_error(error: OSError) -> None:
+            raise PriorBriefError(f"Unable to scan Prior Briefs Folder: {error}") from error
+
         files = sorted(
-            (path for path in self.source_dir.rglob("*.odt") if path.is_file()),
+            (Path(directory) / name
+             for directory, _folders, names in os.walk(self.source_dir, onerror=scan_error)
+             for name in names
+             if name.endswith(".odt") and (Path(directory) / name).is_file()),
             key=lambda path: path.relative_to(self.source_dir).as_posix().casefold(),
         )
+        self.ensure()
         added = updated = unchanged = 0
         errors: list[str] = []
         now = _utc_now()
@@ -697,7 +724,9 @@ class PriorBriefLibrary:
                 title = source_path.stem
                 case_match = CASE_NUMBER_RE.search(title)
                 values = (
-                    brief_id_for_relative_path(relative_path),
+                    str(old["brief_id"]) if old is not None else brief_id_for_relative_path(
+                        relative_path, self.id_namespace,
+                    ),
                     relative_path,
                     title,
                     case_match.group(1).upper() if case_match else "",

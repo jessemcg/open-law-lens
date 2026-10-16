@@ -9,90 +9,44 @@ import unittest
 from unittest.mock import patch
 
 from open_law_lens.agent_commands import AGENT_CLI_COMMAND_PREFIX
-from open_law_lens.config import DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE, load_config
+from open_law_lens.config import load_config, save_config
 from open_law_lens.cli import _cmd_search_briefs, _cmd_extract_brief
 from open_law_lens.prior_briefs import PriorBriefSearchPage, PriorBriefSearchResult
 
+PROJECT = Path(__file__).resolve().parents[1]
+
+
+def instructions():
+    return ' '.join((PROJECT / '.pi/skills/prior-briefs/SKILL.md').read_text().split())
+
 
 class PriorBriefQualityTests(unittest.TestCase):
-    def test_exact_defaults_upgrade_read_only_and_customizations_survive(self):
-        previous = Path(__file__).with_name('fixtures').joinpath(
-            'prior_brief_prompt_previous.txt').read_text()
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'config.json'
-            for prefix in (AGENT_CLI_COMMAND_PREFIX, 'uv run open-law-lens',
-                           'uv run --no-sync open-law-lens'):
-                for words in ('two to ten words', 'two to five words'):
-                    old = previous.replace('$OLL', prefix).replace('two to ten words', words)
+    def test_historical_defaults_and_customizations_are_opaque_and_read_only(self):
+        for fixture in ('prior_brief_prompt_previous.txt', 'prior_brief_prompt_pre_artifacts.txt',
+                        'prior_brief_prompt_pre_lookup.txt'):
+            previous = (Path(__file__).with_name('fixtures') / fixture).read_text()
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / 'config.json'
+                for prefix in (AGENT_CLI_COMMAND_PREFIX, 'uv run open-law-lens', 'uv run --no-sync open-law-lens'):
                     for suffix in ('', '\nCustom instruction: rank by my issue.'):
-                        raw = {'brief_agent_prompt_template': old + suffix,
+                        retired = previous.replace('$OLL', prefix) + suffix
+                        raw = {'brief_agent_prompt_template': retired,
                                'agent_runtime_profiles_version': 2,
                                'agent_runtime_profiles': {'prior_briefs': {
-                                   'provider': 'fireworks', 'model': 'unchanged',
-                                   'thinking': 'high'}}}
+                                   'provider': 'fireworks', 'model': 'unchanged', 'thinking': 'high'}}}
                         path.write_text(json.dumps(raw))
                         before = path.read_bytes()
                         result = load_config(path)
-                        expected = (previous.replace('$OLL', AGENT_CLI_COMMAND_PREFIX)
-                                    .replace('two to ten words', words) + suffix
-                                    if suffix or words == 'two to five words'
-                                    else DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE)
-                        self.assertEqual(result.brief_agent_prompt_template, expected)
+                        self.assertEqual(result.retired_prompt_settings['brief_agent_prompt_template'], retired)
                         self.assertEqual(path.read_bytes(), before)
+                        save_config(result, path)
+                        self.assertEqual(json.loads(path.read_text())['brief_agent_prompt_template'], retired)
                         profile = result.agent_runtime_profiles['prior_briefs']
-                        self.assertEqual((profile.provider, profile.model, profile.thinking),
-                                         ('fireworks', 'unchanged', 'high'))
-
-    def test_pre_artifact_default_upgrades_without_writing_settings(self):
-        previous = (Path(__file__).with_name('fixtures') / 'prior_brief_prompt_pre_artifacts.txt').read_text().strip()
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'config.json'
-            for suffix in ('', '\nMy customized instruction.'):
-                raw = {'brief_agent_prompt_template': previous.replace('$OLL', AGENT_CLI_COMMAND_PREFIX) + suffix,
-                       'agent_runtime_profiles_version': 2,
-                       'agent_runtime_profiles': {'prior_briefs': {
-                           'provider': 'fireworks', 'model': 'unchanged', 'thinking': 'high'}}}
-                path.write_text(json.dumps(raw))
-                before = path.read_bytes()
-                loaded = load_config(path)
-                expected = raw['brief_agent_prompt_template'] if suffix else DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE
-                self.assertEqual(loaded.brief_agent_prompt_template, expected)
-                self.assertEqual(path.read_bytes(), before)
-                self.assertEqual(loaded.agent_runtime_profiles['prior_briefs'].model, 'unchanged')
-
-    def test_pre_lookup_default_upgrades_read_only_with_profiles_preserved(self):
-        previous = (Path(__file__).with_name('fixtures') /
-                    'prior_brief_prompt_pre_lookup.txt').read_text().strip()
-        prefixes = (AGENT_CLI_COMMAND_PREFIX, 'uv run open-law-lens',
-                    'uv run --no-sync open-law-lens',
-                    'uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync open-law-lens')
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'config.json'
-            for prefix in prefixes:
-                for suffix in ('', '\nMy customized lookup instruction.'):
-                    with self.subTest(prefix=prefix, customized=bool(suffix)):
-                        raw = {
-                            'brief_agent_prompt_template': previous.replace('$OLL', prefix) + suffix,
-                            'agent_runtime_profiles_version': 2,
-                            'agent_runtime_profiles': {'prior_briefs': {
-                                'provider': 'fireworks', 'model': 'unchanged', 'thinking': 'high'}},
-                        }
-                        path.write_text(json.dumps(raw))
-                        before = path.read_bytes()
-                        loaded = load_config(path)
-                        expected = (previous.replace('$OLL', AGENT_CLI_COMMAND_PREFIX) + suffix
-                                    if suffix else DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE)
-                        self.assertEqual(loaded.brief_agent_prompt_template, expected)
-                        self.assertEqual(path.read_bytes(), before)
-                        profile = loaded.agent_runtime_profiles['prior_briefs']
-                        self.assertEqual((profile.provider, profile.model, profile.thinking),
-                                         ('fireworks', 'unchanged', 'high'))
+                        self.assertEqual((profile.provider, profile.model, profile.thinking), ('fireworks', 'unchanged', 'high'))
 
     def test_lookup_contract_is_distinct_from_comparison_and_keeps_verification(self):
-        prompt = DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE.format(
-            question='Find the most recent brief arguing an inquiry failure.',
-            brief_database='/tmp/synthetic.sqlite3', brief_count=5)
-        lookup = prompt.split('DOCUMENT LOOKUP:', 1)[1].split('RESEARCH OR COMPARISON:', 1)[0]
+        prompt = instructions()
+        lookup = prompt.split('## Document lookup', 1)[1].split('## Research or comparison', 1)[0]
         for text in (
             '--match all --limit 5 --sort newest',
             "Match the substance of the argument, not the user's exact wording",
@@ -102,31 +56,27 @@ class PriorBriefQualityTests(unittest.TestCase):
             'Return one linked title, document type/date',
             'No ranked list, supporting or contrasting briefs',
             'Do not read or compare the selected current-case fact pattern merely',
-            'dates are tied or genuinely unresolved',
-            'file-date fallback',
-            'initial inquiry versus further inquiry',
-            'No directory listings',
-            'Do not inspect SQL',
+            'dates are tied or genuinely unresolved', 'file-date fallback',
+            'initial inquiry versus further inquiry', 'No directory listings', 'Do not inspect SQL',
         ):
             self.assertIn(text, lookup)
-        self.assertIn('Follow-ups may change the scope', prompt)
-        shared = prompt.split('SOURCE VERIFICATION AND ANSWER RULES (both scopes):', 1)[1]
-        self.assertIn('read EVERY part in manifest order until EOF', shared)
-        self.assertIn('single-result answer rule above takes precedence', shared)
-        self.assertIn('A lookup does not require a quote', shared)
-        self.assertIn('For research or comparison only', shared)
-        self.assertIn('open-law-lens://prior-brief/<brief_id>', shared)
+        self.assertIn('Follow-ups may change the requested task within the original', prompt)
+        shared = prompt.split('## Source verification and answer rules (both scopes)', 1)[1]
+        for text in ('read EVERY part in manifest order until EOF',
+                     'single-result answer rule above takes precedence',
+                     'A lookup does not require a quote', 'For research or comparison only',
+                     'open-law-lens://prior-brief/<brief_id>'):
+            self.assertIn(text, shared)
 
     def test_prompt_contracts(self):
-        prompt = DEFAULT_BRIEF_AGENT_PROMPT_TEMPLATE.format(
-            question='Synthetic question', brief_database='/tmp/synthetic.sqlite3', brief_count=5)
+        prompt = instructions()
         for text in ('until EOF', 'grep is navigation', 'disposable agent workspace only',
                      '--output-dir', 'read EVERY part in manifest order', '32 KiB UTF-8',
                      'Chunk numbers are not legal pinpoints', 'Fetch each selected document once',
                      'strongest directly relevant brief first', 'the opening brief argues',
-                     'nondependent-person eligibility', 'has_more: false',
-                     'never insert brackets', 'Do not browse the web',
-                     'file-date fallback', 'current-case factual context explicitly selected'):
+                     'nondependent-person eligibility', 'has_more: false', 'two to ten words (2–10)',
+                     'never insert brackets', 'Do not browse the web', 'file-date fallback',
+                     'current-case factual context explicitly selected'):
             self.assertIn(text, prompt)
 
     def test_cli_page_keeps_metadata_and_errors(self):
