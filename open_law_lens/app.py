@@ -2722,7 +2722,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def _build_query_action_strip(self) -> Gtk.Widget:
         """Build the compact scope selector owned by the Research composer."""
-        strip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        strip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
         strip.add_css_class("composer-scope-group")
         strip.set_halign(Gtk.Align.START)
         for mode in (
@@ -3767,7 +3767,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         controls.set_homogeneous(False)
         controls.set_min_children_per_line(1)
         controls.set_max_children_per_line(2)
-        controls.set_column_spacing(6)
+        controls.set_column_spacing(2)
         controls.set_row_spacing(2)
         controls.set_halign(Gtk.Align.START)
         controls.set_focusable(False)
