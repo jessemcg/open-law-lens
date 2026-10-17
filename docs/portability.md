@@ -2,8 +2,9 @@
 
 Open Law Lens can run from a **complete source checkout at an arbitrary path**,
 without Jesse's Dropbox layout, UvEnvironments, PiRunMetrics, prior briefs or
-Current Case integrations. This is the source-install contract for a future
-installer, **not a published one-line installer or a self-contained wheel**.
+Current Case integrations. The source installer is implemented in this checkout;
+see [installation](source-install.md) and [current validation/publication status](source-install-validation.md).
+It is not a self-contained wheel.
 Keep the checkout: scripts, `.pi` instructions/extensions and icons are runtime
 resources. Moving it requires explicit reprovisioning. No resource is downloaded
 or dependency installed during launch.
@@ -167,10 +168,11 @@ Existing maintained callers retain their archive location and metrics behavior.
 The maintained `Desktop_Files/launch-open-law-lens.sh` still uses
 `project-env run OpenLawLens open-law-lens app`; XREMAP's `open-selected` command
 uses the same helper. Neither contract needs changing for this addition. A
-future public installer must generate its own launcher pointing at the
-standalone script, not copy Jesse's absolute maintained desktop entry.
+public installer generates its own receipt-bound standalone command and desktop
+entry, not a copy of Jesse's absolute maintained desktop entry. The manual
+standalone script remains supported with its original environment override/default.
 
-## Validation and remaining installer work
+## Validation
 
 Run write-producing checks from a tracked/new-source-only disposable copy and
 paired disposable environment, never from private production state. Include an
@@ -196,7 +198,7 @@ for managed Python. Do not substitute the older girepository-1.0 development API
 Candidate apt packages: `build-essential pkg-config libcairo2-dev
 libgirepository-2.0-dev libffi-dev gir1.2-gtk-4.0 gir1.2-adw-1`. Candidate dnf
 packages: `gcc pkgconf-pkg-config cairo-devel gobject-introspection-devel
-glib2-devel libffi-devel gtk4 libadwaita`. Verify names and versions on the actual
+glib2-devel cairo-gobject-devel libffi-devel gtk4 libadwaita`. Verify names and versions on the actual
 release before advertising support. Existing native build caches can mask missing
 prerequisites; no clean apt/dnf provisioning acceptance is claimed.
 
@@ -214,17 +216,22 @@ writes and treat source resources as read-only. Research Sets remain in the
 library; standalone cache clear also preserves answer indexes and reader
 highlights/positions. Concordance and request-location overrides remain supported.
 
-The license is undecided: obtain owner approval and add a LICENSE before broad
-distribution; repository visibility does not establish permission. A source
-archive without Git metadata reports revision `unknown`; a future installer
-must provide verifiable revision metadata. Ship `diagnostics.RESOURCES`, Python
-package, lock/build metadata, scripts and icons. The desktop template is not a
-deployed entry. Installation needs confirmation and ownership/upgrade receipts;
-uninstall must preserve private data by default and must never remove shared Pi
-packages, credentials or developer-maintained installations.
+The project is licensed under [GNU GPL v3](../LICENSE), matching the companion
+projects. The installer follows latest `origin/main` on a named editable branch,
+records the actual commit, and never updates/resets source during resume/repair.
+It ships the full `diagnostics.RESOURCES`, Python package, lock/build metadata,
+scripts and unchanged icons. Public templates are exported self-contained from
+Desktop_Files; users do not need that sibling repository.
 
-Before publishing a one-line installer, implement and separately accept:
-release/source pinning, native prerequisite handling, explicit runtime
-provisioning, desktop entry/icons, transactional update/recovery, uninstall
-preserving private data, and a clean-install smoke test. Do not advertise a
-public install command until its pinned artifacts are actually published.
+Installation requires path/native confirmations and private ownership receipts.
+The existing standalone provisioning receipt remains distinct from installer
+ownership. Uninstall preserves private data and never removes shared Pi/Node,
+packages, credentials or maintained installations. Maintenance files live only in
+`$XDG_DATA_HOME/open-law-lens/installer/`, receipt/log/lock in the corresponding
+XDG state `installer/`, and disposable cache in the XDG cache `installer/`.
+General data/state roots contain durable work and must never be recursively removed.
+
+The README command requires the new bootstrap/source files on the public `main`
+branch; local implementation is not publication. See
+[current evidence and limitations](source-install-validation.md), including
+clean-native-build versus graphical-distro certification.

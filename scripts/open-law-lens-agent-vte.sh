@@ -67,6 +67,11 @@ if [[ ! -r "$project_dir/.pi/SYSTEM.md" || ! -s "$project_dir/.pi/SYSTEM.md" ]];
     "$project_dir/.pi/SYSTEM.md" >&2
   exit 2
 fi
+if [[ -z "${OPEN_LAW_LENS_PI_BIN:-}" ]] && ! command -v pi >/dev/null 2>&1; then
+  for candidate in "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/bin/pi" "$HOME/.local/bin/pi" "$HOME"/.local/share/pi-node/node-*/bin/pi; do
+    if [[ -x "$candidate" ]]; then pi_bin="$candidate"; break; fi
+  done
+fi
 if [[ ! -x "$pi_bin" ]] && ! command -v "$pi_bin" >/dev/null 2>&1; then
   printf 'Pi executable not found: %s\n' "$pi_bin" >&2
   exit 127
@@ -107,11 +112,27 @@ if [[ -z "$pi_node" ]]; then
     fi
   done
 fi
+if [[ -z "$pi_node" ]]; then
+  for candidate in "${XDG_DATA_HOME:-$HOME/.local/share}/pi-node/current/bin/node" "$HOME/.local/share/pi-node/current/bin/node" "$HOME"/.local/share/pi-node/node-*/bin/node; do
+    if [[ -x "$candidate" ]]; then pi_node="$candidate"; break; fi
+  done
+fi
 if [[ -n "$pi_node" ]] \
   && [[ ! -x "$pi_node" ]] \
   && ! command -v "$pi_node" >/dev/null 2>&1; then
   printf 'Pi Node executable not found: %s\n' "$pi_node" >&2
   exit 127
+fi
+
+# Node readiness and Pi launch argv are separate: official Pi is a shell launcher.
+pi_prefix=("$pi_path")
+pi_shebang=''
+IFS= read -r -n 512 pi_shebang < "$pi_candidate" || true
+if [[ -n "$pi_node" ]]; then
+  export PATH="$(dirname "$pi_node"):${PATH:-/usr/bin:/bin}"
+  if [[ "$pi_shebang" == '#!'*node* ]] || { [[ "$pi_shebang" != '#!'* ]] && [[ "$pi_candidate" == *.js || "$pi_candidate" == *.mjs || "$pi_candidate" == *.cjs ]]; }; then
+    pi_prefix=("$pi_node" "$pi_path")
+  fi
 fi
 
 skill="$project_dir/.pi/skills/legal-researcher/SKILL.md"
@@ -204,8 +225,7 @@ fi
 args+=("${followup_args[@]}")
 # Passive observer for every Pi-backed mode; never grant extra model tools.
 metrics_project_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-metrics_prefix=("$pi_path")
-[[ -z "$pi_node" ]] || metrics_prefix=("$pi_node" "$pi_path")
+metrics_prefix=("${pi_prefix[@]}")
 metrics_values=()
 helper="$metrics_project_root/../PiRunMetrics/launch_adapter.py"
 metrics_enabled="${PI_RUN_METRICS_ENABLED:-}"
@@ -231,7 +251,4 @@ fi
 args+=(--tools "$tools")
 
 cd "$workspace"
-if [[ -n "$pi_node" ]]; then
-  exec "$pi_node" "$pi_path" "${args[@]}" "$prompt"
-fi
-exec "$pi_path" "${args[@]}" "$prompt"
+exec "${pi_prefix[@]}" "${args[@]}" "$prompt"

@@ -1,5 +1,21 @@
 # Repository Guidelines
 
+Public source installation is standalone: see `docs/source-install.md`. Complete
+installation, atomically save the completed receipt and show success before any
+optional Pi/package setup. Skipping, cancellation or failure there must never
+make the application incomplete. Login, model selection, browser permissions
+and paid verification are separate. Preserve maintained UvEnvironments installs;
+never adopt, relocate, migrate or repair their resources through the installer.
+Installer tests use disposable HOME/XDG/Pi/source/runtime paths and synthetic
+executables, never real settings, credentials, documents or host provisioning.
+
+## README style
+
+Keep `README.md` minimalistic and streamlined. Add only important user-facing
+information, with explanations that are short and to the point. Put detailed
+technical explanations, implementation notes and validation reports in `docs/`,
+not the README.
+
 ## Machine-local runtime
 
 Read ../UvEnvironments/README.md. Provision `../UvEnvironments/project-env sync OpenLawLens`
@@ -23,11 +39,14 @@ Research Cache contains durable user work and belongs in XDG data, not cache.
 owned/private-directory violations. `diagnostics.py`/`diagnostics_ui.py` expose
 redacted per-capability checks, no network/Pi by default and opt-in bounded probes.
 Missing optional capabilities do not block core reading. Source installs require
-the complete checkout; no wheel-only/public one-line installer is advertised yet.
+the complete editable checkout; the public bootstrap and independent maintenance
+engine are documented in `docs/source-install.md`.
 `standalone-runtime.py --record` is explicit post-provisioning receipt creation;
 launch checks only, never syncs/downloads. Test from disposable source/environment.
-Standalone clearing preserves saved answers and annotations. License approval,
-public installer safeguards and clean-distro acceptance remain publication gates.
+Standalone clearing preserves saved answers and annotations. GPL v3 is in LICENSE.
+Installer resources own only dedicated installer subdirectories of XDG data/state/
+cache, never durable research/session roots. Publication and clean-distro acceptance
+status must be reported truthfully in `docs/source-install-validation.md`.
 
 ## Project Structure & Module Organization
 - `open_law_lens/` is the Python package.
@@ -57,7 +76,7 @@ public installer safeguards and clean-distro acceptance remain publication gates
 - `open_law_lens/dbus_commands.py` owns the documented application action list, including the live follow-up actions; keep it in sync when actions are added.
 - `open_law_lens/pi_runtime.py` owns Pi runtime discovery, authenticated model enumeration, and atomic updates to the selected app Pi preferences. Standalone RPC discovery uses a private cwd without the tracked personal model fallback.
 - `open_law_lens/agent_commands.py` owns the canonical workspace-safe Open Law Lens command prefix used in agent prompts and CLI suggestions.
-- `scripts/open-law-lens-agent-vte.sh` launches Pi from the embedded terminal. It must use the Node runtime shipped beside the selected Pi executable so desktop PATH differences cannot fall back to an incompatible system Node. Embedded commands use the absolute same-environment `OPEN_LAW_LENS_CLI_BIN`, validated executable before model work; they never invoke uv or depend on UvEnvironments. The maintained outer launcher still selects/validates that app environment. Preserve its temporary-workspace and cache-directory behavior unless the task explicitly changes agent launch semantics. It stages and explicitly loads `.pi/extensions/open-law-lens-followup-bridge.ts` when present in all five Pi workflows without widening the tool allowlist or the `--no-extensions` confinement.
+- `scripts/open-law-lens-agent-vte.sh` launches Pi from the embedded terminal. It must discover the Node runtime shipped beside the selected Pi executable or in the official managed `pi-node/current/bin` layout so desktop PATH differences cannot fall back to an incompatible system Node. Execute official shell launchers directly; use bundled Node only for JavaScript entrypoints, not as a universal Pi prefix. Embedded commands use the absolute same-environment `OPEN_LAW_LENS_CLI_BIN`, validated executable before model work; they never invoke uv or depend on UvEnvironments. The maintained outer launcher still selects/validates that app environment. Preserve its temporary-workspace and cache-directory behavior unless the task explicitly changes agent launch semantics. It stages and explicitly loads `.pi/extensions/open-law-lens-followup-bridge.ts` when present in all five Pi workflows without widening the tool allowlist or the `--no-extensions` confinement.
 - In maintained mode every Pi-backed mode explicitly loads sibling `PiRunMetrics/run-collector.ts` as a passive observer (absolute `PI_RUN_METRICS_COLLECTOR` override; missing code warns without blocking). Preserve model/tool/skill/web restrictions. `profile_key` must travel through launch metadata so Subsequent Treatment is not mislabeled as Law. Metrics default to Git-ignored `.run-metrics/runs/` in this project, may sync through Dropbox, and contain no content. Preserve absolute `PI_RUN_METRICS_ROOT` overrides and old archives. Copy Trace exports are removed, but workspace Pi session persistence/discovery, final-answer parsing, background rendering, generation guards, and Session/Save views must remain. Local Search Briefs launches no Pi run. See `docs/run-metrics-acceptance.md`.
 - Standalone metrics are off by default; explicit opt-in uses an available sibling adapter and XDG state unless overridden, always fail-open. Standalone model discovery/launch must not inherit tracked personal model defaults; validate the user's selected/default authorized model before model work. Optional Computer Use must not block baseline research.
 - Research-capable embedded Agent runs explicitly load the user-level `pi-web-access` package from Pi's agent directory while `--no-extensions` keeps unrelated extensions disabled. Do not vendor extension source or install it under the project's `.pi/npm/` directory.

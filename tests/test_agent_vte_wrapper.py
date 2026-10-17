@@ -105,6 +105,9 @@ class AgentVteWrapperTests(unittest.TestCase):
         executable.write_text(fake_script, encoding="utf-8")
         executable.chmod(0o755)
         if with_sibling_node:
+            # Legacy JavaScript entrypoint: the fixture Node captures argv instead
+            # of interpreting JS. Shell launchers must not take this route.
+            executable.write_text("#!/usr/bin/env node\n// synthetic legacy Pi\n", encoding="utf-8")
             node = root / "node"
             node.write_text(fake_script, encoding="utf-8")
             node.chmod(0o755)

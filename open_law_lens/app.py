@@ -422,6 +422,7 @@ def build_agent_launch_env(
     pi_node = find_pi_node_executable(pi_executable)
     if pi_node:
         env["OPEN_LAW_LENS_PI_NODE_BIN"] = pi_node
+        env["PATH"] = str(Path(pi_node).parent) + os.pathsep + env.get("PATH", os.defpath)
     if profile is not None:
         env["OPEN_LAW_LENS_PI_PROVIDER"] = profile.provider
         env["OPEN_LAW_LENS_PI_MODEL"] = profile.model

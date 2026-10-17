@@ -141,18 +141,17 @@ def _node_executable(environment: Mapping[str, str]) -> str | None:
     """Resolve a compatible Node executable for the installed wrapper.
 
     The ``computer-use-linux`` npm entry point is a ``#!/usr/bin/env node``
-    script, so we prefer an explicit Node binary (``node`` on ``PATH``, then
-    the Pi-bundled runtime) rather than relying on the child's ``env`` lookup.
+    script, so we prefer the explicit override or official Pi-managed runtime,
+    then ``node`` on ``PATH``, rather than the child's unqualified ``env`` lookup.
     """
-    discovered = _which("node", environment)
-    if discovered:
-        return discovered
-    root = _home_path(environment) / ".local" / "share" / "pi-node"
-    if root.is_dir():
-        for candidate in sorted(root.glob("node-*/bin/node"), reverse=True):
-            if candidate.is_file() and os.access(candidate, os.X_OK):
-                return str(candidate)
-    return None
+    from .pi_runtime import managed_node_candidates
+    override = environment.get("OPEN_LAW_LENS_PI_NODE_BIN", "").strip()
+    if override:
+        return override
+    for candidate in managed_node_candidates(environment):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return _which("node", environment)
 
 
 def _installed_wrapper_candidates(environment: Mapping[str, str]) -> list[Path]:

@@ -1,10 +1,11 @@
 [Desktop Entry]
+Version=1.0
 Type=Application
 Name=Open Law Lens
 Comment=Read and research California legal authority
-Exec="@ABSOLUTE_LAUNCHER@" app
-Icon=@ABSOLUTE_ICON@
+Exec=/usr/bin/env -- @COMMAND_EXEC@ app
+Icon=@ICON@
 Terminal=false
-Categories=Office;
+Categories=Office;Utility;
 StartupNotify=true
-DBusActivatable=false
+StartupWMClass=com.mcglaw.OpenLawLens

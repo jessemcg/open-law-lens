@@ -1,0 +1,3 @@
+#!/bin/sh
+# Source-independent maintenance remains available after a partial installation.
+exec /usr/bin/python3 -I @ENGINE@ uninstall "$@"

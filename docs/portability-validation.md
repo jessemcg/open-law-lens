@@ -1,5 +1,8 @@
 # Portability acceptance
 
+Historical pre-installer evidence. See [current installer validation and publication
+status](source-install-validation.md) for the shipped installer and GPL v3 decision.
+
 ## Conflict reconciliation — Work, 2026-10-17
 
 Reconciled six Dropbox source/documentation conflicts locally on Work. Preserved

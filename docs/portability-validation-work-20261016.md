@@ -1,5 +1,8 @@
 # Portability validation — 2026-10-16
 
+Historical pre-installer evidence. See [current installer validation and publication
+status](source-install-validation.md) for the shipped installer and GPL v3 decision.
+
 ## Scope and isolation
 
 Implemented in OpenLawLens only. Existing maintained CLI/desktop/XREMAP command

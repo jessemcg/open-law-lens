@@ -136,7 +136,7 @@ def report(*, agent_check: bool = False, connectivity: bool = False) -> dict:
     capability("agent_workflows", [
         ("VTE 3.91", "ready" if vte_ok else "missing", "Required only for the embedded terminal."),
         ("Pi", "ready" if shutil.which(pi) else "missing", "Install and authorize Pi separately."),
-        ("Pi Node >=22.19", "ready" if node_ok else "missing", "Use the supported Node beside the selected Pi executable."),
+        ("Pi Node >=22.19", "ready" if node_ok else "missing", "Use the supported Node beside Pi or in pi-node/current/bin."),
         ("Authorized default model", model_status, model_detail),
     ])
     capability("agent_web_research", [
@@ -158,7 +158,7 @@ def report(*, agent_check: bool = False, connectivity: bool = False) -> dict:
     capability("browser_recovery", [
         ("Computer Use", "ready" if computer_use_available else "missing", "Install @agent-sh/computer-use-linux separately."),
         ("Default HTTPS browser", "ready" if browser_available else "missing", "Configure a default browser with accessible document content; no browser was opened."),
-        ("Desktop readiness and exact targeting", "not_checked", "Run computer-use-linux doctor explicitly; supported default HTTPS browser, accessibility and exact window targeting are required. No permission changes or browser actions were attempted."),
+        ("Desktop readiness and exact targeting", "not_checked", "Use Pi's native Computer Use doctor tool or its installed Node wrapper (see docs/source-install.md); a global shell command is not guaranteed. Supported default HTTPS browser, accessibility and exact window targeting are required. No permissions or browser actions were attempted."),
         ("Regular clipboard", "ready" if any(shutil.which(tool) for tool in ("wl-paste", "xclip", "xsel")) else "missing", "Requires a clipboard reader supported by this desktop."),
     ])
     capability("selection_lookup", [

@@ -8,6 +8,7 @@ import subprocess
 import time
 import tempfile
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -122,9 +123,10 @@ def find_pi_executable() -> str:
     discovered = shutil.which("pi")
     if discovered:
         return discovered
-    local_bin = Path.home() / ".local" / "bin" / "pi"
-    if local_bin.is_file():
-        return str(local_bin)
+    agent = Path(os.environ.get("PI_CODING_AGENT_DIR") or Path.home() / ".pi/agent").expanduser()
+    for candidate in (agent / "bin/pi", Path.home() / ".local/bin/pi"):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
     candidates = sorted(
         (Path.home() / ".local" / "share" / "pi-node").glob("node-*/bin/pi"),
         reverse=True,
@@ -133,6 +135,33 @@ def find_pi_executable() -> str:
         if candidate.is_file():
             return str(candidate)
     return "pi"
+
+
+def managed_node_candidates(environment: Mapping[str, str] | None = None) -> list[Path]:
+    """Official current layout, standard HOME fallback, then legacy version stores."""
+    env = os.environ if environment is None else environment
+    home = Path(env.get("HOME") or Path.home()).expanduser()
+    data = Path(env.get("XDG_DATA_HOME") or home / ".local/share")
+    if not data.is_absolute():
+        data = home / ".local/share"
+    roots = list(dict.fromkeys((data / "pi-node", home / ".local/share/pi-node")))
+    return [root / "current/bin/node" for root in roots] + [
+        path for root in roots for path in sorted(root.glob("node-*/bin/node"), reverse=True)]
+
+
+def pi_is_javascript(pi_executable: str) -> bool:
+    path = _executable_path(pi_executable)
+    if path is None:
+        return False
+    try:
+        resolved = path.resolve()
+        with resolved.open("rb") as stream:
+            shebang = stream.readline(512)
+        if shebang.startswith(b"#!"):
+            return b"node" in shebang
+        return resolved.suffix in {".js", ".mjs", ".cjs"}
+    except OSError:
+        return False
 
 
 def find_pi_node_executable(pi_executable: str) -> str:
@@ -151,13 +180,16 @@ def find_pi_node_executable(pi_executable: str) -> str:
             break
         target = os.readlink(current)
         current = Path(target) if os.path.isabs(target) else current.parent / target
-    return ""
+    for candidate in managed_node_candidates():
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return shutil.which("node") or ""
 
 
 def pi_command() -> list[str]:
     pi_executable = find_pi_executable()
     pi_node = find_pi_node_executable(pi_executable)
-    if pi_node:
+    if pi_node and pi_is_javascript(pi_executable):
         return [pi_node, pi_executable]
     return [pi_executable]
 
