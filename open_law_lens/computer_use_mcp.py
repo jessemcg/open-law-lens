@@ -137,143 +137,49 @@ def _which(name: str, environment: Mapping[str, str]) -> str | None:
     return shutil.which(name, path=path or None)
 
 
-def _node_executable(environment: Mapping[str, str]) -> str | None:
-    """Resolve a compatible Node executable for the installed wrapper.
-
-    The ``computer-use-linux`` npm entry point is a ``#!/usr/bin/env node``
-    script, so we prefer the explicit override or official Pi-managed runtime,
-    then ``node`` on ``PATH``, rather than the child's unqualified ``env`` lookup.
-    """
-    from .pi_runtime import managed_node_candidates
-    override = environment.get("OPEN_LAW_LENS_PI_NODE_BIN", "").strip()
-    if override:
-        return override
-    for candidate in managed_node_candidates(environment):
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
-    return _which("node", environment)
+def standalone_computer_use_path(environment: Mapping[str, str] | None = None) -> Path:
+    """Machine-local native runtime; independent of agent packages and source storage."""
+    env = os.environ if environment is None else environment
+    return _home_path(env) / ".local/share/open-law-lens/tools/computer-use/computer-use-linux"
 
 
-def _installed_wrapper_candidates(environment: Mapping[str, str]) -> list[Path]:
-    bases: list[Path] = []
-    agent_dir = str(environment.get("PI_CODING_AGENT_DIR") or "").strip()
-    if agent_dir:
-        bases.append(Path(agent_dir).expanduser())
-    bases.append(_home_path(environment) / ".pi" / "agent")
-    suffix = Path("npm") / "node_modules" / "@agent-sh" / "computer-use-linux" / "npm" / "bin" / "computer-use-linux.js"
-    candidates: list[Path] = []
-    seen: set[str] = set()
-    for base in bases:
-        wrapper = base / suffix
-        key = str(wrapper)
-        if key in seen:
-            continue
-        seen.add(key)
-        if wrapper.is_file():
-            candidates.append(wrapper)
-    return candidates
-
-
-def _computer_use_package_version(
-    command: list[str],
-) -> tuple[int, int, int] | None:
-    """Return the best-effort version of an installed server candidate.
-
-    Reads the ``@agent-sh/computer-use-linux`` ``package.json`` beside the
-    candidate executable. ``None`` means the version could not be established
-    (for example a custom binary on ``PATH``), in which case the candidate is
-    always respected as-is.
-    """
-    if not command:
-        return None
-    try:
-        path = Path(command[-1]).expanduser().resolve()
-    except OSError:
-        return None
-    for base in (path.parent, *list(path.parents)[:4]):
-        manifest = base / "package.json"
-        if not manifest.is_file():
-            continue
-        try:
-            data = json.loads(manifest.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if str(data.get("name") or "") != "@agent-sh/computer-use-linux":
-            continue
-        parts = str(data.get("version") or "").split(".")
-        try:
-            major, minor, patch = (int(part) for part in parts[:3])
-        except ValueError:
-            return None
-        return (major, minor, patch)
-    return None
+def _validate_executable(candidate: Path) -> None:
+    if not candidate.is_file():
+        raise ComputerUseMCPError(f"Computer Use executable is not a file: {candidate}")
+    if not os.access(candidate, os.X_OK):
+        raise ComputerUseMCPError(f"Computer Use is not executable: {candidate}")
+    with candidate.open("rb") as stream:
+        header = stream.read(512)
+    node_shebang = header.startswith(b"#!") and b"node" in header.split(b"\n", 1)[0]
+    if candidate.suffix in {".js", ".mjs", ".cjs"} or node_shebang:
+        raise ComputerUseMCPError(
+            "Computer Use requires a standalone executable, not a Node launcher."
+        )
 
 
 def resolve_computer_use_command(
     environment: Mapping[str, str] | None = None,
 ) -> list[str]:
-    """Resolve the argv used to launch the ``computer-use-linux`` MCP server.
+    """Select an explicit executable, the app-owned native runtime, then PATH.
 
-    Order: validated ``OPEN_LAW_LENS_COMPUTER_USE_BIN`` override, then
-    ``computer-use-linux`` on ``PATH``, then the installed
-    ``@agent-sh/computer-use-linux`` wrapper under ``PI_CODING_AGENT_DIR`` or
-    ``~/.pi/agent`` using a compatible Node executable when required.
-
-    When the ``PATH`` candidate is itself an older install of the same
-    ``@agent-sh/computer-use-linux`` package, a strictly newer installed
-    wrapper is preferred instead: server releases have fixed accessibility
-    capture caps (0.4.5 silently stops at 500 nodes, which hides Scholar
-    result links in multi-tab Firefox windows). A ``PATH`` candidate whose
-    version cannot be established is always respected verbatim.
+    Never downloads or installs anything. No agent package discovery or Node
+    dependency: Scholar recovery talks directly to the standalone MCP server.
+    An invalid explicit override is an error, not a silent fallback.
     """
     env = os.environ if environment is None else environment
     override = str(env.get("OPEN_LAW_LENS_COMPUTER_USE_BIN") or "").strip()
-    if override:
-        candidate = Path(override).expanduser()
-        if not candidate.is_file():
+    candidate = Path(override).expanduser() if override else standalone_computer_use_path(env)
+    if not override and not candidate.exists():
+        discovered = _which("computer-use-linux", env)
+        if not discovered:
             raise ComputerUseMCPError(
-                f"OPEN_LAW_LENS_COMPUTER_USE_BIN is not a file: {override}"
+                "Standalone Linux Computer Use was not found. Set "
+                "OPEN_LAW_LENS_COMPUTER_USE_BIN to a standalone executable or put it on PATH. "
+                "For an installer-owned installation, run install.sh --repair."
             )
-        if not os.access(candidate, os.X_OK):
-            raise ComputerUseMCPError(
-                f"OPEN_LAW_LENS_COMPUTER_USE_BIN is not executable: {override}"
-            )
-        return [str(candidate)]
-
-    def wrapper_commands() -> list[list[str]]:
-        commands: list[list[str]] = []
-        for wrapper in _installed_wrapper_candidates(env):
-            node = _node_executable(env)
-            commands.append([node, str(wrapper)] if node else [str(wrapper)])
-        return commands
-
-    discovered = _which("computer-use-linux", env)
-    path_command = [discovered] if discovered else None
-    wrappers = wrapper_commands()
-
-    if path_command is None:
-        if not wrappers:
-            raise ComputerUseMCPError(
-                "Linux Computer Use was not found. Set OPEN_LAW_LENS_COMPUTER_USE_BIN, "
-                "install `computer-use-linux` on PATH, or install "
-                "@agent-sh/computer-use-linux under ~/.pi/agent."
-            )
-        best = wrappers[0]
-        best_version = _computer_use_package_version(best)
-        for wrapper in wrappers[1:]:
-            version = _computer_use_package_version(wrapper)
-            if version is not None and (best_version is None or version > best_version):
-                best = wrapper
-                best_version = version
-        return best
-
-    path_version = _computer_use_package_version(path_command)
-    if path_version is not None:
-        for wrapper in wrappers:
-            wrapper_version = _computer_use_package_version(wrapper)
-            if wrapper_version is not None and wrapper_version > path_version:
-                return wrapper
-    return path_command
+        candidate = Path(discovered)
+    _validate_executable(candidate)
+    return [str(candidate)]
 
 
 class ComputerUseMCPClient:

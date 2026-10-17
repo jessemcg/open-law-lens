@@ -30,6 +30,23 @@ INSTALL_STAGES = 8
 INSTALL_SUCCESS = "Open Law Lens is installed. Open it from your applications menu."
 REPOSITORY = "https://github.com/jessemcg/open-law-lens"
 UV_VERSION = "0.11.8"
+# Upstream v0.7.18 release SHA256 assets, verified when this pin was selected.
+# No mutable latest URL or launch-time download. Helpers are native executables,
+# not agent extensions (COSMIC targeting and the visible activity indicator).
+COMPUTER_USE_VERSION = "0.7.18"
+COMPUTER_USE_HASHES = {
+    "x86_64": (
+        "1c0706e668ed9f1b2115e457be18f18af8d95f5094a5d405b7f158e91756229c",
+        "7d001c5256872abe3034253cfa20b950468268d50933260c1ecb83e17ae2578d",
+        "0ce48732e9d75c355e432d861324cb482112b5f1ab437f21e873e8bf8d629d79"),
+    "aarch64": (
+        "b19f7533f9854cff796acd42b9b1c723e6b7efbdd8c521bc19efe974e57ab569",
+        "90182338cf207be533e18b5ed889380be09bce2d7cf8ce3845158106ca8362a5",
+        "94b923c45e72a7b27c0e272852e4547a3f86c0560b4bdbd1bfae4a875b103b3e"),
+}
+COMPUTER_USE_FILES = {"computer_use": "computer-use-linux",
+                      "computer_use_cosmic": "computer-use-linux-cosmic",
+                      "computer_use_indicator": "computer-use-linux-indicator"}
 APP_ID = "com.mcglaw.OpenLawLens"
 MARKER = ".open-law-lens-install.json"
 PACKAGES = {
@@ -396,7 +413,7 @@ def validate_receipt(data: dict, paths: dict[str, Path]) -> None:
     if not set(data["created"]).issubset(allowed | {"source"}):
         raise MaintenanceError("Unknown owned resource")
     for name, value in data["files"].items():
-        if name not in {"command", "uninstall_command", "desktop", "svg", "symbolic", "png", "engine"} or not re.fullmatch(r"[0-9a-f]{64}", str(value)):
+        if name not in {"command", "uninstall_command", "desktop", "svg", "symbolic", "png", "engine", *COMPUTER_USE_FILES} or not re.fullmatch(r"[0-9a-f]{64}", str(value)):
             raise MaintenanceError("Malformed file ownership")
     agent = data.get("pi_agent_dir", str(Path.home() / ".pi/agent"))
     if not isinstance(agent, str) or not Path(agent).is_absolute():
@@ -532,6 +549,68 @@ def owned_file(key: str, target: Path, content: bytes, data: dict, save, mode: i
         Path(temporary).unlink(missing_ok=True)
 
 
+def computer_use_assets(arch: str | None = None) -> dict[str, tuple[str, str]]:
+    arch = arch or platform.machine()
+    if arch not in COMPUTER_USE_HASHES:
+        raise MaintenanceError("No standalone Computer Use release for this architecture")
+    base = f"https://github.com/agent-sh/computer-use-linux/releases/download/v{COMPUTER_USE_VERSION}"
+    return {key: (f"{base}/{name}-{arch}-unknown-linux-gnu", sha)
+            for (key, name), sha in zip(COMPUTER_USE_FILES.items(), COMPUTER_USE_HASHES[arch], strict=True)}
+
+
+def owned_target(key: str, paths: dict[str, Path]) -> Path:
+    if key in COMPUTER_USE_FILES:
+        return paths["tools"] / "computer-use" / COMPUTER_USE_FILES[key]
+    return paths["maintenance"] / "open_law_lens_maintenance.py" if key == "engine" else paths[key]
+
+
+def verify_native_asset(path: Path, expected: str) -> None:
+    safe_path(path)
+    if digest(path) != expected:
+        raise MaintenanceError(f"Computer Use SHA256 mismatch: {path.name}")
+    with path.open("rb") as stream:
+        if stream.read(4) != b"\x7fELF":
+            raise MaintenanceError(f"Computer Use release is not a native ELF executable: {path.name}")
+
+
+def provision_computer_use(paths: dict[str, Path], data: dict, save) -> None:
+    """Explicit install/repair only. Fully verify downloads before publication."""
+    bound(paths["tools"], data["installation_id"], paths["source"])
+    assets = computer_use_assets()
+    pending = []
+    for key, (url, sha) in assets.items():
+        target = owned_target(key, paths)
+        safe_path(target)
+        if target.exists():
+            actual = digest(target)
+            if actual not in {data["files"].get(key), data.get("previous_files", {}).get(key)}:
+                raise MaintenanceError(f"Collision/modified owned file: {target}")
+            if actual == sha and os.access(target, os.X_OK):
+                verify_native_asset(target, sha)
+                if data["files"].get(key) != sha:
+                    data["files"][key] = sha; save()
+                continue
+        pending.append((key, url, sha))
+    say("CHECK", f"Standalone Computer Use {COMPUTER_USE_VERSION} (SHA256-verified native runtime)")
+    with tempfile.TemporaryDirectory(prefix="open-law-lens-computer-use-") as directory:
+        downloads = {}
+        for key, url, sha in pending:
+            target = Path(directory) / COMPUTER_USE_FILES[key]
+            execute(["curl", "--fail", "--location", "--proto", "=https", "--proto-redir", "=https",
+                     "--tlsv1.2", "--max-time", "180", "--max-filesize", "67108864", url, "--output", str(target)])
+            verify_native_asset(target, sha)
+            downloads[key] = target
+        # No downloaded program is executed until every pending asset is verified.
+        for key, target in downloads.items():
+            owned_file(key, owned_target(key, paths), target.read_bytes(), data, save, 0o755)
+    for key, (_, sha) in assets.items():
+        verify_native_asset(owned_target(key, paths), sha)
+    data["tool_versions"]["computer_use_linux"] = COMPUTER_USE_VERSION
+    data["computer_use_arch"] = platform.machine(); save()
+    execute([str(owned_target("computer_use", paths)), "--help"], capture=True)
+    say("OK", "Scholar recovery runtime installed. Browser accessibility and GNOME window targeting require separate setup; no desktop permissions were changed.")
+
+
 def desktop_environment(paths: dict[str, Path], data: dict) -> dict[str, str]:
     # Keep explicit data/Pi overrides, not another app's interpreter identity.
     env = {key: value for key, value in os.environ.items()
@@ -641,7 +720,7 @@ def uninstall(args) -> int:
         for name in trees:
             if paths[name].exists():
                 bound(paths[name], data["installation_id"], paths["source"])
-        files = {key: paths[key] if key != "engine" else paths["maintenance"] / "open_law_lens_maintenance.py" for key in data["files"]}
+        files = {key: owned_target(key, paths) for key in data["files"]}
         for key, path in files.items():
             safe_path(path)
             if path.exists() and digest(path) not in {data["files"][key], data.get("previous_files", {}).get(key)}:
@@ -741,39 +820,6 @@ def discover_pi(paths: dict[str, Path], env: dict[str, str]) -> list[str]:
     return command
 
 
-def package_version(agent: Path, name: str) -> str:
-    """Presence only; retain configured local/custom installs without reconciling."""
-    candidates = [agent / "npm/node_modules" / name]
-    # Pi's user Git packages live under agent/git/<host>/<owner>/<repo>.
-    # Read manifests only, bounded; never update or execute customized packages.
-    for index, manifest in enumerate((agent / "git").glob("*/*/*/package.json")):
-        if index >= 100:
-            break
-        candidates.append(manifest.parent)
-    declared = ""
-    try:
-        settings = json.loads((agent / "settings.json").read_text())
-        for entry in settings.get("packages", []):
-            source = entry.get("source", "") if isinstance(entry, dict) else entry
-            if not isinstance(source, str):
-                continue
-            if source == f"npm:{name}" or source.startswith(f"npm:{name}@"):
-                # A user's declaration is not ours to update/repair automatically.
-                declared = "configured (retained)"
-            elif source.startswith(("/", "./", "../", "~")):
-                candidates.append(agent / Path(source).expanduser())
-    except (OSError, ValueError, AttributeError):
-        pass
-    for candidate in candidates:
-        try:
-            manifest = json.loads((candidate / "package.json").read_text())
-            if manifest.get("name") == name:
-                return str(manifest.get("version", "installed"))
-        except (OSError, ValueError, AttributeError):
-            pass
-    return declared
-
-
 def offer_pi_install(paths: dict[str, Path], data: dict, save, env: dict[str, str]) -> None:
     assert data["phase"] == "complete"
     outcomes = data.setdefault("optional_setup", {})
@@ -794,36 +840,12 @@ def offer_pi_install(paths: dict[str, Path], data: dict, save, env: dict[str, st
             outcomes["pi"] = "installed" if command else "not discovered"; save()
             if not command:
                 raise MaintenanceError("Pi launcher was not discovered after installation")
-        agent = Path(env["PI_CODING_AGENT_DIR"]).expanduser()
-        for name in ("pi-web-access", "@agent-sh/computer-use-linux"):
-            version = package_version(agent, name)
-            if version:
-                outcomes[name] = {"status": "existing", "version": version}; save()
-                say("OK", f"{name} already present; retained without updating.")
-                continue
-            if not continue_pi_install(name):
-                outcomes[name] = {"status": "skipped"}; save()
-                continue
-            outcomes[name] = {"status": "started"}; save()
-            try:
-                with tempfile.TemporaryDirectory(prefix="open-law-lens-pi-package-") as directory:
-                    with open("/dev/tty", "r+b", buffering=0) as tty:
-                        subprocess.run([*command, "install", f"npm:{name}"], cwd=directory,
-                                       env=env, stdin=tty, stdout=tty, stderr=tty, check=True)
-                version = package_version(agent, name)
-                outcomes[name] = {"status": "installed" if version else "not discovered", "version": version}
-                if not version:
-                    say("WARN", f"{name} command finished but its installation was not discovered; check Pi setup separately.")
-            except Exception:
-                outcomes[name] = {"status": "failed"}; save()
-                say("WARN", f"{name} setup failed; Open Law Lens remains installed.")
-            save()
     except (Exception, KeyboardInterrupt):
         outcomes["stopped"] = True; save()
         raise
     finally:
         print("Next: use /login in Pi, then choose an available model in Open Law Lens Settings.\n"
-              "Web providers and browser permissions need separate setup; see docs/source-install.md.", flush=True)
+              "Scholar browser permissions need separate setup; see docs/source-install.md.", flush=True)
 
 
 def fresh_destinations(paths: dict[str, Path]) -> None:
@@ -854,6 +876,8 @@ def install(args) -> int:
     say("CHECK", "2/8 Proposed changes (no Open Law Lens binary package, no sibling projects)")
     for name, path in paths.items():
         print(f"  {name}: {path}")
+    print(f"  Standalone Computer Use {COMPUTER_USE_VERSION}: {paths['tools'] / 'computer-use'}")
+    print("  Native server + COSMIC/indicator helpers from agent-sh/computer-use-linux GitHub releases; pinned SHA256 checks. No browser/desktop permission setup.")
     if args.dry_run:
         if receipt.exists():
             data = private_json(receipt); validate_receipt(data, paths)
@@ -954,6 +978,7 @@ def install(args) -> int:
             owned_file("uninstall_command", paths["uninstall_command"], render(
                 (paths["source"] / "scripts/desktop/open-law-lens-uninstall.sh.in").read_text(), values), data, save, 0o755)
             stage("environment"); synchronize(paths, data, save)
+            provision_computer_use(paths, data, save)
             env = desktop_environment(paths, data)
             python = str(paths["environment"] / "bin/python")
             execute([python, "-B", str(paths["source"] / "scripts/standalone-runtime.py"), "--check"], env=env)

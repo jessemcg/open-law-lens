@@ -1,5 +1,10 @@
 # Public source installer validation — 2026-10-17
 
+**Initial published installer baseline.** The subsequent standalone native recovery
+runtime, removal of general web search and authorized Home native provisioning
+are documented in [the revision's validation and limits](dependency-runtime-validation.md).
+Guest runs and package-offer checks below predate that revision.
+
 ## Publication and boundaries
 
 Implemented and validated locally on Home (Ubuntu 26.04.1, x86_64, GNOME Wayland).

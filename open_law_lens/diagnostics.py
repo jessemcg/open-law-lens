@@ -123,8 +123,6 @@ def report(*, agent_check: bool = False, connectivity: bool = False) -> dict:
             node_ok = result.returncode == 0 and parts >= (22, 19, 0)
         except (OSError, ValueError, subprocess.SubprocessError):
             pass
-    agent_dir = Path(os.environ.get("PI_CODING_AGENT_DIR", str(Path.home() / ".pi/agent"))).expanduser()
-    web = Path(os.environ.get("OPEN_LAW_LENS_WEB_ACCESS_EXTENSION", str(agent_dir / "npm/node_modules/pi-web-access/index.ts")))
     model_status, model_detail = "not_checked", "Authorize models in Pi. Opt in to offline enumeration with doctor --agent-check."
     if agent_check:
         try:
@@ -138,9 +136,6 @@ def report(*, agent_check: bool = False, connectivity: bool = False) -> dict:
         ("Pi", "ready" if shutil.which(pi) else "missing", "Install and authorize Pi separately."),
         ("Pi Node >=22.19", "ready" if node_ok else "missing", "Use the supported Node beside Pi or in pi-node/current/bin."),
         ("Authorized default model", model_status, model_detail),
-    ])
-    capability("agent_web_research", [
-        ("pi-web-access", "ready" if web.is_file() else "missing", "Additionally required for Law, Assessment and Treatment. Closed-corpus workflows do not need this extension."),
     ])
     capability("pdf_extraction", [binary("pdftotext")])
     capability("prior_brief_indexing", [binary("pandoc")])
@@ -156,9 +151,9 @@ def report(*, agent_check: bool = False, connectivity: bool = False) -> dict:
     except (ImportError, ValueError):
         pass
     capability("browser_recovery", [
-        ("Computer Use", "ready" if computer_use_available else "missing", "Install @agent-sh/computer-use-linux separately."),
+        ("Computer Use", "ready" if computer_use_available else "missing", "The source installer downloads the standalone executable; no Node launcher is required."),
         ("Default HTTPS browser", "ready" if browser_available else "missing", "Configure a default browser with accessible document content; no browser was opened."),
-        ("Desktop readiness and exact targeting", "not_checked", "Use Pi's native Computer Use doctor tool or its installed Node wrapper (see docs/source-install.md); a global shell command is not guaranteed. Supported default HTTPS browser, accessibility and exact window targeting are required. No permissions or browser actions were attempted."),
+        ("Desktop readiness and exact targeting", "not_checked", "Run the standalone computer-use-linux doctor command (see docs/source-install.md). A supported browser, accessibility, exact window targeting and keyboard input are required; GNOME Wayland may need the companion GNOME Shell extension. No permissions or browser actions were attempted."),
         ("Regular clipboard", "ready" if any(shutil.which(tool) for tool in ("wl-paste", "xclip", "xsel")) else "missing", "Requires a clipboard reader supported by this desktop."),
     ])
     capability("selection_lookup", [

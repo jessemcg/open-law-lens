@@ -36,13 +36,12 @@ class PiInstallLayoutTests(unittest.TestCase):
             self.assertEqual(runtime.available_pi_models(), [])
         self.assertFalse((self.root / '.pi').exists())
 
-    def test_home_managed_node_fallback_and_computer_use_wrapper(self):
+    def test_home_managed_node_fallback_and_independent_native_computer_use(self):
         pi = self.executable(self.agent / 'bin/pi', '#!/bin/sh\nexit 0\n')
         node = self.executable(self.root / '.local/share/pi-node/current/bin/node', '#!/bin/sh\nexit 0\n')
-        wrapper = self.agent / 'npm/node_modules/@agent-sh/computer-use-linux/npm/bin/computer-use-linux.js'
-        self.executable(wrapper, '#!/usr/bin/env node\n')
+        native = self.executable(self.root / '.local/share/open-law-lens/tools/computer-use/computer-use-linux', '#!/bin/sh\nexit 0\n')
         self.assertEqual(runtime.find_pi_node_executable(str(pi)), str(node))
-        self.assertEqual(resolve_computer_use_command(dict(os.environ)), [str(node), str(wrapper)])
+        self.assertEqual(resolve_computer_use_command(dict(os.environ)), [str(native)])
 
     def test_legacy_js_and_overrides(self):
         node = self.executable(self.root / 'legacy/bin/node', '#!/bin/sh\nexit 0\n')
@@ -68,7 +67,7 @@ class PiInstallLayoutTests(unittest.TestCase):
                 self.assertEqual(args[0], '--approve')
                 self.assertIn('--no-extensions', args); self.assertIn('--no-skills', args)
                 tools = args[args.index('--tools') + 1]
-                self.assertEqual('web_search' in tools, mode in {'general', 'appeal'})
+                self.assertEqual(tools, 'read,bash,grep,find,ls')
                 self.assertNotIn(str(pi), args)  # Would be first argv if blindly passed through Node.
 
 

@@ -80,20 +80,20 @@ class TerminalTests(InstallerSandbox):
                 self.assertIn(status, (expected, 130) if response == b'\x03' else (expected,))
                 self.assertIn('Press Enter', output)
 
-    def test_full_synthetic_terminal_lifecycle_pi_and_package_offers(self):
+    def test_full_synthetic_terminal_lifecycle_native_runtime_then_only_pi_offer(self):
         command = shlex.join([sys.executable, '-B', str(ROOT / 'tests/preview_source_install.py')])
         replies = [('Press Enter to continue', b'\n'), ('Install the previewed native', b'\n'),
-                   ('Press Enter to install Pi,', b'\n'), ('Press Enter to install pi-web-access,', b'\n'),
-                   ('Press Enter to install @agent-sh/computer-use-linux,', b'\n'),
+                   ('Press Enter to install Pi,', b'\n'),
                    ('Synthetic preview finished.', b'\n')]
         status, text = terminal_process(command, dict(os.environ, TERM='xterm-256color'), replies)
         self.assertEqual(status, 0, text)
         self.assertIn('SYNTHETIC ACCEPTANCE: application phase=complete', text)
         success = text.index(m.INSTALL_SUCCESS)
-        for offer in ('Press Enter to install Pi,', 'Press Enter to install pi-web-access,', 'Press Enter to install @agent-sh/computer-use-linux,'):
-            self.assertLess(success, text.index(offer))
+        self.assertLess(text.index('Scholar recovery runtime installed.'), success)
+        self.assertLess(success, text.index('Press Enter to install Pi,'))
+        self.assertNotIn('pi install', text)
         self.assertIn('8/8 stages passed', text)
-        self.assertIn('0.0.0-synthetic', text)
+        self.assertEqual(text.count('Press Enter to install'), 1)
 
     def test_short_command_template_and_readme_agree(self):
         command = subprocess.check_output([sys.executable, str(ROOT / 'scripts/print-install-command.py')], text=True).strip()
@@ -162,34 +162,19 @@ sys.exit({22 if failure else 0})
 
 
 class OptionalPiTests(InstallerSandbox):
-    def test_existing_pi_no_reinstall_no_package_updates(self):
-        agent = self.home / '.pi/agent'; env = m.desktop_environment(self.paths, {'pi_agent_dir': str(agent)})
-        for name in ('pi-web-access', '@agent-sh/computer-use-linux'):
-            path = agent / 'npm/node_modules' / name; path.mkdir(parents=True)
-            (path / 'package.json').write_text(json.dumps({'name': name, 'version': '1.2.3'}))
-        with patch.object(m, 'discover_pi', return_value=['/fixture/pi']), patch.object(m, 'continue_pi_install', side_effect=AssertionError('Existing installation prompted')), patch.object(m, 'install_optional_pi', side_effect=AssertionError('Reinstalled Pi')), contextlib.redirect_stdout(io.StringIO()):
+    def test_existing_pi_no_reinstall_no_package_access(self):
+        env = m.desktop_environment(self.paths, {})
+        with patch.object(m, 'discover_pi', return_value=['/fixture/pi']), patch.object(m, 'continue_pi_install', side_effect=AssertionError('Unexpected package offer')), patch.object(m, 'install_optional_pi', side_effect=AssertionError('Reinstalled Pi')), patch.object(m.subprocess, 'run', side_effect=AssertionError('Unexpected package operation')), contextlib.redirect_stdout(io.StringIO()):
             m.offer_pi_install(self.paths, self.data, lambda: None, env)
-        self.assertEqual(self.data['optional_setup']['pi'], 'existing')
-        self.assertEqual(self.data['optional_setup']['pi-web-access']['version'], '1.2.3')
+        self.assertEqual(self.data['optional_setup'], {'pi': 'existing'})
 
-    def test_package_fixture_argv_neutral_cwd_user_scope_and_complete_receipt(self):
-        agent = self.home / '.pi/agent'; env = m.desktop_environment(self.paths, {'pi_agent_dir': str(agent)})
-        pi = self.home / 'pi'; record = self.home / 'record'
-        pi.write_text(f'''#!{sys.executable}
-import os,sys,json
-from pathlib import Path
-with Path({str(record)!r}).open('a') as f: f.write(json.dumps({{'args':sys.argv[1:],'cwd':os.getcwd()}})+'\\n')
-'''); pi.chmod(0o755)
-        master, slave = os.openpty(); self.addCleanup(os.close, master); self.addCleanup(os.close, slave)
-        original_open = open
-        def open_tty(path, *args, **kwargs):
-            return os.fdopen(os.dup(slave), 'r+b', buffering=0) if path == '/dev/tty' else original_open(path, *args, **kwargs)
-        with patch.object(m, 'discover_pi', side_effect=[[], [str(pi)]]), patch.object(m, 'continue_pi_install', return_value=True), patch.object(m, 'install_optional_pi') as install, patch('builtins.open', side_effect=open_tty), contextlib.redirect_stdout(io.StringIO()):
+    def test_only_pi_offered_and_rediscovered_after_complete_receipt(self):
+        env = m.desktop_environment(self.paths, {})
+        with patch.object(m, 'discover_pi', side_effect=[[], ['/fixture/pi']]), patch.object(m, 'continue_pi_install', return_value=True) as prompt, patch.object(m, 'install_optional_pi') as install, contextlib.redirect_stdout(io.StringIO()):
             m.offer_pi_install(self.paths, self.data, lambda: self.assertEqual(self.data['phase'], 'complete'), env)
-        install.assert_called_once()
-        records = [json.loads(line) for line in record.read_text().splitlines()]
-        self.assertEqual([r['args'] for r in records], [['install', 'npm:pi-web-access'], ['install', 'npm:@agent-sh/computer-use-linux']])
-        self.assertTrue(all(r['cwd'] != str(self.paths['source']) and not Path(r['cwd']).exists() for r in records))
+        install.assert_called_once_with(env)
+        prompt.assert_called_once_with()
+        self.assertEqual(self.data['optional_setup'], {'pi': 'installed'})
         self.assertEqual(self.data['phase'], 'complete')
 
     def test_skips_cancellation_discovery_and_package_failure_keep_complete(self):
@@ -202,26 +187,12 @@ with Path({str(record)!r}).open('a') as f: f.write(json.dumps({{'args':sys.argv[
             m.offer_pi_install(self.paths, self.data, lambda: None, env)
         install.assert_not_called()
 
-    def test_package_failure_continues_to_next_offer_without_downgrading_app(self):
+    def test_optional_pi_failure_preserves_complete(self):
         env = m.desktop_environment(self.paths, {})
-        master, slave = os.openpty(); self.addCleanup(os.close, master); self.addCleanup(os.close, slave)
-        original_open = open
-        def open_tty(path, *args, **kwargs):
-            return os.fdopen(os.dup(slave), 'r+b', buffering=0) if path == '/dev/tty' else original_open(path, *args, **kwargs)
-        outcomes = [subprocess.CalledProcessError(7, 'fixture'), subprocess.CompletedProcess([], 0)]
-        with patch.object(m, 'discover_pi', return_value=['/fixture/pi']), patch.object(m, 'continue_pi_install', return_value=True), patch('builtins.open', side_effect=open_tty), patch.object(m.subprocess, 'run', side_effect=outcomes), contextlib.redirect_stdout(io.StringIO()):
+        with patch.object(m, 'discover_pi', return_value=[]), patch.object(m, 'continue_pi_install', return_value=True), patch.object(m, 'install_optional_pi', side_effect=OSError('synthetic download failure')), contextlib.redirect_stdout(io.StringIO()), self.assertRaises(OSError):
             m.offer_pi_install(self.paths, self.data, lambda: None, env)
         self.assertEqual(self.data['phase'], 'complete')
-        self.assertEqual(self.data['optional_setup']['pi-web-access']['status'], 'failed')
-        self.assertEqual(self.data['optional_setup']['@agent-sh/computer-use-linux']['status'], 'not discovered')
-
-    def test_configured_custom_packages_are_retained(self):
-        agent = self.home / '.pi/agent'; agent.mkdir(parents=True)
-        (agent / 'settings.json').write_text(json.dumps({'packages': [{'source': 'npm:pi-web-access@1.0.0', 'extensions': []}]}))
-        self.assertEqual(m.package_version(agent, 'pi-web-access'), 'configured (retained)')
-        git = agent / 'git/github.com/synthetic/computer-use-custom'; git.mkdir(parents=True)
-        (git / 'package.json').write_text(json.dumps({'name': '@agent-sh/computer-use-linux', 'version': '0.4.9-custom'}))
-        self.assertEqual(m.package_version(agent, '@agent-sh/computer-use-linux'), '0.4.9-custom')
+        self.assertEqual(self.data['optional_setup'], {'pi': 'started', 'stopped': True})
 
     def test_failed_official_download_is_not_executed(self):
         with patch.object(m, 'execute', side_effect=m.MaintenanceError('failed partial download')), patch.object(m.subprocess, 'run') as run, self.assertRaises(m.MaintenanceError):

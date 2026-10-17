@@ -38,10 +38,9 @@ acceptance notes; neither certifies support across Linux distributions.
 | Core GUI / citation reading | GTK/Libadwaita, locked Python dependencies |
 | CourtListener case research | Internet and a CourtListener API token (Settings or `COURTLISTENER_TOKEN`) |
 | Embedded agent workflows | VTE 3.91, Pi and its supported Node (>=22.19), authorized model/provider |
-| Law / Assessment / Treatment | User-level `pi-web-access` package in addition to Pi |
 | Prior-brief indexing | `pandoc`, an existing readable ODT archive selected in Settings |
 | PDF extraction | `pdftotext` |
-| Scholar / LegInfo browser recovery | Supported default HTTPS browser, `@agent-sh/computer-use-linux`, accessibility/exact window targeting, regular clipboard reader |
+| Scholar / LegInfo browser recovery | Supported default HTTPS browser, standalone native `computer-use-linux`, accessibility/exact window targeting, regular clipboard reader |
 | Selection lookup | `wl-paste`, `xclip` or `xsel`, with actual desktop access |
 | Current Case | Optional selected-case file and case roots; not required for manual fact-pattern selection |
 
@@ -116,9 +115,11 @@ Lens does not store provider credentials or choose a provider for a new user.
 Standalone model discovery ignores the tracked personal project fallback. The
 five independent workflow overrides in Settings still apply; otherwise the
 user's Pi defaults apply. A new standalone agent launch verifies that its chosen
-model is available before launching. Research-capable workflows need the
-user-level web extension; closed-corpus workflows keep their tool restrictions.
-Computer Use is not a prerequisite for a baseline agent extraction.
+model is available before launching. All five profiles expose only
+`read,bash,grep,find,ls`; no general web-search tool is available. Closed-corpus
+workflows keep their source restrictions. Baseline extraction works without
+Computer Use; the source installer includes the standalone native runtime for
+Scholar/LegInfo recovery (see [setup](source-install.md#standalone-computer-use)).
 
 ## Storage and privacy
 
@@ -152,8 +153,8 @@ remains usable without that integration.
 
 Local storage is **not** a promise of entirely local processing. CourtListener
 receives case lookup/search requests. Selected facts, briefing and research
-requests may be sent to the configured model provider; web tools contact external
-services. Authorize that disclosure before using private legal material.
+requests may be sent to the configured model provider. Browser recovery sends
+public authority queries to Google Scholar or requests to official LegInfo pages. Authorize that disclosure before using private legal material.
 Settings files are written privately (`0600`); no provider credentials, document
 contents, raw service error prose or private file paths belong in diagnostics.
 

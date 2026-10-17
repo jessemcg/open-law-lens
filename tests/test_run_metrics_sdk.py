@@ -46,10 +46,6 @@ class RunMetricsSDKTests(unittest.TestCase):
                     'subsequent_treatment': agent_prompts.treatment_request(literal, '42', '10 Cal.App.5th 25'),
                 }
                 prompt.write_text(requests[workflow])
-                if mode in {'general', 'appeal'}:
-                    web = helper._install_web_access(root)
-                    (web / 'index.ts').write_text('export default function(pi) { pi.registerTool({name:"web_search", label:"Synthetic web", description:"Synthetic", parameters:{type:"object",properties:{}}, execute:async()=>({content:[],details:{}})}); }')
-                    helper._install_computer_use(root)
                 executable = root / 'synthetic-pi.mjs'
                 shutil.copyfile(PROJECT / 'tests/metrics_sdk_fixture.mjs', executable)
                 executable.chmod(0o700)
@@ -111,8 +107,6 @@ class RunMetricsSDKTests(unittest.TestCase):
                 for capture in captures[1:]:
                     self.assertEqual(captures[0], capture)
                 expected_tools = {'read', 'bash', 'grep', 'find', 'ls'}
-                if mode in {'general', 'appeal'}:
-                    expected_tools.add('web_search')
                 self.assertEqual(set(captures[0]['tools']), expected_tools)
                 archive = root / 'archive'
                 self.assertFalse((project / '.run-metrics').exists())

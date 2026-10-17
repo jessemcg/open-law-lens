@@ -366,7 +366,8 @@ class ComputerUseResolutionTests(unittest.TestCase):
         fake_bin = Path(bindir) / "computer-use-linux"
         fake_bin.write_text("#!/bin/sh\n", encoding="utf-8")
         fake_bin.chmod(0o755)
-        env["PATH"] = bindir + os.pathsep + os.environ.get("PATH", "")
+        env["PATH"] = bindir
+        env["HOME"] = bindir
         try:
             resolved = resolve_computer_use_command(env)
             self.assertEqual(resolved, [str(fake_bin)])
@@ -375,7 +376,7 @@ class ComputerUseResolutionTests(unittest.TestCase):
 
             shutil.rmtree(bindir, ignore_errors=True)
 
-    def test_missing_without_override_path_or_wrapper(self) -> None:
+    def test_missing_without_override_native_or_path(self) -> None:
         env = {
             "PATH": "/nonexistent",
             "PI_CODING_AGENT_DIR": "/nonexistent/agent",
@@ -384,83 +385,38 @@ class ComputerUseResolutionTests(unittest.TestCase):
         with self.assertRaises(ComputerUseMCPError):
             resolve_computer_use_command(env)
 
-    @staticmethod
-    def _fake_install(root: Path, version: str) -> Path:
-        """Create a fake @agent-sh/computer-use-linux package install."""
-        package = root / "npm" / "node_modules" / "@agent-sh" / "computer-use-linux"
-        bin_dir = package / "npm" / "bin"
-        bin_dir.mkdir(parents=True, exist_ok=True)
-        wrapper = bin_dir / "computer-use-linux.js"
-        wrapper.write_text("#!/bin/sh\n", encoding="utf-8")
-        wrapper.chmod(0o755)
-        (package / "package.json").write_text(
-            json.dumps({"name": "@agent-sh/computer-use-linux", "version": version}),
-            encoding="utf-8",
-        )
-        return wrapper
-
-    def test_newer_wrapper_beats_stale_path_package(self) -> None:
-        # Regression: the pi-node global on PATH was @agent-sh/computer-use-linux
-        # 0.4.5, whose get_app_state silently stops at 500 nodes and hides
-        # Scholar result links in multi-tab Firefox windows. The newer 0.5.0
-        # wrapper installed under the Pi agent directory must win.
+    def test_app_native_runtime_preferred_without_pi_node_or_path(self) -> None:
         import tempfile
+        from open_law_lens.computer_use_mcp import standalone_computer_use_path
+        with tempfile.TemporaryDirectory(prefix="cu-resolve-") as directory:
+            env = {"HOME": directory, "PATH": "/nonexistent"}
+            native = standalone_computer_use_path(env)
+            native.parent.mkdir(parents=True)
+            native.write_bytes(b"\x7fELF synthetic native"); native.chmod(0o700)
+            self.assertEqual(resolve_computer_use_command(env), [str(native)])
+            env["OPEN_LAW_LENS_COMPUTER_USE_BIN"] = "/missing/explicit"
+            with self.assertRaises(ComputerUseMCPError): resolve_computer_use_command(env)
 
-        with tempfile.TemporaryDirectory(prefix="cu-resolve-") as tmp:
-            tmp_path = Path(tmp)
-            path_install = self._fake_install(tmp_path / "path-pkg", "0.4.5")
-            path_bin = tmp_path / "path-bin"
-            path_bin.mkdir()
-            path_link = path_bin / "computer-use-linux"
-            path_link.symlink_to(path_install)
-            agent_wrapper = self._fake_install(tmp_path / "agent", "0.5.0")
-            env = {
-                "PATH": str(path_bin) + os.pathsep + os.environ.get("PATH", ""),
-                "PI_CODING_AGENT_DIR": str(tmp_path / "agent"),
-                "HOME": str(tmp_path / "home"),
-            }
-            resolved = resolve_computer_use_command(env)
-            self.assertEqual(str(agent_wrapper), resolved[-1])
-
-    def test_newer_path_package_beats_older_wrapper(self) -> None:
+    def test_agent_package_install_is_not_discovered(self) -> None:
         import tempfile
+        with tempfile.TemporaryDirectory(prefix="cu-resolve-") as directory:
+            root = Path(directory)
+            # An old agent-owned installation must never become our fallback.
+            wrapper = root / ".pi/agent/npm/node_modules/@agent-sh/computer-use-linux/npm/bin/computer-use-linux.js"
+            wrapper.parent.mkdir(parents=True)
+            wrapper.write_text("#!/usr/bin/env node\n"); wrapper.chmod(0o700)
+            with self.assertRaises(ComputerUseMCPError):
+                resolve_computer_use_command({"HOME": directory, "PATH": "/nonexistent", "PI_CODING_AGENT_DIR": str(root / '.pi/agent')})
 
-        with tempfile.TemporaryDirectory(prefix="cu-resolve-") as tmp:
-            tmp_path = Path(tmp)
-            path_install = self._fake_install(tmp_path / "path-pkg", "0.6.0")
-            path_bin = tmp_path / "path-bin"
-            path_bin.mkdir()
-            path_link = path_bin / "computer-use-linux"
-            path_link.symlink_to(path_install)
-            self._fake_install(tmp_path / "agent", "0.5.0")
-            env = {
-                "PATH": str(path_bin) + os.pathsep + os.environ.get("PATH", ""),
-                "PI_CODING_AGENT_DIR": str(tmp_path / "agent"),
-                "HOME": str(tmp_path / "home"),
-            }
-            resolved = resolve_computer_use_command(env)
-            self.assertEqual(str(path_link.resolve()), str(Path(resolved[-1]).resolve()))
-
-    def test_unversioned_path_binary_is_respected(self) -> None:
-        # A custom PATH binary whose package version cannot be established is
-        # never overridden by an installed wrapper.
+    def test_node_launchers_rejected_on_path_or_as_override(self) -> None:
         import tempfile
-
-        with tempfile.TemporaryDirectory(prefix="cu-resolve-") as tmp:
-            tmp_path = Path(tmp)
-            path_bin = tmp_path / "path-bin"
-            path_bin.mkdir()
-            custom = path_bin / "computer-use-linux"
-            custom.write_text("#!/bin/sh\n", encoding="utf-8")
-            custom.chmod(0o755)
-            self._fake_install(tmp_path / "agent", "0.5.0")
-            env = {
-                "PATH": str(path_bin) + os.pathsep + os.environ.get("PATH", ""),
-                "PI_CODING_AGENT_DIR": str(tmp_path / "agent"),
-                "HOME": str(tmp_path / "home"),
-            }
-            resolved = resolve_computer_use_command(env)
-            self.assertEqual([str(custom)], resolved)
+        with tempfile.TemporaryDirectory(prefix="cu-resolve-") as directory:
+            native = Path(directory) / "computer-use-linux"
+            native.write_text("#!/usr/bin/env node\nthrow new Error('not standalone');\n")
+            native.chmod(0o700)
+            for selection in ({"PATH": directory}, {"OPEN_LAW_LENS_COMPUTER_USE_BIN": str(native)}):
+                with self.subTest(selection=selection), self.assertRaisesRegex(ComputerUseMCPError, 'standalone'):
+                    resolve_computer_use_command({"HOME": directory, **selection})
 
 
 class ScholarIdentityDiagnosticTests(unittest.TestCase):

@@ -59,33 +59,6 @@ class AgentVteWrapperTests(unittest.TestCase):
         prompt.write_text("Research this issue.", encoding="utf-8")
         return project, workspace, prompt
 
-    @staticmethod
-    def _install_web_access(root: Path) -> Path:
-        package = root / "pi-agent" / "npm" / "node_modules" / "pi-web-access"
-        package.mkdir(parents=True)
-        (package / "index.ts").write_text("", encoding="utf-8")
-        (package / "package.json").write_text(
-            '{"name":"pi-web-access","version":"0.19.0"}',
-            encoding="utf-8",
-        )
-        return package
-
-    @staticmethod
-    def _install_computer_use(root: Path) -> None:
-        computer_use = (
-            root
-            / "pi-agent"
-            / "npm"
-            / "node_modules"
-            / "@agent-sh"
-            / "computer-use-linux"
-            / "npm"
-            / "bin"
-            / "computer-use-linux.js"
-        )
-        computer_use.parent.mkdir(parents=True)
-        computer_use.write_text("", encoding="utf-8")
-
     def _fake_pi(
         self,
         root: Path,
@@ -124,9 +97,6 @@ class AgentVteWrapperTests(unittest.TestCase):
         with_bridge: bool = False,
     ) -> tuple[list[str], str]:
         project, workspace, prompt = self._fixture(root, with_bridge=with_bridge)
-        if mode in {"general", "appeal"}:
-            self._install_web_access(root)
-            self._install_computer_use(root)
         pi, output = self._fake_pi(
             root,
             with_sibling_node=with_sibling_node,
@@ -174,10 +144,10 @@ class AgentVteWrapperTests(unittest.TestCase):
                 collector.write_text("// synthetic observer\n")
                 args, _ = self._run(root, mode, extra_env={"OPEN_LAW_LENS_AGENT_PROFILE_KEY": workflow, "PI_RUN_METRICS_COLLECTOR": str(collector), "PI_RUN_METRICS_ENABLED": "1"})
                 self.assertIn(collector, [Path(args[i + 1]).resolve() for i, arg in enumerate(args) if arg == "--extension"])
-                self.assertEqual(args.count("--extension"), 2 if mode in {"general", "appeal"} else 1)
+                self.assertEqual(args.count("--extension"), 1)
                 self.assertIn("--no-extensions", args)
                 self.assertNotIn("--no-session", args)
-                self.assertEqual(args[args.index("--tools") + 1], "read,bash,grep,find,ls" + (",web_search" if mode in {"general", "appeal"} else ""))
+                self.assertEqual(args[args.index("--tools") + 1], "read,bash,grep,find,ls")
                 metadata = (root / "pi-arguments.txt.metrics").read_text().splitlines()
                 self.assertEqual(metadata, [str(PROJECT_DIR / ".run-metrics/runs"), "open-law-lens", workflow])
                 self.assertEqual(args[-2], str(root / "workspace/pi-sessions"))
@@ -219,7 +189,7 @@ class AgentVteWrapperTests(unittest.TestCase):
             result = subprocess.run(["git", "check-ignore", ".run-metrics/runs/2099-01-01/test.jsonl"], cwd=root, capture_output=True)
             self.assertEqual(result.returncode, 0)
 
-    def test_research_mode_loads_skill_and_web_search(self) -> None:
+    def test_research_mode_loads_skill_without_external_tools(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             args, stderr = self._run(root, "general")
@@ -233,7 +203,7 @@ class AgentVteWrapperTests(unittest.TestCase):
                 self.assertIn(flag, args)
             self.assertNotIn("--skill", args)
             self.assertFalse(any(item.startswith("/skill:legal-researcher") for item in args))
-            self.assertEqual(args.count("--extension"), 1)
+            self.assertNotIn("--extension", args)
             self.assertNotIn("capture", stderr.lower())
             system_prompt_path = Path(args[args.index("--system-prompt") + 1])
             self.assertEqual(
@@ -243,22 +213,7 @@ class AgentVteWrapperTests(unittest.TestCase):
             system_prompt = system_prompt_path.read_text(encoding="utf-8")
             self.assertEqual(system_prompt.count("name: legal-researcher"), 1)
             self.assertIn("Open Law Lens legal knowledge work", system_prompt)
-            extension_values = [args[index + 1] for index, value in enumerate(args) if value == "--extension"]
-            self.assertEqual(
-                extension_values[0],
-                str(
-                    root
-                    / "pi-agent"
-                    / "npm"
-                    / "node_modules"
-                    / "pi-web-access"
-                    / "index.ts"
-                ),
-            )
-            self.assertIn(
-                "read,bash,grep,find,ls,web_search",
-                args,
-            )
+            self.assertEqual(args[args.index("--tools") + 1], "read,bash,grep,find,ls")
             self.assertNotIn("mcp", args)
             self.assertNotIn("mcpScript", args)
             self.assertNotIn("open_law_lens_authorize_scholar_window", args)
@@ -323,11 +278,8 @@ class AgentVteWrapperTests(unittest.TestCase):
             )
 
             self.assertEqual(args[0], str(root / "pi"))
-            self.assertIn("--extension", args)
-            self.assertIn(
-                "read,bash,grep,find,ls,web_search",
-                args,
-            )
+            self.assertNotIn("--extension", args)
+            self.assertIn("read,bash,grep,find,ls", args)
             self.assertNotIn("mcp", args)
             self.assertNotIn("mcpScript", args)
             self.assertNotIn("open_law_lens_authorize_scholar_window", args)
@@ -369,37 +321,20 @@ class AgentVteWrapperTests(unittest.TestCase):
             self.assertIn("read,bash,grep,find,ls", args)
             self.assertNotIn("read,bash,grep,find,ls,web_search", args)
 
-    def test_research_mode_reports_missing_user_extension(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            project, workspace, prompt = self._fixture(root)
-            pi, _output = self._fake_pi(root)
-            env = os.environ.copy()
-            env.update(
-                {
-                    "OPEN_LAW_LENS_AGENT_PROMPT_FILE": str(prompt),
-                    "OPEN_LAW_LENS_AGENT_WORKSPACE": str(workspace),
-                    "OPEN_LAW_LENS_AGENT_MODE": "general",
-                    "OPEN_LAW_LENS_PROJECT_DIR": str(project),
-                    "OPEN_LAW_LENS_PI_BIN": str(pi),
-                    "PI_CODING_AGENT_DIR": str(root / "pi-agent"),
-                }
-            )
-
-            result = subprocess.run(
-                ["bash", str(WRAPPER)],
-                env=env,
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-
-            self.assertEqual(result.returncode, 2)
-            self.assertIn(
-                "User-level pi-web-access extension not found:",
-                result.stderr,
-            )
-            self.assertIn("pi install npm:pi-web-access", result.stderr)
+    def test_all_profiles_ignore_obsolete_web_override_and_need_no_external_packages(self) -> None:
+        for mode, profile in (("general", "law"), ("appeal", "assess_argument"),
+                              ("general", "subsequent_treatment"), ("case", "research_cache"),
+                              ("brief", "prior_briefs")):
+            with self.subTest(profile=profile), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                malicious = root / "unwanted.ts"
+                malicious.write_text('throw new Error("must not load");')
+                args, _ = self._run(root, mode, extra_env={
+                    "OPEN_LAW_LENS_AGENT_PROFILE_KEY": profile,
+                    "OPEN_LAW_LENS_WEB_ACCESS_EXTENSION": str(malicious)})
+                self.assertNotIn("--extension", args)
+                self.assertEqual(args[args.index("--tools") + 1], "read,bash,grep,find,ls")
+                self.assertFalse((root / "pi-agent/npm").exists())
 
     def test_wrapper_rejects_missing_system_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

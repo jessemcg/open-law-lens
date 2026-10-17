@@ -21,13 +21,6 @@ for key, value in {
     os.environ[key] = str(ROOT / value)
 os.environ.pop("COURTLISTENER_TOKEN", None)
 (ROOT / "config.json").write_text(json.dumps({"reader_font_size_pt": 14}))
-package = ROOT / "pi-agent/npm/node_modules/pi-web-access"
-package.mkdir(parents=True)
-(package / "index.ts").write_text("")
-(package / "package.json").write_text('{"name":"pi-web-access","version":"0.19.0"}')
-computer_use = ROOT / "pi-agent/npm/node_modules/@agent-sh/computer-use-linux/npm/bin/computer-use-linux.js"
-computer_use.parent.mkdir(parents=True)
-computer_use.write_text("")
 fake = ROOT / "pi"
 fake.write_text("""#!/usr/bin/env python3
 import json, os, pathlib, sys

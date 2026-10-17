@@ -9,12 +9,11 @@ disable-model-invocation: true
 Analyze how subsequent published California cases treated the target case.
 Discovery and extraction are hard-bounded: follow this fixed workflow exactly
 and stop where directed. Use only the Open Law Lens commands supplied in the
-request. Never use generic web search, Pi `web_search`, Google Scholar,
+request. Never use generic web search, Google Scholar,
 California Courts pages, or alternate opinion sites, and never manually call
 `extract-slip-opinion` or `lookup-citation`, to discover later cases or obtain
 pagination, reporter metadata, links, or official copies. Never orchestrate
-Scholar or any browser step yourself. Mode-level web-extension availability is
-not permission to use it in this workflow.
+Scholar or any browser step yourself. No general web-search tool is available.
 
 Apply the preloaded Legal Researcher's bounded execution rules to every supplied
 command: bash tool `timeout: 180`, complete JSON stdout, separate stderr, saved

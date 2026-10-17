@@ -85,11 +85,11 @@ means `~/.config/open-law-lens/config.json`.
 
 See [source installation](source-install.md) and [portability](portability.md)
 for native dependencies and private storage. Public installation completes before
-optional Pi and supporting packages are offered. No model/account is required
+optional Pi is offered. No model/account is required
 for core reading. Run `/login` in Pi separately and select available models in
 Open Law Lens Settings; public installations do not use checkout model defaults.
-Browser recovery uses the installed Computer Use wrapper or Pi native tools,
-not an assumed global shell command. See [advanced diagnostics](source-install.md#optional-pi-and-packages).
+Browser recovery uses the standalone native Computer Use executable, independently
+of Pi or Node. See [browser setup and diagnostics](source-install.md#standalone-computer-use).
 
 ## Run the App
 
@@ -430,8 +430,8 @@ for the shipped-prompt mapping, isolated checks, and limitations.
 Law, Subsequent Treatment, and Assess Legal Question runs are research-capable.
 The launcher preloads the tracked legal-researcher skill into the disposable
 workspace's system prompt once (instead of passing `--skill` and spending a
-model turn reading the file), keeps `--no-skills` so no other skills load, and
-loads the user-level `pi-web-access` extension. Agents route by source through
+model turn reading the file), and keeps `--no-skills` so no other skills load.
+No general web-search tool is exposed. Agents route by source through
 an explicit gate in that skill. There is a narrow enactment-only exception,
 reserved for requests that remain entirely textual (current statutory or rule
 text, a citation, or an effective date) with no further definition or
@@ -446,12 +446,11 @@ the agent silently treat statutes alone as sufficient. On the mandatory route,
 a known material case is direct-extracted with `extract-case --find` for narrow
 propositions in the same tool round as the statute extractions, and a focused
 `case-search --limit 5 --compact` is run only when no reliable citation or name is
-already known. Pi's `web_search` remains available only for unresolved,
-open-ended verification after those deterministic fallbacks. This agent-facing
-web search is separate from the confined default-browser Scholar official-copy
-recovery described below, and is never used to retrieve an official reporter
-copy. Research Cache and Prior Brief runs preload only their own workflow skill, not
-Legal Researcher or a web extension, and remain closed-corpus workflows.
+already known. Unresolved metadata or source gaps must be reported, not filled
+by general web search. The confined default-browser Scholar official-copy
+recovery described below remains available through the application's commands.
+Research Cache and Prior Brief runs preload only their own workflow skill, not
+Legal Researcher, and remain closed-corpus workflows.
 
 All research-capable modes also follow the skill's bounded execution contract:
 180-second bash tool deadlines, sequential 120-second recovery with progress,
@@ -967,8 +966,8 @@ existing import validator remains the final gate; missing identity,
 ambiguity, mismatch, or failed validation performs no Library or Research
 Cache write.
 
-Use Pi's native Computer Use `doctor` tool, or the installed wrapper route in
-[advanced diagnostics](source-install.md#optional-pi-and-packages). Package presence
+Use the standalone Computer Use `doctor` command described in
+[browser setup and diagnostics](source-install.md#standalone-computer-use). Binary presence
 alone does not establish accessibility/exact-window readiness. Permission setup
 is separate and manual; the installer does not grant it.
 

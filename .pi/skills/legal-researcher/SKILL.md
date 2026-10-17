@@ -232,29 +232,18 @@ For Subsequent Treatment, follow the preloaded subsequent-treatment workflow
 skill's discovery ceiling and the request's exact commands. That ceiling
 supersedes the general discovery allowance above; shared verification, bounded
 execution, and one-attempt official-copy recovery still apply. Never use
-`web_search` in that workflow. Describe only supported treatment and continue
+general web search in that workflow. Describe only supported treatment and continue
 with useful verified baselines and disclosed limitations when recovery fails.
 
-## Web-search fallback
+## Unresolved verification
 
-Use Pi's `web_search` only for open-ended, unresolved verification that is not
-official-copy recovery, such as investigating delayed reporter metadata or a
-conflicting identity record. Never use `web_search` to retrieve an official
-reporter copy, to repeat the default-browser Scholar recovery, or as a fallback
-opinion-discovery service. In Subsequent Treatment mode, never use `web_search`
-at all — not for later-case discovery, not for citation, reporter metadata, or
-link gaps, and not for official-copy recovery. Tavily, direct HTTP Scholar,
-alternate opinion sites, and generic web search are never acceptable sources
-for an official copy.
-
-Make narrow searches combining the exact case name, docket number, filed date,
-and reporter series such as `Cal.5th` or `Cal.App.5th`. Search results remain
-leads. After finding a likely official citation, retry `extract-case
-"<official citation>"` and rely on its validated extracted text. State plainly
-if the citation or text remains uncertain.
-
-Do not characterize a holding, treatment, quotation, or pinpoint from a search
-snippet alone.
+No general web-search tool is available. Use the documented Open Law Lens
+commands and the source order below. When reporter metadata, case identity or
+source text remains uncertain, state the specific limitation and continue with
+useful verified material. Do not invent a citation or substitute an unapproved
+search service, website, direct HTTP Scholar request or browser-control tool.
+The single application-owned Scholar recovery remains available as documented
+below; it is not a general search facility.
 
 ## Official-copy recovery contract
 
@@ -284,7 +273,7 @@ Apply this source order and stop at the first point that resolves:
    to any other service and do not attempt a second recovery.
 
 Never fall through to Tavily, direct HTTP Scholar, an alternate opinion site,
-or generic `web_search` to obtain an official copy. Never use Computer Use,
+or generic web search to obtain an official copy. Never use Computer Use,
 `mcp`, `mcpScript`, browser automation, or any desktop tool yourself to
 retrieve or copy an opinion. The recovery-enabled command already performs the
 single deterministic attempt and returns the validated final extraction; quote

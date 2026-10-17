@@ -138,8 +138,6 @@ assert cache.agent_answer_index_path().is_file()
                            OPEN_LAW_LENS_AGENT_PROFILE_KEY=workflow,
                            OPEN_LAW_LENS_PI_SETTINGS=str(root / "no-personal-settings"),
                            PI_CODING_AGENT_DIR=str(root / "pi-agent"), HOME=str(root / "empty-home"))
-                if mode in {"general", "appeal"}:
-                    fixture._install_web_access(root)
                 result = subprocess.run(["bash", str(fixtures.WRAPPER)], env=env, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertNotIn("metrics", result.stderr.lower())
@@ -213,7 +211,8 @@ def require(namespace, version):
 with patch('shutil.which', return_value=None), patch.object(gi, 'require_version', side_effect=require):
     value = report()
 assert value['capabilities']['core_gui']['status'] == 'ready'
-for capability in ('agent_workflows', 'agent_web_research', 'pdf_extraction', 'prior_brief_indexing', 'selection_lookup'):
+assert 'agent_web_research' not in value['capabilities']
+for capability in ('agent_workflows', 'pdf_extraction', 'prior_brief_indexing', 'selection_lookup'):
     assert value['capabilities'][capability]['status'] == 'missing', capability
 """)
 

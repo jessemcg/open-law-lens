@@ -27,11 +27,10 @@ Installs the latest `main` code into `~/OpenLawLens` and asks before installing
 missing dependencies. Settings and research use per-user XDG storage, outside the
 editable checkout. Open Law Lens installs fully without Pi or an AI account.
 
-After confirming the app is installed, setup offers Pi if missing, then each
-missing supporting package: `pi-web-access` and `@agent-sh/computer-use-linux`.
-Press Enter to accept an offer or type `skip` to decline. Skipping, canceling, or
-failing optional setup leaves the application installed. Authentication and
-browser/desktop permission setup are separate.
+The installer includes standalone Linux Computer Use for automated Google Scholar
+recovery. Browser/desktop permission setup is separate. After confirming the app
+is installed, setup offers Pi if missing: press Enter to install or type `skip`.
+Skipping, canceling, or failing optional Pi setup leaves the application installed.
 
 [Installation options, troubleshooting, and removal](docs/source-install.md)
 
@@ -78,8 +77,8 @@ and save it in the app menu under **Settings**. Enter a case citation such as
 For optional AI features, open Pi and use `/login` to enter an API key or sign in.
 Then choose available models in Open Law Lens **Settings → Agent Models**.
 See the [user guide](docs/user-guide.md) for research, prior briefs, and reader tools,
-and [setup instructions](docs/source-install.md#optional-pi-and-packages) for web
-providers and browser readiness.
+and [setup instructions](docs/source-install.md#standalone-computer-use) for browser
+readiness.
 
 AI questions may send selected facts and research to your chosen provider and
 may incur charges. Check confidentiality terms before using sensitive material;

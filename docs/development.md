@@ -71,18 +71,15 @@ linked from [user-guide.md](user-guide.md).
 - `open_law_lens/scholar_browser.py`: default-browser Scholar launch and
   clipboard import primitives for recovery.
 - `scripts/open-law-lens-agent-vte.sh`: embedded Pi terminal launcher. It keeps
-  unrelated extensions disabled with `--no-extensions`; closed-corpus modes
-  load only the passive sibling metrics observer and the app-owned follow-up
-  bridge, while research-capable modes also load the user-level
-  `pi-web-access` extension.
+  unrelated extensions disabled with `--no-extensions`; all five profiles
+  load only the passive sibling metrics observer (when enabled) and app-owned
+  follow-up bridge. Tools are exactly `read,bash,grep,find,ls`; application-owned
+  Scholar recovery runs independently through the standalone native MCP server.
 - `.pi/extensions/open-law-lens-followup-bridge.ts`: the explicitly staged,
   non-model-facing live follow-up bridge; registers no tools.
 - `.pi/settings.json`: maintained-only fallback; public mode ignores it.
-- `~/.pi/agent/npm/node_modules/pi-web-access/`: user-level web-access
-  package explicitly loaded for research-capable Agent runs (or the equivalent
-  path under `PI_CODING_AGENT_DIR`).
 - `.pi/skills/legal-researcher/SKILL.md`: Pi legal-research workflow,
-  web-search fallback rules, and the pre-answer legal-source audit. The
+  source-verification boundaries, and the pre-answer legal-source audit. The
   launcher preloads this file into the system prompt for research modes.
 
 ## Local Files and Credentials
@@ -92,8 +89,7 @@ Do not commit local runtime data:
 - `config.json`: local settings and CourtListener token.
 - `cache/`: disposable CourtListener lookup and import cache.
 - `library/`: durable local SQLite authority library.
-- `.pi/npm/`: optional project-local Pi package cache; the embedded workflow
-  uses the user-level Pi package installation instead.
+- `.pi/npm/`: legacy generated package cache, not an application dependency.
 - `.venv/`, `__pycache__/`, `.pytest_cache/`, and `.mypy_cache/`: generated
   development artifacts.
 

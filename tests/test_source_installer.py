@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -60,10 +61,17 @@ class InstallerSandbox(unittest.TestCase):
         self.enterContext(patch.object(m, 'verify_environment', return_value={}))
         self.enterContext(patch.object(m, 'discover_pi', return_value=[]))
         self.enterContext(patch.object(m, 'continue_pi_install', return_value=False))
+        self.asset_bytes = {key: b'\x7fELF synthetic fixture ' + key.encode() for key in m.COMPUTER_USE_FILES}
+        self.enterContext(patch.object(m, 'computer_use_assets', return_value={
+            key: (f'https://fixture.invalid/{key}', hashlib.sha256(body).hexdigest())
+            for key, body in self.asset_bytes.items()}))
         self.calls = []
         original = m.execute
         def execute(command, **kwargs):
             self.calls.append(command)
+            if command[0] == 'curl' and '--output' in command:
+                key = next(arg.rsplit('/', 1)[-1] for arg in command if arg.startswith('https://fixture.invalid/'))
+                Path(command[command.index('--output') + 1]).write_bytes(self.asset_bytes[key])
             if command[0] in {'git', 'desktop-file-validate'}:
                 return original(command, **kwargs)
             return subprocess.CompletedProcess(command, 0, '', '')

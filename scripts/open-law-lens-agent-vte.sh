@@ -136,29 +136,11 @@ if [[ -n "$pi_node" ]]; then
 fi
 
 skill="$project_dir/.pi/skills/legal-researcher/SKILL.md"
-pi_agent_dir="${PI_CODING_AGENT_DIR:-${HOME:-}/.pi/agent}"
-if [[ "$pi_agent_dir" == "~" ]]; then
-  pi_agent_dir="${HOME:-}"
-elif [[ "$pi_agent_dir" == "~/"* ]]; then
-  pi_agent_dir="${HOME:-}/${pi_agent_dir:2}"
-fi
-extension="${OPEN_LAW_LENS_WEB_ACCESS_EXTENSION:-$pi_agent_dir/npm/node_modules/pi-web-access/index.ts}"
-package_json="$(dirname "$extension")/package.json"
 if [[ "$agent_mode" == "general" || "$agent_mode" == "appeal" ]]; then
   if [[ ! -r "$skill" || ! -s "$skill" ]]; then
     printf 'Legal researcher skill unreadable or empty: %s. Restore the app resources.\n' "$skill" >&2
     exit 2
   fi
-  if [[ ! -f "$extension" || ! -f "$package_json" ]]; then
-    printf 'User-level pi-web-access extension not found: %s\n' "$extension" >&2
-    printf 'Install it with: pi install npm:pi-web-access\n' >&2
-    exit 2
-  fi
-  if ! grep -Eq '"name"[[:space:]]*:[[:space:]]*"pi-web-access"' "$package_json"; then
-    printf 'Expected the pi-web-access package in %s\n' "$package_json" >&2
-    exit 2
-  fi
-  # Computer Use is optional: extraction reports unavailable recovery safely.
 fi
 
 mkdir -p "$workspace/tmp" "$workspace/uv-cache" "$workspace/pi-sessions"
@@ -217,10 +199,6 @@ args+=(
 )
 if [[ -n "$pi_provider" ]]; then
   args+=(--provider "$pi_provider" --model "$pi_model" --thinking "$pi_thinking")
-fi
-if [[ "$agent_mode" == "general" || "$agent_mode" == "appeal" ]]; then
-  args+=(--extension "$extension")
-  tools+=",web_search"
 fi
 args+=("${followup_args[@]}")
 # Passive observer for every Pi-backed mode; never grant extra model tools.
