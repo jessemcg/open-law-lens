@@ -57,6 +57,7 @@ class RunMetricsSDKTests(unittest.TestCase):
                            OPEN_LAW_LENS_AGENT_WORKSPACE=str(workspace), OPEN_LAW_LENS_AGENT_MODE=mode,
                            OPEN_LAW_LENS_AGENT_PROFILE_KEY=workflow, OPEN_LAW_LENS_PROJECT_DIR=str(project),
                            OPEN_LAW_LENS_PI_BIN=str(executable), OPEN_LAW_LENS_PI_NODE_BIN=node,
+                           OPEN_LAW_LENS_CLI_BIN='/bin/true',
                            PI_CODING_AGENT_DIR=str(root / 'pi-agent'), PI_RUN_METRICS_COLLECTOR=str(collector))
                 env.pop('PI_RUN_METRICS_ROOT', None)
                 captures = []

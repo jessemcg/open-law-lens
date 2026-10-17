@@ -21,9 +21,10 @@ from xml.etree import ElementTree
 from .config import load_config
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_PRIOR_BRIEFS_DIR = PROJECT_ROOT / "prior_briefs"
-DEFAULT_PRIOR_BRIEFS_DB = PROJECT_ROOT / "library" / "prior_briefs.sqlite3"
+from .paths import RESOURCE_ROOT as PROJECT_ROOT, data_root
+
+DEFAULT_PRIOR_BRIEFS_DIR = data_root() / "prior_briefs"
+DEFAULT_PRIOR_BRIEFS_DB = data_root() / "library" / "prior_briefs.sqlite3"
 SCHEMA_VERSION = "2"
 TEXT_VERSION = "pandoc-plain-headings-v3"
 CASE_NUMBER_RE = re.compile(r"(?<![A-Z0-9])([A-Z]\d{6})(?!\d)", re.IGNORECASE)

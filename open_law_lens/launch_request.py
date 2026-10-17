@@ -15,22 +15,24 @@ def request_path() -> Path:
     root = os.environ.get("OPEN_LAW_LENS_REQUEST_DIR", "").strip()
     if root:
         return Path(root).expanduser() / "open_authority_request.json"
-    runtime_dir = os.environ.get("XDG_RUNTIME_DIR", "").strip()
-    if runtime_dir:
-        return Path(runtime_dir) / "open-law-lens" / "open_authority_request.json"
-    return Path("/tmp") / f"open-law-lens-{os.getuid()}" / "open_authority_request.json"
+    from .paths import runtime_root
+    return runtime_root() / "open_authority_request.json"
 
 
 def write_open_authority_request(text: str) -> None:
     path = request_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    from .paths import runtime_root
+    if not os.environ.get("OPEN_LAW_LENS_REQUEST_DIR", "").strip():
+        runtime_root(create=True)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     payload = {
         "id": uuid.uuid4().hex,
         "created_at": time.time(),
         "text": text,
     }
     temp_path = path.with_suffix(f".{payload['id']}.tmp")
-    temp_path.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
+    with os.fdopen(os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as stream:
+        stream.write(json.dumps(payload, ensure_ascii=True))
     temp_path.replace(path)
 
 

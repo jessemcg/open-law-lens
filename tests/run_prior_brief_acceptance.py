@@ -98,6 +98,7 @@ def main():
             env.pop('COURTLISTENER_TOKEN', None)
             env.update({
                 'OPEN_LAW_LENS_PROJECT_DIR': str(PROJECT),
+                'OPEN_LAW_LENS_CLI_BIN': str(Path(sys.executable).parent / 'open-law-lens'),
                 'PYTHONPATH': str(PROJECT),
                 'OPEN_LAW_LENS_CONFIG': str(run / 'config.json'),
                 'OPEN_LAW_LENS_PRIOR_BRIEFS_DB': str(run / 'briefs.sqlite3'),

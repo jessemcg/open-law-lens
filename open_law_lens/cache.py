@@ -32,8 +32,9 @@ from .storage import (
     resource_id_from_url,
 )
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-PROJECT_CACHE_DIR = PROJECT_ROOT / "cache"
+from .paths import RESOURCE_ROOT as PROJECT_ROOT, research_root, standalone
+
+PROJECT_CACHE_DIR = research_root()
 OPINION_TEXT_FIELDS = (
     "html_with_citations",
     "plain_text",
@@ -46,10 +47,7 @@ OPINION_TEXT_FIELDS = (
 
 
 def cache_root() -> Path:
-    root = os.environ.get("OPEN_LAW_LENS_CACHE_DIR")
-    if root:
-        return Path(root).expanduser()
-    return PROJECT_CACHE_DIR
+    return research_root()
 
 
 def citation_cache_key(citation: str) -> str:
@@ -1271,17 +1269,18 @@ class JsonCache:
                 self.root / "statutes",
                 self.root / "rules",
                 self.root / "prior_briefs",
-                self.root / "agent_answers",
                 self.case_index_path(),
                 self.statute_index_path(),
                 self.rule_index_path(),
                 self.prior_brief_index_path(),
-                self.agent_answer_index_path(),
                 self.metadata_path(),
             ]
-            if not preserve_reader_positions:
+            # Public cache clearing must not destroy user-created answers.
+            if not standalone():
+                sources.extend([self.root / "agent_answers", self.agent_answer_index_path()])
+            if not preserve_reader_positions and not standalone():
                 sources.append(self.reader_positions_path())
-            if not preserve_reader_highlights:
+            if not preserve_reader_highlights and not standalone():
                 sources.append(self.reader_highlights_path())
             for source in sources:
                 if not source.exists():

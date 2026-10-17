@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Open Law Lens
+Comment=Read and research California legal authority
+Exec="@ABSOLUTE_LAUNCHER@" app
+Icon=@ABSOLUTE_ICON@
+Terminal=false
+Categories=Office;
+StartupNotify=true
+DBusActivatable=false

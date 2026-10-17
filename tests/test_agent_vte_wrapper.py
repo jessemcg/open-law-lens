@@ -5,6 +5,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 
@@ -16,6 +17,11 @@ LEGAL_RESEARCHER_SKILL = (
 
 
 class AgentVteWrapperTests(unittest.TestCase):
+    def setUp(self):
+        selection = patch.dict(os.environ, {"OPEN_LAW_LENS_CLI_BIN": "/bin/true"})
+        selection.start()
+        self.addCleanup(selection.stop)
+
     def _fixture(
         self, root: Path, *, with_bridge: bool = False
     ) -> tuple[Path, Path, Path]:
@@ -153,6 +159,8 @@ class AgentVteWrapperTests(unittest.TestCase):
         return output.read_text(encoding="utf-8").splitlines(), completed.stderr
 
     def test_metrics_all_pi_workflows_keep_tools_and_session_transport(self) -> None:
+        if not (PROJECT_DIR.parent / "PiRunMetrics/launch_adapter.py").is_file():
+            self.skipTest("Optional PiRunMetrics adapter absent; standalone acceptance runs independently")
         for mode, workflow in (("general", "law"), ("case", "research_cache"),
                                ("brief", "prior_briefs"), ("appeal", "assess_argument"),
                                ("general", "subsequent_treatment")):
@@ -591,10 +599,11 @@ class AgentVteWrapperTests(unittest.TestCase):
         path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         path.chmod(0o755)
 
-    def test_missing_uv_fails_before_pi_launch(self) -> None:
+    def test_missing_cli_fails_before_pi_launch(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             env = self._minimal_env(root)
+            env.pop("OPEN_LAW_LENS_CLI_BIN", None)
             env["HOME"] = str(root / "no-uv-home")
             (root / "no-uv-home").mkdir(parents=True)
 
@@ -607,14 +616,14 @@ class AgentVteWrapperTests(unittest.TestCase):
             )
 
         self.assertEqual(result.returncode, 127)
-        self.assertIn("requires the uv executable", result.stderr)
+        self.assertIn("CLI is unavailable", result.stderr)
 
-    def test_uv_resolved_from_home_local_bin_on_minimal_path(self) -> None:
+    def test_no_uv_needed_on_minimal_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             env = self._minimal_env(root)
             home = root / "home"
-            self._write_executable(home / ".local" / "bin" / "uv")
+            home.mkdir()
             env["HOME"] = str(home)
 
             result = subprocess.run(
@@ -627,7 +636,7 @@ class AgentVteWrapperTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_uv_override_is_used(self) -> None:
+    def test_obsolete_uv_override_is_not_executed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             env = self._minimal_env(root)

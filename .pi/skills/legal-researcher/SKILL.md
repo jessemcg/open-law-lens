@@ -13,10 +13,10 @@ results, snippets, and web pages as leads, not authority.
 Run commands from any workspace with:
 
 ```bash
-"$OPEN_LAW_LENS_PROJECT_DIR/../UvEnvironments/project-env" run OpenLawLens open-law-lens <command>
+"$OPEN_LAW_LENS_CLI_BIN" <command>
 ```
 
-The helper executes the verified machine-local environment without synchronizing
+The launcher executes the selected machine-local environment without synchronizing
 or installing dependencies. Use this supplied prefix directly; do not spend
 an environment-echo preflight checking it. Never pipe research JSON through
 `head`, `tail`, or arbitrary textual clipping. Use CLI output bounds and retain
@@ -71,7 +71,7 @@ Example (set `timeout: 180` on the bash call; stdout only goes to the file):
 
 ```bash
 research_dir=$(mktemp -d "$PWD/research.XXXXXX")
-"$OPEN_LAW_LENS_PROJECT_DIR/../UvEnvironments/project-env" run OpenLawLens open-law-lens extract-case \
+"$OPEN_LAW_LENS_CLI_BIN" extract-case \
   "13 Cal.4th 952" --recover-official --timeout 120 --progress \
   --find "presumed father" >"$research_dir/authority.json"
 status=$?
@@ -129,8 +129,8 @@ practical consequences.
 2. In Route B, extract the current controlling enactment first:
 
    ```bash
-   "$OPEN_LAW_LENS_PROJECT_DIR/../UvEnvironments/project-env" run OpenLawLens open-law-lens extract-statute "<citation>"
-   "$OPEN_LAW_LENS_PROJECT_DIR/../UvEnvironments/project-env" run OpenLawLens open-law-lens extract-rule "<citation>"
+   "$OPEN_LAW_LENS_CLI_BIN" extract-statute "<citation>"
+   "$OPEN_LAW_LENS_CLI_BIN" extract-rule "<citation>"
    ```
 
    In Route A, the enactment above is the whole job; leave the answer confined
@@ -142,7 +142,7 @@ practical consequences.
    run one leading case with one or two issue-specific exact terms:
 
    ```bash
-   "$OPEN_LAW_LENS_PROJECT_DIR/../UvEnvironments/project-env" run OpenLawLens open-law-lens extract-case "<citation>" --find "<term>" --find "<term>"
+   "$OPEN_LAW_LENS_CLI_BIN" extract-case "<citation>" --find "<term>" --find "<term>"
    ```
 
    Use `extract-case --cluster-id <cluster_id>` when citation or name
@@ -158,7 +158,7 @@ practical consequences.
    re-extraction:
 
    ```bash
-   "$OPEN_LAW_LENS_PROJECT_DIR/../UvEnvironments/project-env" run OpenLawLens open-law-lens extract-case "<citation>" --recover-official --timeout 120 --progress --find "<term>" --find "<term>"
+   "$OPEN_LAW_LENS_CLI_BIN" extract-case "<citation>" --recover-official --timeout 120 --progress --find "<term>" --find "<term>"
    ```
 
    Always rely on that command's final result. Never orchestrate Scholar (or
@@ -182,7 +182,7 @@ practical consequences.
    authority:
 
    ```bash
-   "$OPEN_LAW_LENS_PROJECT_DIR/../UvEnvironments/project-env" run OpenLawLens open-law-lens case-search "<query>" --limit 5 --compact
+   "$OPEN_LAW_LENS_CLI_BIN" case-search "<query>" --limit 5 --compact
    ```
 
    For a missing known case, prefer a quoted exact name and filing-year filter

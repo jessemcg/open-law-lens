@@ -223,7 +223,8 @@ from .text_formatting import normalize_malformed_quote_stacks, smart_quote_displ
 from .web_import import ExtractedWebpage, extract_webpage_text
 
 
-PROJECT_DIR = Path(__file__).resolve().parent.parent
+from .paths import RESOURCE_ROOT as PROJECT_DIR, execution_env, workspace_root, standalone
+
 AGENT_WRAPPER = PROJECT_DIR / "scripts" / "open-law-lens-agent-vte.sh"
 AGENT_FOLLOWUP_EXTENSION = (
     PROJECT_DIR / ".pi" / "extensions" / "open-law-lens-followup-bridge.ts"
@@ -406,6 +407,7 @@ def build_agent_launch_env(
 ) -> dict[str, str]:
     pi_executable = find_pi_executable()
     env = {
+        **execution_env(),
         "OPEN_LAW_LENS_AGENT_PROMPT_FILE": str(prompt_path),
         "OPEN_LAW_LENS_AGENT_WORKSPACE": str(workspace),
         "OPEN_LAW_LENS_AGENT_MODE": mode,
@@ -427,7 +429,7 @@ def build_agent_launch_env(
     library = getattr(client, "library", None)
     library_path = getattr(library, "path", None)
     if library_path is not None:
-        env["OPEN_LAW_LENS_LIBRARY_DB"] = str(library_path)
+        env["OPEN_LAW_LENS_LIBRARY_DB"] = str(Path(library_path).absolute())
     prior_brief_snapshot = workspace / "prior_briefs.sqlite3"
     if prior_brief_snapshot.is_file():
         env["OPEN_LAW_LENS_PRIOR_BRIEFS_DB"] = str(prior_brief_snapshot)
@@ -2210,6 +2212,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         show_dbus_commands = Gio.SimpleAction.new("show_dbus_commands", None)
         show_dbus_commands.connect("activate", self._on_show_dbus_commands)
         self.add_action(show_dbus_commands)
+        setup = Gio.SimpleAction.new("setup_diagnostics", None)
+        setup.connect("activate", lambda *_: self._show_setup_diagnostics())
+        self.add_action(setup)
         show_cli_commands = Gio.SimpleAction.new("show_cli_commands", None)
         show_cli_commands.connect("activate", self._on_show_cli_commands)
         self.add_action(show_cli_commands)
@@ -2594,12 +2599,18 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         toolbar_view.set_content(toast_overlay)
         return toolbar_view
 
+    def _show_setup_diagnostics(self) -> None:
+        from .diagnostics_ui import SetupWindow
+        window = SetupWindow(self)
+        window.present()
+
     def _build_menu_button(self) -> Gtk.MenuButton:
         menu = Gio.Menu()
         for entries in (
             (("Update Prior Brief Library", "win.update_brief_library"),),
             (
                 ("Settings", "win.settings"),
+                ("Setup / Diagnostics", "win.setup_diagnostics"),
                 ("Keyboard Shortcuts", "win.show_shortcuts"),
             ),
             (
@@ -4171,6 +4182,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return False
 
     def _on_window_close_request(self, _window: Gtk.Window) -> bool:
+        self._agent_setup_generation = getattr(self, "_agent_setup_generation", 0) + 1
         self._case_load_generation = getattr(self, '_case_load_generation', 0) + 1
         self._stop_agent_answer_polling()
         self._capture_current_reader_position()
@@ -4202,7 +4214,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             if self._current_case_context_title is not None:
                 self._current_case_context_title.set_text(case_name or "Current Case")
             if self._current_case_context_subtitle is not None:
-                self._current_case_context_subtitle.set_text("SOCF unavailable")
+                self._current_case_context_subtitle.set_text(
+                    "Optional integration not configured" if standalone() and not case_name else "SOCF unavailable"
+                )
                 self._current_case_context_subtitle.set_tooltip_text(str(exc))
             self._current_case_context_toggle_guard = True
             try:
@@ -9697,10 +9711,14 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return agent_prompts.assessment_request(issue, export)
 
     def _write_prompt_file(self, prompt: str) -> Path:
+        parent = workspace_root() if standalone() else None
+        if parent is not None:
+            parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         handle = tempfile.NamedTemporaryFile(
             "w",
             encoding="utf-8",
             prefix="open-law-lens-agent-",
+            dir=parent,
             suffix=".txt",
             delete=False,
         )
@@ -9709,9 +9727,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return Path(handle.name)
 
     def _create_agent_workspace(self) -> Path:
-        cache_root = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")).expanduser()
-        parent = cache_root / "open-law-lens" / "agent-workspaces"
-        parent.mkdir(parents=True, exist_ok=True)
+        parent = workspace_root()
+        parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         return Path(tempfile.mkdtemp(prefix="workspace.", dir=parent))
 
     def _selected_agent_clusters(self) -> list[dict[str, Any]]:
@@ -10190,7 +10207,44 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         )
         return False
 
-    def _launch_agent_with_prompt(
+    def _launch_agent_with_prompt(self, prompt_path: Path, workspace: Path, mode: str,
+                                  success_status: str = "Started embedded Pi agent.",
+                                  profile_key: str | None = None) -> None:
+        if not standalone():
+            self._launch_agent_with_prompt_ready(prompt_path, workspace, mode, success_status, profile_key)
+            return
+        self._agent_setup_generation = getattr(self, "_agent_setup_generation", 0) + 1
+        generation = self._agent_setup_generation
+        self._set_status("Checking Pi authorization and selected model…")
+
+        def check() -> None:
+            error = ""
+            try:
+                catalog = available_pi_runtime_catalog()
+                profile = agent_profile_for_mode(load_config(), mode, profile_key)
+                selected = (profile.provider, profile.model) if profile else (
+                    catalog.default_model.settings_key if catalog.default_model else None
+                )
+                if selected not in {model.settings_key for model in catalog.models}:
+                    error = "Configure and authorize your chosen model in Pi, then select it in Settings. Open Law Lens will not choose a provider for you."
+            except Exception:
+                error = "Pi model setup is unavailable. Install Pi, authorize your chosen provider there, and review Setup / Diagnostics."
+
+            def finish() -> bool:
+                if generation != getattr(self, "_agent_setup_generation", 0) or not self.get_visible():
+                    return False
+                if error:
+                    self._set_status(error)
+                elif agent_profile_for_mode(load_config(), mode, profile_key) != profile:
+                    self._set_status("Agent model settings changed during setup. Submit the question again to check the selected model.")
+                else:
+                    self._launch_agent_with_prompt_ready(prompt_path, workspace, mode, success_status, profile_key)
+                return False
+            GLib.idle_add(finish)
+
+        threading.Thread(target=check, daemon=True).start()
+
+    def _launch_agent_with_prompt_ready(
         self,
         prompt_path: Path,
         workspace: Path,
@@ -11869,6 +11923,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return False
 
     def _stop_agent(self) -> None:
+        self._agent_setup_generation = getattr(self, "_agent_setup_generation", 0) + 1
         if self._agent_pid is not None:
             try:
                 os.kill(self._agent_pid, signal.SIGTERM)
@@ -12023,6 +12078,9 @@ class OpenLawLensApp(Adw.Application):
                 return window
         window = OpenLawLensWindow(self)
         window.present()
+        from .paths import config_path
+        if standalone() and not config_path().exists():
+            window._show_setup_diagnostics()
         return window
 
     def _on_submit_speech_law_question(

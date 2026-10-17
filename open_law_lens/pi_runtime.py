@@ -6,14 +6,16 @@ import select
 import shutil
 import subprocess
 import time
+import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 
-PROJECT_DIR = Path(__file__).resolve().parent.parent
-PROJECT_PI_SETTINGS_PATH = PROJECT_DIR / ".pi" / "settings.json"
+from .paths import RESOURCE_ROOT as PROJECT_DIR, pi_settings_path, standalone
+
+PROJECT_PI_SETTINGS_PATH = pi_settings_path()
 PI_MODEL_DISCOVERY_TIMEOUT_SECONDS = 10
 PI_THINKING_LEVELS: tuple[str, ...] = (
     "off",
@@ -177,16 +179,30 @@ def _pi_rpc_command() -> list[str]:
     ]
 
 
-def _pi_rpc_response(
+def _pi_rpc_response(command: list[str], request: dict[str, Any], *, timeout: float) -> dict[str, Any]:
+    if not standalone():
+        return _pi_rpc_response_in(command, request, timeout=timeout, cwd=PROJECT_DIR)
+    # Never allow the installed resource tree's personal model fallback to win.
+    with tempfile.TemporaryDirectory(prefix="open-law-lens-models-") as temporary:
+        cwd = Path(temporary)
+        settings = pi_settings_path()
+        if settings.is_file():
+            (cwd / ".pi").mkdir(mode=0o700)
+            shutil.copyfile(settings, cwd / ".pi" / "settings.json")
+        return _pi_rpc_response_in(command, request, timeout=timeout, cwd=cwd)
+
+
+def _pi_rpc_response_in(
     command: list[str],
     request: dict[str, Any],
     *,
     timeout: float,
+    cwd: Path,
 ) -> dict[str, Any]:
     try:
         process = subprocess.Popen(
             command,
-            cwd=PROJECT_DIR,
+            cwd=cwd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -357,6 +373,8 @@ def _read_pi_settings(path: Path) -> dict[str, Any]:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
+        if standalone() and path == pi_settings_path():
+            return {}
         raise PiSettingsError(f"Pi project settings not found: {path}") from exc
     except (OSError, json.JSONDecodeError) as exc:
         raise PiSettingsError(f"Unable to read Pi project settings: {exc}") from exc
@@ -383,12 +401,11 @@ def save_project_pi_model(
     settings = _read_pi_settings(path)
     settings["defaultProvider"] = model.provider
     settings["defaultModel"] = model.model_id
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        temp_path.write_text(
-            json.dumps(settings, ensure_ascii=True, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        with os.fdopen(os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(settings, ensure_ascii=True, indent=2) + "\n")
         os.replace(temp_path, path)
     except OSError as exc:
         raise PiSettingsError(f"Unable to save Pi project settings: {exc}") from exc

@@ -14,30 +14,14 @@ library_db="${OPEN_LAW_LENS_LIBRARY_DB:-}"
 prior_briefs_db="${OPEN_LAW_LENS_PRIOR_BRIEFS_DB:-}"
 prior_briefs_dir="${OPEN_LAW_LENS_PRIOR_BRIEFS_DIR:-}"
 
-# Resolve uv before doing any model work. Order: validated explicit override,
-# then PATH lookup, then the standard user-local install.
-uv_bin="${OPEN_LAW_LENS_UV_BIN:-}"
-if [[ -n "$uv_bin" ]]; then
-  if [[ "$uv_bin" == */* ]]; then
-    [[ -x "$uv_bin" ]] || uv_bin=""
-  else
-    uv_bin="$(command -v "$uv_bin" 2>/dev/null || true)"
-  fi
-fi
-if [[ -z "$uv_bin" ]]; then
-  uv_bin="$(command -v uv 2>/dev/null || true)"
-fi
-if [[ -z "$uv_bin" ]]; then
-  if [[ -x "${HOME:-}/.local/bin/uv" ]]; then
-    uv_bin="${HOME}/.local/bin/uv"
-  fi
-fi
-if [[ -z "$uv_bin" || ! -x "$uv_bin" ]]; then
-  printf 'Open Law Lens requires the uv executable for agent research.\n' >&2
-  printf 'Install uv or set OPEN_LAW_LENS_UV_BIN to its full path.\n' >&2
+# Installed same-environment entry point; launches never provision dependencies.
+umask 077
+cli_bin="${OPEN_LAW_LENS_CLI_BIN:-}"
+if [[ "$cli_bin" != /* || ! -x "$cli_bin" ]]; then
+  printf 'Open Law Lens CLI is unavailable. Relaunch through the provisioned application launcher.\n' >&2
   exit 127
 fi
-export PATH="$(dirname "$uv_bin"):$PATH"
+export OPEN_LAW_LENS_CLI_BIN="$cli_bin"
 
 if [[ -z "$prompt_file" || ! -f "$prompt_file" ]]; then
   printf 'Open Law Lens agent prompt file not found: %s\n' "$prompt_file" >&2
@@ -47,8 +31,8 @@ if [[ -z "$workspace" ]]; then
   printf 'Open Law Lens agent workspace is required.\n' >&2
   exit 2
 fi
-if [[ -z "$project_dir" || ! -f "$project_dir/.pi/settings.json" ]]; then
-  printf 'Open Law Lens project Pi settings not found: %s\n' "$project_dir/.pi/settings.json" >&2
+if [[ -z "$project_dir" || ! -d "$project_dir/.pi" ]]; then
+  printf 'Open Law Lens resources not found: %s\n' "$project_dir" >&2
   exit 2
 fi
 # Resolve the workflow independently of execution mode (Law and Treatment both
@@ -139,7 +123,6 @@ elif [[ "$pi_agent_dir" == "~/"* ]]; then
 fi
 extension="${OPEN_LAW_LENS_WEB_ACCESS_EXTENSION:-$pi_agent_dir/npm/node_modules/pi-web-access/index.ts}"
 package_json="$(dirname "$extension")/package.json"
-computer_use_linux_js="$pi_agent_dir/npm/node_modules/@agent-sh/computer-use-linux/npm/bin/computer-use-linux.js"
 if [[ "$agent_mode" == "general" || "$agent_mode" == "appeal" ]]; then
   if [[ ! -r "$skill" || ! -s "$skill" ]]; then
     printf 'Legal researcher skill unreadable or empty: %s. Restore the app resources.\n' "$skill" >&2
@@ -154,16 +137,23 @@ if [[ "$agent_mode" == "general" || "$agent_mode" == "appeal" ]]; then
     printf 'Expected the pi-web-access package in %s\n' "$package_json" >&2
     exit 2
   fi
-  if [[ ! -f "$computer_use_linux_js" ]]; then
-    printf 'User-level @agent-sh/computer-use-linux package not found: %s\n' "$computer_use_linux_js" >&2
-    printf 'Install it with: pi install npm:@agent-sh/computer-use-linux\n' >&2
-    exit 2
-  fi
+  # Computer Use is optional: extraction reports unavailable recovery safely.
 fi
 
 mkdir -p "$workspace/tmp" "$workspace/uv-cache" "$workspace/pi-sessions"
 mkdir -p "$workspace/.pi"
-cp -a "$project_dir/.pi/settings.json" "$workspace/.pi/"
+settings_file="${OPEN_LAW_LENS_PI_SETTINGS:-$project_dir/.pi/settings.json}"
+if [[ "${OPEN_LAW_LENS_STORAGE:-legacy}" == standalone ]]; then
+  settings_file="${OPEN_LAW_LENS_PI_SETTINGS:-${XDG_CONFIG_HOME:-$HOME/.config}/open-law-lens/pi/settings.json}"
+fi
+if [[ -f "$settings_file" ]]; then
+  cp -- "$settings_file" "$workspace/.pi/settings.json"
+elif [[ "${OPEN_LAW_LENS_STORAGE:-legacy}" == standalone ]]; then
+  printf '{}\n' > "$workspace/.pi/settings.json"
+else
+  printf 'Maintained Open Law Lens Pi settings missing. Restore the selected app preferences.\n' >&2
+  exit 2
+fi
 cp -a "$project_dir/.pi/SYSTEM.md" "$workspace/.pi/"
 # The live follow-up bridge is explicitly staged and loaded only when present;
 # it registers no model-facing tools and never widens the tool allowlist.
@@ -218,7 +208,14 @@ metrics_prefix=("$pi_path")
 [[ -z "$pi_node" ]] || metrics_prefix=("$pi_node" "$pi_path")
 metrics_values=()
 helper="$metrics_project_root/../PiRunMetrics/launch_adapter.py"
-if [[ -r "$helper" && -x /usr/bin/python3 ]]; then
+metrics_enabled="${PI_RUN_METRICS_ENABLED:-}"
+if [[ -z "$metrics_enabled" ]]; then
+  if [[ "${OPEN_LAW_LENS_STORAGE:-legacy}" == standalone ]]; then metrics_enabled=0; else metrics_enabled=1; fi
+fi
+if [[ "${OPEN_LAW_LENS_STORAGE:-legacy}" == standalone && "$metrics_enabled" != 0 ]]; then
+  export PI_RUN_METRICS_ROOT="${PI_RUN_METRICS_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/open-law-lens/run-metrics/runs}"
+fi
+if [[ "$metrics_enabled" != 0 && -r "$helper" && -x /usr/bin/python3 ]]; then
   mapfile -d '' -t metrics_values < <(/usr/bin/python3 "$helper" --shell \
     --project "$metrics_project_root" --app open-law-lens --workflow "$workflow" -- "${metrics_prefix[@]}")
 fi
@@ -227,7 +224,7 @@ if (( ${#metrics_values[@]} )); then
   for entry in "${metrics_values[@]:1}"; do export "$entry"; done
 else
   unset PI_RUN_METRICS_APP PI_RUN_METRICS_WORKFLOW PI_RUN_METRICS_REVISION PI_RUN_METRICS_DIRTY PI_RUN_METRICS_PI_VERSION PI_RUN_METRICS_BUILD_PROVENANCE PI_RUN_METRICS_LAUNCH_CONFIGURATION
-  if [[ "${PI_RUN_METRICS_ENABLED:-1}" != 0 ]]; then
+  if [[ "$metrics_enabled" != 0 ]]; then
     printf 'Pi run metrics: collection incomplete or unavailable.\n' >&2
   fi
 fi

@@ -99,18 +99,14 @@ def create_followup_request_id() -> str:
 
 def open_law_lens_followup_runtime_root() -> Path:
     """Return Open Law Lens's private runtime root for follow-up bridge sockets."""
-    configured = str(os.environ.get("XDG_RUNTIME_DIR", "") or "").strip()
-    if configured:
-        root = Path(configured).expanduser()
-    else:
-        root = Path(tempfile.gettempdir()) / f"open-law-lens-{os.getuid()}"
-    path = root / "open-law-lens" / "agent-followup"
-    path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    try:
-        path.chmod(0o700)
-    except OSError:
-        pass
-    return path.resolve(strict=False)
+    from .paths import runtime_root
+    path = runtime_root(create=True) / "agent-followup"
+    path.mkdir(mode=0o700, exist_ok=True)
+    import stat
+    metadata = path.lstat()
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_mode & 0o077:
+        raise OSError("Unsafe follow-up runtime directory")
+    return path
 
 
 def create_followup_runtime(*, generation: int) -> FollowUpRuntime:

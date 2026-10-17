@@ -30,6 +30,11 @@ def assembled(workflow):
 
 
 class WorkflowSkillTests(unittest.TestCase):
+    def setUp(self):
+        selection = patch.dict(os.environ, {"OPEN_LAW_LENS_CLI_BIN": "/bin/true"})
+        selection.start()
+        self.addCleanup(selection.stop)
+
     def test_real_resources_preloaded_once_in_order_and_rebuilt_on_relaunch(self):
         harness = wrapper_tests.AgentVteWrapperTests()
         original = harness._fixture

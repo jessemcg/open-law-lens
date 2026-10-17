@@ -45,7 +45,7 @@ from .slip_opinions import (
 )
 from .statutes import LegInfoError
 
-PROJECT_DIR = Path(__file__).resolve().parent.parent
+from .paths import RESOURCE_ROOT as PROJECT_DIR, execution_env, standalone
 DBUS_ACTIVATE_TIMEOUT_SECONDS = 0.35
 DESKTOP_APP_ID = APP_ID
 
@@ -79,7 +79,7 @@ def pi_cli_cache_isolation_path(
     ``$XDG_RUNTIME_DIR/open-law-lens/pi-cache/<session>`` with a PID fallback.
     Non-Pi use returns ``None`` so the project ``cache/`` default is retained.
     """
-    if command in _GUI_COMMANDS:
+    if command in _GUI_COMMANDS or command == "doctor":
         return None
     if environ.get("OPEN_LAW_LENS_CACHE_DIR", "").strip():
         return None
@@ -90,6 +90,9 @@ def pi_cli_cache_isolation_path(
     )
     session_id = environ.get("PI_SESSION_ID", "").strip() or str(pid if pid is not None else os.getpid())
     component = _sanitize_session_component(session_id)
+    if environ.get("OPEN_LAW_LENS_STORAGE") == "standalone":
+        from .paths import runtime_root
+        return str(runtime_root() / "pi-cache" / component)
     return str(Path(base) / "open-law-lens" / "pi-cache" / component)
 
 
@@ -588,6 +591,7 @@ def _start_app_detached(open_text: str = "") -> subprocess.Popen[bytes]:
     return subprocess.Popen(
         [sys.executable, "-m", "open_law_lens", "app"],
         cwd=PROJECT_DIR,
+        env={**os.environ, **execution_env()},
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -1021,6 +1025,17 @@ def _print_missing_citation_audit(audit: MissingCitationAudit) -> None:
         _print_prune_candidate(candidate)
 
 
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    from .diagnostics import report, format_report
+    value = report(agent_check=args.agent_check, connectivity=args.connectivity)
+    if args.json:
+        _print_json(value)
+    else:
+        print(format_report(value))
+    # Optional capabilities never make core diagnostics fail as one unit.
+    return 0 if value["capabilities"]["core_gui"]["status"] == "ready" else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="open-law-lens")
     parser.add_argument(
@@ -1029,6 +1044,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="print available CLI authority commands and examples",
     )
     subparsers = parser.add_subparsers(dest="command")
+
+    doctor = subparsers.add_parser("doctor", help="report redacted per-capability readiness (no network by default)")
+    doctor.add_argument("--json", action="store_true", help="machine-readable report")
+    doctor.add_argument("--agent-check", action="store_true", help="explicit offline Pi authorization check; no model calls")
+    doctor.add_argument("--connectivity", action="store_true", help="explicit CourtListener connectivity request")
+    doctor.set_defaults(func=_cmd_doctor)
 
     app_parser = subparsers.add_parser("app", help="launch the GTK app")
     app_parser.add_argument(
@@ -1360,6 +1381,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if standalone():
+        os.umask(0o077)
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.list_cli_commands:
@@ -1377,14 +1400,18 @@ def main(argv: list[str] | None = None) -> int:
             _print_json({"ok": False, "export_status": "failed", "error": str(exc)})
             return 1
     previous_cache_dir = os.environ.get("OPEN_LAW_LENS_CACHE_DIR")
-    isolated = pi_cli_cache_isolation_path(getattr(args, "command", ""), os.environ)
+    isolated = None if args.command == "doctor" else pi_cli_cache_isolation_path(getattr(args, "command", ""), os.environ)
     if isolated:
         try:
+            if standalone():
+                from .paths import runtime_root
+                runtime_root(create=True)
             os.makedirs(isolated, mode=0o700, exist_ok=True)
             os.chmod(isolated, 0o700)
             os.environ["OPEN_LAW_LENS_CACHE_DIR"] = isolated
         except OSError:
-            isolated = None
+            print("Unable to create a private research workspace. Check XDG_RUNTIME_DIR permissions.", file=sys.stderr)
+            return 1
     try:
         return int(args.func(args))
     except (CourtListenerError, LegInfoError, CaliforniaRulesError, SlipOpinionError, ValueError, RuntimeError) as exc:

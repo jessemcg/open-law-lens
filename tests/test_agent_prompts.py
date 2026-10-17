@@ -59,7 +59,7 @@ class RequestBuilderTests(unittest.TestCase):
         request = prompts.treatment_request(title, cluster, citation)
         self.assertIn(f'Target case: {title}', request)
         self.assertIn(f'Target official citation: {citation}', request)
-        commands = [line for line in request.splitlines() if line.startswith('"$OPEN_LAW_LENS_PROJECT_DIR')]
+        commands = [line for line in request.splitlines() if line.startswith('"$OPEN_LAW_LENS_CLI_BIN')]
         self.assertEqual(len(commands), 6)
         graph, search_cite, search_title, compact, recovery, full = map(shlex.split, commands)
         self.assertEqual(graph[graph.index('--cluster-id') + 1], cluster)

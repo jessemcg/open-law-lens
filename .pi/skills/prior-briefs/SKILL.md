@@ -15,7 +15,7 @@ every brief relied upon.
 Use this command prefix directly, without startup reconnaissance:
 
 ```bash
-"$OPEN_LAW_LENS_PROJECT_DIR/../UvEnvironments/project-env" run OpenLawLens open-law-lens <command>
+"$OPEN_LAW_LENS_CLI_BIN" <command>
 ```
 
 ## Select the requested scope
@@ -29,7 +29,7 @@ lookup into a research report.
 
 ## Document lookup
 
-- Start immediately with `"$OPEN_LAW_LENS_PROJECT_DIR/../UvEnvironments/project-env" run OpenLawLens open-law-lens search-briefs "<short issue terms>" --match all --limit 5 --sort newest`
+- Start immediately with `"$OPEN_LAW_LENS_CLI_BIN" search-briefs "<short issue terms>" --match all --limit 5 --sort newest`
   for a recency request. No directory listings, environment inspection,
   database-schema reconnaissance, or direct SQLite queries; use the documented CLI.
 - Match the substance of the argument, not the user's exact wording, unless
@@ -67,7 +67,7 @@ lookup into a research report.
 
 ## Research or comparison
 
-Start immediately with `"$OPEN_LAW_LENS_PROJECT_DIR/../UvEnvironments/project-env" run OpenLawLens open-law-lens search-briefs "<terms>" --match all --limit 5`, not
+Start immediately with `"$OPEN_LAW_LENS_CLI_BIN" search-briefs "<terms>" --match all --limit 5`, not
 startup reconnaissance. Use short discriminating all searches or specific phrase
 searches; default to 5–10 candidates. Reserve any for a few meaningful
 alternatives: it ORs individual tokens, including split citation numbers (213.5
@@ -90,7 +90,7 @@ relevant document was found.
 Fetch each selected brief once with:
 
 ```bash
-"$OPEN_LAW_LENS_PROJECT_DIR/../UvEnvironments/project-env" run OpenLawLens open-law-lens extract-brief <brief_id> --output-dir "$OPEN_LAW_LENS_AGENT_WORKSPACE/brief-<brief_id>"
+"$OPEN_LAW_LENS_CLI_BIN" extract-brief <brief_id> --output-dir "$OPEN_LAW_LENS_AGENT_WORKSPACE/brief-<brief_id>"
 ```
 
 The absolute output directory must be new and inside the disposable agent

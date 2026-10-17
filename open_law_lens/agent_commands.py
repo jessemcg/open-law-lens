@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 
-AGENT_CLI_COMMAND_PREFIX = (
-    '"$OPEN_LAW_LENS_PROJECT_DIR/../UvEnvironments/project-env" run OpenLawLens open-law-lens'
-)
+AGENT_CLI_COMMAND_PREFIX = '"$OPEN_LAW_LENS_CLI_BIN"'
 
 
 def agent_cli_command(arguments: str) -> str:

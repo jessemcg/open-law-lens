@@ -81,6 +81,7 @@ for variant in ("baseline", "candidate"):
         prompt = law_request(QUESTION) + FIXTURE_NOTICE
         env = os.environ.copy()
         env.update({"OPEN_LAW_LENS_PROJECT_DIR": str(project),
+                    "OPEN_LAW_LENS_CLI_BIN": str(Path(sys.executable).parent / "open-law-lens"),
                     "OPEN_LAW_LENS_CONFIG": str(run / "config.json"),
                     "OPEN_LAW_LENS_CACHE_DIR": str(run / "cache"),
                     "OPEN_LAW_LENS_LIBRARY_DB": str(run / "library.sqlite3"),

@@ -9,8 +9,9 @@ from pathlib import Path
 from typing import Any
 
 
-PROJECT_DIR = Path(__file__).resolve().parent.parent
-CONFIG_PATH = Path(os.environ.get("OPEN_LAW_LENS_CONFIG", str(PROJECT_DIR / "config.json")))
+from .paths import RESOURCE_ROOT as PROJECT_DIR, config_path
+
+CONFIG_PATH = config_path()
 CONFIG_KEY_COURTLISTENER_TOKEN = "courtlistener_token"
 CONFIG_KEY_CONCORDANCE_FILE_PATH = "concordance_file_path"
 CONFIG_KEY_PRIOR_BRIEFS_FOLDER = "prior_briefs_folder"
@@ -371,10 +372,8 @@ def save_config(config: AppConfig, path: Path = CONFIG_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        temp_path.write_text(
-            json.dumps(data, ensure_ascii=True, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        with os.fdopen(os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(data, ensure_ascii=True, indent=2, sort_keys=True) + "\n")
         os.replace(temp_path, path)
     finally:
         temp_path.unlink(missing_ok=True)

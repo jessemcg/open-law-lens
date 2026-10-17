@@ -38,8 +38,9 @@ from .storage import (
 )
 from .text_formatting import quote_stack_replacements
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-PROJECT_LIBRARY_DIR = PROJECT_ROOT / "library"
+from .paths import RESOURCE_ROOT as PROJECT_ROOT, data_root, library_path
+
+PROJECT_LIBRARY_DIR = data_root() / "library"
 DEFAULT_LIBRARY_DB = PROJECT_LIBRARY_DIR / "open_law_lens.sqlite3"
 SCHEMA_VERSION = "4"
 TAVILY_OPINIONS_MIGRATED_KEY = "tavily_opinions_migrated_v1"
@@ -95,10 +96,7 @@ CP1252_CONTROL_TRANSLATION = str.maketrans(
 
 
 def library_db_path() -> Path:
-    path = os.environ.get("OPEN_LAW_LENS_LIBRARY_DB")
-    if path:
-        return Path(path).expanduser()
-    return DEFAULT_LIBRARY_DB
+    return library_path()
 
 
 def _utc_now() -> str:

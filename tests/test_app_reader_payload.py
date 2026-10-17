@@ -6670,6 +6670,7 @@ Opinion text.
         self.assertEqual(sections, [
             [("Update Prior Brief Library", "win.update_brief_library")],
             [("Settings", "win.settings"),
+             ("Setup / Diagnostics", "win.setup_diagnostics"),
              ("Keyboard Shortcuts", "win.show_shortcuts")],
             [("CLI Commands", "win.show_cli_commands"),
              ("D-Bus Commands", "win.show_dbus_commands")],
@@ -7125,10 +7126,7 @@ Opinion text.
                 "10 Cal.App.5th 25",
             )
 
-        prefix = (
-            '"$OPEN_LAW_LENS_PROJECT_DIR/../UvEnvironments/project-env" run OpenLawLens '
-            "open-law-lens "
-        )
+        prefix = '"$OPEN_LAW_LENS_CLI_BIN" '
         # One citation-graph command.
         self.assertEqual(prompt.count("published-citing-cases"), 1)
         self.assertIn(

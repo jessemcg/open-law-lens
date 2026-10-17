@@ -5,6 +5,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from .paths import standalone
+
 
 CURRENT_CASE_FILE = Path(
     "/home/jesse/Dropbox/MCGLAW/config_files/scripts/misc/currently_selected_case"
@@ -59,7 +61,12 @@ def normalize_root(root: Path) -> Path:
     return Path(os.path.normpath(str(root))).expanduser()
 
 
-def read_current_case(case_file: Path = CURRENT_CASE_FILE) -> str:
+def read_current_case(case_file: Path | None = None) -> str:
+    if case_file is None:
+        override = os.environ.get("OPEN_LAW_LENS_CURRENT_CASE_FILE", "")
+        if standalone() and not override:
+            raise CurrentCaseError("Current Case is not configured. Choose a fact pattern in Settings, or configure a selected-case file and case roots.")
+        case_file = Path(override).expanduser() if override else CURRENT_CASE_FILE
     if not case_file.is_file():
         raise CurrentCaseError(f"Current case file not found: {case_file}")
     return clean_case_name(case_file.read_text(encoding="utf-8"))
@@ -69,7 +76,13 @@ def resolve_case_dir(
     case_name: str,
     roots: list[Path] | None = None,
 ) -> Path:
-    roots = roots or [OPEN_CASES_ROOT, CLOSED_CASES_ROOT]
+    if roots is None:
+        configured = os.environ.get("OPEN_LAW_LENS_CASE_ROOTS", "")
+        roots = [Path(value).expanduser() for value in configured.split(os.pathsep) if value]
+        if not roots and not standalone():
+            roots = [OPEN_CASES_ROOT, CLOSED_CASES_ROOT]
+        if not roots:
+            raise CurrentCaseError("Current Case roots are not configured; use the manual fact-pattern chooser in Settings.")
     cleaned = clean_case_name(case_name)
     for root in roots:
         target = normalize_root(root) / cleaned
@@ -134,7 +147,7 @@ def find_current_case_documents(case_dir: Path) -> tuple[CurrentCaseDocument, ..
 
 def current_case_socf_odt(
     *,
-    case_file: Path = CURRENT_CASE_FILE,
+    case_file: Path | None = None,
     roots: list[Path] | None = None,
 ) -> Path:
     return current_case_socf(case_file=case_file, roots=roots).path
@@ -142,7 +155,7 @@ def current_case_socf_odt(
 
 def current_case_socf(
     *,
-    case_file: Path = CURRENT_CASE_FILE,
+    case_file: Path | None = None,
     roots: list[Path] | None = None,
 ) -> CurrentCaseSocf:
     case_name = read_current_case(case_file)

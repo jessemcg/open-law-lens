@@ -1,5 +1,20 @@
 # Open Law Lens
 
+## Standalone portability
+
+Open Law Lens now has an independent **complete-source** launch mode that does
+not require Jesse's directory layout, UvEnvironments, PiRunMetrics, a briefs
+archive or Current Case integration. It uses per-user XDG storage, ignores the
+checkout's personal Pi defaults, and provides **Setup / Diagnostics** in the app
+menu plus `open-law-lens doctor`. Core reading remains available without Pi/VTE.
+
+See [standalone setup and portability](docs/portability.md) for native requirements,
+explicit locked provisioning, launch commands, data/privacy boundaries and the
+future installer checklist. **There is no published one-line installer yet.**
+Existing maintained launchers keep their storage and runtime behavior; no private
+settings or research data are migrated automatically. Unless stated otherwise,
+commands and checkout-relative storage paths below describe maintained mode.
+
 ## Machine-local runtime
 
 From this checkout provision `../UvEnvironments/project-env sync OpenLawLens`
@@ -55,7 +70,8 @@ export COURTLISTENER_TOKEN="your-token"
 ```
 
 Or save it in the app menu under Settings. The Settings path writes a local
-`config.json` file in the project root.
+`config.json` file in the project root in maintained mode, or
+`$XDG_CONFIG_HOME/open-law-lens/config.json` in standalone mode.
 
 ## Features
 
@@ -103,8 +119,9 @@ Or save it in the app menu under Settings. The Settings path writes a local
 ## Requirements
 
 - Python 3.13+
-- `uv`
-- GTK 4, Libadwaita, and PyGObject system packages
+- `uv` for explicit provisioning only (not an ordinary launch requirement)
+- GTK >=4.10, Libadwaita >=1.4 and the locked managed-Python PyGObject stack;
+  see [native prerequisites](docs/portability.md#linux-boundary-and-native-prerequisites)
 - Required for Agent features: GTK VTE packages and the Pi coding agent
 - Optional: `pdftotext` for extracting appeal fact patterns and California
   slip-opinion PDFs
@@ -171,9 +188,10 @@ The Settings window lists the models currently authorized in Pi and lets each
 user choose a separate model and reasoning effort for Query Law, Query Research
 Cache, Query Prior Briefs, Assess Legal Question, and Subsequent Treatment. These personal overrides are
 stored in the ignored local `config.json` and apply to newly launched sessions.
-Choosing **Use Pi defaults** leaves that workflow on Pi's merged user and
-project defaults. Pi credentials remain in the user's home Pi configuration,
-and the tracked `.pi/settings.json` remains the project fallback.
+Choosing **Use Pi defaults** uses user defaults plus optional XDG app preferences
+in standalone mode, or merged user/project defaults for maintained callers.
+Pi credentials remain in the user's home Pi configuration; tracked
+`.pi/settings.json` is only the maintained-mode fallback.
 
 ## Run the App
 
@@ -576,19 +594,18 @@ skill; Legal Researcher delegates to it without a duplicate ceiling. Commands
 remain Python-generated runtime inputs. Old prompt settings are retained but
 inactive; none are upgraded in memory or rewritten during deployment.
 
-The wrapper also resolves `uv` deterministically before launching Pi. It uses
-the validated `OPEN_LAW_LENS_UV_BIN` override, then `uv` on `PATH`, then
-`$HOME/.local/bin/uv`, and prepends the resolved directory to `PATH` so the
-canonical `uv run --project "$OPEN_LAW_LENS_PROJECT_DIR" --no-sync ...`
-commands work even under a reduced desktop `PATH`. If `uv` cannot be resolved,
-the wrapper fails before any model work with a concise diagnostic.
+The wrapper uses the absolute `OPEN_LAW_LENS_CLI_BIN` entry point supplied by
+the app from its own Python environment. It fails before model work if that
+executable is unavailable; embedded commands never run uv, provision dependencies,
+or require a sibling environment helper. The maintained outer desktop launcher
+still validates the runtime through UvEnvironments. Computer Use is optional
+for recovery; its absence does not block baseline research.
 
 Pi remains in a private disposable workspace rather than using the source tree
-as its working directory. Agent-facing Open Law Lens commands explicitly select
-the installed project with this canonical prefix:
-`"$OPEN_LAW_LENS_PROJECT_DIR/../UvEnvironments/project-env" run OpenLawLens open-law-lens ...`.
-This keeps command resolution deterministic without exposing the project tree
-through ordinary workspace discovery.
+as its working directory. Agent-facing commands use the canonical prefix
+`"$OPEN_LAW_LENS_CLI_BIN" ...`. This keeps command resolution deterministic,
+including paths containing spaces, without exposing the project tree through
+ordinary workspace discovery.
 
 Final-answer completion keeps GTK responsive: session-log reading, source/quote
 matching, and text/link preparation run in a background worker; GTK inserts and
@@ -712,6 +729,11 @@ untouched. Without a selection, it copies the full citation as before. Use
 ordinary **Copy** to copy selected prose.
 
 ### Operational metrics pilot
+
+The following maintained-mode behavior is unchanged. Standalone collection is
+**off by default** and has no sibling-project requirement. Explicit opt-in uses
+an available sibling adapter and defaults its archive to XDG state; see
+[portability](docs/portability.md#optional-metrics-and-maintained-integrations).
 
 The no-observer shell fallback now clears inherited build/capability tags too,
 without claiming new OpenLawLens observations or loaded-code provenance. Existing
