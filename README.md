@@ -14,11 +14,8 @@ and the [Pi coding agent](https://pi.dev/) for optional AI questions.
 
 ## Install
 
-Open Law Lens is intentionally distributed as source rather than a Flatpak or
-Debian package so that it can be easily modified by a coding agent.
-The installer targets mutable Ubuntu 24.04/26.04 and Fedora 43/44, including
-compatible bases, on x86_64 or aarch64. See the detailed installation notes for
-native requirements and current validation limits.
+Open Law Lens is intentionally distributed as source rather than a Flatpak or Debian package so that it can be easily modified by a coding agent.
+The installer has been tested with Ubuntu and Fedora.
 
 With `curl` installed, run as your normal user—not with sudo:
 
