@@ -1,5 +1,8 @@
 # Repository Guidelines
 
+## Settings interaction contract
+Preserve the General/Display/Highlights/Agent Model boxed expandable home; do not restore retired prompt editors. Save stays open, gives local feedback, and accepts the literal draft only after successful persistence. Close offers Keep Editing / Discard Unsaved Changes and cannot undo the immediate session-only fact-pattern action. Accepted closure alone releases window ownership. See `docs/unified-settings-validation.md`.
+
 Public source installation is standalone: see `docs/source-install.md`. Complete
 installation, atomically save the completed receipt and show success before any
 optional Pi setup. Skipping, cancellation or failure there must never

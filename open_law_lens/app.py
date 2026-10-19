@@ -996,12 +996,15 @@ class CliCommandsWindow(Adw.ApplicationWindow):
         self.parent_window._set_status("CLI command copied to clipboard.")
 
 
+from .settings_session import SettingsSession, close_settings_before_parent
+
+
 class SettingsWindow(Adw.ApplicationWindow):
     def __init__(self, parent: "OpenLawLensWindow") -> None:
         super().__init__(application=parent.get_application())
         self.parent_window = parent
         self.set_title("Settings")
-        self.set_default_size(900, 760)
+        self.set_default_size(900, 720)
         self.set_modal(False)
         config = load_config()
         self._original_pi_profile = config.agent_runtime_profile
@@ -1180,6 +1183,8 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.settings_scroller.set_child(root)
         toolbar_view.set_content(self.settings_scroller)
         self.set_content(toolbar_view)
+        self._session = SettingsSession(self, self._draft_snapshot,
+            " The session-only fact-pattern selection takes effect immediately and is not undone.")
         self._load_pi_models()
 
     def _build_agent_model_settings_page(self) -> Gtk.Box:
@@ -1225,7 +1230,16 @@ class SettingsWindow(Adw.ApplicationWindow):
         page_box.append(controls)
         return page_box
 
+    def _draft_snapshot(self):
+        return (self.token_row.get_text(), self.concordance_row.get_text(), self.prior_briefs_folder_row.get_text(),
+                self.reader_font_size_row.get_value(), int(self.reader_font_family_row.get_selected()),
+                self._search_color_value(self.search_match_color_control, DEFAULT_SEARCH_MATCH_COLOR),
+                self._search_color_value(self.linked_text_color_control, DEFAULT_LINKED_TEXT_COLOR),
+                self._selected_pi_profile() if self._pi_profiles_ready else self._pending_pi_profile)
+
     def _on_settings_close_request(self, *_args: object) -> bool:
+        if hasattr(self, "_session") and self._session.close_request():
+            return True
         self._pi_model_closed = True
         self._pi_model_generation += 1
         return False
@@ -1581,8 +1595,14 @@ class SettingsWindow(Adw.ApplicationWindow):
             self.status_label.set_text(f"Unable to save settings: {exc}")
             return
         self._original_pi_profile = agent_runtime_profile
+        self._pending_pi_profile = agent_runtime_profile
         self.prior_briefs_folder_row.set_text(folder or str(DEFAULT_PRIOR_BRIEFS_DIR))
-        self.parent_window.reload_settings()
+        self._session.accept()
+        try:
+            self.parent_window.reload_settings()
+        except Exception:
+            self.status_label.set_text("Settings saved, but the main view could not refresh. Close and reopen the main view when convenient.")
+            return
         messages = ["Settings saved."]
         if folder_changed:
             messages.append("Use Update Prior Brief Library to index the selected folder.")
@@ -4047,6 +4067,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return False
 
     def _on_window_close_request(self, _window: Gtk.Window) -> bool:
+        if close_settings_before_parent(self.get_application()):
+            return True
         self._agent_setup_generation = getattr(self, "_agent_setup_generation", 0) + 1
         self._case_load_generation = getattr(self, '_case_load_generation', 0) + 1
         self._stop_agent_answer_polling()
@@ -6647,7 +6669,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _on_open_settings(self, _action: Gio.SimpleAction, _parameter: GLib.Variant | None) -> None:
         if self._settings_window is None:
             self._settings_window = SettingsWindow(self)
-            self._settings_window.connect("close-request", self._on_settings_closed)
+            self._settings_window.connect_after("close-request", self._on_settings_closed)
         self._settings_window.present()
 
     def _on_settings_closed(self, _window: Gtk.Window) -> bool:
