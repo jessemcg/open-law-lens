@@ -113,8 +113,8 @@ network, invoke Pi, read documents or open browsers (they may check Node's versi
 Install/authorize Pi separately following Pi's official instructions. Open Law
 Lens does not store provider credentials or choose a provider for a new user.
 Standalone model discovery ignores the tracked personal project fallback. The
-five independent workflow overrides in Settings still apply; otherwise the
-user's Pi defaults apply. A new standalone agent launch verifies that its chosen
+single shared Agent Model selection in Settings applies to every new Agent
+session; otherwise the user's Pi defaults apply. A new standalone agent launch verifies that its chosen
 model is available before launching. All five profiles expose only
 `read,bash,grep,find,ls`; no general web-search tool is available. Closed-corpus
 workflows keep their source restrictions. Baseline extraction works without

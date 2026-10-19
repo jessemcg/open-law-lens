@@ -34,7 +34,7 @@ from open_law_lens.app import (
     OpenLawLensApp,
     OpenLawLensWindow,
     SettingsWindow,
-    agent_profile_for_mode,
+    shared_agent_profile,
     build_agent_launch_env,
     build_case_reader_payload,
     case_reader_masthead,
@@ -199,7 +199,7 @@ class AppReaderPayloadTests(unittest.TestCase):
             ["<Control>s"],
         )
 
-    def test_agent_modes_map_to_the_five_runtime_profiles(self) -> None:
+    def test_agent_modes_keep_workflow_identity_independent_of_shared_selection(self) -> None:
         self.assertEqual(AGENT_PROFILE_BY_MODE["general"], AGENT_PROFILE_LAW)
         self.assertEqual(
             AGENT_PROFILE_BY_MODE["case"],
@@ -214,57 +214,26 @@ class AppReaderPayloadTests(unittest.TestCase):
             AGENT_PROFILE_ASSESS_ARGUMENT,
         )
 
-        profiles = {
-            key: PiAgentProfile(
-                provider="test",
-                model=f"{key}-model",
-                thinking="medium",
-            )
-            for key in AGENT_PROFILE_BY_MODE.values()
-        }
-        profiles[AGENT_PROFILE_SUBSEQUENT_TREATMENT] = PiAgentProfile(
-            provider="test",
-            model="subsequent-model",
-            thinking="high",
-        )
-        config = AppConfig(agent_runtime_profiles=profiles)
-        for mode, key in AGENT_PROFILE_BY_MODE.items():
-            self.assertEqual(agent_profile_for_mode(config, mode), profiles[key])
-        self.assertIsNone(agent_profile_for_mode(config, "brief_search"))
+        profile = PiAgentProfile('shared', 'chosen', 'high')
+        config = AppConfig(agent_runtime_profile=profile)
+        self.assertEqual(shared_agent_profile(config), profile)
+        self.assertIsNone(shared_agent_profile(AppConfig()))
 
-    def test_subsequent_treatment_profile_overrides_general_mode_mapping(self) -> None:
-        config = AppConfig(
-            agent_runtime_profiles={
-                AGENT_PROFILE_LAW: PiAgentProfile(
-                    provider="test",
-                    model="law-model",
-                    thinking="low",
-                ),
-                AGENT_PROFILE_SUBSEQUENT_TREATMENT: PiAgentProfile(
-                    provider="test",
-                    model="subsequent-model",
-                    thinking="high",
-                ),
-            }
-        )
-
-        self.assertEqual(
-            agent_profile_for_mode(config, AGENT_MODE_GENERAL),
-            config.agent_runtime_profiles[AGENT_PROFILE_LAW],
-        )
-        self.assertEqual(
-            agent_profile_for_mode(
-                config,
-                AGENT_MODE_GENERAL,
-                AGENT_PROFILE_SUBSEQUENT_TREATMENT,
-            ),
-            config.agent_runtime_profiles[AGENT_PROFILE_SUBSEQUENT_TREATMENT],
-        )
-        self.assertIsNone(
-            agent_profile_for_mode(
-                AppConfig(), AGENT_MODE_GENERAL, AGENT_PROFILE_SUBSEQUENT_TREATMENT
-            )
-        )
+    def test_all_workflows_share_selection_without_changing_identity(self) -> None:
+        from open_law_lens.app import PI_SELECTION_ENV_KEYS
+        profile = PiAgentProfile('shared', 'chosen', 'high')
+        for mode, key in (*AGENT_PROFILE_BY_MODE.items(), ('general', 'subsequent_treatment')):
+            with self.subTest(workflow=key), \
+                 patch('open_law_lens.app.find_pi_executable', return_value='/fake/pi'), \
+                 patch('open_law_lens.app.find_pi_node_executable', return_value=''), \
+                 patch.dict(os.environ, dict.fromkeys(PI_SELECTION_ENV_KEYS, 'stale')):
+                env = build_agent_launch_env(SimpleNamespace(), Path('/prompt'), Path('/workspace'),
+                                             mode, profile, key)
+                self.assertEqual([env[name] for name in PI_SELECTION_ENV_KEYS], ['shared', 'chosen', 'high'])
+                self.assertEqual(env['OPEN_LAW_LENS_AGENT_MODE'], mode)
+                self.assertEqual(env['OPEN_LAW_LENS_AGENT_PROFILE_KEY'], key)
+                defaults = build_agent_launch_env(SimpleNamespace(), Path('/prompt'), Path('/workspace'), mode, None, key)
+                self.assertFalse(set(PI_SELECTION_ENV_KEYS) & defaults.keys())
 
     def test_agent_failure_keeps_session_output_visible(self) -> None:
         class DummyWidget:

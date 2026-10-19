@@ -2,104 +2,64 @@ from __future__ import annotations
 
 import inspect
 import unittest
-from types import SimpleNamespace
+from types import SimpleNamespace, MethodType
 from unittest.mock import patch
 
-from open_law_lens.app import AGENT_PROFILE_TITLES, SettingsWindow
-from open_law_lens.config import (
-    AGENT_PROFILE_KEYS,
-    AGENT_PROFILE_LAW,
-    AGENT_PROFILE_SUBSEQUENT_TREATMENT,
-    PiAgentProfile,
-)
+from open_law_lens.app import SettingsWindow
+from open_law_lens.config import PiAgentProfile
 from open_law_lens.pi_runtime import PiModel, PiRuntimeCatalog
 
 
 class FakeComboRow:
-    def __init__(self) -> None:
+    def __init__(self):
         self.selected = 0
-        self.model: object = None
+        self.model = None
         self.sensitive = False
-        self.subtitle = ""
+        self.subtitle = ''
 
-    def get_selected(self) -> int:
-        return self.selected
-
-    def set_selected(self, selected: int) -> None:
-        self.selected = selected
-
-    def set_model(self, model: object) -> None:
-        self.model = model
-
-    def set_sensitive(self, sensitive: bool) -> None:
-        self.sensitive = sensitive
-
-    def set_subtitle(self, subtitle: str) -> None:
-        self.subtitle = subtitle
+    def get_selected(self): return self.selected
+    def set_selected(self, value): self.selected = value
+    def set_model(self, value): self.model = value
+    def set_sensitive(self, value): self.sensitive = value
+    def set_subtitle(self, value): self.subtitle = value
 
 
-class FakeButton:
-    def __init__(self) -> None:
-        self.sensitive = False
-
-    def set_sensitive(self, sensitive: bool) -> None:
-        self.sensitive = sensitive
-
-
-def model_window(
-    original: dict[str, PiAgentProfile] | None = None,
-) -> SimpleNamespace:
+def model_window(original=None):
     window = SimpleNamespace(
-        _pi_model_closed=False,
-        _pi_model_generation=1,
-        _pi_model_applying=False,
-        _pi_profiles_ready=False,
-        _pi_runtime_catalog=None,
-        _pi_profile_model_rows={key: FakeComboRow() for key in AGENT_PROFILE_KEYS},
-        _pi_profile_thinking_rows={key: FakeComboRow() for key in AGENT_PROFILE_KEYS},
-        _pi_profile_model_options={},
-        _pi_profile_thinking_options={},
-        _pi_profile_adjustment_notes={},
-        _original_pi_profiles=dict(original or {}),
-        _pending_pi_profiles=dict(original or {}),
-        pi_model_refresh_button=FakeButton(),
+        _pi_model_closed=False, _pi_model_generation=1, _pi_model_applying=False,
+        _pi_profiles_ready=False, _pi_runtime_catalog=None,
+        pi_model_row=FakeComboRow(), pi_thinking_row=FakeComboRow(),
+        _pi_model_options=[], _pi_thinking_options=[],
+        _original_pi_profile=original, _pending_pi_profile=original,
+        pi_model_refresh_button=FakeComboRow(),
     )
-    window._selected_pi_model = lambda key: SettingsWindow._selected_pi_model(  # type: ignore[arg-type]
-        window, key
-    )
-    window._selected_pi_thinking = (  # type: ignore[attr-defined]
-        lambda key: SettingsWindow._selected_pi_thinking(window, key)  # type: ignore[arg-type]
-    )
-    window._selected_pi_profile = (  # type: ignore[attr-defined]
-        lambda key: SettingsWindow._selected_pi_profile(window, key)  # type: ignore[arg-type]
-    )
-    window._selected_pi_profiles = (  # type: ignore[attr-defined]
-        lambda: SettingsWindow._selected_pi_profiles(window)  # type: ignore[arg-type]
-    )
-    window._pi_model_is_available = (  # type: ignore[attr-defined]
-        lambda model: SettingsWindow._pi_model_is_available(window, model)  # type: ignore[arg-type]
-    )
-    window._populate_pi_thinking_row = (  # type: ignore[attr-defined]
-        lambda key, preferred: SettingsWindow._populate_pi_thinking_row(  # type: ignore[arg-type]
-            window, key, preferred
-        )
-    )
-    window._update_pi_profile_model_subtitle = (  # type: ignore[attr-defined]
-        lambda key: SettingsWindow._update_pi_profile_model_subtitle(  # type: ignore[arg-type]
-            window, key
-        )
-    )
+    for name in ('_selected_pi_model', '_selected_pi_thinking', '_selected_pi_profile',
+                 '_pi_model_is_available', '_populate_pi_thinking_row', '_update_pi_model_subtitle'):
+        setattr(window, name, MethodType(getattr(SettingsWindow, name), window))
     return window
 
 
 class PiModelSettingsUiTests(unittest.TestCase):
-    def test_settings_renders_five_independent_profile_groups(self) -> None:
-        self.assertEqual(len(AGENT_PROFILE_KEYS), 5)
-        self.assertIn(AGENT_PROFILE_SUBSEQUENT_TREATMENT, AGENT_PROFILE_KEYS)
-        self.assertEqual(
-            AGENT_PROFILE_TITLES[AGENT_PROFILE_SUBSEQUENT_TREATMENT],
-            "Subsequent Treatment",
-        )
+    def setUp(self):
+        self.full = PiModel('synthetic', 'full', 'Full', supported_thinking_levels=('off', 'low', 'high', 'max'))
+        self.fast = PiModel('synthetic', 'fast', 'Fast', supported_thinking_levels=('off', 'low', 'high'))
+        self.plain = PiModel('synthetic', 'plain', 'Plain', supported_thinking_levels=('off',))
+        self.catalog = PiRuntimeCatalog((self.full, self.fast, self.plain), self.full, 'high')
+        strings = patch('open_law_lens.app.Gtk.StringList.new', side_effect=list)
+        strings.start()
+        self.addCleanup(strings.stop)
+
+    def finish(self, window, desired=None, catalog='default', error=''):
+        self.assertFalse(SettingsWindow._finish_pi_model_load(
+            window, 1, self.catalog if catalog == 'default' else catalog, error, desired))
+
+    def test_single_pair_no_workflow_rendering_or_duplicate_heading(self):
+        source = inspect.getsource(SettingsWindow._build_agent_model_settings_page)
+        self.assertEqual(source.count('Adw.ComboRow('), 2)
+        self.assertIn('title="Thinking Effort"', source)
+        self.assertNotIn('AGENT_PROFILE', source)
+        self.assertNotIn('PreferencesGroup', source)
+        self.assertNotIn('label="Agent Model"', source)
 
     def test_layout_has_only_one_app_scroller_and_no_prompt_editors(self):
         source = inspect.getsource(SettingsWindow)
@@ -115,186 +75,66 @@ class PiModelSettingsUiTests(unittest.TestCase):
         source = inspect.getsource(SettingsWindow.__init__)
         self.assertEqual(source.count('Adw.PreferencesGroup()'), 1)
         self.assertEqual(source.count('root.append(categories_group)'), 1)
-        self.assertLess(source.index('root.append(categories_group)'),
-                        source.index('for title, subtitle in'))
-        category_loop = source.split('for title, subtitle in', 1)[1].split(
-            'general = self.settings_categories', 1)[0]
-        self.assertIn('categories_group.add(category)', category_loop)
-        self.assertNotIn('Adw.PreferencesGroup()', category_loop)
-        self.assertNotIn('root.append(', category_loop)
+        loop = source.split('for title, subtitle in', 1)[1].split('general = self.settings_categories', 1)[0]
+        self.assertIn('categories_group.add(category)', loop)
+        self.assertNotIn('Adw.PreferencesGroup()', loop)
+        self.assertIn('One model and thinking effort for all Agent tasks', loop)
 
-    def test_close_invalidates_pending_model_generation(self):
+    def test_defaults_inherit_effective_effort(self):
         window = model_window()
-        SettingsWindow._on_settings_close_request(window)
-        self.assertTrue(window._pi_model_closed)
-        self.assertEqual(window._pi_model_generation, 2)
-        SettingsWindow._finish_pi_model_load(window, 1, None, 'stale', {})
-        self.assertFalse(window.pi_model_refresh_button.sensitive)
+        self.finish(window)
+        self.assertIsNone(window._selected_pi_profile())
+        self.assertEqual(window._selected_pi_thinking(), 'high')
+        self.assertFalse(window.pi_thinking_row.sensitive)
 
-    def test_failure_keeps_unsaved_profile_snapshot_for_retry_or_save(self):
-        saved = PiAgentProfile('synthetic', 'saved', 'high')
-        draft = PiAgentProfile('synthetic', 'draft', 'low')
-        window = model_window({'law': saved})
-        self._finish(window, None, 'Synthetic failure', {'law': draft})
-        self.assertEqual(window._pending_pi_profiles, {'law': draft})
-        self.assertEqual(window._original_pi_profiles, {'law': saved})
+    def test_explicit_supported_unsupported_and_nonreasoning(self):
+        for model, requested, expected in ((self.full, 'max', 'max'),
+                                           (self.fast, 'max', 'high'),
+                                           (self.plain, 'high', 'off')):
+            with self.subTest(model=model.model_id):
+                window = model_window()
+                self.finish(window, PiAgentProfile(model.provider, model.model_id, requested))
+                self.assertEqual(window._selected_pi_model(), model)
+                self.assertEqual(window._selected_pi_thinking(), expected)
+                self.assertTrue(window.pi_thinking_row.sensitive)
+                if requested != expected:
+                    self.assertIn('unsupported', window.pi_thinking_row.subtitle)
 
-    def setUp(self) -> None:
-        self.sol = PiModel(
-            provider="openai-codex",
-            model_id="gpt-5.6-sol",
-            name="GPT-5.6 Sol",
-            supported_thinking_levels=(
-                "off",
-                "minimal",
-                "low",
-                "medium",
-                "high",
-                "xhigh",
-                "max",
-            ),
-        )
-        self.fast = PiModel(
-            provider="fireworks",
-            model_id="accounts/fireworks/routers/glm-fast",
-            name="GLM Fast",
-            supported_thinking_levels=("off", "minimal", "low", "medium", "high"),
-        )
+    def test_unavailable_model_preserved_and_can_choose_defaults(self):
+        profile = PiAgentProfile('missing', 'retired', 'xhigh')
+        window = model_window(profile)
+        self.finish(window, profile)
+        self.assertEqual(window._selected_pi_profile(), profile)
+        self.assertIn('configured; unavailable', window.pi_model_row.model[1])
+        self.assertFalse(window.pi_thinking_row.sensitive)
+        self.assertTrue(window.pi_model_row.sensitive)
 
-    def _finish(
-        self,
-        window: SimpleNamespace,
-        catalog: PiRuntimeCatalog | None,
-        error: str = "",
-        desired: dict[str, PiAgentProfile] | None = None,
-    ) -> None:
-        with patch(
-            "open_law_lens.app.Gtk.StringList.new",
-            side_effect=lambda labels: list(labels),
-        ):
-            result = SettingsWindow._finish_pi_model_load(  # type: ignore[arg-type]
-                window,
-                1,
-                catalog,
-                error,
-                dict(desired or {}),
-            )
-        self.assertFalse(result)
-
-    def test_missing_profiles_inherit_effective_pi_defaults(self) -> None:
-        window = model_window()
-        catalog = PiRuntimeCatalog(
-            models=(self.fast, self.sol),
-            default_model=self.sol,
-            default_thinking_level="medium",
-        )
-
-        self._finish(window, catalog)
-
-        for key in AGENT_PROFILE_KEYS:
-            self.assertIsNone(window._selected_pi_model(key))
-            self.assertEqual(window._selected_pi_thinking(key), "medium")
-            self.assertFalse(window._pi_profile_thinking_rows[key].sensitive)
-        self.assertEqual(window._selected_pi_profiles(), {})
+    def test_failure_retains_unsaved_selection_and_recovery(self):
+        saved = PiAgentProfile('synthetic', 'full', 'max')
+        draft = PiAgentProfile('synthetic', 'fast', 'low')
+        window = model_window(saved)
+        self.finish(window, draft, catalog=None, error='Synthetic failure')
+        self.assertEqual(window._pending_pi_profile, draft)
+        self.assertEqual(window._original_pi_profile, saved)
+        self.assertEqual(window._selected_pi_profile(), draft)
+        self.assertFalse(window._pi_profiles_ready)
+        self.assertIn('Synthetic failure', window.pi_model_row.subtitle)
+        self.finish(window, draft)
+        self.assertEqual(window._selected_pi_profile(), draft)
         self.assertTrue(window._pi_profiles_ready)
 
-    def test_explicit_profile_selects_model_and_supported_reasoning(self) -> None:
-        profile = PiAgentProfile(
-            provider=self.sol.provider,
-            model=self.sol.model_id,
-            thinking="max",
-        )
-        window = model_window({AGENT_PROFILE_LAW: profile})
-        catalog = PiRuntimeCatalog(
-            models=(self.fast, self.sol),
-            default_model=self.sol,
-            default_thinking_level="medium",
-        )
-
-        self._finish(window, catalog, desired={AGENT_PROFILE_LAW: profile})
-
-        self.assertEqual(
-            window._selected_pi_model(AGENT_PROFILE_LAW).settings_key,
-            self.sol.settings_key,
-        )
-        self.assertEqual(window._selected_pi_thinking(AGENT_PROFILE_LAW), "max")
-        self.assertTrue(
-            window._pi_profile_thinking_rows[AGENT_PROFILE_LAW].sensitive
-        )
-
-    def test_unsupported_reasoning_moves_to_nearest_supported_level(self) -> None:
-        profile = PiAgentProfile(
-            provider=self.fast.provider,
-            model=self.fast.model_id,
-            thinking="max",
-        )
-        window = model_window({AGENT_PROFILE_LAW: profile})
-        catalog = PiRuntimeCatalog(
-            models=(self.fast, self.sol),
-            default_model=self.sol,
-            default_thinking_level="medium",
-        )
-
-        self._finish(window, catalog, desired={AGENT_PROFILE_LAW: profile})
-
-        self.assertEqual(window._selected_pi_thinking(AGENT_PROFILE_LAW), "high")
-        self.assertIn(
-            "Max is unsupported",
-            window._pi_profile_thinking_rows[AGENT_PROFILE_LAW].subtitle,
-        )
-
-    def test_unavailable_configured_model_is_preserved(self) -> None:
-        profile = PiAgentProfile(
-            provider="openai-codex",
-            model="retired-model",
-            thinking="xhigh",
-        )
-        window = model_window({AGENT_PROFILE_LAW: profile})
-        catalog = PiRuntimeCatalog(
-            models=(self.fast,),
-            default_model=self.fast,
-            default_thinking_level="low",
-        )
-
-        self._finish(window, catalog, desired={AGENT_PROFILE_LAW: profile})
-
-        selected = window._selected_pi_model(AGENT_PROFILE_LAW)
-        self.assertEqual(selected.settings_key, ("openai-codex", "retired-model"))
-        self.assertEqual(window._selected_pi_thinking(AGENT_PROFILE_LAW), "xhigh")
-        self.assertFalse(
-            window._pi_profile_thinking_rows[AGENT_PROFILE_LAW].sensitive
-        )
-        self.assertIn(
-            "configured; unavailable",
-            window._pi_profile_model_rows[AGENT_PROFILE_LAW].model[1],
-        )
-
-    def test_model_query_failure_preserves_existing_profiles(self) -> None:
-        profile = PiAgentProfile(
-            provider=self.sol.provider,
-            model=self.sol.model_id,
-            thinking="high",
-        )
-        window = model_window({AGENT_PROFILE_LAW: profile})
-
-        self._finish(
-            window,
-            None,
-            "Pi model query failed.",
-            desired={AGENT_PROFILE_LAW: profile},
-        )
-
-        self.assertFalse(window._pi_profiles_ready)
-        self.assertFalse(window._pi_profile_model_rows[AGENT_PROFILE_LAW].sensitive)
-        self.assertEqual(
-            window._selected_pi_profile(AGENT_PROFILE_LAW),
-            profile,
-        )
-        self.assertEqual(
-            window._pi_profile_model_rows[AGENT_PROFILE_LAW].subtitle,
-            "Pi model query failed.",
-        )
+    def test_close_and_stale_generation_ignore_callbacks(self):
+        window = model_window()
+        self.assertFalse(SettingsWindow._finish_pi_model_load(window, 0, self.catalog, '', None))
+        self.assertFalse(window.pi_model_refresh_button.sensitive)
+        SettingsWindow._on_settings_close_request(window)
+        self.assertTrue(window._pi_model_closed)
+        self.finish(window)
+        self.assertFalse(window.pi_model_refresh_button.sensitive)
+        SettingsWindow._on_pi_model_selected(window, None, None)
+        SettingsWindow._on_pi_thinking_selected(window, None, None)
+        self.assertIsNone(window.pi_model_row.model)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

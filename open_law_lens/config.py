@@ -26,6 +26,7 @@ RETIRED_PROMPT_KEYS: tuple[str, ...] = (
 )
 CONFIG_KEY_APPEAL_ISSUE_PRESETS = "appeal_issue_presets"
 CONFIG_KEY_APPEAL_ISSUE_LABELS = "appeal_issue_labels"
+CONFIG_KEY_AGENT_RUNTIME_PROFILE = "agent_runtime_profile"
 CONFIG_KEY_AGENT_RUNTIME_PROFILES = "agent_runtime_profiles"
 CONFIG_KEY_AGENT_RUNTIME_PROFILES_VERSION = "agent_runtime_profiles_version"
 CONFIG_KEY_READER_FONT_SIZE_PT = "reader_font_size_pt"
@@ -46,8 +47,7 @@ AGENT_PROFILE_KEYS: tuple[str, ...] = (
     AGENT_PROFILE_ASSESS_ARGUMENT,
     AGENT_PROFILE_SUBSEQUENT_TREATMENT,
 )
-# Version 2 introduced the independent Subsequent Treatment profile. Legacy
-# configs clone Query Law once; version 2 absent means Use Pi defaults.
+# Historical schema identifier; never inserted or interpreted during active loading.
 AGENT_RUNTIME_PROFILES_VERSION = 2
 PI_THINKING_LEVELS: tuple[str, ...] = (
     "off", "minimal", "low", "medium", "high", "xhigh", "max",
@@ -177,7 +177,10 @@ class AppConfig:
     retired_prompt_settings: dict[str, Any] = field(default_factory=dict, repr=False)
     appeal_issue_presets: list[str] = field(default_factory=lambda: list(DEFAULT_APPEAL_ISSUE_PRESETS))
     appeal_issue_labels: list[str] = field(default_factory=lambda: list(DEFAULT_APPEAL_ISSUE_LABELS))
-    agent_runtime_profiles: dict[str, PiAgentProfile] = field(default_factory=dict)
+    agent_runtime_profile: PiAgentProfile | None = None
+    # Opaque inactive JSON, preserving values and presence (including the version).
+    legacy_agent_settings: dict[str, Any] = field(default_factory=dict, repr=False)
+    extra_settings: dict[str, Any] = field(default_factory=dict, repr=False)
     reader_font_size_pt: int = DEFAULT_READER_FONT_SIZE_PT
     reader_font_family: str = DEFAULT_READER_FONT_FAMILY
     search_match_color: str = DEFAULT_SEARCH_MATCH_COLOR
@@ -250,49 +253,25 @@ def normalize_appeal_issue_labels(value: Any, presets: list[str]) -> list[str]:
     return labels
 
 
-def normalize_agent_runtime_profiles(value: Any) -> dict[str, PiAgentProfile]:
+def normalize_agent_runtime_profile(value: Any) -> PiAgentProfile | None:
     if not isinstance(value, dict):
-        return {}
-    profiles: dict[str, PiAgentProfile] = {}
-    for key in AGENT_PROFILE_KEYS:
-        raw_profile = value.get(key)
-        if not isinstance(raw_profile, dict):
-            continue
-        provider = str(raw_profile.get("provider") or "").strip()
-        model = str(raw_profile.get("model") or "").strip()
-        thinking = str(raw_profile.get("thinking") or "").strip().lower()
-        if provider and model and thinking in PI_THINKING_LEVELS:
-            profiles[key] = PiAgentProfile(provider=provider, model=model, thinking=thinking)
-    return profiles
+        return None
+    if not all(isinstance(value.get(key), str) for key in ("provider", "model", "thinking")):
+        return None
+    provider = value["provider"].strip()
+    model = value["model"].strip()
+    thinking = value["thinking"].strip().lower()
+    if provider and model and thinking in PI_THINKING_LEVELS:
+        return PiAgentProfile(provider, model, thinking)
+    return None
 
 
-def stored_agent_runtime_profiles_version(value: Any) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 1
-
-
-def migrate_agent_runtime_profiles(
-    profiles: dict[str, PiAgentProfile],
-    raw_profiles: Any,
-    schema_version: int = 1,
-) -> dict[str, PiAgentProfile]:
-    """Clone legacy Query Law once, without overriding known/default selections."""
-    if schema_version >= AGENT_RUNTIME_PROFILES_VERSION:
-        return profiles
-    if AGENT_PROFILE_SUBSEQUENT_TREATMENT in profiles:
-        return profiles
-    if isinstance(raw_profiles, dict) and AGENT_PROFILE_SUBSEQUENT_TREATMENT in raw_profiles:
-        return profiles
-    law_profile = profiles.get(AGENT_PROFILE_LAW)
-    if law_profile is None:
-        return profiles
-    migrated = dict(profiles)
-    migrated[AGENT_PROFILE_SUBSEQUENT_TREATMENT] = PiAgentProfile(
-        provider=law_profile.provider, model=law_profile.model, thinking=law_profile.thinking,
-    )
-    return migrated
+def shared_profile_from_json(raw: dict[str, Any]) -> PiAgentProfile | None:
+    # Presence, not truthiness: explicit defaults/malformed data must never revive Law.
+    if CONFIG_KEY_AGENT_RUNTIME_PROFILE in raw:
+        return normalize_agent_runtime_profile(raw[CONFIG_KEY_AGENT_RUNTIME_PROFILE])
+    legacy = raw.get(CONFIG_KEY_AGENT_RUNTIME_PROFILES)
+    return normalize_agent_runtime_profile(legacy.get(AGENT_PROFILE_LAW)) if isinstance(legacy, dict) else None
 
 
 def reader_font_css(font_family: str) -> str:
@@ -326,11 +305,11 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
         appeal_issue_labels=normalize_appeal_issue_labels(
             raw.get(CONFIG_KEY_APPEAL_ISSUE_LABELS), appeal_issue_presets,
         ),
-        agent_runtime_profiles=migrate_agent_runtime_profiles(
-            normalize_agent_runtime_profiles(raw.get(CONFIG_KEY_AGENT_RUNTIME_PROFILES)),
-            raw.get(CONFIG_KEY_AGENT_RUNTIME_PROFILES),
-            stored_agent_runtime_profiles_version(raw.get(CONFIG_KEY_AGENT_RUNTIME_PROFILES_VERSION)),
-        ),
+        agent_runtime_profile=shared_profile_from_json(raw),
+        legacy_agent_settings={key: raw[key] for key in (
+            CONFIG_KEY_AGENT_RUNTIME_PROFILES, CONFIG_KEY_AGENT_RUNTIME_PROFILES_VERSION,
+        ) if key in raw},
+        extra_settings=dict(raw),
         reader_font_size_pt=coerce_reader_font_size(raw.get(CONFIG_KEY_READER_FONT_SIZE_PT)),
         reader_font_family=normalize_reader_font_family(raw.get(CONFIG_KEY_READER_FONT_FAMILY)),
         search_match_color=normalize_search_color(raw.get(CONFIG_KEY_SEARCH_MATCH_COLOR), DEFAULT_SEARCH_MATCH_COLOR),
@@ -353,21 +332,23 @@ def save_config(config: AppConfig, path: Path = CONFIG_PATH) -> None:
         CONFIG_KEY_PRIOR_BRIEFS_FOLDER: config.prior_briefs_folder.strip(),
         CONFIG_KEY_APPEAL_ISSUE_PRESETS: appeal_issue_presets,
         CONFIG_KEY_APPEAL_ISSUE_LABELS: normalize_appeal_issue_labels(appeal_issue_labels, appeal_issue_presets),
-        CONFIG_KEY_AGENT_RUNTIME_PROFILES_VERSION: AGENT_RUNTIME_PROFILES_VERSION,
-        CONFIG_KEY_AGENT_RUNTIME_PROFILES: {
-            key: {"provider": profile.provider, "model": profile.model, "thinking": profile.thinking}
-            for key, profile in config.agent_runtime_profiles.items()
-            if key in AGENT_PROFILE_KEYS
-            and profile.provider.strip()
-            and profile.model.strip()
-            and profile.thinking in PI_THINKING_LEVELS
-        },
+        CONFIG_KEY_AGENT_RUNTIME_PROFILE: (
+            {"provider": config.agent_runtime_profile.provider,
+             "model": config.agent_runtime_profile.model,
+             "thinking": config.agent_runtime_profile.thinking}
+            if config.agent_runtime_profile is not None else None
+        ),
         CONFIG_KEY_READER_FONT_SIZE_PT: coerce_reader_font_size(config.reader_font_size_pt),
         CONFIG_KEY_READER_FONT_FAMILY: normalize_reader_font_family(config.reader_font_family),
         CONFIG_KEY_SEARCH_MATCH_COLOR: normalize_search_color(config.search_match_color, DEFAULT_SEARCH_MATCH_COLOR),
         CONFIG_KEY_LINKED_TEXT_COLOR: normalize_search_color(config.linked_text_color, DEFAULT_LINKED_TEXT_COLOR),
         CONFIG_KEY_DEFAULT_BARE_STATUTE_LAW_CODE: normalize_bare_statute_law_code(config.default_bare_statute_law_code),
     }
+    data = {**config.extra_settings, **data}
+    for key in (CONFIG_KEY_AGENT_RUNTIME_PROFILES, CONFIG_KEY_AGENT_RUNTIME_PROFILES_VERSION):
+        data.pop(key, None)
+        if key in config.legacy_agent_settings:
+            data[key] = config.legacy_agent_settings[key]
     data.update({key: config.retired_prompt_settings[key] for key in RETIRED_PROMPT_KEYS if key in config.retired_prompt_settings})
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")

@@ -1,9 +1,8 @@
-"""Actual SettingsWindow, synthetic config/catalog/files only; no case or network.
+"""Owned SettingsWindow with synthetic config/catalog/files, no Pi/network.
 
-Run through paired disposable project-env overrides. --auto checks state/save/
-callbacks and exits. Otherwise a separate small controls window drives appearance,
-refresh, failure and sizing while the real Settings window stays unmodified.
-All process-local state is under the printed temporary root. No production saves.
+Run from a tracked-source disposable copy with paired project-env overrides and
+isolated HOME/XDG/Pi roots. --auto exercises state/save/refresh then exits;
+otherwise the separate controls window drives synthetic discovery failures.
 """
 from __future__ import annotations
 
@@ -29,7 +28,7 @@ os.environ.pop('COURTLISTENER_TOKEN', None)
 os.environ['GSETTINGS_BACKEND'] = 'memory'
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from open_law_lens import app as ui
-from open_law_lens.config import AGENT_PROFILE_KEYS, load_config
+from open_law_lens.config import AGENT_PROFILE_KEYS, PiAgentProfile, load_config
 from open_law_lens.pi_runtime import PiModel, PiRuntimeCatalog, PiRuntimeError
 from gi.repository import Gio
 
@@ -38,29 +37,30 @@ PROFILES = {key: {'provider': 'synthetic', 'model': f'model-{index}', 'thinking'
 RETIRED = {'general_agent_prompt_template': '  Synthetic {broken} /skill:no  ',
            'later_treatment_agent_prompt_template': {'not': 'a template'},
            'subsequent_treatment_agent_prompt_template': None}
-(ROOT / 'config.json').write_text(json.dumps({
-    **RETIRED, 'courtlistener_token': 'synthetic-token',
-    'agent_runtime_profiles_version': 2, 'agent_runtime_profiles': PROFILES}))
+CONFIG = ROOT / 'config.json'
+CONFIG.write_text(json.dumps({**RETIRED, 'courtlistener_token': 'synthetic-token',
+    'agent_runtime_profiles_version': {'opaque': 2}, 'agent_runtime_profiles': PROFILES}))
 SOCF = ROOT / 'synthetic-socf.odt'
 ALTERNATIVE = ROOT / 'synthetic-fact.pdf'
 SOCF.write_text('Synthetic source path only; never extracted.')
 ALTERNATIVE.write_text('Synthetic alternate source path only; never extracted.')
 BRIEFS = ROOT / 'Synthetic briefs α'
 BRIEFS.mkdir()
-MODE = {'failure': False}
-FAILURES: list[str] = []
+MODE = {'failure': False, 'missing': False}
+FAILURES = []
 MODELS = tuple(PiModel(provider='synthetic', model_id=f'model-{index}',
     name=('Very long synthetic model label with distinct identifiers and Unicode αβγ ' * 3
           if index == 2 else f'Synthetic model {index}'),
-    supported_thinking_levels=('off', 'low', 'medium', 'high')) for index in range(4))
-CATALOG = PiRuntimeCatalog(models=MODELS, default_model=MODELS[0], default_thinking_level='medium')
+    supported_thinking_levels=(('off',) if index == 3 else ('off', 'low', 'medium', 'high')))
+    for index in range(4))
+CATALOG = PiRuntimeCatalog(MODELS, MODELS[0], 'medium')
 
 
 def catalog():
     time.sleep(0.35)
     if MODE['failure']:
         raise PiRuntimeError('Synthetic model query failure — configured values preserved.')
-    return CATALOG
+    return PiRuntimeCatalog(MODELS[:1], MODELS[0], 'medium') if MODE['missing'] else CATALOG
 
 
 def walk(widget):
@@ -73,68 +73,58 @@ def walk(widget):
 
 def activate(application):
     parent = SimpleNamespace(get_application=lambda: application,
-        _appeal_fact_pattern_path_override=None, reload_settings=lambda: None)
+        _appeal_fact_pattern_path_override=None, reload_settings=Mock())
     settings = ui.SettingsWindow(parent)
-    settings.set_title('Synthetic OpenLawLens Settings')
+    settings.set_title('Synthetic OpenLawLens Shared Agent Settings')
     settings.present()
     controls = ui.Adw.ApplicationWindow(application=application, title='Synthetic Settings Controls')
     box = ui.Gtk.Box(orientation=ui.Gtk.Orientation.VERTICAL, spacing=5)
     controls.set_content(box)
-    result = ui.Gtk.Label(label=f'Synthetic only: {ROOT}', wrap=True)
-    box.append(result)
+    box.append(ui.Gtk.Label(label=f'Synthetic only: {ROOT}', wrap=True))
     style = ui.Adw.StyleManager.get_default()
     provider = ui.Gtk.CssProvider()
     ui.Gtk.StyleContext.add_provider_for_display(ui.Gdk.Display.get_default(), provider, 800)
 
-    def expand(*_):
-        for category in settings.settings_categories.values():
-            category.set_expanded(True)
-
-    def refresh(failure):
-        MODE['failure'] = failure
+    def refresh(failure=False, missing=False):
+        MODE.update(failure=failure, missing=missing)
         settings._on_refresh_pi_models(None)
 
-    def choose(*_):
+    def choose():
         settings._on_appeal_fact_pattern_chosen(
             SimpleNamespace(open_finish=lambda _: Gio.File.new_for_path(str(ALTERNATIVE))), None)
 
-    def size(width):
-        settings.set_default_size(width, 760)
-
     for label, callback in (
-        ('Expand all', expand),
-        ('Collapse all', lambda *_: [row.set_expanded(False) for row in settings.settings_categories.values()]),
-        ('900 × 760', lambda *_: size(900)), ('Narrow 620 × 760', lambda *_: size(620)),
-        ('Light', lambda *_: style.set_color_scheme(ui.Adw.ColorScheme.FORCE_LIGHT)),
-        ('Dark', lambda *_: style.set_color_scheme(ui.Adw.ColorScheme.FORCE_DARK)),
-        ('Enlarge text', lambda *_: provider.load_from_string('* { font-size: 20px; }')),
-        ('Normal text', lambda *_: provider.load_from_string('')),
-        ('Refresh success', lambda *_: refresh(False)), ('Refresh failure', lambda *_: refresh(True)),
+        ('Agent Model only', lambda: [row.set_expanded(title == 'Agent Model')
+                                     for title, row in settings.settings_categories.items()]),
+        ('Expand all', lambda: [row.set_expanded(True) for row in settings.settings_categories.values()]),
+        ('Collapse all', lambda: [row.set_expanded(False) for row in settings.settings_categories.values()]),
+        ('900 × 760', lambda: settings.set_default_size(900, 760)),
+        ('620 × 760', lambda: settings.set_default_size(620, 760)),
+        ('Light', lambda: style.set_color_scheme(ui.Adw.ColorScheme.FORCE_LIGHT)),
+        ('Dark', lambda: style.set_color_scheme(ui.Adw.ColorScheme.FORCE_DARK)),
+        ('Enlarge text', lambda: provider.load_from_string('* { font-size: 20px; }')),
+        ('Normal text', lambda: provider.load_from_string('')),
+        ('Refresh success', lambda: refresh()), ('Refresh failure', lambda: refresh(True)),
+        ('Unavailable model catalog', lambda: refresh(missing=True)),
         ('Synthetic choose fact pattern', choose),
-        ('Use Current Case SOCF', lambda *_: settings._on_reset_appeal_fact_pattern(None)),
     ):
         button = ui.Gtk.Button(label=label)
-        button.connect('clicked', callback)
+        button.connect('clicked', lambda _button, callback=callback: callback())
         box.append(button)
-    if '--auto' not in sys.argv and '--matrix' not in sys.argv:
-        controls.present()
-    print(f'ROOT={ROOT}', flush=True)
+    print(f'ROOT={ROOT} PID={os.getpid()}', flush=True)
     if '--matrix' in sys.argv:
-        # Native widget snapshots work without altering/unlocking the desktop.
-        # They are rendered previews, not evidence of compositor/keyboard input.
         stages = iter(('collapsed-light-900', 'expanded-light-900', 'expanded-dark-900',
                        'expanded-dark-620-large', 'bottom-dark-620-large'))
         stage = None
 
         def render():
+            nonlocal stage
             if not settings.pi_model_refresh_button.get_sensitive():
                 return True
-            nonlocal stage
             if stage is not None:
                 snapshot = ui.Gtk.Snapshot()
                 width, height = settings.get_width(), settings.get_height()
-                assert (width, height) == (620 if '620' in stage else 900, 760), (
-                    stage, width, height)
+                assert (width, height) == (620 if '620' in stage else 900, 760)
                 ui.Gtk.WidgetPaintable.new(settings).snapshot(snapshot, width, height)
                 node = snapshot.to_node()
                 texture = settings.get_renderer().render_texture(node, None)
@@ -148,16 +138,15 @@ def activate(application):
                 return False
             if stage == 'collapsed-light-900':
                 settings.unmaximize()
-                settings.set_default_size(901, 761)
-                size(900)
+                settings.set_default_size(900, 760)
                 style.set_color_scheme(ui.Adw.ColorScheme.FORCE_LIGHT)
             if stage == 'expanded-light-900':
                 settings.settings_categories['General'].set_expanded(True)
-                settings.settings_categories['Agent Models'].set_expanded(True)
+                settings.settings_categories['Agent Model'].set_expanded(True)
             if stage == 'expanded-dark-900':
                 style.set_color_scheme(ui.Adw.ColorScheme.FORCE_DARK)
             if stage == 'expanded-dark-620-large':
-                size(620)
+                settings.set_default_size(620, 760)
                 provider.load_from_string('* { font-size: 20px; }')
             if stage == 'bottom-dark-620-large':
                 adjustment = settings.settings_scroller.get_vadjustment()
@@ -166,138 +155,141 @@ def activate(application):
         ui.GLib.timeout_add(900, render)
         return
     if '--auto' not in sys.argv:
+        controls.present()
         return
 
-    initial_bytes = (ROOT / 'config.json').read_bytes()
+    initial_bytes = CONFIG.read_bytes()
     phase = 0
     unsaved = None
+    saved_bytes = None
 
     def check():
-        nonlocal phase, unsaved, settings
+        nonlocal phase, unsaved, settings, saved_bytes
         try:
             if not settings.pi_model_refresh_button.get_sensitive():
                 return True
             if phase == 0:
-                assert list(settings.settings_categories) == ['General', 'Display', 'Highlights', 'Agent Models']
-                assert not any(row.get_expanded() for row in settings.settings_categories.values()), {
-                    title: row.get_expanded() for title, row in settings.settings_categories.items()}
-
-                assert not hasattr(settings, '_settings_stack')
-                assert not any(isinstance(widget, ui.Gtk.TextView) for widget in walk(settings))
-                # Internal model popovers are toolkit-owned; all app content shares one scroller.
-                for widget in (settings.token_row, settings.reader_font_family_row,
-                               settings.prior_briefs_folder_row, settings.appeal_fact_pattern_entry,
-                               *settings._pi_profile_model_rows.values()):
+                assert list(settings.settings_categories) == ['General', 'Display', 'Highlights', 'Agent Model']
+                assert not any(row.get_expanded() for row in settings.settings_categories.values())
+                rows = list(settings.settings_categories.values())
+                category_list = rows[0].get_parent()
+                assert category_list.has_css_class('boxed-list')
+                assert all(row.get_parent() is category_list for row in rows)
+                assert category_list.get_row_at_index(4) is None
+                agent = settings.settings_categories['Agent Model']
+                assert agent.get_subtitle() == 'One model and thinking effort for all Agent tasks'
+                combos = [w for w in walk(agent) if isinstance(w, ui.Adw.ComboRow)]
+                assert [w.get_title() for w in combos] == ['Model', 'Thinking Effort']
+                assert isinstance(settings.pi_model_row.get_parent(), ui.Gtk.ListBox)
+                assert settings.pi_model_row.get_parent() is settings.pi_thinking_row.get_parent()
+                assert not any(isinstance(w, ui.Gtk.TextView) for w in walk(settings))
+                assert isinstance(settings.token_row, ui.Adw.PasswordEntryRow)
+                for widget in (settings.token_row, settings.pi_model_row, settings.pi_thinking_row,
+                               settings.prior_briefs_folder_row, settings.appeal_fact_pattern_entry):
                     ancestor = widget.get_parent()
-                    while ancestor is not None and not isinstance(ancestor, ui.Gtk.ScrolledWindow):
+                    while ancestor and not isinstance(ancestor, ui.Gtk.ScrolledWindow):
                         ancestor = ancestor.get_parent()
                     assert ancestor is settings.settings_scroller
-                assert isinstance(settings.token_row, ui.Adw.PasswordEntryRow)
-                categories = list(settings.settings_categories.values())
-                category_list = categories[0].get_parent()
-                assert isinstance(category_list, ui.Gtk.ListBox)
-                assert category_list.has_css_class('boxed-list')
-                assert all(row.get_parent() is category_list for row in categories), (
-                    'All four categories must be rows of ONE shared boxed list, not separate cards')
-                assert [category_list.get_row_at_index(i) for i in range(4)] == categories
-                assert category_list.get_row_at_index(4) is None
-                settings.prior_briefs_folder_row.set_text('relative/missing/folder')
+                assert settings._selected_pi_profile() == PiAgentProfile(**PROFILES['law'])
+                assert CONFIG.read_bytes() == initial_bytes
+                settings.prior_briefs_folder_row.set_text('relative/missing')
                 settings._on_save_clicked(None)
                 assert 'Unable to set Prior Briefs Folder' in settings.status_label.get_text()
-                assert (ROOT / 'config.json').read_bytes() == initial_bytes
+                assert CONFIG.read_bytes() == initial_bytes
                 settings._on_prior_briefs_folder_chosen(SimpleNamespace(
                     select_folder_finish=lambda _: Gio.File.new_for_path(str(BRIEFS))), None)
+                settings._on_prior_briefs_folder_chosen(SimpleNamespace(select_folder_finish=lambda _: None), None)
                 assert settings.prior_briefs_folder_row.get_text() == str(BRIEFS)
-                settings._on_prior_briefs_folder_chosen(SimpleNamespace(
-                    select_folder_finish=lambda _: None), None)
-                assert settings.prior_briefs_folder_row.get_text() == str(BRIEFS)
-                settings._on_prior_briefs_folder_chosen(SimpleNamespace(
-                    select_folder_finish=Mock(side_effect=ui.GLib.Error('Synthetic dismissal'))), None)
-                assert settings.prior_briefs_folder_row.get_text() == str(BRIEFS)
-                settings._on_reset_prior_briefs_folder(None)
-                assert settings.prior_briefs_folder_row.get_text() == str(ui.DEFAULT_PRIOR_BRIEFS_DIR)
-                settings.prior_briefs_folder_row.set_text(str(BRIEFS))
-                assert (ROOT / 'config.json').read_bytes() == initial_bytes
-                assert settings.child_focus(ui.Gtk.DirectionType.TAB_FORWARD)
-                assert settings.get_focus() is not None
-                assert len(settings._pi_profile_model_rows) == len(settings._pi_profile_thinking_rows) == 5
-                assert all(any(child is widget for child in walk(settings.settings_categories['General']))
-                           for widget in (settings.prior_briefs_folder_row, settings.appeal_fact_pattern_entry))
-                assert settings._selected_pi_profiles() == load_config().agent_runtime_profiles
                 settings.settings_categories['General'].set_expanded(True)
-                settings.settings_categories['Agent Models'].set_expanded(True)
+                agent.set_expanded(True)
                 settings.token_row.set_text('unsaved synthetic token')
                 settings.reader_font_size_row.set_value(17)
-                row = settings._pi_profile_model_rows['law']
-                row.set_selected(2)
-                unsaved = settings._selected_pi_profiles()
-                settings.settings_categories['Agent Models'].set_expanded(False)
-                settings.settings_categories['Agent Models'].set_expanded(True)
-                assert settings.token_row.get_text() == 'unsaved synthetic token'
-                assert settings.settings_categories['General'].get_expanded()
-                assert settings._selected_pi_profiles() == unsaved
+                settings.pi_model_row.set_selected(3)  # Long synthetic model label.
+                unsaved = settings._selected_pi_profile()
                 choose()
                 assert parent._appeal_fact_pattern_path_override == ALTERNATIVE
                 settings._on_reset_appeal_fact_pattern(None)
                 assert parent._appeal_fact_pattern_path_override is None
                 assert settings.appeal_fact_pattern_entry.get_text() == str(SOCF)
-                assert (ROOT / 'config.json').read_bytes() == initial_bytes
-                refresh(True)
-                assert not settings.pi_model_refresh_button.get_sensitive()
+                refresh()
+                # Saving while discovery is in flight must preserve the unsaved pair.
+                settings._on_save_clicked(None)
+                assert load_config().agent_runtime_profile == unsaved
+                assert 'Agent model changes apply to new sessions.' in settings.status_label.get_text()
                 phase = 1
             elif phase == 1:
-                assert not settings._pi_profiles_ready
-                assert settings._pending_pi_profiles == unsaved
-                with patch.object(ui, 'save_config', side_effect=OSError('synthetic write failure')):
-                    settings._on_save_clicked(None)
-                assert 'Unable to save settings: synthetic write failure' in settings.status_label.get_text()
-                assert (ROOT / 'config.json').read_bytes() == initial_bytes
-                settings._on_save_clicked(None)
-                assert load_config().agent_runtime_profiles == unsaved
-                assert load_config().retired_prompt_settings == RETIRED
-                assert load_config().reader_font_size_pt == 17
-                assert load_config().courtlistener_token == 'unsaved synthetic token'
-                assert load_config().prior_briefs_folder == str(BRIEFS)
-                print('PASS actual Settings: ONE shared boxed list/four collapsed categories/General paths/independent expansion/unsaved retention/loading/failure/save/compatibility/fact callbacks', flush=True)
-                settings.close()
-                settings = ui.SettingsWindow(parent)
-                settings.set_title('Synthetic OpenLawLens Settings Reloaded')
-                settings.present()
+                assert settings._selected_pi_profile() == unsaved
+                assert settings.token_row.get_text() == 'unsaved synthetic token'
+                assert settings.settings_categories['General'].get_expanded()
+                refresh(True)
                 phase = 2
             elif phase == 2:
+                assert not settings._pi_profiles_ready
+                assert settings._pending_pi_profile == unsaved
+                before = CONFIG.read_bytes()
+                with patch.object(ui, 'save_config', side_effect=OSError('synthetic write failure')):
+                    settings._on_save_clicked(None)
+                assert 'Unable to save settings' in settings.status_label.get_text()
+                assert CONFIG.read_bytes() == before
+                settings._on_save_clicked(None)
+                assert load_config().agent_runtime_profile == unsaved
+                refresh(missing=True)
+                phase = 3
+            elif phase == 3:
+                assert settings._selected_pi_profile() == unsaved
+                assert 'unavailable' in settings.pi_model_row.get_subtitle()
+                assert not settings.pi_thinking_row.get_sensitive()
+                settings._on_save_clicked(None)
+                assert load_config().agent_runtime_profile == unsaved
+                refresh()
+                phase = 4
+            elif phase == 4:
+                assert settings._selected_pi_profile() == unsaved
+                assert settings.pi_thinking_row.get_sensitive()
+                settings.pi_model_row.set_selected(4)  # Non-reasoning model.
+                assert settings._selected_pi_thinking() == 'off'
+                assert 'unsupported' in settings.pi_thinking_row.get_subtitle()
+                settings.pi_model_row.set_selected(0)
+                assert settings._selected_pi_profile() is None
+                assert settings._selected_pi_thinking() == 'medium'
+                assert not settings.pi_thinking_row.get_sensitive()
+                settings._on_save_clicked(None)
+                raw = json.loads(CONFIG.read_text())
+                assert raw['agent_runtime_profile'] is None
+                assert raw['agent_runtime_profiles'] == PROFILES
+                assert raw['agent_runtime_profiles_version'] == {'opaque': 2}
+                assert load_config().retired_prompt_settings == RETIRED
+                saved_bytes = CONFIG.read_bytes()
+                settings.close()
+                settings = ui.SettingsWindow(parent)
+                settings.set_title('Synthetic OpenLawLens Shared Agent Settings Reopened')
+                settings.present()
+                phase = 5
+            else:
+                assert settings._selected_pi_profile() is None
                 assert settings.token_row.get_text() == 'unsaved synthetic token'
                 assert settings.reader_font_size_row.get_value() == 17
-                saved = (ROOT / 'config.json').read_bytes()
                 assert settings.prior_briefs_folder_row.get_text() == str(BRIEFS)
                 settings.token_row.set_text('discard me')
-                settings._on_reset_prior_briefs_folder(None)
-                assert load_config().prior_briefs_folder == str(BRIEFS)
+                settings.pi_model_row.set_selected(2)
                 choose()
-                assert parent._appeal_fact_pattern_path_override == ALTERNATIVE
-                settings._on_refresh_pi_models(None)
+                refresh()
                 generation = settings._pi_model_generation
                 settings.close()
                 assert settings._pi_model_closed and settings._pi_model_generation > generation
-                assert (ROOT / 'config.json').read_bytes() == saved
+                assert not settings._finish_pi_model_load(generation, CATALOG, '', unsaved)
+                assert CONFIG.read_bytes() == saved_bytes
                 assert parent._appeal_fact_pattern_path_override == ALTERNATIVE
-                print('PASS actual Settings: reload/close discards unsaved settings/session fact override/generation guard', flush=True)
-                settings = ui.SettingsWindow(parent)
-                settings.set_title('Synthetic OpenLawLens Settings Default Reset')
-                settings.present()
-                phase = 3
-            else:
-                settings._on_reset_prior_briefs_folder(None)
-                settings._on_save_clicked(None)
-                assert load_config().prior_briefs_folder == ''
-                assert load_config().retired_prompt_settings == RETIRED
-                assert parent._appeal_fact_pattern_path_override == ALTERNATIVE
-                assert 'appeal_fact_pattern' not in (ROOT / 'config.json').read_text()
-                print('PASS actual Settings: saved folder reset restores default; fact override remains session-only', flush=True)
+                assert 'appeal_fact_pattern' not in CONFIG.read_text()
+                print('PASS actual Settings: shared boxed categories/single pair/Law fallback/read-only load/'
+                      'Save during loading/unsaved refresh/failure/recovery/unavailable retention/'
+                      'nonreasoning clamp/defaults/save-reopen/legacy compatibility/close guards/'
+                      'other controls/session-only facts', flush=True)
                 application.quit()
                 return False
         except Exception as exc:
-            print(f'FAIL phase {phase}: {exc!r}', flush=True)
             FAILURES.append(repr(exc))
+            print(f'FAIL phase {phase}: {exc!r}', flush=True)
             application.quit()
             raise
         return True

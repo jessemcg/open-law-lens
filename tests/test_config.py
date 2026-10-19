@@ -9,8 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from open_law_lens.config import (
-    AGENT_PROFILE_KEYS, AGENT_PROFILE_LAW, AGENT_PROFILE_SUBSEQUENT_TREATMENT,
-    AGENT_RUNTIME_PROFILES_VERSION, AppConfig, DEFAULT_APPEAL_ISSUE_LABELS,
+    AGENT_PROFILE_KEYS, AppConfig, DEFAULT_APPEAL_ISSUE_LABELS,
     DEFAULT_APPEAL_ISSUE_PRESETS, DEFAULT_BARE_STATUTE_LAW_CODE,
     DEFAULT_LINKED_TEXT_COLOR, DEFAULT_READER_FONT_FAMILY,
     DEFAULT_READER_FONT_SIZE_PT, DEFAULT_SEARCH_MATCH_COLOR,
@@ -61,7 +60,8 @@ class ConfigTests(unittest.TestCase):
                 save_config(replace(config, reader_font_size_pt=19), path)
                 saved = json.loads(path.read_text())
                 self.assertEqual({key: saved[key] for key in RETIRED_PROMPT_KEYS}, retired)
-                self.assertEqual(load_config(path).agent_runtime_profiles, config.agent_runtime_profiles)
+                self.assertEqual(load_config(path).agent_runtime_profile, config.agent_runtime_profile)
+                self.assertEqual(saved['agent_runtime_profiles'], raw['agent_runtime_profiles'])
                 self.assertEqual(load_config(path).reader_font_size_pt, 19)
                 self.assertEqual(load_config(path).retired_prompt_settings, retired)
 
@@ -77,14 +77,12 @@ class ConfigTests(unittest.TestCase):
             save_config(AppConfig(), path)
             self.assertFalse(set(RETIRED_PROMPT_KEYS) & json.loads(path.read_text()).keys())
 
-    def test_save_and_load_active_preferences_and_five_profiles(self):
-        profiles = {key: PiAgentProfile('test-provider', f'model-{index}', thinking)
-                    for index, (key, thinking) in enumerate(zip(
-                        AGENT_PROFILE_KEYS, ('off', 'low', 'medium', 'high', 'max')))}
+    def test_save_and_load_active_preferences_and_shared_profile(self):
+        profile = PiAgentProfile('test-provider', 'model', 'max')
         original = AppConfig(
             courtlistener_token=' token-value ', concordance_file_path=' /tmp/file.sdi ',
             prior_briefs_folder=' /tmp/prior briefs α ',
-            agent_runtime_profiles=profiles, reader_font_size_pt=14,
+            agent_runtime_profile=profile, reader_font_size_pt=14,
             reader_font_family='Caladea', search_match_color='#12AB34',
             linked_text_color='#AA4433', default_bare_statute_law_code='FAM',
             appeal_issue_presets=[' One ', 'Two', 'One'], appeal_issue_labels=[' First ', 'Second'],
@@ -96,7 +94,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(loaded.courtlistener_token, 'token-value')
             self.assertEqual(loaded.concordance_file_path, '/tmp/file.sdi')
             self.assertEqual(loaded.prior_briefs_folder, '/tmp/prior briefs α')
-            self.assertEqual(loaded.agent_runtime_profiles, profiles)
+            self.assertEqual(loaded.agent_runtime_profile, profile)
             self.assertEqual(loaded.reader_font_size_pt, 14)
             self.assertEqual(loaded.reader_font_family, 'Caladea')
             self.assertEqual(loaded.search_match_color, '#12ab34')
@@ -104,46 +102,60 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(loaded.default_bare_statute_law_code, 'FAM')
             self.assertEqual(loaded.appeal_issue_presets, ['One', 'Two'])
             self.assertEqual(loaded.appeal_issue_labels, ['First', 'Second'])
-            self.assertEqual(json.loads(path.read_text())['agent_runtime_profiles_version'], AGENT_RUNTIME_PROFILES_VERSION)
+            self.assertNotIn('agent_runtime_profiles_version', json.loads(path.read_text()))
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
-    def test_invalid_or_incomplete_profiles_are_ignored(self):
-        invalid = ({}, None, [], {'provider': 'x', 'model': 'y'},
-                   {'provider': '', 'model': 'y', 'thinking': 'high'},
-                   {'provider': 'x', 'model': 'y', 'thinking': 'unsupported'})
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'config.json'
-            for value in invalid:
-                path.write_text(json.dumps({'agent_runtime_profiles_version': 2,
-                    'agent_runtime_profiles': {key: value for key in AGENT_PROFILE_KEYS}}))
-                self.assertEqual(load_config(path).agent_runtime_profiles, {})
-            path.write_text(json.dumps({'agent_runtime_profiles': {'unknown': {
-                'provider': 'x', 'model': 'y', 'thinking': 'high'}}}))
-            self.assertEqual(load_config(path).agent_runtime_profiles, {})
-
-    def test_legacy_model_profile_migration_and_intentional_defaults(self):
+    def test_shared_selection_precedence_read_only_and_lossless_save(self):
         law = {'provider': 'x', 'model': 'law-model', 'thinking': 'high'}
-        treatment = {'provider': 'y', 'model': 'treatment-model', 'thinking': 'low'}
+        shared = {'provider': 'shared', 'model': 'chosen', 'thinking': 'low'}
+        invalid = (None, {}, [], False, 7, 'bad', {'provider': 7, 'model': 'x', 'thinking': 'high'},
+                   {'provider': '', 'model': 'x', 'thinking': 'high'},
+                   {'provider': 'x', 'model': 'y', 'thinking': 'bad'})
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'config.json'
-            for version in (None, 1, 2, 3, 'invalid'):
-                for entry in ('absent', None, {}, treatment):
-                    with self.subTest(version=version, entry=entry):
-                        raw = {'agent_runtime_profiles': {'law': law}}
-                        if version is not None:
+            for version in ('absent', None, 1, 2, 3, {'opaque': True}):
+                for selection in ('absent', shared, *invalid):
+                    with self.subTest(version=version, selection=selection):
+                        legacy = {key: {'provider': key, 'model': key, 'thinking': 'medium'}
+                                  for key in AGENT_PROFILE_KEYS}
+                        legacy['law'] = law
+                        legacy['unknown'] = ['preserve', None]
+                        raw = {'agent_runtime_profiles': legacy, 'unknown_setting': {'keep': True}}
+                        if version != 'absent':
                             raw['agent_runtime_profiles_version'] = version
-                        if entry != 'absent':
-                            raw['agent_runtime_profiles']['subsequent_treatment'] = entry
-                        path.write_text(json.dumps(raw))
+                        if selection != 'absent':
+                            raw['agent_runtime_profile'] = selection
+                        path.write_text(json.dumps(raw, indent=3))
                         before = path.read_bytes()
                         loaded = load_config(path)
                         self.assertEqual(path.read_bytes(), before)
-                        expected = treatment if entry == treatment else (
-                            law if entry == 'absent' and version in (None, 1, 'invalid') else None)
-                        self.assertEqual(loaded.agent_runtime_profiles.get(AGENT_PROFILE_SUBSEQUENT_TREATMENT),
-                                         PiAgentProfile(**expected) if expected else None)
-                        self.assertEqual(loaded.agent_runtime_profiles[AGENT_PROFILE_LAW], PiAgentProfile(**law))
+                        expected = law if selection == 'absent' else shared if selection == shared else None
+                        self.assertEqual(loaded.agent_runtime_profile, PiAgentProfile(**expected) if expected else None)
+                        save_config(loaded, path)
+                        saved = json.loads(path.read_text())
+                        self.assertEqual(saved['agent_runtime_profile'], expected)
+                        self.assertEqual(saved['agent_runtime_profiles'], legacy)
+                        self.assertEqual(saved['unknown_setting'], raw['unknown_setting'])
+                        self.assertEqual('agent_runtime_profiles_version' in saved, version != 'absent')
+                        if version != 'absent':
+                            self.assertEqual(saved['agent_runtime_profiles_version'], version)
+                        self.assertEqual(load_config(path).agent_runtime_profile, loaded.agent_runtime_profile)
+
+    def test_missing_invalid_law_never_selects_another_workflow(self):
+        other = {'provider': 'other', 'model': 'never', 'thinking': 'high'}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'config.json'
+            for legacy in (None, [], 'bad', {}, {'research_cache': other},
+                           {'law': None, 'prior_briefs': other}, {'law': {}, 'subsequent_treatment': other}):
+                raw = {'agent_runtime_profiles': legacy}
+                path.write_text(json.dumps(raw))
+                loaded = load_config(path)
+                self.assertIsNone(loaded.agent_runtime_profile)
+                save_config(loaded, path)
+                self.assertEqual(json.loads(path.read_text())['agent_runtime_profiles'], legacy)
             path.write_text('{}')
-            self.assertEqual(load_config(path).agent_runtime_profiles, {})
+            save_config(load_config(path), path)
+            self.assertNotIn('agent_runtime_profiles', json.loads(path.read_text()))
 
     def test_retired_reasoning_flags_are_not_reactivated(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -152,8 +164,9 @@ class ConfigTests(unittest.TestCase):
                 ('general_agent', 'case_agent', 'brief_agent', 'appeal_issue', 'later_treatment')}))
             config = load_config(path)
             save_config(config, path)
-            self.assertEqual(config.agent_runtime_profiles, {})
-            self.assertFalse(any('xhigh_reasoning' in key for key in json.loads(path.read_text())))
+            self.assertIsNone(config.agent_runtime_profile)
+            self.assertTrue(all(value is True for key, value in json.loads(path.read_text()).items()
+                                if 'xhigh_reasoning' in key))
 
     def test_colors_reject_non_hex_values(self):
         with tempfile.TemporaryDirectory() as directory:

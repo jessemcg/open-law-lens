@@ -359,7 +359,7 @@ independently expandable categories are rows within that list, not separate
 cards. Categories are initially collapsed: **General** (masked CourtListener
 token, concordance file, Prior Briefs Folder, and Case Question Fact Pattern),
 **Display** (case font and size), **Highlights** (search-match and linked-text
-colors), and **Agent Models**.
+colors), and **Agent Model**.
 Multiple categories can remain open. There is one outer scrollbar, no sidebar,
 and a flat **Save** button in the header with visible save/error feedback.
 Persistent preferences are saved only explicitly; closing discards unsaved edits.
@@ -387,11 +387,22 @@ The GUI, CLI and newly prepared agent snapshots use the same resolver. Existing
 agent sessions keep their original snapshot; changing Settings never retargets
 follow-ups. See [source-location validation](settings-source-locations.md).
 
-Agent Models retains five independent workflow model/reasoning profiles and
-asynchronous refresh. Subsequent Treatment is independent of Law. Profiles are
-stored locally in ignored `config.json`, apply to new sessions, and can each use
-**Use Pi defaults**. Unavailable models and values during discovery failure are
-preserved. **Search Briefs** remains local and launches no Pi.
+**Agent Model** has one **Model** and one **Thinking Effort** selector for all
+Agent tasks: Law, Research Cache, Prior Briefs, Case Question, and Subsequent
+Treatment. Changes apply to new sessions; existing sessions and follow-ups keep
+their launch-time selection and workflow. Until a shared choice is explicitly
+saved, the existing saved Law selection supplies the starting pair (not unsaved
+Settings edits). If that selection is absent or invalid, Pi defaults apply.
+
+**Use Pi defaults** inherits both model and effort; the disabled effort row shows
+the effective inherited effort when discovery succeeds. Explicit models expose
+supported efforts, with visible feedback when an unsupported effort is adjusted.
+Refresh is asynchronous and retains unsaved choices; unavailable models and
+values during discovery failure remain visible and are preserved on Save.
+The app saves only its own selection, not global Pi preferences. Legacy workflow
+settings remain inactive compatibility data; loading/opening/launching never
+migrates the settings file. **Search Briefs** remains local and launches no Pi.
+See [shared-selection validation](shared-agent-model-validation.md).
 
 There are **no prompt editors or skill pickers**. New sessions automatically get
 `.pi/SYSTEM.md`, shared Legal Researcher when applicable, and exactly one fixed

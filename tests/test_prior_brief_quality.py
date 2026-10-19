@@ -41,8 +41,8 @@ class PriorBriefQualityTests(unittest.TestCase):
                         self.assertEqual(path.read_bytes(), before)
                         save_config(result, path)
                         self.assertEqual(json.loads(path.read_text())['brief_agent_prompt_template'], retired)
-                        profile = result.agent_runtime_profiles['prior_briefs']
-                        self.assertEqual((profile.provider, profile.model, profile.thinking), ('fireworks', 'unchanged', 'high'))
+                        self.assertIsNone(result.agent_runtime_profile)
+                        self.assertEqual(json.loads(path.read_text())['agent_runtime_profiles'], raw['agent_runtime_profiles'])
 
     def test_lookup_contract_is_distinct_from_comparison_and_keeps_verification(self):
         prompt = instructions()

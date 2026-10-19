@@ -75,7 +75,8 @@ and save it in the app menu under **Settings**. Enter a case citation such as
 `Cal. Rules of Court, rule 8.1115` to look up authority.
 
 For optional AI features, open Pi and use `/login` to enter an API key or sign in.
-Then choose available models in Open Law Lens **Settings → Agent Models**.
+Then choose one model and thinking effort for new Agent sessions in
+Open Law Lens **Settings → Agent Model**.
 See the [user guide](docs/user-guide.md) for research, prior briefs, and reader tools,
 and [setup instructions](docs/source-install.md#standalone-computer-use) for browser
 readiness.

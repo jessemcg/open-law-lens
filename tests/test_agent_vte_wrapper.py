@@ -221,24 +221,26 @@ class AgentVteWrapperTests(unittest.TestCase):
             self.assertEqual(args[-2], str(root / "workspace" / "pi-sessions"))
             self.assertEqual(args[-1], str(root / "workspace"))
 
-    def test_explicit_runtime_profile_is_passed_to_pi(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            args, stderr = self._run(
-                Path(temp_dir),
-                "brief",
-                profile=(
-                    "fireworks",
-                    "accounts/fireworks/routers/glm-fast",
-                    "low",
-                ),
-            )
-
-        self.assertEqual(args[args.index("--provider") + 1], "fireworks")
-        self.assertEqual(
-            args[args.index("--model") + 1],
-            "accounts/fireworks/routers/glm-fast",
-        )
-        self.assertEqual(args[args.index("--thinking") + 1], "low")
+    def test_shared_runtime_profile_keeps_all_five_fixed_workflows(self) -> None:
+        workflows = (("general", "law", "law-question"),
+                     ("case", "research_cache", "research-cache"),
+                     ("brief", "prior_briefs", "prior-briefs"),
+                     ("appeal", "assess_argument", "case-assessment"),
+                     ("general", "subsequent_treatment", "subsequent-treatment"))
+        for mode, key, skill in workflows:
+            with self.subTest(workflow=key), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                args, _ = self._run(root, mode, profile=("synthetic", "shared-model", "low"),
+                                    extra_env={"OPEN_LAW_LENS_AGENT_PROFILE_KEY": key})
+                self.assertEqual(args[args.index("--provider") + 1], "synthetic")
+                self.assertEqual(args[args.index("--model") + 1], "shared-model")
+                self.assertEqual(args[args.index("--thinking") + 1], "low")
+                self.assertEqual(args[args.index("--tools") + 1], "read,bash,grep,find,ls")
+                system = (root / "workspace/.pi/SYSTEM.md").read_text()
+                self.assertIn(f"name: {skill}\n", system)
+                for _, _, other_skill in workflows:
+                    if other_skill != skill:
+                        self.assertNotIn(f"name: {other_skill}\n", system)
 
     def test_incomplete_runtime_profile_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

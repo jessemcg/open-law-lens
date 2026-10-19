@@ -80,7 +80,7 @@ except CurrentCaseError as error:
     assert 'not configured' in str(error) and '/home/jesse' not in str(error)
 else:
     raise AssertionError('personal integration must be off')
-assert not load_config().agent_runtime_profiles
+assert load_config().agent_runtime_profile is None
 """)
 
     def test_config_and_library_roundtrip_no_source_writes(self):
@@ -235,7 +235,7 @@ for capability in ('agent_workflows', 'pdf_extraction', 'prior_brief_indexing', 
         from open_law_lens.pi_runtime import PiModel, PiRuntimeCatalog
         catalog = PiRuntimeCatalog((PiModel('other', 'paid', 'Other'),),
                                    PiModel('other', 'paid', 'Other'), 'medium')
-        configured = AppConfig(agent_runtime_profiles={'law': PiAgentProfile('chosen', 'missing', 'high')})
+        configured = AppConfig(agent_runtime_profile=PiAgentProfile('chosen', 'missing', 'high'))
         parent = SimpleNamespace(_set_status=Mock(), _launch_agent_with_prompt_ready=Mock(), get_visible=lambda: True)
         class InlineThread:
             def __init__(self, *, target, daemon): self.target = target
