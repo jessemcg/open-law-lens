@@ -169,6 +169,12 @@ class PiAgentProfile:
     thinking: str
 
 
+@dataclass
+class _SettingsRevision:
+    path: Path | None = None
+    revision: str | None = None
+
+
 @dataclass(frozen=True)
 class AppConfig:
     courtlistener_token: str = ""
@@ -186,6 +192,7 @@ class AppConfig:
     search_match_color: str = DEFAULT_SEARCH_MATCH_COLOR
     linked_text_color: str = DEFAULT_LINKED_TEXT_COLOR
     default_bare_statute_law_code: str = DEFAULT_BARE_STATUTE_LAW_CODE
+    _settings_revision: _SettingsRevision = field(default_factory=_SettingsRevision, repr=False, compare=False)
 
 
 def coerce_reader_font_size(value: Any, default: int = DEFAULT_READER_FONT_SIZE_PT) -> int:
@@ -285,8 +292,11 @@ def reader_font_css(font_family: str) -> str:
 def load_config(path: Path = CONFIG_PATH) -> AppConfig:
     """Read settings only; retired prompt JSON stays opaque, including both aliases."""
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        from ._model_store import read_ordinary
+        raw = read_ordinary(path)
+    except FileNotFoundError:
+        return AppConfig(_settings_revision=_SettingsRevision(Path(path), "missing"))
+    except (json.JSONDecodeError, OSError):
         return AppConfig()
     if not isinstance(raw, dict):
         return AppConfig()
@@ -310,6 +320,7 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
             CONFIG_KEY_AGENT_RUNTIME_PROFILES, CONFIG_KEY_AGENT_RUNTIME_PROFILES_VERSION,
         ) if key in raw},
         extra_settings=dict(raw),
+        _settings_revision=_SettingsRevision(Path(path), raw.revision),
         reader_font_size_pt=coerce_reader_font_size(raw.get(CONFIG_KEY_READER_FONT_SIZE_PT)),
         reader_font_family=normalize_reader_font_family(raw.get(CONFIG_KEY_READER_FONT_FAMILY)),
         search_match_color=normalize_search_color(raw.get(CONFIG_KEY_SEARCH_MATCH_COLOR), DEFAULT_SEARCH_MATCH_COLOR),
@@ -350,14 +361,11 @@ def save_config(config: AppConfig, path: Path = CONFIG_PATH) -> None:
         if key in config.legacy_agent_settings:
             data[key] = config.legacy_agent_settings[key]
     data.update({key: config.retired_prompt_settings[key] for key in RETIRED_PROMPT_KEYS if key in config.retired_prompt_settings})
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        with os.fdopen(os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as stream:
-            stream.write(json.dumps(data, ensure_ascii=True, indent=2, sort_keys=True) + "\n")
-        os.replace(temp_path, path)
-    finally:
-        temp_path.unlink(missing_ok=True)
+    from ._model_store import save_ordinary
+    revision = config._settings_revision
+    expected = revision.revision if revision.path == Path(path) else None
+    published = save_ordinary(path, data, expected=expected)
+    revision.path, revision.revision = Path(path), published
 
 
 def courtlistener_token() -> str:

@@ -1,5 +1,15 @@
 # Repository Guidelines
 
+## Application-owned model maintenance
+
+Keep `model-settings --stdin` before GUI/backend/Pi imports. Singular profile
+presence blocks legacy Law resurrection. Vendored schema/store are app-owned,
+not sibling runtime imports. Each loaded AppConfig owns its revision; Settings
+holds that snapshot through Save, advances only after publication, and never
+reloads a fresh baseline underneath an older draft. Reconcile/Retain are
+receipt-only and cannot authorize later-edit rollback. Synthetic tests only;
+see SkillsMenu's `replace-workhorse-model/references/protocol-v1.md` package.
+
 ## Settings interaction contract
 Preserve the General/Display/Highlights/Agent Model boxed expandable home; do not restore retired prompt editors. Save stays open, gives local feedback, and accepts the literal draft only after successful persistence. Close offers Keep Editing / Discard Unsaved Changes and cannot undo the immediate session-only fact-pattern action. Accepted closure alone releases window ownership. See `docs/unified-settings-validation.md`.
 

@@ -1007,6 +1007,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.set_default_size(900, 720)
         self.set_modal(False)
         config = load_config()
+        self._loaded_config = config
         self._original_pi_profile = config.agent_runtime_profile
         self._pending_pi_profile = self._original_pi_profile
         self._pi_model_options: list[PiModel | None] = []
@@ -1540,7 +1541,7 @@ class SettingsWindow(Adw.ApplicationWindow):
     def _on_save_clicked(self, _button: Gtk.Button) -> None:
         token = self.token_row.get_text().strip()
         concordance_path = self.concordance_row.get_text().strip()
-        previous_config = load_config()
+        previous_config = self._loaded_config
         folder = self.prior_briefs_folder_row.get_text().strip()
         if folder == str(DEFAULT_PRIOR_BRIEFS_DIR):
             folder = ""
@@ -1558,7 +1559,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         if 0 <= selected_font_family_index < len(self.reader_font_family_values):
             reader_font_family = self.reader_font_family_values[selected_font_family_index]
         else:
-            reader_font_family = load_config().reader_font_family
+            reader_font_family = previous_config.reader_font_family
         # Preserve retired settings during round trips without exposing them.
         bare_statute_law_code = previous_config.default_bare_statute_law_code
         agent_runtime_profile = (
@@ -1577,6 +1578,7 @@ class SettingsWindow(Adw.ApplicationWindow):
             agent_runtime_profile=agent_runtime_profile,
             legacy_agent_settings=previous_config.legacy_agent_settings,
             extra_settings=previous_config.extra_settings,
+            _settings_revision=previous_config._settings_revision,
             reader_font_size_pt=coerce_reader_font_size(
                 int(round(self.reader_font_size_row.get_value()))
             ),
@@ -1596,6 +1598,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         except OSError as exc:
             self.status_label.set_text(f"Unable to save settings: {exc}")
             return
+        self._loaded_config = config
         self._original_pi_profile = agent_runtime_profile
         self._pending_pi_profile = agent_runtime_profile
         self.prior_briefs_folder_row.set_text(folder or str(DEFAULT_PRIOR_BRIEFS_DIR))

@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+# Bounded maintenance dispatch precedes GUI/backend and ordinary CLI imports.
+import sys as _model_sys
+if _model_sys.argv[1:2] == ["model-settings"]:
+    from .model_settings import main as _model_settings_main
+    raise SystemExit(_model_settings_main())
+
 import argparse
 import json
 import os

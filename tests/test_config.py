@@ -189,7 +189,8 @@ class ConfigTests(unittest.TestCase):
                 path.write_text(json.dumps({'reader_font_family': old}))
                 self.assertEqual(load_config(path).reader_font_family, expected)
             for name, css in READER_FONT_FAMILY_OPTIONS:
-                save_config(AppConfig(reader_font_family=name), path)
+                from dataclasses import replace
+                save_config(replace(load_config(path), reader_font_family=name), path)
                 self.assertEqual(load_config(path).reader_font_family, name)
                 self.assertTrue(css)
             self.assertIn('Century Schoolbook', dict(READER_FONT_FAMILY_OPTIONS))
