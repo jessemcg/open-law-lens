@@ -191,16 +191,24 @@ def activate(app):
         assert mb.get_x() + mb.get_width() <= cb.get_width() + 1
         assert mb.get_y() >= sb.get_y()
         first_width, second_width, _, _ = controls._sizes()
-        wrapped = controls.get_width() < first_width + second_width
+        wrapped = (
+            controls.get_width()
+            < first_width + controls.get_column_spacing() + second_width
+        )
         observed_wrapping.add(wrapped)
         if not wrapped:
-            assert abs(mb.get_x() - sb.get_x() - sb.get_width()) <= 1
+            assert abs(
+                mb.get_x() - sb.get_x() - sb.get_width()
+                - controls.get_column_spacing()
+            ) <= 1
             assert abs(
                 (mb.get_y() + mb.get_height() / 2)
                 - (sb.get_y() + sb.get_height() / 2)
             ) <= 1
         else:
-            assert mb.get_y() >= sb.get_y() + sb.get_height()
+            assert mb.get_y() >= (
+                sb.get_y() + sb.get_height() + controls.get_row_spacing()
+            )
             assert abs(mb.get_x() - sb.get_x()) <= 1
         button_bounds = []
         for mode in modes[:4]:
@@ -208,7 +216,10 @@ def activate(app):
             assert ok
             button_bounds.append(bounds)
         for previous, current in zip(button_bounds, button_bounds[1:]):
-            assert abs(current.get_x() - previous.get_x() - previous.get_width()) <= 1
+            assert abs(
+                current.get_x() - previous.get_x() - previous.get_width()
+                - strip.get_spacing()
+            ) <= 1
         assert abs(mb.get_height() - sb.get_height()) <= 1, (
             mb.get_height(), sb.get_height()
         )

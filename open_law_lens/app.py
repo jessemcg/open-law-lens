@@ -1817,24 +1817,26 @@ class ComposerControls(Gtk.FlowBox):
         self, orientation: Gtk.Orientation, for_size: int
     ) -> tuple[int, int, int, int]:
         first_width, second_width, first_height, second_height = self._sizes()
+        natural_width = first_width + self.get_column_spacing() + second_width
         if orientation == Gtk.Orientation.HORIZONTAL:
-            return max(first_width, second_width), first_width + second_width, -1, -1
-        wrapped = for_size >= 0 and for_size < first_width + second_width
+            return max(first_width, second_width), natural_width, -1, -1
+        wrapped = for_size >= 0 and for_size < natural_width
         height = (
-            first_height + second_height + 2
+            first_height + second_height + self.get_row_spacing()
             if wrapped else max(first_height, second_height)
         )
         return height, height, -1, -1
 
     def do_size_allocate(self, width: int, height: int, baseline: int) -> None:
         first_width, second_width, first_height, second_height = self._sizes()
-        wrapped = width < first_width + second_width
+        wrapped = width < first_width + self.get_column_spacing() + second_width
         first = self.get_child_at_index(0)
         second = self.get_child_at_index(1)
         first.allocate(first_width, first_height, -1, None)
         position = Graphene.Point().init(
-            0 if wrapped else first_width,
-            first_height + 2 if wrapped else (first_height - second_height) / 2,
+            0 if wrapped else first_width + self.get_column_spacing(),
+            first_height + self.get_row_spacing()
+            if wrapped else (first_height - second_height) / 2,
         )
         second.allocate(
             second_width, second_height, -1, Gsk.Transform.new().translate(position)
