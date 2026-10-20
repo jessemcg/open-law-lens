@@ -1223,8 +1223,10 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.pi_thinking_row.set_model(Gtk.StringList.new(["Loading..."]))
         self.pi_thinking_row.set_sensitive(False)
         self.pi_thinking_row.connect("notify::selected", self._on_pi_thinking_selected)
-        # ComboRow activates through its ListBox parent, not a plain Box.
+        # Match Adwaita preferences rows while retaining the ListBox parent
+        # required for ComboRow activation.
         controls = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        controls.add_css_class("boxed-list")
         controls.append(self.pi_model_row)
         controls.append(self.pi_thinking_row)
         page_box.append(controls)

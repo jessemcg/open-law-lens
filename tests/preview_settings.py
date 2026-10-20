@@ -100,6 +100,8 @@ def activate(application):
         ('Collapse all', lambda: [row.set_expanded(False) for row in settings.settings_categories.values()]),
         ('900 × 760', lambda: settings.set_default_size(900, 760)),
         ('620 × 760', lambda: settings.set_default_size(620, 760)),
+        ('520 × 620', lambda: settings.set_default_size(520, 620)),
+        ('469 × 620', lambda: settings.set_default_size(469, 620)),
         ('Light', lambda: style.set_color_scheme(ui.Adw.ColorScheme.FORCE_LIGHT)),
         ('Dark', lambda: style.set_color_scheme(ui.Adw.ColorScheme.FORCE_DARK)),
         ('Enlarge text', lambda: provider.load_from_string('* { font-size: 20px; }')),
@@ -113,48 +115,110 @@ def activate(application):
         box.append(button)
     print(f'ROOT={ROOT} PID={os.getpid()}', flush=True)
     if '--matrix' in sys.argv:
-        stages = iter(('collapsed-light-900', 'expanded-light-900', 'expanded-dark-900',
-                       'expanded-dark-620-large', 'bottom-dark-620-large'))
+        ui.Gtk.Settings.get_default().set_property('gtk-enable-animations', False)
+        stages = iter(
+            [(theme, width, large, 'loaded')
+             for theme in ('light', 'dark') for width in (900, 520, 469)
+             for large in (False, True)]
+            + [('dark', 520, False, state)
+               for state in ('loading', 'unavailable', 'failure')]
+        )
         stage = None
+        size_attempts = 0
+        paintable = ui.Gtk.WidgetPaintable.new(settings)
 
         def render():
-            nonlocal stage
-            if not settings.pi_model_refresh_button.get_sensitive():
+            nonlocal stage, settings, paintable, size_attempts
+            if not settings.pi_model_refresh_button.get_sensitive() and (stage is None or stage[3] != 'loading'):
                 return True
             if stage is not None:
+                theme, expected_width, large, state = stage
+                adjustment = settings.settings_scroller.get_vadjustment()
+                bottom = max(0, adjustment.get_upper() - adjustment.get_page_size())
+                if adjustment.get_value() < bottom - 1:
+                    adjustment.set_value(bottom)
+                    return True
+                size = 'large' if large else 'normal'
+                name = f'agent-{theme}-{expected_width}-{size}-{state}'
                 snapshot = ui.Gtk.Snapshot()
                 width, height = settings.get_width(), settings.get_height()
-                assert (width, height) == (620 if '620' in stage else 900, 760)
-                ui.Gtk.WidgetPaintable.new(settings).snapshot(snapshot, width, height)
+                expected_height = 760 if expected_width == 900 else 620
+                if (width, height) != (expected_width, expected_height):
+                    # X11 includes client-decoration extents in default_size.
+                    # Measure them rather than hardcoding a shadow allowance.
+                    assert size_attempts < 3, (stage, width, height)
+                    surface = settings.get_surface()
+                    settings.set_default_size(
+                        expected_width + surface.get_width() - width,
+                        expected_height + surface.get_height() - height)
+                    size_attempts += 1
+                    return True
+                paintable.snapshot(snapshot, width, height)
                 node = snapshot.to_node()
+                assert node is not None
                 texture = settings.get_renderer().render_texture(node, None)
-                texture.save_to_png(str(ROOT / f'{stage}.png'))
+                texture.save_to_png(str(ROOT / f'{name}.png'))
                 assert settings.settings_scroller.get_hadjustment().get_upper() <= settings.settings_scroller.get_width() + 1
-                print(f'RENDER {stage}: {width}x{height}; no horizontal scrolling', flush=True)
+                assert settings.settings_categories['Agent Model'].get_expanded()
+                assert settings.pi_model_row.get_mapped()
+                assert settings.pi_model_row.get_parent().has_css_class('boxed-list')
+                if state in ('loading', 'failure'):
+                    assert not settings.pi_model_row.get_sensitive()
+                if state == 'unavailable':
+                    assert 'unavailable' in settings.pi_model_row.get_subtitle()
+                    assert not settings.pi_thinking_row.get_sensitive()
+                print(f'RENDER {name}: {width}x{height}; no horizontal scrolling', flush=True)
             try:
                 stage = next(stages)
             except StopIteration:
                 application.quit()
                 return False
-            if stage == 'collapsed-light-900':
-                settings.unmaximize()
-                settings.set_default_size(900, 760)
-                style.set_color_scheme(ui.Adw.ColorScheme.FORCE_LIGHT)
-            if stage == 'expanded-light-900':
-                settings.settings_categories['General'].set_expanded(True)
-                settings.settings_categories['Agent Model'].set_expanded(True)
-            if stage == 'expanded-dark-900':
-                style.set_color_scheme(ui.Adw.ColorScheme.FORCE_DARK)
-            if stage == 'expanded-dark-620-large':
-                settings.set_default_size(620, 760)
-                provider.load_from_string('* { font-size: 20px; }')
-            if stage == 'bottom-dark-620-large':
-                adjustment = settings.settings_scroller.get_vadjustment()
-                adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
+            theme, width, large, state = stage
+            size_attempts = 0
+            settings.destroy()
+            style.set_color_scheme(ui.Adw.ColorScheme.FORCE_LIGHT if theme == 'light'
+                                   else ui.Adw.ColorScheme.FORCE_DARK)
+            provider.load_from_string('* { font-size: 20px; }' if large else '')
+            # Fresh windows avoid compositor/backend resize policy contaminating
+            # the requested content-size matrix.
+            settings = ui.SettingsWindow(parent)
+            settings.set_title('Synthetic OpenLawLens Shared Agent Settings')
+            settings.set_default_size(width, 760 if width == 900 else 620)
+            settings.present()
+            paintable = ui.Gtk.WidgetPaintable.new(settings)
+            for title, row in settings.settings_categories.items():
+                row.set_expanded(title == 'Agent Model')
+            if state == 'loading':
+                # Hold the synthetic loading view by ignoring its worker result.
+                settings._pi_model_generation += 1
+                settings.pi_model_row.set_sensitive(False)
+                settings.pi_thinking_row.set_sensitive(False)
+                settings.pi_model_refresh_button.set_sensitive(False)
+                settings.pi_model_row.set_subtitle('Loading models authorized in Pi...')
+            elif state in ('unavailable', 'failure'):
+                settings._pi_model_generation += 1
+                settings.pi_model_refresh_button.set_sensitive(True)
+                settings._finish_pi_model_load(
+                    settings._pi_model_generation,
+                    PiRuntimeCatalog(MODELS[:1], MODELS[0], 'medium') if state == 'unavailable' else None,
+                    'Synthetic refresh failure' if state == 'failure' else '',
+                    PiAgentProfile(provider='synthetic', model='model-2', thinking='high'))
             return True
-        ui.GLib.timeout_add(900, render)
+
+        def checked_render():
+            try:
+                return render()
+            except Exception as exc:
+                FAILURES.append(repr(exc))
+                print(f'FAIL render {stage}: {exc!r}', flush=True)
+                application.quit()
+                return False
+
+        ui.GLib.timeout_add(900, checked_render)
         return
     if '--auto' not in sys.argv:
+        if '--agent' in sys.argv:
+            settings.settings_categories['Agent Model'].set_expanded(True)
         controls.present()
         return
 
@@ -276,6 +340,8 @@ def activate(application):
                 refresh()
                 generation = settings._pi_model_generation
                 settings.close()
+                assert not settings._pi_model_closed
+                settings._session.dialog.response('discard')
                 assert settings._pi_model_closed and settings._pi_model_generation > generation
                 assert not settings._finish_pi_model_load(generation, CATALOG, '', unsaved)
                 assert CONFIG.read_bytes() == saved_bytes

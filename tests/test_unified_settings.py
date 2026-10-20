@@ -26,6 +26,14 @@ class UnifiedSettingsTests(unittest.TestCase):
             w.present()
             self.assertEqual(list(w.settings_categories), ["General", "Display", "Highlights", "Agent Model"])
             self.assertIsInstance(w.token_row, ui.Adw.PasswordEntryRow)
+            controls = w.pi_model_row.get_parent()
+            self.assertIsInstance(controls, ui.Gtk.ListBox)
+            self.assertIs(w.pi_thinking_row.get_parent(), controls)
+            self.assertEqual(controls.get_selection_mode(), ui.Gtk.SelectionMode.NONE)
+            self.assertTrue(controls.has_css_class("boxed-list"))
+            self.assertIs(controls.get_row_at_index(0), w.pi_model_row)
+            self.assertIs(controls.get_row_at_index(1), w.pi_thinking_row)
+            self.assertIsNone(controls.get_row_at_index(2))
             # Immediate session-only action is outside the persistent draft.
             parent._appeal_fact_pattern_path_override = "synthetic-session-only"
             self.assertEqual(w._draft_snapshot(), w._session.baseline)
