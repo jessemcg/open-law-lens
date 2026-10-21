@@ -1,6 +1,5 @@
 # Open Law Lens
 
-Settings stays open after Save; Close is separate.
 [Settings guide and validation](docs/unified-settings-validation.md).
 
 <img src="open-law-lens-icon.svg" alt="Open Law Lens icon" width="96" align="right">
