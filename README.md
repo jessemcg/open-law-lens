@@ -1,10 +1,5 @@
 # Open Law Lens
 
-Model maintenance: `open-law-lens model-settings --stdin` supports Skills Menu's
-**Maintenance → Replace Workhorse Model** without GUI/backend startup. Settings
-objects retain their own save revision; fresh reads never authorize older drafts.
-See the [protocol](../SkillsMenu/.pi/skills/replace-workhorse-model/references/protocol-v1.md).
-
 Settings stays open after Save; Close is separate.
 [Settings guide and validation](docs/unified-settings-validation.md).
 
