@@ -1,7 +1,5 @@
 # Open Law Lens
 
-[Settings guide and validation](docs/unified-settings-validation.md).
-
 <img src="open-law-lens-icon.svg" alt="Open Law Lens icon" width="96" align="right">
 
 A Linux desktop app for reading and researching California legal authority.
