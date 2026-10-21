@@ -151,7 +151,7 @@ assert cache.agent_answer_index_path().is_file()
             with patch.dict(os.environ, {"OPEN_LAW_LENS_STORAGE": "standalone", "XDG_CONFIG_HOME": str(root)}):
                 def check(command, request, *, timeout, cwd):
                     self.assertNotEqual(cwd, PROJECT)
-                    self.assertFalse((cwd / ".pi/settings.json").exists())
+                    self.assertEqual(json.loads((cwd / ".pi/settings.json").read_text()), {})
                     return {"success": True}
                 with patch.object(pi_runtime, "_pi_rpc_response_in", side_effect=check):
                     pi_runtime._pi_rpc_response([], {}, timeout=1)

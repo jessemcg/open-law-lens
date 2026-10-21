@@ -263,12 +263,14 @@ def normalize_appeal_issue_labels(value: Any, presets: list[str]) -> list[str]:
 def normalize_agent_runtime_profile(value: Any) -> PiAgentProfile | None:
     if not isinstance(value, dict):
         return None
-    if not all(isinstance(value.get(key), str) for key in ("provider", "model", "thinking")):
+    if not all(isinstance(value.get(key), str) for key in ("provider", "model")):
+        return None
+    if "thinking" in value and not isinstance(value["thinking"], str):
         return None
     provider = value["provider"].strip()
     model = value["model"].strip()
-    thinking = value["thinking"].strip().lower()
-    if provider and model and thinking in PI_THINKING_LEVELS:
+    thinking = value.get("thinking", "").strip().lower()
+    if provider and model and ("thinking" not in value or thinking in PI_THINKING_LEVELS):
         return PiAgentProfile(provider, model, thinking)
     return None
 
@@ -278,7 +280,9 @@ def shared_profile_from_json(raw: dict[str, Any]) -> PiAgentProfile | None:
     if CONFIG_KEY_AGENT_RUNTIME_PROFILE in raw:
         return normalize_agent_runtime_profile(raw[CONFIG_KEY_AGENT_RUNTIME_PROFILE])
     legacy = raw.get(CONFIG_KEY_AGENT_RUNTIME_PROFILES)
-    return normalize_agent_runtime_profile(legacy.get(AGENT_PROFILE_LAW)) if isinstance(legacy, dict) else None
+    value = legacy.get(AGENT_PROFILE_LAW) if isinstance(legacy, dict) else None
+    # Model-only inheritance is a modern format, never revival of partial legacy Law.
+    return normalize_agent_runtime_profile(value) if isinstance(value, dict) and "thinking" in value else None
 
 
 def reader_font_css(font_family: str) -> str:
@@ -346,7 +350,8 @@ def save_config(config: AppConfig, path: Path = CONFIG_PATH) -> None:
         CONFIG_KEY_AGENT_RUNTIME_PROFILE: (
             {"provider": config.agent_runtime_profile.provider,
              "model": config.agent_runtime_profile.model,
-             "thinking": config.agent_runtime_profile.thinking}
+             **({"thinking": config.agent_runtime_profile.thinking}
+                if config.agent_runtime_profile.thinking else {})}
             if config.agent_runtime_profile is not None else None
         ),
         CONFIG_KEY_READER_FONT_SIZE_PT: coerce_reader_font_size(config.reader_font_size_pt),

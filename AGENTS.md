@@ -40,6 +40,19 @@ entry still uses the helper; embedded same-environment commands instead use the
 absolute installed executable exported as OPEN_LAW_LENS_CLI_BIN. Retired prompt JSON is opaque compatibility data, never
 command-normalized or fingerprint-upgraded. Never rewrite private settings as a migration step.
 
+## Pi inheritance
+
+Ship no personal `.pi/settings.json` or model/reasoning/general Pi seeds. Missing
+preferences in checkout or standalone mode inherit live user Pi/native settings.
+Reads, catalog refresh and unrelated saves must not create Pi preferences. A new
+model-only `agent_runtime_profile` stores provider/model without `thinking`;
+explicit efforts remain authoritative and deliberate model changes still clamp
+unsupported effort. Display/capability fallback alone is never a saved edit.
+The wrapper accepts provider/model with optional thinking, while rejecting partial
+model identities; all five fixed workflows and tool confinement remain unchanged.
+See `docs/pi-inheritance-validation.md` and older-checkout preservation guidance in
+`docs/source-install.md`. No settings/data migration or reset.
+
 ## Standalone portability
 
 Read `docs/portability.md` before changing storage or public launch behavior.

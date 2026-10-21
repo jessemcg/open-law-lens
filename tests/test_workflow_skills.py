@@ -62,6 +62,10 @@ class WorkflowSkillTests(unittest.TestCase):
                 self.assertEqual(system.read_text().count('name: legal-researcher\n'), int(research))
                 self.assertEqual(args[args.index('--system-prompt') + 1], str(system))
                 self.assertIn('Literal {question} /skill:not-an-invocation é', args)
+                # Required instructions are preloaded, independent of global slash-command policy.
+                agent = root / 'pi-agent'
+                agent.mkdir(exist_ok=True)
+                (agent / 'settings.json').write_text('{"enableSkillCommands":false}')
                 # Reinvoke the actual wrapper in the SAME workspace, not the fixture.
                 env = dict(os.environ, OPEN_LAW_LENS_PROJECT_DIR=str(root / 'project'),
                     OPEN_LAW_LENS_AGENT_WORKSPACE=str(root / 'workspace'),
@@ -71,6 +75,7 @@ class WorkflowSkillTests(unittest.TestCase):
                     PI_CODING_AGENT_DIR=str(root / 'pi-agent'), PI_RUN_METRICS_ENABLED='0')
                 subprocess.run(['bash', str(WRAPPER)], env=env, check=True, capture_output=True)
                 self.assertEqual(system.read_text(), expected)
+                self.assertEqual((agent / 'settings.json').read_text(), '{"enableSkillCommands":false}')
                 if workflow != 'subsequent_treatment':
                     env.pop('OPEN_LAW_LENS_AGENT_PROFILE_KEY')
                     subprocess.run(['bash', str(WRAPPER)], env=env, check=True, capture_output=True)

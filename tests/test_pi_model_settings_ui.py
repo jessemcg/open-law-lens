@@ -84,8 +84,23 @@ class PiModelSettingsUiTests(unittest.TestCase):
         window = model_window()
         self.finish(window)
         self.assertIsNone(window._selected_pi_profile())
-        self.assertEqual(window._selected_pi_thinking(), 'high')
+        self.assertEqual(window._selected_pi_thinking(), '')
+        self.assertIn('High', window.pi_thinking_row.model[0])
         self.assertFalse(window.pi_thinking_row.sensitive)
+
+    def test_catalog_adjustment_alone_preserves_saved_effort(self):
+        profile = PiAgentProfile(self.plain.provider, self.plain.model_id, 'high')
+        window = model_window(profile)
+        self.finish(window, profile)
+        self.assertEqual(window._selected_pi_thinking(), 'off')
+        self.assertEqual(window._selected_pi_profile(), profile)
+
+    def test_model_only_selection_keeps_reasoning_inherited(self):
+        window = model_window()
+        self.finish(window)
+        window.pi_model_row.set_selected(1)
+        SettingsWindow._on_pi_model_selected(window, None, None)
+        self.assertEqual(window._selected_pi_profile(), PiAgentProfile('synthetic', 'full', ''))
 
     def test_explicit_supported_unsupported_and_nonreasoning(self):
         for model, requested, expected in ((self.full, 'max', 'max'),

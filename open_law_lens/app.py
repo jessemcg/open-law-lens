@@ -1262,8 +1262,13 @@ class SettingsWindow(Adw.ApplicationWindow):
     def _selected_pi_profile(self) -> PiAgentProfile | None:
         model = self._selected_pi_model()
         thinking = self._selected_pi_thinking()
-        if model is None or not thinking:
+        if model is None:
             return None
+        pending = self._pending_pi_profile
+        if (not getattr(self, '_pi_profile_edited', False) and pending is not None
+                and model.settings_key == (pending.provider, pending.model)):
+            # Capability/display adjustment is not an intentional settings edit.
+            return pending
         return PiAgentProfile(model.provider, model.model_id, thinking)
 
     def _pi_model_is_available(self, model: PiModel) -> bool:
@@ -1283,32 +1288,30 @@ class SettingsWindow(Adw.ApplicationWindow):
         try:
             if model is None:
                 default = catalog.default_thinking_level if catalog is not None else "medium"
-                self._pi_thinking_options = [default]
+                self._pi_thinking_options = [""]
                 row.set_model(Gtk.StringList.new([f"Use Pi default ({default.title()})"]))
                 row.set_selected(0)
                 row.set_sensitive(False)
                 row.set_subtitle("Inherited together with the Pi default model.")
                 return
             if not self._pi_model_is_available(model):
-                configured = preferred or "medium"
+                configured = preferred or ""
                 self._pi_thinking_options = [configured]
-                row.set_model(Gtk.StringList.new([configured.title()]))
+                row.set_model(Gtk.StringList.new([configured.title() if configured else "Use Pi default"]))
                 row.set_selected(0)
                 row.set_sensitive(False)
                 row.set_subtitle("This configured model is unavailable; the value is preserved.")
                 return
-            requested = preferred or (
-                catalog.default_thinking_level if catalog is not None else "medium"
-            )
-            effective = clamp_pi_thinking_level(model, requested)
-            levels = list(model.supported_thinking_levels or ("off",))
+            requested = preferred or ""
+            effective = clamp_pi_thinking_level(model, requested) if requested else ""
+            levels = ["", *list(model.supported_thinking_levels or ("off",))]
             self._pi_thinking_options = levels
-            row.set_model(Gtk.StringList.new([level.title() for level in levels]))
+            row.set_model(Gtk.StringList.new([level.title() if level else "Use Pi default" for level in levels]))
             row.set_selected(levels.index(effective))
             row.set_sensitive(True)
             row.set_subtitle(
                 f"{requested.title()} is unsupported by this model; Pi will use {effective.title()}."
-                if effective != requested else f"Passed to Pi as --thinking {effective}."
+                if effective != requested else (f"Passed to Pi as --thinking {effective}." if effective else "Inherit Pi reasoning; no app effort override.")
             )
         finally:
             self._pi_model_applying = False
@@ -1325,6 +1328,7 @@ class SettingsWindow(Adw.ApplicationWindow):
     def _on_pi_model_selected(self, _row: Adw.ComboRow, _parameter: object) -> None:
         if self._pi_model_applying or self._pi_model_closed:
             return
+        self._pi_profile_edited = True
         preferred = self._selected_pi_thinking()
         self._update_pi_model_subtitle()
         self._populate_pi_thinking_row(preferred)
@@ -1332,6 +1336,7 @@ class SettingsWindow(Adw.ApplicationWindow):
     def _on_pi_thinking_selected(self, _row: Adw.ComboRow, _parameter: object) -> None:
         if self._pi_model_applying or self._pi_model_closed:
             return
+        self._pi_profile_edited = True
         thinking = self._selected_pi_thinking()
         if thinking:
             self.pi_thinking_row.set_subtitle(f"Passed to Pi as --thinking {thinking}.")
@@ -1404,10 +1409,10 @@ class SettingsWindow(Adw.ApplicationWindow):
                 self.pi_model_row.set_selected(0)
                 self.pi_model_row.set_sensitive(False)
                 self.pi_model_row.set_subtitle(error or "Pi models unavailable.")
-                thinking = desired.thinking if desired else "medium"
+                thinking = desired.thinking if desired else ""
                 self._pi_thinking_options = [thinking]
                 self.pi_thinking_row.set_model(Gtk.StringList.new(
-                    [thinking.title()] if desired else ["Use Pi default (unavailable)"]
+                    [thinking.title()] if thinking else ["Use Pi default (unavailable)"]
                 ))
                 self.pi_thinking_row.set_selected(0)
                 self.pi_thinking_row.set_sensitive(False)
@@ -1601,6 +1606,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         self._loaded_config = config
         self._original_pi_profile = agent_runtime_profile
         self._pending_pi_profile = agent_runtime_profile
+        self._pi_profile_edited = False
         self.prior_briefs_folder_row.set_text(folder or str(DEFAULT_PRIOR_BRIEFS_DIR))
         self._session.accept()
         try:

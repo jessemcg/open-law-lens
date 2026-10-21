@@ -1,5 +1,9 @@
 # Unified Settings alignment — 2026-10-19
 
+Pi inheritance follow-up (2026-10-21): see [validation](pi-inheritance-validation.md)
+for missing preferences, model-only effort inheritance and current isolated native
+Settings acceptance. Older notes below describe their original validation scope.
+
 Publication: the user subsequently authorized a separate local commit of these changes. No push or maintained-app restart is included; the native-input limitation below remains unresolved. The no-commit statements describe the validation run.
 
 General/Display/Highlights/Agent Model retain the existing single boxed expandable home, one outer scroller and inline compact controls. No retired prompt editor, workflow picker or nested model category was restored. The CourtListener token remains masked.

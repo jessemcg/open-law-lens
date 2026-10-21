@@ -9,6 +9,7 @@ config.json
 cache/
 library/
 prior_briefs/
+/.pi/settings.json
 .pi/git/
 .pi/npm/
 .pi/sessions/

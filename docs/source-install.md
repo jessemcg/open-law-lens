@@ -103,6 +103,17 @@ resource markers, locks and installed-file hashes prevent blind takeover/removal
 The standalone dependency/source receipt (`.open-law-lens-runtime.json`) is
 separate from the installer's ownership receipt.
 
+Neither standalone installs nor clean source checkouts ship personal Pi settings
+or model/reasoning/general preference seeds. Missing app overrides inherit live
+user Pi settings/native behavior. Reads, refresh and unrelated saves never create
+Pi preferences; selecting only a model keeps effort inherited. Existing standalone
+XDG preferences are unaffected. Before updating an older Git checkout, preserve
+any personal selection from the formerly tracked `.pi/settings.json` outside the
+checkout, then restore it to that ignored path if desired. Git removal may delete
+a downstream checkout's unmodified tracked file; it cannot automatically preserve
+every existing selection. There is no automatic migration/reset. Workflow prompts,
+skills, tool restrictions and session safeguards remain app-owned.
+
 A suitable uv is reused; otherwise private uv **0.11.8** is downloaded from Astral.
 Managed Python 3.13 and `uv sync --locked` explicitly provision an editable project
 outside source. No checkout `.venv`, system pip, sudo npm, launch-time install,

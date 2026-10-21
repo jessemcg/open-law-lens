@@ -7,7 +7,6 @@ import shutil
 import subprocess
 import time
 import tempfile
-import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -213,14 +212,14 @@ def _pi_rpc_command() -> list[str]:
 
 def _pi_rpc_response(command: list[str], request: dict[str, Any], *, timeout: float) -> dict[str, Any]:
     if not standalone():
+        _read_pi_settings(pi_settings_path())
         return _pi_rpc_response_in(command, request, timeout=timeout, cwd=PROJECT_DIR)
     # Never allow the installed resource tree's personal model fallback to win.
     with tempfile.TemporaryDirectory(prefix="open-law-lens-models-") as temporary:
         cwd = Path(temporary)
-        settings = pi_settings_path()
-        if settings.is_file():
-            (cwd / ".pi").mkdir(mode=0o700)
-            shutil.copyfile(settings, cwd / ".pi" / "settings.json")
+        settings = _read_pi_settings(pi_settings_path())
+        (cwd / ".pi").mkdir(mode=0o700)
+        (cwd / ".pi/settings.json").write_text(json.dumps(settings), encoding="utf-8")
         return _pi_rpc_response_in(command, request, timeout=timeout, cwd=cwd)
 
 
@@ -403,11 +402,10 @@ def available_pi_runtime_catalog(
 
 def _read_pi_settings(path: Path) -> dict[str, Any]:
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError as exc:
-        if standalone() and path == pi_settings_path():
-            return {}
-        raise PiSettingsError(f"Pi project settings not found: {path}") from exc
+        from ._model_store import read_ordinary
+        raw = read_ordinary(path)
+    except FileNotFoundError:
+        return {}
     except (OSError, json.JSONDecodeError) as exc:
         raise PiSettingsError(f"Unable to read Pi project settings: {exc}") from exc
     if not isinstance(raw, dict):
@@ -433,13 +431,8 @@ def save_project_pi_model(
     settings = _read_pi_settings(path)
     settings["defaultProvider"] = model.provider
     settings["defaultModel"] = model.model_id
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        with os.fdopen(os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as stream:
-            stream.write(json.dumps(settings, ensure_ascii=True, indent=2) + "\n")
-        os.replace(temp_path, path)
+        from ._model_store import save_ordinary
+        save_ordinary(path, settings)
     except OSError as exc:
         raise PiSettingsError(f"Unable to save Pi project settings: {exc}") from exc
-    finally:
-        temp_path.unlink(missing_ok=True)

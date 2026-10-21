@@ -69,6 +69,21 @@ class Contract(unittest.TestCase):
         elif self.package=='recordprep': data['classifier_model_id']=''
         elif self.package=='omnivoice_app': data['llm_plain_model']=''
         else: self.skipTest('owner has no covered direct-client slot')
+    def test_model_only_apply_never_materializes_inherited_reasoning(self):
+        if self.package != 'open_law_lens':
+            self.skipTest('OpenLawLens optional reasoning profile')
+        self.config.unlink()
+        self.call('inspect')
+        self.assertFalse(self.config.exists())
+        plan = self.preview(); self.apply(plan)
+        self.assertEqual(json.loads(self.config.read_bytes())['agent_runtime_profile'], NEW)
+        self.assertEqual(self.pi.read_bytes(), self.original[self.pi])
+        self.recovery(plan)
+        self.assertFalse(self.config.exists())
+        self.put(self.config, {'agent_runtime_profile': OLD, 'unrelated': [1]})
+        plan = self.preview(); self.apply(plan)
+        self.assertEqual(json.loads(self.config.read_bytes()), {'agent_runtime_profile': NEW, 'unrelated': [1]})
+
     def test_empty_named_direct_slots_are_assessed_without_a_guessed_identity(self):
         data=json.loads(self.config.read_bytes());self.clear_named_direct_selections(data);self.put(self.config,data)
         before=self.config.read_bytes();result=self.call('inspect')

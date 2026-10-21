@@ -77,12 +77,12 @@ if [[ ! -x "$pi_bin" ]] && ! command -v "$pi_bin" >/dev/null 2>&1; then
   exit 127
 fi
 if [[ -n "$pi_provider" || -n "$pi_model" || -n "$pi_thinking" ]]; then
-  if [[ -z "$pi_provider" || -z "$pi_model" || -z "$pi_thinking" ]]; then
-    printf 'Pi runtime profile requires provider, model, and thinking level.\n' >&2
+  if [[ -z "$pi_provider" || -z "$pi_model" ]]; then
+    printf 'Pi runtime profile requires provider and model.\n' >&2
     exit 2
   fi
   case "$pi_thinking" in
-    off|minimal|low|medium|high|xhigh|max) ;;
+    ''|off|minimal|low|medium|high|xhigh|max) ;;
     *)
       printf 'Unsupported Pi thinking level: %s\n' "$pi_thinking" >&2
       exit 2
@@ -149,14 +149,8 @@ settings_file="${OPEN_LAW_LENS_PI_SETTINGS:-$project_dir/.pi/settings.json}"
 if [[ "${OPEN_LAW_LENS_STORAGE:-legacy}" == standalone ]]; then
   settings_file="${OPEN_LAW_LENS_PI_SETTINGS:-${XDG_CONFIG_HOME:-$HOME/.config}/open-law-lens/pi/settings.json}"
 fi
-if [[ -f "$settings_file" ]]; then
-  cp -- "$settings_file" "$workspace/.pi/settings.json"
-elif [[ "${OPEN_LAW_LENS_STORAGE:-legacy}" == standalone ]]; then
-  printf '{}\n' > "$workspace/.pi/settings.json"
-else
-  printf 'Maintained Open Law Lens Pi settings missing. Restore the selected app preferences.\n' >&2
-  exit 2
-fi
+/usr/bin/python3 "$(dirname -- "${BASH_SOURCE[0]}")/stage-pi-settings.py" \
+  "$settings_file" "$workspace/.pi/settings.json"
 cp -a "$project_dir/.pi/SYSTEM.md" "$workspace/.pi/"
 # The live follow-up bridge is explicitly staged and loaded only when present;
 # it registers no model-facing tools and never widens the tool allowlist.
@@ -198,7 +192,8 @@ args+=(
   --system-prompt "$workspace/.pi/SYSTEM.md"
 )
 if [[ -n "$pi_provider" ]]; then
-  args+=(--provider "$pi_provider" --model "$pi_model" --thinking "$pi_thinking")
+  args+=(--provider "$pi_provider" --model "$pi_model")
+  [[ -z "$pi_thinking" ]] || args+=(--thinking "$pi_thinking")
 fi
 args+=("${followup_args[@]}")
 # Passive observer for every Pi-backed mode; never grant extra model tools.

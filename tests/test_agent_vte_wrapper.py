@@ -268,7 +268,7 @@ class AgentVteWrapperTests(unittest.TestCase):
             )
 
         self.assertEqual(result.returncode, 2)
-        self.assertIn("requires provider, model, and thinking", result.stderr)
+        self.assertIn("requires provider and model", result.stderr)
 
     def test_research_mode_uses_node_shipped_beside_pi(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -367,11 +367,8 @@ class AgentVteWrapperTests(unittest.TestCase):
         self.assertIn("Pi system prompt not found or empty", result.stderr)
 
     def test_repository_does_not_vendor_web_access(self) -> None:
-        settings = json.loads(
-            (PROJECT_DIR / ".pi" / "settings.json").read_text(encoding="utf-8")
-        )
-
-        self.assertNotIn("packages", settings)
+        tracked = subprocess.check_output(["git", "ls-files", ".pi/settings.json"], cwd=PROJECT_DIR)
+        self.assertEqual(tracked.strip(), b"")
         extensions = PROJECT_DIR / ".pi" / "extensions"
         vendored = {
             "pi-web-access",

@@ -11,7 +11,7 @@ import sys
 from .paths import RESOURCE_ROOT, standalone
 
 RESOURCES = (
-    "scripts/open-law-lens-agent-vte.sh", "scripts/open-law-lens-standalone.sh", "scripts/standalone-runtime.py",
+    "scripts/open-law-lens-agent-vte.sh", "scripts/stage-pi-settings.py", "scripts/open-law-lens-standalone.sh", "scripts/standalone-runtime.py",
     ".pi/SYSTEM.md", ".pi/extensions/open-law-lens-followup-bridge.ts",
     *[f".pi/skills/{name}/SKILL.md" for name in (
         "legal-researcher", "law-question", "research-cache", "prior-briefs",
