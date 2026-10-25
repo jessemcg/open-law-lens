@@ -38,6 +38,10 @@ class SharedAgentModelTests(unittest.TestCase):
                         **{name: Mock() for name in ('_stop_agent', '_stop_agent_answer_polling',
                             '_clear_agent_answer', '_set_status', '_set_agent_subview',
                             '_start_agent_answer_polling', '_refresh_agent_followup_state', '_on_agent_spawned')})
+                    parent._agent_request_generation = 1
+                    parent._agent_request_current = lambda request: True
+                    context = ui._AGENT_REQUEST.set(ui.AgentRequest(1, selection, 'synthetic-token', selection.agent_runtime_profile, None))
+                    self.addCleanup(ui._AGENT_REQUEST.reset, context)
                     with patch.object(ui, 'load_config', return_value=selection), \
                          patch.object(ui, 'find_pi_executable', return_value='/fake/pi'), \
                          patch.object(ui, 'find_pi_node_executable', return_value=''), \
@@ -64,18 +68,23 @@ class SharedAgentModelTests(unittest.TestCase):
         changed = replace(original, agent_runtime_profile=PiAgentProfile('other', 'available', 'high'))
         for mode, key in WORKFLOWS:
             effort_changed = replace(original, agent_runtime_profile=PiAgentProfile('chosen', 'available', 'low'))
-            for final, expected in ((original, 'launch'), (changed, 'changed during setup'),
-                                    (effort_changed, 'changed during setup'),
-                                    (replace(original, agent_runtime_profile=None), 'changed during setup')):
+            for final, expected in ((original, 'launch'), (changed, 'Settings changed'),
+                                    (effort_changed, 'Settings changed'),
+                                    (replace(original, agent_runtime_profile=None), 'Settings changed')):
                 with self.subTest(workflow=key, expected=expected):
-                    parent = SimpleNamespace(_set_status=Mock(), _launch_agent_with_prompt_ready=Mock(), get_visible=lambda: True)
+                    parent = SimpleNamespace(_set_status=Mock(), _launch_agent_with_prompt_ready=Mock(),
+                                             _agent_terminal=object())
+                    parent._agent_request_current = ui.OpenLawLensWindow._agent_request_current.__get__(parent)
+                    continuation = lambda: parent._launch_agent_with_prompt_ready(
+                        Path('/synthetic/prompt'), Path('/synthetic/workspace'), mode, key)
                     with patch.object(ui, 'standalone', return_value=True), \
                          patch.object(ui, 'load_config', side_effect=[original, final]), \
-                         patch.object(ui, 'available_pi_runtime_catalog', return_value=catalog), \
+                         patch.object(ui, 'courtlistener_token', return_value='synthetic-token'), \
+                         patch.object(ui.task_prerequisites, 'cheap_check', return_value=ui.task_prerequisites.Result()), \
+                         patch.object(ui.task_prerequisites.pi_runtime, 'available_pi_runtime_catalog', return_value=catalog), \
                          patch.object(ui.threading, 'Thread', InlineThread), \
                          patch.object(ui.GLib, 'idle_add', side_effect=lambda callback: callback()):
-                        ui.OpenLawLensWindow._launch_agent_with_prompt(
-                            parent, Path('/synthetic/prompt'), Path('/synthetic/workspace'), mode, profile_key=key)
+                        ui.OpenLawLensWindow._begin_agent_request(parent, True, continuation)
                     if expected == 'launch':
                         self.assertEqual(parent._launch_agent_with_prompt_ready.call_args.args[-1], key)
                     else:

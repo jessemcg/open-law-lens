@@ -98,6 +98,10 @@ class CourtListenerError(RuntimeError):
         self.body = body
 
 
+class CourtListenerAuthenticationRequired(CourtListenerError):
+    """An API endpoint rejected an anonymous request, not an invalid token."""
+
+
 @dataclass(frozen=True)
 class FormattedCitation:
     plain_text: str
@@ -640,6 +644,16 @@ class CourtListenerClient:
                     parsed = json.loads(body)
                 except json.JSONDecodeError:
                     parsed = None
+                if not self.token.strip() and (
+                    exc.code == 401 or (
+                        exc.code == 403 and isinstance(parsed, dict)
+                        and parsed.get("detail") == "Authentication credentials were not provided."
+                    )
+                ):
+                    from .task_prerequisites import MESSAGES, Reason
+                    raise CourtListenerAuthenticationRequired(
+                        MESSAGES[Reason.TOKEN], status=exc.code
+                    ) from exc
                 if isinstance(parsed, dict):
                     detail = (
                         parsed.get("detail")

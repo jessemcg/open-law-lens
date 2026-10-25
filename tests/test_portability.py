@@ -236,18 +236,21 @@ for capability in ('agent_workflows', 'pdf_extraction', 'prior_brief_indexing', 
         catalog = PiRuntimeCatalog((PiModel('other', 'paid', 'Other'),),
                                    PiModel('other', 'paid', 'Other'), 'medium')
         configured = AppConfig(agent_runtime_profile=PiAgentProfile('chosen', 'missing', 'high'))
-        parent = SimpleNamespace(_set_status=Mock(), _launch_agent_with_prompt_ready=Mock(), get_visible=lambda: True)
+        parent = SimpleNamespace(_set_status=Mock(), _launch_agent_with_prompt_ready=Mock(), _agent_terminal=object())
+        parent._agent_request_current = ui.OpenLawLensWindow._agent_request_current.__get__(parent)
         class InlineThread:
             def __init__(self, *, target, daemon): self.target = target
             def start(self): self.target()
         with patch.object(ui, 'standalone', return_value=True), \
-             patch.object(ui, 'available_pi_runtime_catalog', return_value=catalog), \
+             patch.object(ui.task_prerequisites.pi_runtime, 'available_pi_runtime_catalog', return_value=catalog), \
+             patch.object(ui.task_prerequisites, 'cheap_check', return_value=ui.task_prerequisites.Result()), \
+             patch.object(ui, 'courtlistener_token', return_value='synthetic-token'), \
              patch.object(ui, 'load_config', return_value=configured), \
              patch.object(ui.threading, 'Thread', InlineThread), \
              patch.object(ui.GLib, 'idle_add', side_effect=lambda callback: callback()):
-            ui.OpenLawLensWindow._launch_agent_with_prompt(parent, Path('/synthetic/prompt'), Path('/synthetic/workspace'), 'general')
+            ui.OpenLawLensWindow._begin_agent_request(parent, True, parent._launch_agent_with_prompt_ready)
         parent._launch_agent_with_prompt_ready.assert_not_called()
-        self.assertIn('will not choose a provider', parent._set_status.call_args.args[0])
+        self.assertEqual('Choose an available model in Settings → Agent Model.', parent._set_status.call_args.args[0])
 
     def test_public_launcher_missing_environment_never_installs(self):
         with tempfile.TemporaryDirectory() as directory:

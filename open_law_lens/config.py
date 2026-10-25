@@ -52,7 +52,7 @@ AGENT_RUNTIME_PROFILES_VERSION = 2
 PI_THINKING_LEVELS: tuple[str, ...] = (
     "off", "minimal", "low", "medium", "high", "xhigh", "max",
 )
-DEFAULT_READER_FONT_SIZE_PT = 11
+DEFAULT_READER_FONT_SIZE_PT = 14
 DEFAULT_SEARCH_MATCH_COLOR = "#fff3b0"
 DEFAULT_LINKED_TEXT_COLOR = "#fff0a6"
 # Retired preference: retained only for backward-compatible config round trips.
@@ -81,7 +81,7 @@ READER_FONT_FAMILY_OPTIONS: tuple[tuple[str, str], ...] = (
     ),
     ("Lato", 'Lato, Carlito, "Noto Sans", "Liberation Sans", sans-serif'),
 )
-DEFAULT_READER_FONT_FAMILY = READER_FONT_FAMILY_OPTIONS[0][0]
+DEFAULT_READER_FONT_FAMILY = "Linux Libertine O"
 LEGACY_READER_FONT_FAMILY_ALIASES: dict[str, str] = {
     "Georgia": "Caladea",
     "Merriweather": "Bitstream Charter",

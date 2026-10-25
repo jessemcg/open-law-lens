@@ -32,6 +32,14 @@ class PiRuntimeError(RuntimeError):
     pass
 
 
+class PiExecutableMissing(PiRuntimeError):
+    pass
+
+
+class PiStartError(PiRuntimeError):
+    pass
+
+
 class PiSettingsError(RuntimeError):
     pass
 
@@ -94,8 +102,10 @@ def _supported_thinking_levels(raw_model: dict[str, Any]) -> tuple[str, ...]:
 def _pi_model_from_json(raw_model: Any) -> PiModel | None:
     if not isinstance(raw_model, dict):
         return None
-    provider = str(raw_model.get("provider") or "").strip()
-    model_id = str(raw_model.get("id") or "").strip()
+    if not isinstance(raw_model.get("provider"), str) or not isinstance(raw_model.get("id"), str):
+        return None
+    provider = raw_model["provider"].strip()
+    model_id = raw_model["id"].strip()
     if not provider or not model_id:
         return None
     name = str(raw_model.get("name") or model_id).strip() or model_id
@@ -134,6 +144,17 @@ def find_pi_executable() -> str:
         if candidate.is_file():
             return str(candidate)
     return "pi"
+
+
+def require_pi_executable() -> str:
+    """Validate existing discovery, distinguishing an explicit broken override."""
+    executable = find_pi_executable()
+    path = _executable_path(executable)
+    if path is None or not os.access(path, os.X_OK):
+        if os.environ.get("OPEN_LAW_LENS_PI_BIN", "").strip():
+            raise PiStartError("Unusable Pi override.")
+        raise PiExecutableMissing("Pi is not discoverable.")
+    return executable
 
 
 def managed_node_candidates(environment: Mapping[str, str] | None = None) -> list[Path]:
@@ -241,7 +262,7 @@ def _pi_rpc_response_in(
             bufsize=1,
         )
     except OSError as exc:
-        raise PiRuntimeError(f"Unable to start Pi model query: {exc}") from exc
+        raise PiStartError(f"Unable to start Pi model query: {exc}") from exc
     output_lines: list[str] = []
     response: dict[str, Any] | None = None
     timed_out = False
@@ -349,7 +370,7 @@ def available_pi_models(
     for raw_model in raw_models:
         model = _pi_model_from_json(raw_model)
         if model is None:
-            continue
+            raise PiRuntimeError("Pi returned an invalid model entry.")
         models[model.settings_key] = model
     return sorted(
         models.values(),
@@ -377,6 +398,8 @@ def current_pi_runtime_defaults(
     if not isinstance(data, dict):
         raise PiRuntimeError("Pi returned an invalid current-state response.")
     model = _pi_model_from_json(data.get("model"))
+    if data.get("model") is not None and model is None:
+        raise PiRuntimeError("Pi returned an invalid current model.")
     thinking = str(data.get("thinkingLevel") or "medium").strip().lower()
     if thinking not in PI_THINKING_LEVELS:
         thinking = "medium"

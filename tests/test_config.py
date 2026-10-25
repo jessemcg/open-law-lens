@@ -180,7 +180,7 @@ class ConfigTests(unittest.TestCase):
     def test_font_preferences_and_retired_bare_code(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'config.json'
-            for value, expected in ((2, 8), (100, 48), ('14', 14), ('invalid', 11), (None, 11)):
+            for value, expected in ((2, 8), (100, 48), ('14', 14), ('invalid', 14), (None, 14)):
                 path.write_text(json.dumps({'reader_font_size_pt': value, 'default_bare_statute_law_code': 'invalid'}))
                 self.assertEqual(load_config(path).reader_font_size_pt, expected)
                 self.assertEqual(load_config(path).default_bare_statute_law_code, 'WIC')

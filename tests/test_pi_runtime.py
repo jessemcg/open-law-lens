@@ -52,7 +52,6 @@ class PiRuntimeTests(unittest.TestCase):
                         "name": "GLM 5.2",
                         "reasoning": False,
                     },
-                    {"provider": "", "id": "invalid"},
                 ]
             },
         }

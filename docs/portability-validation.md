@@ -2,6 +2,9 @@
 
 Historical pre-installer evidence. See [current installer validation and publication
 status](source-install-validation.md) for the shipped installer and GPL v3 decision.
+The historical Setup-window evidence below is superseded by
+[quiet startup and task-time validation](quiet-startup-validation.md): that GUI
+has been removed, not retained as a setup path.
 
 ## Conflict reconciliation — Work, 2026-10-17
 

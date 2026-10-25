@@ -207,9 +207,11 @@ GNOME Wayland may require its companion **GNOME Shell** extension (not an agent
 extension) and a manual logout/login; that is not a universal Linux requirement.
 The installer never grants desktop permissions, changes GNOME extensions, opens
 a browser or bypasses a human verification challenge. Setup commands have desktop
-effects; review them before running. `open-law-lens doctor` or **Setup / Diagnostics**
-provides redacted local checks without starting browser recovery or network/model
-probes by default. Missing readiness fails recovery closed, not baseline reading.
+effects; review them before running. For explicit technical troubleshooting,
+`open-law-lens doctor` provides redacted local checks without starting browser
+recovery or network/model probes by default. The app opens directly into its main
+window and gives task-specific guidance only when needed; no GUI setup report is
+shown. Missing readiness fails recovery closed, not baseline reading.
 
 ## Development helper
 

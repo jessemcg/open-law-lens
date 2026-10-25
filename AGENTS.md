@@ -62,8 +62,10 @@ config/data/state, never personal checkout config/model defaults or implicit cas
 paths. Preserve all explicit data overrides and never migrate private files.
 Research Cache contains durable user work and belongs in XDG data, not cache.
 `paths.py` resolves paths without creating them; runtime creation rejects unsafe
-owned/private-directory violations. `diagnostics.py`/`diagnostics_ui.py` expose
-redacted per-capability checks, no network/Pi by default and opt-in bounded probes.
+owned/private-directory violations. `diagnostics.py` exposes explicit non-GUI
+CLI checks, redacted per capability, no network/Pi by default and opt-in bounded
+probes. Startup is quiet; task_prerequisites.py owns short task-time messages.
+Never restore a GUI diagnostics window, first-run wizard or automatic repair.
 Missing optional capabilities do not block core reading. Source installs require
 the complete editable checkout; the public bootstrap and independent maintenance
 engine are documented in `docs/source-install.md`.

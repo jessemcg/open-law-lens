@@ -78,6 +78,7 @@ from open_law_lens.opinion_formatting import DisplayStyleSpan
 from open_law_lens.reader_highlights import ReaderHighlight
 from open_law_lens.slip_opinions import SlipOpinionResult
 from open_law_lens.web_import import ExtractedWebpage
+from open_law_lens import app as ui
 
 
 class AppReaderPayloadTests(unittest.TestCase):
@@ -143,6 +144,13 @@ class AppReaderPayloadTests(unittest.TestCase):
             OpenLawLensWindow.reload_settings(window)
             factory.assert_called_once()
             window._clear_brief_search_session.assert_called_once()
+            window.prior_briefs = old
+            window._agent_request_pending = True
+            generation = window._agent_request_generation
+            OpenLawLensWindow.reload_settings(window)
+            self.assertGreater(window._agent_request_generation, generation)
+            self.assertFalse(window._agent_request_pending)
+            window._set_status.assert_called_with('Settings changed. Submit the question again.')
 
     def test_old_folder_update_callbacks_do_not_report_on_new_folder(self) -> None:
         library = Mock()
@@ -185,6 +193,7 @@ class AppReaderPayloadTests(unittest.TestCase):
         old.sync.side_effect = lambda: (
             setattr(window, 'prior_briefs', new), SimpleNamespace(errors=()))[1]
         with patch('open_law_lens.app.GLib.idle_add') as publish:
+            window._agent_prepare_idle = ui.GLib.idle_add
             OpenLawLensWindow._prepare_brief_agent_worker(window, 'Question?', None, False, '')
         old.backup.assert_called_once()
         old.list_briefs.assert_called_once()
@@ -2522,6 +2531,7 @@ class AppReaderPayloadTests(unittest.TestCase):
             patch("open_law_lens.app.export_fact_pattern", return_value=fact_export) as export,
             patch("open_law_lens.app.GLib.idle_add") as idle_add,
         ):
+            window._agent_prepare_idle = ui.GLib.idle_add
             OpenLawLensWindow._prepare_general_agent_worker(  # type: ignore[arg-type]
                 window,
                 "What law applies?",
@@ -3043,6 +3053,7 @@ class AppReaderPayloadTests(unittest.TestCase):
             ) as export_current_case,
             patch("open_law_lens.app.GLib.idle_add") as idle_add,
         ):
+            window._agent_prepare_idle = idle_add
             OpenLawLensWindow._prepare_case_agent_worker(  # type: ignore[arg-type]
                 window,
                 "Compare the cases.",
@@ -3112,6 +3123,7 @@ class AppReaderPayloadTests(unittest.TestCase):
             patch("open_law_lens.app.export_fact_pattern") as export_current_case,
             patch("open_law_lens.app.GLib.idle_add") as idle_add,
         ):
+            window._agent_prepare_idle = idle_add
             OpenLawLensWindow._prepare_case_agent_worker(  # type: ignore[arg-type]
                 window,
                 "Explain the authorities.",
@@ -3179,6 +3191,7 @@ class AppReaderPayloadTests(unittest.TestCase):
             patch("open_law_lens.app.export_fact_pattern", return_value=fact_export),
             patch("open_law_lens.app.GLib.idle_add") as idle_add,
         ):
+            window._agent_prepare_idle = idle_add
             OpenLawLensWindow._prepare_case_agent_worker(  # type: ignore[arg-type]
                 window,
                 "Summarize the relevant facts.",
@@ -3300,6 +3313,7 @@ class AppReaderPayloadTests(unittest.TestCase):
 
         window = DummyWindow()
 
+        window._begin_agent_request = Mock(return_value=False)
         with patch("open_law_lens.app.Vte", None):
             result = OpenLawLensWindow.start_appeal_issue_assessment(  # type: ignore[arg-type]
                 window,
@@ -3308,8 +3322,10 @@ class AppReaderPayloadTests(unittest.TestCase):
             )
 
         self.assertFalse(result)
-        self.assertEqual(window.statuses, ["Embedded terminal is unavailable."])
+        self.assertEqual(window.statuses, [])
+        self.assertTrue(window._begin_agent_request.call_args.args[0])
 
+    @patch('open_law_lens.app._AGENT_REQUEST', new=SimpleNamespace(get=lambda: ('synthetic',)))
     def test_appeal_issue_start_creates_workspace_and_thread(self) -> None:
         class DummyThread:
             created: list[tuple[object, tuple[object, ...]]] = []
@@ -3345,6 +3361,7 @@ class AppReaderPayloadTests(unittest.TestCase):
 
         window = DummyWindow()
 
+        window._agent_worker = lambda worker: worker
         with patch("open_law_lens.app.Vte", object()):
             with patch("open_law_lens.app.threading.Thread", DummyThread):
                 result = OpenLawLensWindow.start_appeal_issue_assessment(  # type: ignore[arg-type]
@@ -3403,6 +3420,7 @@ class AppReaderPayloadTests(unittest.TestCase):
             "icons", "hicolor", "scalable", "actions", "cafe-symbolic.svg"
         ).is_file())
 
+    @patch('open_law_lens.app._AGENT_REQUEST', new=SimpleNamespace(get=lambda: ('synthetic',)))
     def test_custom_appeal_issue_uses_current_fact_pattern(self) -> None:
         class DummyWindow:
             def __init__(self) -> None:
@@ -3447,6 +3465,7 @@ class AppReaderPayloadTests(unittest.TestCase):
         self.assertFalse(result)
         self.assertEqual(window.statuses, ["Enter a legal question to assess."])
 
+    @patch('open_law_lens.app._AGENT_REQUEST', new=SimpleNamespace(get=lambda: ('synthetic',)))
     def test_custom_appeal_issue_reports_missing_fact_pattern(self) -> None:
         class DummyWindow:
             def __init__(self) -> None:
@@ -6639,7 +6658,6 @@ Opinion text.
         self.assertEqual(sections, [
             [("Update Prior Brief Library", "win.update_brief_library")],
             [("Settings", "win.settings"),
-             ("Setup / Diagnostics", "win.setup_diagnostics"),
              ("Keyboard Shortcuts", "win.show_shortcuts")],
             [("CLI Commands", "win.show_cli_commands"),
              ("D-Bus Commands", "win.show_dbus_commands")],
@@ -7273,6 +7291,7 @@ Opinion text.
         self.assertTrue(window.reader_subsequent_treatment_button.visible)
         self.assertTrue(window.reader_subsequent_treatment_button.sensitive)
 
+    @patch('open_law_lens.app._AGENT_REQUEST', new=SimpleNamespace(get=lambda: ('synthetic',)))
     def test_later_treatment_click_launches_general_agent_prompt(self) -> None:
         class DummyWindow:
             def __init__(self) -> None:

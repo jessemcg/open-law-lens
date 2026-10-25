@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+from contextvars import ContextVar
 import json
 import os
 import re
@@ -12,7 +13,7 @@ import tempfile
 import threading
 import time
 import weakref
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from importlib import resources
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -53,6 +54,7 @@ from .client import (
     CALIFORNIA_CASE_COURT_IDS,
     CourtListenerClient,
     CourtListenerError,
+    CourtListenerAuthenticationRequired,
     CourtListenerSearchResult,
     FormattedCitation,
     cluster_short_title,
@@ -109,7 +111,7 @@ from .config import (
     READER_FONT_FAMILY_OPTIONS,
     save_config,
 )
-from . import agent_prompts
+from . import agent_prompts, task_prerequisites
 from .current_case import (
     CurrentCaseDocument,
     CurrentCaseError,
@@ -372,6 +374,19 @@ def _bind_pi_model_list_item(
 def shared_agent_profile(config: AppConfig) -> PiAgentProfile | None:
     """Application selection for every new Agent session, independent of workflow."""
     return config.agent_runtime_profile
+
+
+@dataclass(frozen=True, slots=True)
+class AgentRequest:
+    generation: int
+    config: AppConfig = field(repr=False)
+    token: str = field(repr=False)
+    profile: PiAgentProfile | None
+    fact_pattern: Path | None = field(repr=False)
+
+
+# Each preparation worker and its GTK callbacks retain their original request.
+_AGENT_REQUEST: ContextVar[AgentRequest | None] = ContextVar("agent_request", default=None)
 
 
 PI_SELECTION_ENV_KEYS = (
@@ -2110,9 +2125,6 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         show_dbus_commands = Gio.SimpleAction.new("show_dbus_commands", None)
         show_dbus_commands.connect("activate", self._on_show_dbus_commands)
         self.add_action(show_dbus_commands)
-        setup = Gio.SimpleAction.new("setup_diagnostics", None)
-        setup.connect("activate", lambda *_: self._show_setup_diagnostics())
-        self.add_action(setup)
         show_cli_commands = Gio.SimpleAction.new("show_cli_commands", None)
         show_cli_commands.connect("activate", self._on_show_cli_commands)
         self.add_action(show_cli_commands)
@@ -2497,18 +2509,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         toolbar_view.set_content(toast_overlay)
         return toolbar_view
 
-    def _show_setup_diagnostics(self) -> None:
-        from .diagnostics_ui import SetupWindow
-        window = SetupWindow(self)
-        window.present()
-
     def _build_menu_button(self) -> Gtk.MenuButton:
         menu = Gio.Menu()
         for entries in (
             (("Update Prior Brief Library", "win.update_brief_library"),),
             (
                 ("Settings", "win.settings"),
-                ("Setup / Diagnostics", "win.setup_diagnostics"),
                 ("Keyboard Shortcuts", "win.show_shortcuts"),
             ),
             (
@@ -3523,13 +3529,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         frame.append(answer_scroller)
 
         if Vte is None:
-            missing = Gtk.Label(
-                label="Install GTK4 VTE packages to use the embedded Pi terminal.",
-                xalign=0,
-            )
-            missing.add_css_class("dim-label")
-            self._agent_session_widget = missing
-            frame.append(missing)
+            # Missing terminal support is explained only when an Agent task is requested.
+            placeholder = Gtk.Box()
+            self._agent_session_widget = placeholder
+            frame.append(placeholder)
             self._set_agent_subview(AGENT_SUBVIEW_ANSWER)
             return frame
 
@@ -3835,6 +3838,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         """Compatibility dispatcher for legacy call sites; no message history is kept."""
         if not text:
             return
+        if text in task_prerequisites.MESSAGES.values() or text == "Settings changed. Submit the question again.":
+            self._set_composer_error(text)
+            return
         lower = text.casefold()
         if any(
             phrase in lower
@@ -4080,9 +4086,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return False
 
     def _on_window_close_request(self, _window: Gtk.Window) -> bool:
+        self._agent_request_generation = getattr(self, "_agent_request_generation", 0) + 1
+        self._agent_request_pending = False
         if close_settings_before_parent(self.get_application()):
             return True
-        self._agent_setup_generation = getattr(self, "_agent_setup_generation", 0) + 1
+        self._agent_requests_closed = True
         self._case_load_generation = getattr(self, '_case_load_generation', 0) + 1
         self._stop_agent_answer_polling()
         self._capture_current_reader_position()
@@ -4986,8 +4994,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         cluster_id: str,
         target_citation: str,
     ) -> None:
-        if Vte is None or self._agent_terminal is None:
-            self._set_status("Embedded terminal is unavailable.")
+        if _AGENT_REQUEST.get() is None:
+            self._begin_agent_request(True, lambda: self._start_later_treatment_agent(
+                cluster, cluster_id, target_citation))
             return
         prompt = OpenLawLensWindow._compose_later_treatment_agent_prompt(
             self,
@@ -5218,6 +5227,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self,
         _button: Gtk.Button,
     ) -> None:
+        if _AGENT_REQUEST.get() is None:
+            self._begin_agent_request(True, lambda: self._on_later_treatment_clicked(_button))
+            return
         cluster = (
             getattr(self, "_reader_display_cluster", None)
             or getattr(self, "_selected_cluster", None)
@@ -6649,6 +6661,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return True
 
     def reload_settings(self) -> None:
+        pending = getattr(self, "_agent_request_pending", False)
+        self._agent_request_generation = getattr(self, "_agent_request_generation", 0) + 1
+        self._agent_request_pending = False
         self.client = CourtListenerClient.default()
         previous_briefs = getattr(self, "prior_briefs", None)
         folder_changed = (
@@ -6675,8 +6690,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._load_cached_cases()
         self._refresh_case_suggestion_index_async(force=True)
         self._set_status(
-            "Prior Briefs Folder changed. Use Update Prior Brief Library to index it."
-            if folder_changed else "Settings saved."
+            "Settings changed. Submit the question again." if pending else (
+                "Prior Briefs Folder changed. Use Update Prior Brief Library to index it."
+                if folder_changed else "Settings saved."
+            )
         )
 
     def _on_open_settings(self, _action: Gio.SimpleAction, _parameter: GLib.Variant | None) -> None:
@@ -6711,6 +6728,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if not issue:
             self._set_status("Enter a legal question to assess.")
             return False
+        if _AGENT_REQUEST.get() is None:
+            return self._begin_agent_request(
+                True, lambda: self._start_custom_appeal_issue_assessment(issue))
         fact_pattern_path = self._appeal_fact_pattern_path()
         if fact_pattern_path is None:
             return False
@@ -8389,6 +8409,11 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 populate_research_cache,
                 self._scholar_lookup_query(citation, link),
             )
+        except CourtListenerAuthenticationRequired:
+            return (
+                "fallback", self._scholar_lookup_query(citation, link),
+                cache_generation, True,
+            )
         except CourtListenerError:
             return (
                 "fallback",
@@ -8402,6 +8427,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         kind = str(payload[0] if payload else "")
         if kind == "success":
             return self._apply_lookup_result(*payload[1:])
+        if kind == "fallback" and len(payload) > 3 and payload[3] is True:
+            return self._fallback_lookup_to_scholar(
+                str(payload[1]), int(payload[2]), missing_authentication=True,
+            )
         if kind == "fallback":
             return self._fallback_lookup_to_scholar(
                 str(payload[1] if len(payload) > 1 else ""),
@@ -8428,13 +8457,19 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self,
         citation: str,
         cache_generation: int | None = None,
+        *,
+        missing_authentication: bool = False,
     ) -> bool:
         if cache_generation is not None and cache_generation != self._research_cache_generation:
             return False
         self._set_reader_header("")
         self.reader_buffer.set_text("")
         self._set_reader_busy(True, "Recovering official copy in browser...")
-        self._set_status("CourtListener lookup unavailable. Recovering through Google Scholar...")
+        self._set_status(
+            task_prerequisites.MESSAGES[task_prerequisites.Reason.TOKEN]
+            if missing_authentication else
+            "CourtListener lookup unavailable. Recovering through Google Scholar..."
+        )
         self._start_browser_recovery(
             citation,
             expected_citation=normalize_official_citation(citation),
@@ -9687,9 +9722,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if not issue:
             self._set_status("Enter a legal question to assess.")
             return False
-        if Vte is None or self._agent_terminal is None:
-            self._set_status("Embedded terminal is unavailable.")
-            return False
+        if _AGENT_REQUEST.get() is None:
+            return self._begin_agent_request(
+                True, lambda: self.start_appeal_issue_assessment(issue, fact_pattern_path))
         self._agent_last_question = issue
         try:
             workspace = self._create_agent_workspace()
@@ -9698,7 +9733,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return False
         self._set_status("Preparing legal question assessment...")
         thread = threading.Thread(
-            target=self._prepare_appeal_issue_worker,
+            target=self._agent_worker(self._prepare_appeal_issue_worker),
             args=(issue, fact_pattern_path, workspace),
             daemon=True,
         )
@@ -9716,9 +9751,9 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             prompt_path = self._write_prompt_file(
                 self._compose_appeal_issue_agent_prompt(issue, export)
             )
-            GLib.idle_add(self._finish_appeal_issue_prepare, prompt_path, workspace)
+            self._agent_prepare_idle(self._finish_appeal_issue_prepare, prompt_path, workspace)
         except (FactPatternError, OSError, ValueError) as exc:
-            GLib.idle_add(self._set_status, f"Unable to prepare fact pattern: {exc}")
+            self._agent_prepare_idle(self._set_status, f"Unable to prepare fact pattern: {exc}")
 
     def _finish_appeal_issue_prepare(self, prompt_path: Path, workspace: Path) -> bool:
         self._case_agent_text_sources = []
@@ -9743,6 +9778,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         return resolved, selected, warning
 
     def _on_agent_launch(self, _widget: Gtk.Widget) -> None:
+        self._agent_request_generation = getattr(self, "_agent_request_generation", 0) + 1
+        self._agent_request_pending = False
         mode = self._selected_agent_mode
         question = self.agent_question_entry.get_text().strip()
         if not question:
@@ -9762,9 +9799,12 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if mode == AGENT_MODE_APPEAL:
             self._start_custom_appeal_issue_assessment(question)
             return
-        if Vte is None or self._agent_terminal is None:
-            self._set_status("Embedded terminal is unavailable.")
-            return
+        self._begin_agent_request(
+            mode == AGENT_MODE_GENERAL,
+            lambda: self._prepare_agent_question(mode, question),
+        )
+
+    def _prepare_agent_question(self, mode: str, question: str) -> None:
         self._agent_last_question = question
         current_case, current_case_selected, current_case_warning = (
             self._current_case_context_for_launch()
@@ -9772,7 +9812,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if mode == AGENT_MODE_BRIEF:
             self._set_status("Updating Prior Brief Library...")
             threading.Thread(
-                target=self._prepare_brief_agent_worker,
+                target=self._agent_worker(self._prepare_brief_agent_worker),
                 args=(
                     question,
                     current_case,
@@ -9807,7 +9847,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 return
             self._set_status("Preparing marked authorities for Cache Agent...")
             thread = threading.Thread(
-                target=self._prepare_case_agent_worker,
+                target=self._agent_worker(self._prepare_case_agent_worker),
                 args=(
                     question,
                     clusters,
@@ -9825,7 +9865,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return
         self._set_status("Preparing Law Agent...")
         threading.Thread(
-            target=self._prepare_general_agent_worker,
+            target=self._agent_worker(self._prepare_general_agent_worker),
             args=(
                 question,
                 current_case,
@@ -9885,7 +9925,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                     warning,
                 )
             )
-            GLib.idle_add(
+            self._agent_prepare_idle(
                 self._finish_brief_agent_prepare,
                 prompt_path,
                 workspace,
@@ -9894,7 +9934,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 warning if current_case_selected and current_case_export is None else "",
             )
         except (PriorBriefError, OSError, ValueError) as exc:
-            GLib.idle_add(self._set_status, f"Unable to prepare Brief Agent: {exc}")
+            self._agent_prepare_idle(self._set_status, f"Unable to prepare Brief Agent: {exc}")
 
     def _finish_brief_agent_prepare(
         self,
@@ -9947,7 +9987,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                     warning,
                 )
             )
-            GLib.idle_add(
+            self._agent_prepare_idle(
                 self._finish_general_agent_prepare,
                 prompt_path,
                 workspace,
@@ -9955,7 +9995,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 warning if current_case_selected and current_case_export is None else "",
             )
         except OSError as exc:
-            GLib.idle_add(self._set_status, f"Unable to prepare Law Agent: {exc}")
+            self._agent_prepare_idle(self._set_status, f"Unable to prepare Law Agent: {exc}")
 
     def _finish_general_agent_prepare(
         self,
@@ -10049,7 +10089,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                     if current_case_selected and warning
                     else "No text found for marked authorities or current-case SOCF."
                 )
-                GLib.idle_add(self._set_status, message)
+                self._agent_prepare_idle(self._set_status, message)
                 return
             prompt_path = self._write_prompt_file(
                 self._compose_case_agent_prompt(
@@ -10060,7 +10100,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                     warning,
                 )
             )
-            GLib.idle_add(
+            self._agent_prepare_idle(
                 self._finish_case_agent_prepare,
                 prompt_path,
                 workspace,
@@ -10079,7 +10119,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 warning if current_case_selected and current_case_export is None else "",
             )
         except (CourtListenerError, LegInfoError, CaliforniaRulesError, OSError, ValueError) as exc:
-            GLib.idle_add(self._set_status, f"Unable to prepare marked authorities: {exc}")
+            self._agent_prepare_idle(self._set_status, f"Unable to prepare marked authorities: {exc}")
 
     def _finish_case_agent_prepare(
         self,
@@ -10107,42 +10147,90 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         )
         return False
 
+    def _agent_request_current(self, request: AgentRequest) -> bool:
+        if (request.generation != getattr(self, "_agent_request_generation", 0)
+                or getattr(self, "_agent_requests_closed", False)):
+            return False
+        if (load_config() != request.config or courtlistener_token() != request.token
+                or getattr(self, "_appeal_fact_pattern_path_override", None) != request.fact_pattern):
+            self._agent_request_generation += 1
+            self._agent_request_pending = False
+            self._set_status("Settings changed. Submit the question again.")
+            return False
+        return True
+
+    def _begin_agent_request(self, research: bool, continuation: Callable) -> bool:
+        self._agent_request_generation = getattr(self, "_agent_request_generation", 0) + 1
+        self._agent_request_pending = False
+        config = load_config()
+        token = courtlistener_token()
+        result = task_prerequisites.cheap_check(
+            research=research, token=token,
+            terminal=Vte is not None and self._agent_terminal is not None,
+            launcher=AGENT_WRAPPER.is_file(),
+        )
+        if result.reason is not None:
+            self._set_status(result.message)
+            return False
+        request = AgentRequest(
+            self._agent_request_generation, config, token, shared_agent_profile(config),
+            getattr(self, "_appeal_fact_pattern_path_override", None),
+        )
+        self._agent_request_pending = True
+
+        def check() -> None:
+            result = task_prerequisites.model_check(request.profile)
+
+            def finish() -> bool:
+                if not self._agent_request_current(request):
+                    return False
+                if result.reason is not None:
+                    self._agent_request_pending = False
+                    self._set_status(result.message)
+                    return False
+                context = _AGENT_REQUEST.set(request)
+                try:
+                    continuation()
+                finally:
+                    _AGENT_REQUEST.reset(context)
+                return False
+            GLib.idle_add(finish)
+        threading.Thread(target=check, daemon=True).start()
+        return True
+
+    def _agent_worker(self, worker: Callable) -> Callable:
+        request = _AGENT_REQUEST.get()
+
+        def run(*args: Any) -> None:
+            context = _AGENT_REQUEST.set(request)
+            try:
+                # No GTK access in the worker; publishing is guarded on GTK.
+                worker(*args)
+            finally:
+                _AGENT_REQUEST.reset(context)
+        return run
+
+    def _agent_prepare_idle(self, callback: Callable, *args: Any) -> None:
+        request = _AGENT_REQUEST.get()
+
+        def finish() -> bool:
+            if request is None or not self._agent_request_current(request):
+                return False
+            context = _AGENT_REQUEST.set(request)
+            try:
+                callback(*args)
+            finally:
+                _AGENT_REQUEST.reset(context)
+            return False
+        GLib.idle_add(finish)
+
     def _launch_agent_with_prompt(self, prompt_path: Path, workspace: Path, mode: str,
                                   success_status: str = "Started embedded Pi agent.",
                                   profile_key: str | None = None) -> None:
-        if not standalone():
-            self._launch_agent_with_prompt_ready(prompt_path, workspace, mode, success_status, profile_key)
+        request = _AGENT_REQUEST.get()
+        if request is None or not self._agent_request_current(request):
             return
-        self._agent_setup_generation = getattr(self, "_agent_setup_generation", 0) + 1
-        generation = self._agent_setup_generation
-        self._set_status("Checking Pi authorization and selected model…")
-        profile = shared_agent_profile(load_config())
-
-        def check() -> None:
-            error = ""
-            try:
-                catalog = available_pi_runtime_catalog()
-                selected = (profile.provider, profile.model) if profile else (
-                    catalog.default_model.settings_key if catalog.default_model else None
-                )
-                if selected not in {model.settings_key for model in catalog.models}:
-                    error = "Configure and authorize your chosen model in Pi, then select it in Settings. Open Law Lens will not choose a provider for you."
-            except Exception:
-                error = "Pi model setup is unavailable. Install Pi, authorize your chosen provider there, and review Setup / Diagnostics."
-
-            def finish() -> bool:
-                if generation != getattr(self, "_agent_setup_generation", 0) or not self.get_visible():
-                    return False
-                if error:
-                    self._set_status(error)
-                elif shared_agent_profile(load_config()) != profile:
-                    self._set_status("Agent model settings changed during setup. Submit the question again to check the selected model.")
-                else:
-                    self._launch_agent_with_prompt_ready(prompt_path, workspace, mode, success_status, profile_key)
-                return False
-            GLib.idle_add(finish)
-
-        threading.Thread(target=check, daemon=True).start()
+        self._launch_agent_with_prompt_ready(prompt_path, workspace, mode, success_status, profile_key)
 
     def _launch_agent_with_prompt_ready(
         self,
@@ -10152,14 +10240,19 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         success_status: str = "Started embedded Pi agent.",
         profile_key: str | None = None,
     ) -> None:
+        request = _AGENT_REQUEST.get()
+        if request is None or not self._agent_request_current(request):
+            return
+        if not AGENT_WRAPPER.is_file():
+            self._set_status(task_prerequisites.MESSAGES[task_prerequisites.Reason.LAUNCHER])
+            return
+        self._agent_request_pending = False
+        self._agent_request_generation += 1  # consume this launch exactly once
         self._stop_agent()
         self._stop_agent_answer_polling()
         self._clear_agent_answer()
         self._agent_failure_visible = False
         self._agent_output_collapsed = False
-        if not AGENT_WRAPPER.is_file():
-            self._set_status(f"Agent wrapper not found: {AGENT_WRAPPER}")
-            return
         self._agent_followup_live_mode = mode
         self._agent_answer_turn_count = 0
         self._agent_answer_eligible = False
@@ -10189,7 +10282,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         env = os.environ.copy()
         for key in PI_SELECTION_ENV_KEYS:
             env.pop(key, None)
-        profile = shared_agent_profile(load_config())
+        profile = request.profile
         env.update(
             build_agent_launch_env(
                 self.client,
@@ -11980,9 +12073,6 @@ class OpenLawLensApp(Adw.Application):
                 return window
         window = OpenLawLensWindow(self)
         window.present()
-        from .paths import config_path
-        if standalone() and not config_path().exists():
-            window._show_setup_diagnostics()
         return window
 
     def _on_submit_speech_law_question(

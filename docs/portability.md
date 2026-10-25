@@ -46,8 +46,8 @@ acceptance notes; neither certifies support across Linux distributions.
 
 Missing Pi, VTE or a briefs archive must not prevent ordinary citation reading.
 Browser recovery is optional and must still fail closed on missing desktop
-support, ambiguous identity, changed targets or a human challenge. Diagnostics
-never grants desktop permissions, solves a challenge or opens a browser.
+support, ambiguous identity, changed targets or a human challenge. Technical CLI
+checks never grant desktop permissions, solve a challenge or open a browser.
 
 ## Explicit provisioning (not launch)
 
@@ -97,10 +97,13 @@ for a separately provisioned runtime. It clears inherited Python/uv environment
 identity. It sets `OPEN_LAW_LENS_STORAGE=standalone` and a private creation umask.
 It never silently reuses a maintained runtime or falls back to system Python.
 
-First launch without a standalone config opens **Setup / Diagnostics**. This is
-also available from the app menu. It reports redacted per-capability readiness,
-not a single all-or-nothing install status. Default checks do not contact a
-network, invoke Pi, read documents or open browsers (they may check Node's version).
+Every launch opens only the main app, including without settings, a CourtListener
+token, Pi or an authorized model. No first-run marker or settings file is written
+to suppress setup. Requested tasks report one concise missing requirement in the
+app; reading saved material remains available. There is no GUI diagnostics window.
+For explicit technical troubleshooting, the non-GUI `doctor` command reports
+redacted capability checks. Its default checks do not contact a network, invoke
+Pi, read documents or open browsers (they may check Node's version).
 
 - `doctor --agent-check`: opt-in offline Pi model enumeration, no paid model call.
 - `doctor --connectivity`: opt-in bounded HTTPS request to CourtListener. The token
@@ -114,8 +117,9 @@ Install/authorize Pi separately following Pi's official instructions. Open Law
 Lens does not store provider credentials or choose a provider for a new user.
 Standalone model discovery ignores the tracked personal project fallback. The
 single shared Agent Model selection in Settings applies to every new Agent
-session; otherwise the user's Pi defaults apply. A new standalone agent launch verifies that its chosen
-model is available before launching. All five profiles expose only
+session; otherwise the user's Pi defaults apply. Every new Agent request, in
+both storage modes, verifies executable/terminal/launcher availability and its
+authorized model before source validation or prompt/workspace preparation. All five profiles expose only
 `read,bash,grep,find,ls`; no general web-search tool is available. Closed-corpus
 workflows keep their source restrictions. Baseline extraction works without
 Computer Use; the source installer includes the standalone native runtime for
@@ -183,10 +187,11 @@ resolution, no-state diagnostics, saved answers, optional Current Case,
 commands with spaces, all five confined workflow launches without sibling
 projects, and ignored personal model defaults. `tests/test_standalone_runtime.py`
 covers receipt acceptance/rejection and atomic private writes.
-`tests/test_diagnostics_ui.py` covers redacted errors, refresh and closed-window
-result ownership. `tests/preview_portability.py` exercises actual GTK startup,
-missing VTE, Setup, and synthetic Settings save/reopen. It uses temporary state,
-no real Pi/model/network calls; `--hold` allows local desktop inspection.
+`tests/test_task_prerequisites.py` covers task classifications and stale request
+ownership. `tests/preview_portability.py` exercises quiet/repeated GTK startup,
+concise task feedback, preserved question/answer, default Display controls and
+synthetic Settings save/reopen. It uses temporary state, no real Pi/model/network
+calls; `--hold` allows local desktop inspection.
 
 ## Linux boundary and native prerequisites
 

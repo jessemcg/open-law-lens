@@ -352,6 +352,24 @@ controller as Enter. The existing `submit_speech_law_question`,
 starting new sessions. A successful `gdbus` activation only means the app
 received the action; the app reports delivery acceptance or failure.
 
+### Quiet startup and task-time guidance
+
+Launch opens only the main app, even without settings, CourtListener credentials,
+Pi or model authorization. Saved material and local exact-phrase search do not
+need Agent setup. There is no setup wizard or diagnostics item in the app menu.
+
+Law questions, Case Question and Subsequent Treatment need a CourtListener API
+token: add it in **Settings → General**, Save, then retry. Research Cache and
+Prior Briefs questions do not require that token. All new Agent sessions need Pi,
+GTK 4 VTE terminal support and an available authorized model. If prompted, open
+Pi and use `/login`, or choose an available model in **Settings → Agent Model**.
+A usable inherited Pi default needs no app-specific selection. The app reports
+one missing requirement at a time without installing or authorizing anything.
+Blocked requests preserve the question and current answer/session. Changing
+settings during a pending request cancels that launch; submit again after Save.
+Token presence and a listed model are not proof of valid credentials or paid
+inference; subsequent service errors are still reported normally.
+
 ### Settings and app-owned instructions
 
 Settings is one page with **one shared boxed list**, matching Focus: all four
@@ -359,7 +377,11 @@ independently expandable categories are rows within that list, not separate
 cards. Categories are initially collapsed: **General** (masked CourtListener
 token, concordance file, Prior Briefs Folder, and Case Question Fact Pattern),
 **Display** (case font and size), **Highlights** (search-match and linked-text
-colors), and **Agent Model**.
+colors), and **Agent Model**. New/default Display settings use **Linux Libertine O,
+14 pt** (the letter O). Valid saved choices, including Noto Serif/11 pt, are
+preserved. Missing or invalid values use the defaults without rewriting settings
+on load. Font menus and existing Linux Libertine/serif fallbacks are unchanged;
+no font is bundled, downloaded or installed by this preference change.
 Multiple categories can remain open. There is one outer scrollbar, no sidebar,
 and a flat **Save** button in the header with visible save/error feedback.
 Persistent preferences are saved only explicitly; closing discards unsaved edits.

@@ -233,6 +233,8 @@ def activate(application):
             if not settings.pi_model_refresh_button.get_sensitive():
                 return True
             if phase == 0:
+                assert settings.reader_font_size_row.get_value() == 14
+                assert settings.reader_font_family_values[settings.reader_font_family_row.get_selected()] == 'Linux Libertine O'
                 assert list(settings.settings_categories) == ['General', 'Display', 'Highlights', 'Agent Model']
                 assert not any(row.get_expanded() for row in settings.settings_categories.values())
                 rows = list(settings.settings_categories.values())
@@ -315,7 +317,7 @@ def activate(application):
                 assert 'unsupported' in settings.pi_thinking_row.get_subtitle()
                 settings.pi_model_row.set_selected(0)
                 assert settings._selected_pi_profile() is None
-                assert settings._selected_pi_thinking() == 'medium'
+                assert settings._selected_pi_thinking() == ''  # effort stays inherited
                 assert not settings.pi_thinking_row.get_sensitive()
                 settings._on_save_clicked(None)
                 raw = json.loads(CONFIG.read_text())
