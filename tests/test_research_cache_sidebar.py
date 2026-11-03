@@ -73,6 +73,29 @@ class SidebarTests(unittest.TestCase):
         seed(self.cache)
         self.window = SidebarHarness(self.cache)
 
+    def test_research_set_status_does_not_widen_sidebar(self):
+        host = SimpleNamespace(client=None)
+        header = OpenLawLensWindow._build_research_cache_header(host)
+        sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        sidebar.set_size_request(320, -1)
+        sidebar.append(header)
+        baseline = tuple(sidebar.measure(Gtk.Orientation.HORIZONTAL, -1)[:2])
+        for name in ("Synthetic", "A long research set name " * 8, "X" * 200):
+            for dirty in (False, True, False):
+                with self.subTest(name=name, dirty=dirty):
+                    host._active_research_set_name = name
+                    host._active_research_set_dirty = dirty
+                    OpenLawLensWindow._refresh_research_set_label(host)
+                    self.assertEqual(
+                        tuple(sidebar.measure(Gtk.Orientation.HORIZONTAL, -1)[:2]),
+                        baseline,
+                    )
+                    self.assertEqual(
+                        host._research_set_label.get_text(),
+                        f"Set: {name}" + (" (unsaved changes)" if dirty else ""),
+                    )
+        self.assertGreater(header.measure(Gtk.Orientation.VERTICAL, 320)[1], 40)
+
     def test_all_types_counts_and_explicit_selection(self):
         for key, expected in (("select_cluster_id", "42"), ("select_statute_id", "WIC:300"),
                               ("select_rule_id", "CRC:8.11"),

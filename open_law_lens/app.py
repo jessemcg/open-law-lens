@@ -2843,6 +2843,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
         self._research_set_label = Gtk.Label(label="", xalign=0)
         self._research_set_label.add_css_class("dim-label")
+        # Status/name changes must not increase the sidebar's preferred width.
+        self._research_set_label.set_wrap(True)
+        self._research_set_label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        self._research_set_label.set_max_width_chars(1)
         self._research_set_label.set_visible(False)
         box.append(header)
         box.append(self._research_set_label)
