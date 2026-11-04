@@ -356,9 +356,12 @@ the extracted sources:
 - For best-argument questions, lead with the strongest defensible formulation
   and its central vulnerability. Do not repeat the same theory through multiple
   research summaries and drafting passes.
-- For a simple "what is" question, provide a short definition, the statutory
-  routes, and only the material caveats—normally about 350 to 650 words unless
-  the user requests depth.
+- For a simple "what is" question, lead with a short direct definition. Explain
+  only the statutory routes and qualifications material to that question, with
+  the required source support. Prefer a compact paragraph or a few short
+  paragraphs; expand when the question or a material distinction requires it.
+  Do not pad the answer to a word target. Concision must not remove a decisive
+  exception, contrary authority, or uncertainty.
 - Use concise legal prose and address contrary authority or material gaps in
   the available legal sources.
 - Use quotation marks only for exact, continuous text verified in the source.

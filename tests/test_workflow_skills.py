@@ -180,3 +180,20 @@ class WorkflowSkillTests(unittest.TestCase):
                        'do not restart discovery or official-copy recovery',
                        'Do not characterize treatment the inspected text does not support'):
             self.assertIn(phrase, treatment)
+
+    def test_simple_definition_is_proportionate_without_weakening_research(self):
+        for workflow in ('law', 'assess_argument', 'subsequent_treatment'):
+            with self.subTest(workflow=workflow):
+                text = ' '.join(assembled(workflow).split())
+                self.assertNotRegex(text, r'350\s*(?:to|[–-])\s*650')
+                for phrase in ('lead with a short direct definition',
+                               'statutory routes and qualifications material to that question',
+                               'with the required source support',
+                               'expand when the question or a material distinction requires it',
+                               'Do not pad the answer to a word target',
+                               'Concision must not remove a decisive exception, contrary authority, or uncertainty',
+                               'mandatory enactment-plus-case route',
+                               'least one leading published California case',
+                               'One attempt per authority across',
+                               'exact, continuous text verified in the source'):
+                    self.assertIn(phrase, text)
