@@ -60,8 +60,19 @@ CourtListener coverage. Never use unpublished cases as controlling treatment.
   paginated Library reconciliation, even if its durable identifier differs from
   the requested cluster. Apply the shared execution-failure stop rule.
 - If compact passages are inadequate for a relied-on case, perform at most one
-  ordinary `full_extract_command` for it. Never run a second recovery attempt
-  for the same case, including across identity aliases.
+  ordinary `full_extract_command` for it. The command creates a unique private
+  workspace parent and exports into its previously nonexistent `source` child.
+  Its bounded status JSON returns metadata and manifest paths; the manifest lists
+  the lossless source-part paths. Read the metadata, manifest, and relevant source
+  parts with surrounding qualifications under the shared source-inspection rules.
+  Reuse an already inspected artifact when sufficient instead of extracting the
+  same source again. Never run a second recovery attempt for the same case,
+  including across identity aliases.
+- If directory creation, export, or subsequent artifact reading fails, preserve
+  useful compact baselines. Answer the supported portion with the specific
+  inspection limitation; do not restart discovery or official-copy recovery merely
+  to satisfy the export step. Do not characterize treatment the inspected text
+  does not support.
 
 ## Citation, fallback, and disclosure
 

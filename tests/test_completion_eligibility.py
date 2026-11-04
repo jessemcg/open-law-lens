@@ -12,6 +12,37 @@ from test_session_snapshot import entry
 
 
 class CompletionEligibilityTests(unittest.TestCase):
+    def test_short_qualified_answer_after_tool_failure_is_deliverable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            window = CompletionWindow(Path(directory))
+            window._agent_active = True
+            path = window._agent_session_log_path
+            answer = ('The inspected passage supports only a limited conclusion. '
+                      'Full-source export failed, so later qualifications were not verified.')
+            tool_failure = json.dumps({'type': 'message', 'id': 't1', 'message': {
+                'role': 'toolResult', 'toolName': 'bash', 'toolCallId': 'export1',
+                'isError': True, 'content': [{'type': 'text', 'text': 'synthetic export denied'}],
+            }}) + '\n'
+            path.write_text(
+                entry('user', 'q1', text='Synthetic treatment question')
+                + entry('assistant', 'a1', 'toolUse', content=[{
+                    'type': 'toolCall', 'id': 'export1', 'name': 'bash',
+                    'arguments': {'command': 'synthetic export'},
+                }]) + tool_failure + entry('assistant', 'a2', 'stop', text=answer)
+            )
+            snapshot = PiSessionSnapshotCache().read(path)
+            self.assertTrue(snapshot.current_completed)
+            self.assertEqual(snapshot.answer, answer)
+            window._poll_agent_answer()
+            pump_until(lambda: not window._agent_answer_working)
+            self.assertTrue(window._agent_answer_eligible)
+            self.assertFalse(window._agent_failure_visible)
+            self.assertEqual(window._agent_last_answer_text, answer)
+            self.assertEqual(window._agent_answer_turn_count, 1)
+            self.assertEqual(window.views[-1], 'answer')
+            self.assertEqual(len(window.applied), 40)
+            window._stop_agent_answer_polling()
+
     def test_failed_followup_keeps_previous_answer_unsaveable_and_retry_restores(self):
         with tempfile.TemporaryDirectory() as directory:
             window = CompletionWindow(Path(directory))

@@ -166,3 +166,17 @@ class WorkflowSkillTests(unittest.TestCase):
                        'Do not retry network timeouts', 'not a quota', 'do not search elsewhere',
                        'Omit any treatment characterization', 'one identity form, not two attempts'):
             self.assertIn(phrase, treatment)
+
+    def test_treatment_lossless_transport_and_optional_failure_contract(self):
+        treatment = ' '.join(assembled('subsequent_treatment').split())
+        for phrase in ('at most one ordinary `full_extract_command`',
+                       'previously nonexistent `source` child',
+                       'metadata and manifest paths', 'lossless source-part paths',
+                       'surrounding qualifications under the shared source-inspection rules',
+                       'Reuse an already inspected artifact when sufficient',
+                       'directory creation, export, or subsequent artifact reading fails',
+                       'preserve useful compact baselines',
+                       'Answer the supported portion with the specific inspection limitation',
+                       'do not restart discovery or official-copy recovery',
+                       'Do not characterize treatment the inspected text does not support'):
+            self.assertIn(phrase, treatment)

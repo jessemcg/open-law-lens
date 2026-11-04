@@ -1,6 +1,10 @@
 from pathlib import Path
 import json
+import os
 import shlex
+import subprocess
+import sys
+import tempfile
 from types import SimpleNamespace
 import unittest
 
@@ -59,14 +63,79 @@ class RequestBuilderTests(unittest.TestCase):
         request = prompts.treatment_request(title, cluster, citation)
         self.assertIn(f'Target case: {title}', request)
         self.assertIn(f'Target official citation: {citation}', request)
-        commands = [line for line in request.splitlines() if line.startswith('"$OPEN_LAW_LENS_CLI_BIN')]
-        self.assertEqual(len(commands), 6)
-        graph, search_cite, search_title, compact, recovery, full = map(shlex.split, commands)
-        self.assertEqual(graph[graph.index('--cluster-id') + 1], cluster)
+        commands = dict(block.split(':\n', 1) for block in request.split('\n\n')[1:])
+        self.assertEqual(list(commands), [
+            'published_citing_cases_command', 'citation_search_command',
+            'case_name_search_command', 'compact_extract_command',
+            'recover_official_extract_command', 'full_extract_command',
+        ])
+        graph, search_cite, search_title, compact, recovery = (
+            shlex.split(command) for command in list(commands.values())[:5]
+        )
+        full = shlex.split(commands['full_extract_command'].split(' && ', 1)[1])
+        self.assertEqual(graph, ['$OPEN_LAW_LENS_CLI_BIN', 'published-citing-cases',
+                                 '--cluster-id', cluster, '--limit', '10', '--json'])
         for tokens, value in ((search_cite, citation), (search_title, title)):
             self.assertEqual(json.loads(tokens[tokens.index('case-search') + 1]), value)
             self.assertEqual(tokens[-3:], ['--limit', '10', '--compact'])
         self.assertEqual(compact[-4:], ['--find', '<term>', '--find', '<term>'])
         self.assertEqual(recovery[recovery.index('extract-case') + 1], '<official citation>')
         self.assertIn('--recover-official', recovery)
-        self.assertEqual(full[-2:], ['--cluster-id', '<cluster_id>'])
+        self.assertEqual(full, ['$OPEN_LAW_LENS_CLI_BIN', 'extract-case', '--cluster-id',
+                                '<cluster_id>', '--output-dir', '$full_source_parent/source'])
+        self.assertEqual(compact, ['$OPEN_LAW_LENS_CLI_BIN', 'extract-case', '--cluster-id',
+                                   '<cluster_id>', '--find', '<term>', '--find', '<term>'])
+        self.assertEqual(recovery, ['$OPEN_LAW_LENS_CLI_BIN', 'extract-case', '<official citation>',
+                                    '--recover-official', '--timeout', '120', '--progress',
+                                    '--find', '<term>'])
+
+    def test_full_extract_template_uses_one_call_and_fresh_nonexistent_child(self):
+        with tempfile.TemporaryDirectory(prefix='treatment workspace ') as directory:
+            root = Path(directory)
+            executable = root / 'synthetic cli'
+            log = root / 'calls.jsonl'
+            executable.write_text(
+                f'#!{sys.executable}\n'
+                'import json, os, pathlib, sys\n'
+                'args = sys.argv[1:]\n'
+                'dest = pathlib.Path(args[args.index("--output-dir") + 1])\n'
+                'assert not dest.exists()\n'
+                'assert dest.parent.is_dir()\n'
+                'dest.mkdir()\n'
+                '(dest / "sentinel").write_text("preserved")\n'
+                'with open(os.environ["CALL_LOG"], "a") as log:\n'
+                '    log.write(json.dumps(args) + "\\n")\n'
+            )
+            executable.chmod(0o700)
+            request = prompts.treatment_request('Synthetic', '1', '1 Cal.5th 1')
+            template = request.split('full_extract_command:\n', 1)[1]
+            # Replace the entire placeholder argument with a shell-quoted value.
+            cluster = 'id with spaces; $(false) `false` "quote" \' é'
+            command = template.replace('"<cluster_id>"', shlex.quote(cluster))
+            env = dict(os.environ, OPEN_LAW_LENS_AGENT_WORKSPACE=str(root),
+                       OPEN_LAW_LENS_CLI_BIN=str(executable), CALL_LOG=str(log))
+            for _ in range(2):
+                subprocess.run(['bash', '-c', command], env=env, capture_output=True,
+                               text=True, timeout=10, check=True)
+            calls = [json.loads(line) for line in log.read_text().splitlines()]
+            self.assertEqual(len(calls), 2)
+            destinations = []
+            for args in calls:
+                self.assertEqual(args[:4], ['extract-case', '--cluster-id', cluster, '--output-dir'])
+                self.assertEqual(len(args), 5)
+                destination = Path(args[4])
+                self.assertEqual(destination.name, 'source')
+                self.assertEqual(destination.parent.parent, root)
+                self.assertTrue(destination.parent.name.startswith('treatment-source.'))
+                self.assertEqual(destination.parent.stat().st_mode & 0o777, 0o700)
+                self.assertEqual((destination / 'sentinel').read_text(), 'preserved')
+                destinations.append(destination)
+            self.assertNotEqual(*destinations)
+            # mktemp failure must not fall through to extraction or overwrite a source.
+            env['OPEN_LAW_LENS_AGENT_WORKSPACE'] = str(root / 'missing workspace')
+            result = subprocess.run(['bash', '-c', command], env=env, capture_output=True,
+                                    text=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(len(log.read_text().splitlines()), 2)
+            for destination in destinations:
+                self.assertEqual((destination / 'sentinel').read_text(), 'preserved')

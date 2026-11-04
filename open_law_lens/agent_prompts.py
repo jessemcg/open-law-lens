@@ -89,7 +89,13 @@ def treatment_request(target_title: str, cluster_id: str, target_citation: str) 
             'extract-case "<official citation>" --recover-official --timeout 120'
             ' --progress --find "<term>"'
         ),
-        "full_extract_command": agent_cli_command("extract-case --cluster-id <cluster_id>"),
+        "full_extract_command": (
+            'full_source_parent=$(mktemp -d "$OPEN_LAW_LENS_AGENT_WORKSPACE/treatment-source.XXXXXX") && '
+            + agent_cli_command(
+                'extract-case --cluster-id "<cluster_id>"'
+                ' --output-dir "$full_source_parent/source"'
+            )
+        ),
     }
     return (
         f"Target case: {target_title}\nTarget official citation: {target_citation}\n"

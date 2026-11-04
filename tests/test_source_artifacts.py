@@ -14,6 +14,12 @@ from open_law_lens.source_artifacts import export_source_artifacts, source_parts
 
 
 class SourceArtifactTests(unittest.TestCase):
+    def setUp(self):
+        network = patch('open_law_lens.client.urlopen',
+                        side_effect=AssertionError('Network forbidden in synthetic artifact tests'))
+        network.start()
+        self.addCleanup(network.stop)
+
     def test_lossless_bounded_parts_offsets_modes_metadata_and_late_exception(self):
         for text in ('x' * 126_028 + '\nLate exception.', ('line\n' * 7000),
                      ('Résumé ⚖️ 中 😀\n\n' * 9000) + 'Late exception.\n', '',
@@ -112,6 +118,51 @@ class SourceArtifactTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()) as output:
             self.assertEqual(cli._export_source_result({'ok': False, 'text': 'partial'}, str(Path(directory) / 'fail')), 1)
             self.assertFalse((Path(directory) / 'fail').exists())
+
+    def test_cli_export_failure_and_collision_preserve_inspected_baseline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            baseline = root / 'compact.json'
+            baseline_text = json.dumps({'text': 'Inspected synthetic passage',
+                                        'warnings': ['Unpaginated baseline']})
+            baseline.write_text(baseline_text)
+            payload = {'ok': True, 'text': 'Full synthetic source\nLate qualification.'}
+            destination = root / 'source'
+            original_open = os.open
+
+            def opened(path, flags, *args, **kwargs):
+                if path == 'metadata.json':
+                    raise PermissionError('synthetic export denied')
+                return original_open(path, flags, *args, **kwargs)
+
+            with patch.dict(os.environ, {'OPEN_LAW_LENS_AGENT_WORKSPACE': directory}), \
+                    patch.object(cli, 'extract_case_by_cluster_id',
+                                 return_value=SimpleNamespace(to_json=lambda: payload)) as extract:
+                output = io.StringIO()
+                with patch('open_law_lens.source_artifacts.os.open', opened), redirect_stdout(output):
+                    code = cli.main(['extract-case', '--cluster-id', 'synthetic-id',
+                                     '--output-dir', str(destination)])
+                self.assertEqual(code, 1)
+                extract.assert_called_once()
+                self.assertEqual(json.loads(output.getvalue())['export_status'], 'failed')
+                self.assertFalse(destination.exists())
+                self.assertEqual(baseline.read_text(), baseline_text)
+
+                # Export into an existing destination fails without changing prior artifacts.
+                destination.mkdir()
+                sentinel = destination / 'sentinel'
+                sentinel.write_text('prior source artifact')
+                extract.reset_mock()
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    code = cli.main(['extract-case', '--cluster-id', 'synthetic-id',
+                                     '--output-dir', str(destination)])
+                self.assertEqual(code, 1)
+                self.assertEqual(json.loads(output.getvalue())['export_status'], 'failed')
+                extract.assert_called_once()
+                self.assertEqual(list(destination.iterdir()), [sentinel])
+                self.assertEqual(sentinel.read_text(), 'prior source artifact')
+                self.assertEqual(baseline.read_text(), baseline_text)
 
     def test_cli_extraction_and_permission_errors_are_structured_nonzero(self):
         with tempfile.TemporaryDirectory() as directory:
