@@ -65,13 +65,19 @@ not a legal-answer quality claim.
 | Treatment: graph once; if necessary exact citation then exact name searches only; no query rewriting, pagination, semantic/web search, timeout retries | subsequent-treatment Discovery ceiling; exact commands generated in Python, including quoted title/citation/cluster arguments |
 | Treatment: confirmed SQLite startup lock retry only; no replay of recovery outcomes | subsequent-treatment plus unchanged Legal Researcher transient-lock contract |
 | Treatment: 3–5-case ceiling not quota; published verified later cases; parallel compact baselines; one sequential recovery per authority across aliases | subsequent-treatment Discovery / Extraction plus shared bounded execution |
-| Treatment: citation preferred, cluster alternative only when needed; no recovery on already paginated reconciliation; at most one ordinary full extraction | subsequent-treatment Selected-case extraction; Python supplies templates |
-| Treatment: supported treatment only, useful unpaginated baselines, returned URLs, missing pagination/citation/text caveats, no alternate-source hunts | subsequent-treatment Citation/fallback/disclosure |
+| Treatment: citation preferred, cluster alternative only when needed; no recovery on already paginated reconciliation; at most one ordinary full extraction | subsequent-treatment Selected-case extraction; Python supplies a unique-workspace-parent / new-child `--output-dir` template; inspect metadata/manifest and relevant lossless parts with surrounding qualifications, reuse sufficient inspected artifacts |
+| Treatment: supported treatment only, useful unpaginated baselines, returned URLs, missing pagination/citation/text caveats, no alternate-source hunts | subsequent-treatment Citation/fallback/disclosure; optional directory/export/read failure preserves compact baselines and a qualified answer without restarting discovery/recovery |
 | Shared: narrow enactment-only route, mandatory published-case route, direct `--find`, same-round work, source verification, bounded recovery | Legal Researcher retained; no weakening of case floor or source routing |
+| Shared: simple definitions proportional to the question, without a numeric word target | Legal Researcher Answer requirements; short direct definition, required source support and material routes/qualifications, expansion when needed; retain decisive exceptions, contrary authority and uncertainty |
 | Duplicated treatment ceiling | detailed ceiling now only in subsequent-treatment; Legal Researcher delegates and retains shared verification/recovery |
 | Duplicated assessment record/structure rules | case-assessment; Legal Researcher delegates |
 | Conflicting title limit | SYSTEM's stricter 3–8 words / 64 characters everywhere; subtitle 2–5 words / 40 characters; assessment example now also fits |
 | Current-case interpretation formerly in Python | compact common SYSTEM rule; Brief lookup exception and assessment complete-record rule remain workflow-specific |
+
+The treatment artifact correction and proportionate-definition guidance were
+validated separately from the original acceptance below; see
+[Targeted session-efficiency validation](targeted-session-efficiency-validation.md)
+for synthetic transport results and the limits on behavioral claims.
 
 The common SYSTEM remains a compact identity/source/workspace/honesty/presentation
 contract, not a second legal-research procedure. No user-supplied values format
