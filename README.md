@@ -88,3 +88,5 @@ verify answers, quotations, and current law against the sources.
 ## License
 
 See [LICENSE](LICENSE).
+
+**Recommended Agent model:** the latest DeepSeek Flash model via the Fireworks API.
