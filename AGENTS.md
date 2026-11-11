@@ -1,5 +1,14 @@
 # Repository Guidelines
 
+## Synchronized settings permissions
+
+Settings, containing directories and adjacent writer locks accept group/other
+write bits (Dropbox 0664/0666 and 0775/0777 directories). Never reject or chmod
+ordinary settings solely for these bits. Keep ownership, no-link, JSON, CAS,
+writer exclusion and sync-conflict checks. Explicit saves still publish 0600;
+machine-local recovery state retains its separate private-storage policy.
+Test only synthetic files; never rewrite private settings for validation.
+
 ## Application-owned model maintenance
 
 Keep `model-settings --stdin` before GUI/backend/Pi imports. Singular profile

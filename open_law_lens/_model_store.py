@@ -1,6 +1,8 @@
 """Application-owned, standard-library-only settings safety and protocol v1.
 Vendored independently in each owner; no sibling runtime dependency. No discovery,
 GUI, credentials, provider requests or migrations. Only explicit saves publish.
+Settings and adjacent locks may have Dropbox-synchronized permission bits;
+ownership, no-link, revision and conflict checks still apply. Local state is private.
 """
 from __future__ import annotations
 import contextlib
@@ -71,7 +73,7 @@ def directory(path):
             nxt = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
             os.close(fd); fd = nxt
             m = os.fstat(fd)
-            if m.st_uid not in (0, os.getuid()) or (m.st_mode & 0o002 and not m.st_mode & stat.S_ISVTX):
+            if m.st_uid not in (0, os.getuid()):
                 fail('unsafe_settings_directory')
         return fd
     except BaseException:
@@ -121,7 +123,7 @@ class Store:
         return os.open(name, flags | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, mode, dir_fd=self.fd)
     def read_fd(self, fd):
         before = os.fstat(fd)
-        if not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or before.st_nlink != 1 or before.st_mode & 0o022:
+        if not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or before.st_nlink != 1:
             fail('unsafe_settings_file')
         if before.st_size > LIMIT: fail('settings_too_large')
         os.lseek(fd,0,0); data = b''
@@ -151,7 +153,7 @@ class Store:
         fd = self.open('.'+self.path.name+'.writer.lock', os.O_RDWR | os.O_CREAT)
         try:
             m=os.fstat(fd)
-            if not stat.S_ISREG(m.st_mode) or m.st_uid!=os.getuid() or m.st_nlink!=1 or m.st_mode & 0o077: fail('unsafe_settings_lock')
+            if not stat.S_ISREG(m.st_mode) or m.st_uid!=os.getuid() or m.st_nlink!=1: fail('unsafe_settings_lock')
             try: fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError: fail('settings_busy')
             self.check()

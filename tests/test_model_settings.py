@@ -113,12 +113,18 @@ class Contract(unittest.TestCase):
         self.assertEqual(kept['status'],'retained');self.assertEqual(self.recovery(plan,ok=False),'rollback_conflict')
         for p,original in before.items(): self.assertEqual(p.read_bytes(),original)
     def test_capabilities_inspect_and_preview_are_settings_read_only(self):
+        # Dropbox may restore broad modes; CLI reads/preview must accept them.
+        for path in self.original:
+            path.parent.chmod(0o777)
+            path.chmod(0o666)
         self.call('capabilities'); result=self.call('inspect')
         self.assertTrue(result['slots'])
         for s in result['slots']: self.assertEqual(s['identity'],OLD)
         self.preview()
         for p,data in self.original.items(): self.assertEqual(p.read_bytes(),data)
         self.assertFalse(list((self.root/'state').rglob('*-before.json')))
+        for path in self.original:
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o666)
     def test_apply_readback_idempotency_and_guarded_rollback(self):
         plan=self.preview(); result=self.apply(plan)
         self.assertEqual(result['status'],'applied'); self.assertTrue(result['current_matches_operation'])
