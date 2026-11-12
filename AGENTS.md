@@ -1,5 +1,9 @@
 # Repository Guidelines
 
+## Test scope
+
+Run only tests that exercise the changed behavior or plausibly affected downstream integrations; start with focused cases selected from the actual diff. Use Linux Computer Use for relevant GUI behavior, not a whole-app walkthrough by default. For SKILL/prompt/docs-only edits, prefer relevant content, contract, loading, or audit checks; skip unrelated GUI tests. Expand coverage only for an identified dependency, regression risk, or failure, and briefly explain why before a broad run. Full suites require relevant breadth or an explicit user request. This scope rule qualifies all validation checklists below. Report checks actually run and remaining relevant gaps; preserve existing safety/isolation requirements.
+
 ## Synchronized settings permissions
 
 Settings, containing directories and adjacent writer locks accept group/other
