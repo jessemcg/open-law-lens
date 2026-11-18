@@ -7,11 +7,13 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from html.parser import HTMLParser
+from http.client import HTTPException
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from . import research_observation as observe
 from .cache import JsonCache, cluster_id_from_cluster, normalize_citation, resource_id_from_url
 from .case_titles import cluster_short_title_value, cluster_title_value
 from .citation_model import official_citation_dict_from_text
@@ -613,25 +615,42 @@ class CourtListenerClient:
         return headers
 
     def _request_json(self, request: Request) -> Any:
+        observation = observe.current.get()
+        logical = observation.request(request.full_url, request.get_method()) if observation else None
         for attempt in range(RATE_LIMIT_RETRY_ATTEMPTS):
+            sample = None
+            status = None
+            if logical is not None:
+                sample = {"status": None, "outcome": "incomplete", "ms": 0, "retry": None, "backoff_ms": 0}
+                logical["attempts"].append(sample)
+                clock = time.monotonic()
             try:
                 with urlopen(request, timeout=self.timeout) as response:
-                    return json.loads(response.read().decode("utf-8"))
+                    if sample is not None:
+                        status = getattr(response, "status", None)
+                    decoded = json.loads(response.read().decode("utf-8"))
+                if sample is not None:
+                    observe.attempt_result(sample, logical, "ok", status, clock)
+                return decoded
             except HTTPError as exc:
-                body = exc.read().decode("utf-8", errors="replace")
+                try:
+                    body = exc.read().decode("utf-8", errors="replace")
+                finally:
+                    if sample is not None:
+                        observe.attempt_result(sample, logical, "http_error", exc.code, clock)
                 wait_seconds = _rate_limit_wait_seconds(body)
                 if (
                     exc.code == 429
                     and wait_seconds is not None
                     and attempt < RATE_LIMIT_RETRY_ATTEMPTS - 1
                 ):
-                    time.sleep(wait_seconds)
+                    observe.retry_sleep(wait_seconds, sample, "throttle")
                     continue
                 if (
                     exc.code in TRANSIENT_HTTP_RETRY_STATUSES
                     and attempt < RATE_LIMIT_RETRY_ATTEMPTS - 1
                 ):
-                    time.sleep(TRANSIENT_HTTP_RETRY_SECONDS[attempt])
+                    observe.retry_sleep(TRANSIENT_HTTP_RETRY_SECONDS[attempt], sample, "gateway")
                     continue
                 if exc.code in TRANSIENT_HTTP_RETRY_STATUSES:
                     message = (
@@ -664,9 +683,24 @@ class CourtListenerClient:
                         message = f"{message}: {detail}"
                 raise CourtListenerError(message, status=exc.code, body=body) from exc
             except URLError as exc:
+                if sample is not None:
+                    observe.attempt_result(sample, logical, "transport", status, clock)
                 raise CourtListenerError(f"Unable to reach CourtListener: {exc.reason}") from exc
             except json.JSONDecodeError as exc:
+                if sample is not None:
+                    observe.attempt_result(sample, logical, "decode", status, clock)
                 raise CourtListenerError("CourtListener returned invalid JSON") from exc
+            except UnicodeDecodeError:
+                if sample is not None:
+                    observe.attempt_result(sample, logical, "decode", status, clock)
+                raise
+            except (OSError, HTTPException):
+                if sample is not None:
+                    observe.attempt_result(sample, logical, "transport", status, clock)
+                raise
+            finally:
+                if sample is not None and sample["outcome"] == "incomplete":
+                    observe.attempt_result(sample, logical, "incomplete", status, clock)
         raise CourtListenerError("CourtListener request failed.")
 
     def lookup_citation(
@@ -680,6 +714,8 @@ class CourtListenerClient:
         if not normalized:
             raise ValueError("Citation is required.")
         self.last_lookup_source = ""
+        if refresh:
+            observe.source("refresh_lookup")
         if not refresh:
             library_result = self.library.read_lookup(normalized)
             if isinstance(library_result, list):
@@ -688,6 +724,7 @@ class CourtListenerClient:
                 if populate_research_cache:
                     self._cache_lookup_clusters(library_result)
                 self.last_lookup_source = "Library"
+                observe.source("lookup_library")
                 return library_result
             cached = self.cache.read_lookup(normalized)
             if isinstance(cached, list):
@@ -698,6 +735,7 @@ class CourtListenerClient:
                         self._cache_lookup_clusters(filtered_cached)
                         self._upsert_eligible_lookup(normalized, filtered_cached)
                     self.last_lookup_source = "Research Cache"
+                    observe.source("lookup_cache")
                     return filtered_cached
         data = urlencode({"text": normalized}).encode("utf-8")
         request = Request(
@@ -711,6 +749,7 @@ class CourtListenerClient:
         )
         result = self._request_json(request)
         if not isinstance(result, list):
+            observe.shape_error()
             raise CourtListenerError("CourtListener citation lookup returned unexpected JSON.")
         result = tagged_lookup_result(result, SOURCE_PROVIDER_COURTLISTENER)
         self.cache.write_lookup(normalized, result)
@@ -754,9 +793,11 @@ class CourtListenerClient:
         request = Request(full_url, headers=self._headers(), method="GET")
         result = self._request_json(request)
         if not isinstance(result, dict):
+            observe.shape_error()
             raise CourtListenerError("CourtListener search returned unexpected JSON.")
         rows = result.get("results")
         if not isinstance(rows, list):
+            observe.shape_error()
             raise CourtListenerError("CourtListener search returned unexpected results.")
         normalized = []
         exclusions: dict[str, int] = {}
@@ -778,6 +819,9 @@ class CourtListenerClient:
                 exclusions[reason] = exclusions.get(reason, 0) + 1
             else:
                 normalized.append(item)
+        if observation := observe.current.get():
+            observation.page(semantic=semantic, next_url=url, received=len(rows),
+                             delivered=len(normalized), exclusions=exclusions)
         count = _int_value(result.get("count"), len(rows))
         next_value = result.get("next")
         return CourtListenerSearchPage(
@@ -844,9 +888,11 @@ class CourtListenerClient:
             request = Request(current_url, headers=self._headers(), method="GET")
             result = self._request_json(request)
             if not isinstance(result, dict):
+                observe.shape_error()
                 raise CourtListenerError("CourtListener cited-by lookup returned unexpected JSON.")
             values = result.get("results")
             if not isinstance(values, list):
+                observe.shape_error()
                 raise CourtListenerError("CourtListener cited-by lookup returned unexpected results.")
             rows.extend(value for value in values if isinstance(value, dict))
             count = result.get("count")
@@ -923,9 +969,11 @@ class CourtListenerClient:
         )
         result = self._request_json(request)
         if not isinstance(result, dict):
+            observe.shape_error()
             raise CourtListenerError("CourtListener cited-by lookup returned unexpected JSON.")
         rows = result.get("results")
         if not isinstance(rows, list):
+            observe.shape_error()
             raise CourtListenerError("CourtListener cited-by lookup returned unexpected results.")
         for row in rows:
             if not isinstance(row, dict):
@@ -1006,11 +1054,14 @@ class CourtListenerClient:
         full_url = url if url.startswith("http") else f"{BASE_URL}{url}"
         resource_id = resource_id_from_url(full_url)
         self.last_resource_source = ""
+        if refresh:
+            observe.source("refresh_resource")
         if not refresh:
             if kind == "opinions":
                 library_opinion = self.library.read_opinion(resource_id)
                 if isinstance(library_opinion, dict):
                     self.last_resource_source = "Library"
+                    observe.source("resource_library")
                     return tagged_source_payload(
                         library_opinion,
                         SOURCE_PROVIDER_COURTLISTENER,
@@ -1019,6 +1070,7 @@ class CourtListenerClient:
                 library_cluster = self.library.read_cluster(resource_id)
                 if isinstance(library_cluster, dict):
                     self.last_resource_source = "Library"
+                    observe.source("resource_library")
                     return tagged_source_payload(
                         library_cluster,
                         SOURCE_PROVIDER_COURTLISTENER,
@@ -1026,6 +1078,7 @@ class CourtListenerClient:
             cached = self.cache.read_resource(kind, resource_id)
             if isinstance(cached, dict):
                 self.last_resource_source = "Research Cache"
+                observe.source("resource_cache")
                 return tagged_source_payload(
                     cached,
                     SOURCE_PROVIDER_COURTLISTENER,
@@ -1033,6 +1086,7 @@ class CourtListenerClient:
         request = Request(full_url, headers=self._headers(), method="GET")
         result = self._request_json(request)
         if not isinstance(result, dict):
+            observe.shape_error()
             raise CourtListenerError(f"CourtListener {kind} endpoint returned unexpected JSON.")
         result = tagged_source_payload(result, SOURCE_PROVIDER_COURTLISTENER)
         self.cache.write_resource(kind, resource_id, result)
@@ -1057,6 +1111,7 @@ class CourtListenerClient:
             ]
             if library_opinions:
                 self.last_opinion_source = "Library"
+                observe.source("opinion_library")
                 return library_opinions
         urls = cluster.get("sub_opinions")
         if not isinstance(urls, list):

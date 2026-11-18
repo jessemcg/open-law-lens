@@ -1,5 +1,9 @@
 # Open Law Lens run-metrics acceptance
 
+For the additive Open Law Lens CLI/CourtListener producer, see the
+[current research observation contract](research-observation-contract.md).
+The acceptance below is historical.
+
 2026-09-22, home desktop. Installed Pi 0.87.1 / Node 22.23.1.
 
 ## Shipped scope

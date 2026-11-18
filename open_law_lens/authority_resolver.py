@@ -6,6 +6,7 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Any
 
+from . import research_observation as observe
 from .cache import cluster_id_from_cluster
 from .case_suggestions import (
     case_suggestions_from_library,
@@ -269,6 +270,7 @@ def extract_case_by_cluster_id(
     if not refresh:
         durable = _reconcile_durable_case(cluster, client)
         if durable is not None:
+            observe.source("durable_case_library")
             return _result_from_durable_match(
                 durable,
                 requested_id=clean_cluster_id,

@@ -17,7 +17,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
 
-from . import APP_ID
+from . import APP_ID, research_observation as observe
 from .agent_commands import agent_cli_command
 from .authority_passages import build_authority_passages
 from .authority_resolver import (
@@ -51,7 +51,7 @@ from .scholar_browser import (
 )
 from .external_import import normalize_official_citation
 from .browser_recovery import DEFAULT_TIMEOUT_SECONDS
-from .scholar_recovery_service import recover_official_copy
+from .scholar_recovery_service import REASON_REEXTRACT_FAILED, recover_official_copy
 from .slip_opinions import (
     DEFAULT_SLIP_OPINION_MAX_AGE_DAYS,
     SlipOpinionError,
@@ -123,12 +123,19 @@ def _cmd_app(args: argparse.Namespace) -> int:
 
 
 def _cmd_lookup(args: argparse.Namespace) -> int:
+    observe.note_yield(lookup_text_requested=bool(args.text))
     client = CourtListenerClient.default()
     result = client.lookup_citation(args.citation, refresh=args.refresh)
     if not args.text:
         _print_json(result)
+        if observe.current.get():
+            observe.note_yield(clusters=sum(
+                isinstance(cluster, dict) for row in result if isinstance(row, dict)
+                if isinstance((values := row.get("clusters")), list) for cluster in values
+            ))
         return 0
     clusters = client.clusters_from_lookup(result)
+    observe.note_yield(clusters=len(clusters), lookup_text=False)
     if not clusters:
         print("No matching CourtListener case clusters.", file=sys.stderr)
         return 1
@@ -139,6 +146,7 @@ def _cmd_lookup(args: argparse.Namespace) -> int:
         text = client.opinion_display(opinion).text
         if text:
             print(text)
+            observe.note_yield(lookup_text=True)
             return 0
     print("No opinion text found for first matching cluster.", file=sys.stderr)
     return 1
@@ -175,15 +183,14 @@ def _print_authority_result(args: argparse.Namespace, authority_type: str) -> in
             }
         )
         return 1
-    if getattr(args, "text", False):
-        if result.text:
-            print(result.text)
-            return 0
-        if result.error:
-            print(result.error, file=sys.stderr)
-        return 1
-    _print_json(result.to_json())
-    return 0 if result.ok else 1
+    _observe_authority(result)
+    return _print_case_result(result, [], bool(getattr(args, "text", False)))
+
+
+def _observe_authority(result: AuthorityResult) -> None:
+    if observe.current.get() and result.authority_type in {"case", "statute", "rule"}:
+        observe.note_yield(authority_type=result.authority_type, text_available=bool(result.text),
+                           official_pagination=bool(result.official_pagination))
 
 
 def _cmd_extract(args: argparse.Namespace) -> int:
@@ -192,16 +199,25 @@ def _cmd_extract(args: argparse.Namespace) -> int:
 
 def _print_case_result(result: Any, find_queries: list[str], text_mode: bool) -> int:
     if find_queries:
-        _print_json(build_authority_passages(result, find_queries))
+        payload = build_authority_passages(result, find_queries)
+        _print_json(payload)
+        if observe.current.get():
+            observe.note_yield(passages=len(payload["passages"]), matches=payload["match_count"],
+                               unmatched_queries=len(payload["unmatched_queries"]),
+                               omitted_matches=sum(row["omitted_matches"] for row in payload["query_accounting"]))
         return 0 if result.ok else 1
     if text_mode:
         if result.text:
             print(result.text)
+            observe.note_yield(text_delivered=True)
             return 0
         if result.error:
             print(result.error, file=sys.stderr)
+        observe.note_yield(text_delivered=False)
         return 1
     _print_json(result.to_json())
+    if observe.current.get():
+        observe.note_yield(text_delivered=bool(result.text))
     return 0 if result.ok else 1
 
 
@@ -234,10 +250,12 @@ def _recover_official_authority(
     unpaginated baselines are never turned into a failure.
     """
     if result.official_pagination:
+        observe.note_yield(recovery="not_needed")
         return result
     citation = normalize_official_citation(result.citation)
     target_cluster_id = (result.identifier or cluster_id).strip()
     if not citation and not target_cluster_id:
+        observe.note_yield(recovery="no_target")
         return result
 
     try:
@@ -262,8 +280,10 @@ def _recover_official_authority(
     except (OSError, sqlite3.Error, RuntimeError, ValueError):
         # Recovery is optional. Its exception may include private paths or raw
         # lookup details, and does not establish absence or successful import.
+        observe.note_yield(recovery="failed")
         warning = "Scholar recovery: failed — An operational error interrupted recovery."
     else:
+        _observe_recovery(service)
         if service.ok and service.authority is not None:
             return service.authority
         reason = _strip_recovery_reason(service.reason)
@@ -273,6 +293,18 @@ def _recover_official_authority(
         if reason:
             warning += f" — {reason}"
     return replace(result, warnings=[*result.warnings, warning])
+
+
+def _observe_recovery(service) -> None:
+    if observation := observe.current.get():
+        if service.ok and service.authority is not None:
+            observe.note_yield(recovery="recovered")
+        elif service.reason_code == REASON_REEXTRACT_FAILED:
+            observe.note_yield(recovery="saved-but-unverified")
+        elif service.outcome == "not_found":
+            observe.note_yield(recovery="not-found")
+        else:
+            observation.recovery(service.outcome)
 
 
 def _strip_recovery_reason(reason: str) -> str:
@@ -349,6 +381,8 @@ def _cmd_extract_case(args: argparse.Namespace) -> int:
         )
         return 1
 
+    if observe.current.get():
+        observe.note_yield(baseline_text=bool(result.text), baseline_pagination=bool(result.official_pagination))
     if recover:
         result = _recover_official_authority(
             result,
@@ -357,8 +391,13 @@ def _cmd_extract_case(args: argparse.Namespace) -> int:
             timeout=getattr(args, "timeout", None),
         )
 
+    _observe_authority(result)
     if getattr(args, "output_dir", None):
-        return _export_source_result(result.to_json(), args.output_dir)
+        if not observe.current.get():
+            return _export_source_result(result.to_json(), args.output_dir)
+        status = _export_source_result(result.to_json(), args.output_dir)
+        observe.note_yield(exported=status == 0, text_delivered=status == 0 and bool(result.text))
+        return status
     return _print_case_result(result, find_queries, text_mode)
 
 
@@ -405,8 +444,11 @@ def _cmd_extract_slip_opinion(args: argparse.Namespace) -> int:
         return 1
     if getattr(args, "text", False):
         print(result.display.text)
-        return 0
-    _print_json(result.to_json())
+    else:
+        _print_json(result.to_json())
+    if observe.current.get():
+        observe.note_yield(authority_type="case", text_available=bool(result.display.text),
+                           text_delivered=bool(result.display.text), official_pagination=False)
     return 0
 
 
@@ -556,6 +598,7 @@ def _cmd_published_citing_cases(args: argparse.Namespace) -> int:
         ],
     }
     _print_json(payload)
+    observe.note_yield(citing_cases=len(results))
     return 0 if results else 1
 
 
@@ -752,6 +795,10 @@ def _cmd_recover_scholar(args: argparse.Namespace) -> int:
         progress=progress,
     )
     _print_json(service.to_json())
+    _observe_recovery(service)
+    if observe.current.get() and service.authority is not None:
+        _observe_authority(service.authority)
+        observe.note_yield(text_delivered=bool(service.authority.text))
     return 0 if service.ok else 1
 
 
@@ -760,8 +807,10 @@ def _cmd_lookup_statute(args: argparse.Namespace) -> int:
     statute = client.lookup_statute(args.citation, refresh=args.refresh)
     if args.text:
         print(str(statute.get("text") or ""))
-        return 0
-    _print_json(statute)
+    else:
+        _print_json(statute)
+    if observe.current.get():
+        observe.note_yield(authority_type="statute", text_delivered=bool(statute.get("text")))
     return 0
 
 
@@ -770,8 +819,10 @@ def _cmd_lookup_rule(args: argparse.Namespace) -> int:
     rule = client.lookup_rule(args.citation, refresh=args.refresh)
     if args.text:
         print(str(rule.get("text") or ""))
-        return 0
-    _print_json(rule)
+    else:
+        _print_json(rule)
+    if observe.current.get():
+        observe.note_yield(authority_type="rule", text_delivered=bool(rule.get("text")))
     return 0
 
 
@@ -868,6 +919,7 @@ def _cmd_search_briefs(args: argparse.Namespace) -> int:
             "results": [result.to_json() for result in page.results],
         }
     )
+    observe.note_yield(briefs=len(page.results))
     return 0
 
 
@@ -883,11 +935,16 @@ def _cmd_extract_brief(args: argparse.Namespace) -> int:
             print(str(exc), file=sys.stderr)
         return 1
     if getattr(args, "output_dir", None):
-        return _export_source_result(brief.to_json(), args.output_dir)
+        status = _export_source_result(brief.to_json(), args.output_dir)
+        if observe.current.get():
+            observe.note_yield(exported=status == 0, text_delivered=status == 0 and bool(brief.text))
+        return status
     if args.text:
         print(brief.text)
     else:
         _print_json(brief.to_json())
+    if observe.current.get():
+        observe.note_yield(text_delivered=bool(brief.text))
     return 0
 
 
@@ -1402,6 +1459,20 @@ def main(argv: list[str] | None = None) -> int:
     if not hasattr(args, "func"):
         parser.print_help()
         return 2
+    observation = observe.begin(args.command)
+    if observation is None:
+        return _dispatch_cli(args)
+    token = observe.current.set(observation)
+    code = None
+    try:
+        code = _dispatch_cli(args)
+        return code
+    finally:
+        observe.current.reset(token)
+        observation.finish(code)
+
+
+def _dispatch_cli(args: argparse.Namespace) -> int:
     if getattr(args, "output_dir", None) is not None:
         from .source_artifacts import validate_destination
 
