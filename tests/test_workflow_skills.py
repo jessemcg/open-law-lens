@@ -1,11 +1,16 @@
 """Real resource assembly through the offline wrapper; no Pi API or credentials."""
 from pathlib import Path
+import json
 import os
 import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
 
+from open_law_lens.agent import export_selected_authorities
+from open_law_lens.agent_prompts import cache_request
+from open_law_lens.fact_patterns import export_fact_pattern
+from test_agent import DummyClient
 import test_agent_vte_wrapper as wrapper_tests
 
 WRAPPER = wrapper_tests.WRAPPER
@@ -166,6 +171,74 @@ class WorkflowSkillTests(unittest.TestCase):
                        'Do not retry network timeouts', 'not a quota', 'do not search elsewhere',
                        'Omit any treatment characterization', 'one identity form, not two attempts'):
             self.assertIn(phrase, treatment)
+
+    def test_law_followup_reuses_inspected_evidence_but_fills_specific_gaps(self):
+        law = ' '.join(assembled('law').split())
+        # "Put that in one paragraph" versus "Does the later amendment change that?"
+        for phrase in (
+            'answer the new question, not the entire previous memo',
+            'reuse directly inspected passages still available in this session',
+            'when they support the answer',
+            'Do not repeat discovery just because a new turn began',
+            'A previous assistant assertion or search snippet is not verified evidence',
+            'new proposition, changed date, material objection, or passage no longer available',
+            'use Legal Researcher to fill that specific gap',
+            'published-case requirement for doctrinal conclusions',
+            'qualified fallback if bounded research cannot verify a case',
+            'confine the answer to the extracted enactment',
+        ):
+            self.assertIn(phrase, law)
+        for _, workflow, _, _ in WORKFLOWS:
+            if workflow != 'law':
+                self.assertNotIn('answer the new question', assembled(workflow))
+
+    def test_cache_navigation_cue_keeps_source_inspection_and_corpus_boundaries(self):
+        cache = ' '.join(assembled('research_cache').split())
+        for phrase in (
+            "manifest's `text_path` entries",
+            'For a question only about the current-case facts, use the supplied extracted factual-text path directly',
+            'verify quotations in the source text itself',
+            'Skip the manifest if the needed evidence is already available',
+            'a targeted lookup within the declared selected export is allowed',
+            'qualify any material gap; do not broaden the corpus',
+            'Do not use web browsing or unselected Open Law Lens cache or library materials',
+        ):
+            self.assertIn(phrase, cache)
+
+    def test_cache_request_locates_selected_sources_and_facts_without_a_listing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            selected = export_selected_authorities(
+                DummyClient(), [{'id': 42, 'case_name': 'Example v. State'}],
+                [{'statute_id': 'TEST:1', 'citation': 'Test Code, § 1',
+                  'text': 'Notice must be given.'}], [], root / 'selected',
+            )
+            request = cache_request('What do the selected sources say about risk and notice?', selected)
+            manifest_path = request.split('Selected authority manifest:\n', 1)[1].splitlines()[0]
+            manifest = json.loads(Path(manifest_path).read_text())
+            opinion = Path(manifest['cases'][0]['opinions'][0]['text_path'])
+            statute = Path(manifest['statutes'][0]['text_path'])
+            self.assertEqual(opinion.parent, selected.case_dir)
+            self.assertEqual(statute.parent, selected.case_dir)
+            self.assertIn('active risk today', opinion.read_text())
+            self.assertIn('Notice must be given.', statute.read_text())
+            # If a listed path fails, another selected file is still usable;
+            # the manifest is not a substitute for the missing source's text.
+            opinion.unlink()
+            self.assertFalse(opinion.exists())
+            self.assertNotIn('active risk today', json.dumps(manifest))
+            self.assertIn('Notice must be given.', statute.read_text())
+
+            fact_source = root / 'facts.odt'
+            fact_source.touch()
+            with patch('open_law_lens.fact_patterns.extract_fact_pattern_text',
+                       return_value='The hearing occurred on Monday.'):
+                facts = export_fact_pattern(fact_source, root / 'factual_context')
+            empty = export_selected_authorities(DummyClient(), [], [], [], root / 'empty')
+            facts_only = cache_request('When was the hearing?', empty, facts, True)
+            self.assertIn('Selected authority count: 0', facts_only)
+            text_path = facts_only.split('Extracted fact-pattern text: ', 1)[1].splitlines()[0]
+            self.assertEqual(Path(text_path).read_text(), 'The hearing occurred on Monday.\n')
 
     def test_treatment_lossless_transport_and_optional_failure_contract(self):
         treatment = ' '.join(assembled('subsequent_treatment').split())

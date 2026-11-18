@@ -18,6 +18,14 @@ answers as prior analysis for context only, not as legal authority. If the
 exported materials do not answer the question, say that plainly. A checked SOCF
 alone is sufficient material for a factual question; it does not supply law.
 
+When you need source text, navigate directly via the supplied manifest's
+`text_path` entries. For a question only about the current-case facts, use the
+supplied extracted factual-text path directly. The manifest locates sources;
+verify quotations in the source text itself. Skip the manifest if the needed
+evidence is already available. If a path fails, a targeted lookup within the
+declared selected export is allowed. Use identifiable, accessible selected
+sources and briefly qualify any material gap; do not broaden the corpus.
+
 ## Comparison and reader links
 
 When current-case factual context is provided and the question calls for
