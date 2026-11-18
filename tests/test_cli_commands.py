@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import unittest
 from io import StringIO
 from contextlib import redirect_stderr, redirect_stdout
@@ -8,8 +9,12 @@ from unittest.mock import MagicMock, patch
 
 from open_law_lens.agent_commands import AGENT_CLI_COMMAND_PREFIX
 from open_law_lens.authority_resolver import AuthorityResult
+from open_law_lens.browser_recovery import ScholarRecoveryOutcome
 from open_law_lens.cli import PROJECT_DIR, _activate_open_authority, build_parser, main
 from open_law_lens.cli_commands import CLI_COMMANDS, build_cli_commands_text
+from open_law_lens.client import CourtListenerError
+from open_law_lens.scholar_browser import ScholarClipboardImport
+from open_law_lens.scholar_recovery_service import recover_official_copy
 
 
 class CliCommandTests(unittest.TestCase):
@@ -408,7 +413,7 @@ class CliCommandTests(unittest.TestCase):
 
 
 class RecoverOfficialTests(unittest.TestCase):
-    """--recover-official is a provable no-op after durable reconciliation."""
+    """Optional recovery may improve a baseline but must not erase it."""
 
     @staticmethod
     def _reconciled_result() -> AuthorityResult:
@@ -438,12 +443,11 @@ class RecoverOfficialTests(unittest.TestCase):
             resolved_input="7856391",
             source="CourtListener API",
             title="In re S.H.",
-            citation="",
+            citation="82 Cal.App.5th 166",
             identifier="7856391",
-            source_url="",
-            text="Uncited CourtListener text.",
-            warnings=["No official reporter copy was found; a default-browser Google Scholar "
-                      "recovery is the next step."],
+            source_url="https://example.test/courtlistener/opinion/1",
+            text="Baseline opinion: the presumption applies here.",
+            warnings=["No embedded reporter page markers."],
             error="",
             official_pagination=False,
             pagination_marker_count=0,
@@ -496,34 +500,135 @@ class RecoverOfficialTests(unittest.TestCase):
         self.assertEqual(payload["match_count"], 1)
         self.assertIn("In re I.F.", payload["passages"][0]["text"])
 
-    def test_unmatched_unpaginated_baseline_recovers_exactly_once(self) -> None:
-        result = self._unpaginated_result()
-        service = MagicMock()
-        service.ok = False
-        service.outcome = "not_found"
-        service.reason = "No single corroborated Scholar result matched."
+    def _extract_find(self, *, recover: bool = True):
+        args = ["extract-case", "--cluster-id", "7856391", "--find", "presumption applies"]
+        if recover:
+            args.append("--recover-official")
         output, errors = StringIO(), StringIO()
+        with redirect_stdout(output), redirect_stderr(errors):
+            status = main(args)
+        self.assertEqual(errors.getvalue(), "")
+        self.assertTrue(output.getvalue(), "Expected a JSON result even if recovery failed")
+        return status, json.loads(output.getvalue())
+
+    def _assert_baseline_retained(self, payload, baseline, warning):
+        self.assertEqual(baseline["match_count"], 1)
+        self.assertFalse(baseline["official_pagination"])
+        self.assertNotIn("text", baseline)
+        passage, = baseline["passages"]
+        self.assertEqual(passage["text"], self._unpaginated_result().text)
+        self.assertEqual(passage["page"], "")
+        match, = passage["matches"]
+        self.assertEqual(match["start_page"], "")
+        self.assertEqual(match["end_page"], "")
+        self.assertEqual(match["pinpoint_status"], "unavailable")
+        result = self._unpaginated_result()
+        for field in ("source", "citation", "source_url", "identifier"):
+            self.assertEqual(payload[field], getattr(result, field))
+        warnings = payload["warnings"]
+        self.assertEqual(len(warnings), len(baseline["warnings"]) + 1)
+        self.assertEqual(warnings[:-1], baseline["warnings"])
+        self.assertTrue(warnings[-1].startswith(warning), warnings[-1])
+        self.assertNotIn("next step", warnings[-1])
+        self.assertEqual(payload, {**baseline, "warnings": warnings})
+
+    def test_optional_recovery_outcomes_preserve_or_improve_find_passage(self) -> None:
+        service_module = "open_law_lens.scholar_recovery_service"
+        recovered = self._reconciled_result()
+        empty = AuthorityResult(False, "case", "82 Cal.App.5th 166", error="No opinion text.")
+        for outcome, code, readback, warning in (
+            ("blocked", "challenge_captcha", None, "Scholar recovery: blocked [challenge_captcha]"),
+            ("not_found", "no_matching_result", None, "Scholar recovery: not_found"),
+            ("copied", "", empty, "Scholar recovery: imported [reextract_failed]"),
+            ("copied", "", recovered, ""),
+        ):
+            with (
+                self.subTest(outcome=outcome, verified=readback is recovered),
+                patch("open_law_lens.cli.extract_case_by_cluster_id",
+                      side_effect=lambda *args, **kwargs: self._unpaginated_result()),
+                patch("open_law_lens.cli.CourtListenerClient.default"),
+                patch("open_law_lens.cli.recover_official_copy", wraps=recover_official_copy) as recover,
+                patch(f"{service_module}.RecoveryLock"),
+                patch(f"{service_module}.run_scholar_recovery", return_value=ScholarRecoveryOutcome(
+                    1, outcome, "82 Cal.App.5th 166", recovered.source_url, "", reason_code=code,
+                )) as browser,
+                patch(f"{service_module}.read_regular_clipboard", return_value="Synthetic copy."),
+                patch(f"{service_module}.import_scholar_text", return_value=ScholarClipboardImport(
+                    "In re S.H.", "82 Cal.App.5th 166", recovered.identifier, "opinion-1", 11, True,
+                )) as importer,
+                patch("open_law_lens.authority_resolver.extract_case", return_value=readback) as extract,
+            ):
+                baseline_status, baseline = self._extract_find(recover=False)
+                recover.assert_not_called()
+                self.assertEqual(baseline_status, 0)
+                status, payload = self._extract_find()
+                self.assertEqual(status, 0)
+                recover.assert_called_once()
+                browser.assert_called_once()
+                self.assertEqual(importer.call_count, int(outcome == "copied"))
+                self.assertEqual(extract.call_count, int(outcome == "copied"))
+                if warning:
+                    self._assert_baseline_retained(payload, baseline, warning)
+                else:
+                    self.assertEqual(payload["source"], recovered.source)
+                    self.assertEqual(payload["source_url"], recovered.source_url)
+                    self.assertEqual(payload["match_count"], 1)
+                    self.assertEqual(payload["passages"][0]["text"], recovered.text)
+                    self.assertEqual(payload["passages"][0]["matches"][0]["start_page"], "170")
+
+    def test_operational_errors_in_optional_recovery_preserve_find_passage(self) -> None:
+        for failure_stage, failure in (
+            ("setup", sqlite3.OperationalError("private database path")),
+            ("lookup", CourtListenerError("private lookup details")),
+            ("service", RuntimeError("private service details")),
+            ("service", PermissionError("private lock path")),
+        ):
+            with (
+                self.subTest(stage=failure_stage, exception=type(failure)),
+                patch("open_law_lens.cli.extract_case_by_cluster_id",
+                      side_effect=lambda *args, **kwargs: self._unpaginated_result()),
+                patch("open_law_lens.cli.CourtListenerClient.default") as default_client,
+                patch("open_law_lens.cli.recover_official_copy") as recover,
+            ):
+                target = {
+                    "setup": default_client,
+                    "lookup": default_client.return_value.fetch_url,
+                    "service": recover,
+                }[failure_stage]
+                target.side_effect = failure
+                _, baseline = self._extract_find(recover=False)
+                status, payload = self._extract_find()
+                self.assertEqual(status, 0)
+                self.assertNotIn(str(failure), str(payload))
+                self.assertNotIn("not_found", str(payload))
+                self.assertNotIn("saved", str(payload))
+                self._assert_baseline_retained(payload, baseline, "Scholar recovery: failed")
+                target.assert_called_once()
+                self.assertEqual(recover.call_count, int(failure_stage == "service"))
+
+    def test_failed_recovery_does_not_make_empty_baseline_usable(self) -> None:
+        result = AuthorityResult(False, "case", "7856391", error="No readable opinion text.")
         with (
             patch("open_law_lens.cli.extract_case_by_cluster_id", return_value=result),
-            patch("open_law_lens.cli.CourtListenerClient.default") as default_client,
-            patch(
-                "open_law_lens.cli.recover_official_copy", return_value=service
-            ) as recover,
-            redirect_stdout(output),
-            redirect_stderr(errors),
+            patch("open_law_lens.cli.CourtListenerClient.default"),
+            patch("open_law_lens.cli.recover_official_copy", side_effect=RuntimeError) as recover,
         ):
-            status = main([
-                "extract-case", "--cluster-id", "7856391", "--recover-official",
-            ])
-
-        # The unpaginated baseline remains a usable result, so the command
-        # still reports success while appending the recovery warning.
-        self.assertEqual(status, 0)
+            status, payload = self._extract_find()
         recover.assert_called_once()
-        # The fallback warning is appended exactly once to the baseline.
-        payload = json.loads(output.getvalue())
-        recovery_warnings = [w for w in payload["warnings"] if w.startswith("Scholar recovery:")]
-        self.assertEqual(len(recovery_warnings), 1)
+        self.assertEqual(status, 1)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"], "No readable opinion text.")
+        self.assertEqual(payload["match_count"], 0)
+
+    def test_recovery_does_not_catch_keyboard_interrupt(self) -> None:
+        with (
+            patch("open_law_lens.cli.extract_case_by_cluster_id", return_value=self._unpaginated_result()),
+            patch("open_law_lens.cli.CourtListenerClient.default"),
+            patch("open_law_lens.cli.recover_official_copy", side_effect=KeyboardInterrupt) as recover,
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            self._extract_find()
+        recover.assert_called_once()
 
 
 if __name__ == "__main__":

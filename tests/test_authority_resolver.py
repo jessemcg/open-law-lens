@@ -41,7 +41,7 @@ class AuthorityResolverTests(unittest.TestCase):
         client.lookup_citation.assert_called_once_with("123 Cal.App.5th 456", refresh=False)
         self.assertFalse(result.ok)
         self.assertEqual(result.title, "")  # citation must not become expected name
-        self.assertTrue(any("Google Scholar recovery is next" in w for w in result.warnings))
+        self.assertEqual(result.error, "No CourtListener case cluster matched.")
 
     def test_no_cluster_preserves_supplied_name_for_scholar(self) -> None:
         client = MagicMock()
@@ -58,7 +58,7 @@ class AuthorityResolverTests(unittest.TestCase):
         self.assertEqual(result.title, "In re L.G.")
         self.assertEqual(result.citation, "118 Cal.App.5th 1208")
 
-    def test_no_cluster_reports_no_baseline_and_browser_recovery_next(self) -> None:
+    def test_no_cluster_reports_only_baseline_miss(self) -> None:
         client = MagicMock()
         client.lookup_citation.return_value = [{"status": 200, "clusters": []}]
         client.clusters_from_lookup.return_value = []
@@ -68,8 +68,8 @@ class AuthorityResolverTests(unittest.TestCase):
 
         self.assertFalse(result.ok)
         self.assertEqual(result.text, "")
-        self.assertTrue(any("Google Scholar recovery is next" in w for w in result.warnings))
-        self.assertTrue(result.error)
+        self.assertEqual(result.error, "No CourtListener case cluster matched.")
+        self.assertNotIn("Scholar", str(result.to_json()))
         # Neither Tavily nor a direct HTTP Scholar search may be reached.
         client.library.upsert_cluster.assert_not_called()
         client.cache.upsert_cluster.assert_not_called()
@@ -285,12 +285,25 @@ class DurableReconciliationTests(unittest.TestCase):
             self.assertEqual(result.identifier, "7856391")
             self.assertEqual(result.source, "CourtListener API")
             self.assertFalse(result.official_pagination)
-            self.assertTrue(
-                any(
-                    "Google Scholar" in warning
-                    for warning in result.warnings
-                )
-            )
+            self.assertFalse(result.ok)
+            self.assertEqual(result.error, "No readable opinion text found in the CourtListener/slip baseline.")
+            self.assertNotIn("Scholar", str(result.to_json()))
+
+    def test_unpaginated_baseline_reports_pagination_gap_without_recovery_prediction(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = self._client(temp_dir)
+            client.fetch_cluster_opinions.return_value = [{"plain_text": "Readable baseline."}]
+            client.reader_opinions.side_effect = lambda opinions: opinions
+            client.opinion_display.side_effect = _display_for
+            client.fetch_cluster_slip_opinion.side_effect = RuntimeError("No slip text.")
+
+            result = extract_case_by_cluster_id("7856391", client=client)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.text, "Readable baseline.")
+        self.assertFalse(result.official_pagination)
+        self.assertIn("No official reporter citation.", result.warnings)
+        self.assertNotIn("Scholar", str(result.to_json()))
 
     def test_durable_result_passes_through_find_formatting(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

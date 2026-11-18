@@ -6,10 +6,12 @@ so no real desktop, clipboard, or Scholar request is involved.
 
 from __future__ import annotations
 
+import sqlite3
 import unittest
 from unittest import mock
 from typing import Any
 
+from open_law_lens.authority_resolver import AuthorityResult
 from open_law_lens.scholar_recovery_service import (
     OUTCOME_BLOCKED,
     OUTCOME_BUSY,
@@ -48,6 +50,7 @@ class ServiceTests(unittest.TestCase):
     def test_success_imports_and_reports_imported(self) -> None:
         client = self._client()
         progress = mock.Mock()
+        authority = AuthorityResult(True, "case", "11 Cal.5th 614", text="imported text")
         with mock.patch(
             "open_law_lens.scholar_recovery_service.run_scholar_recovery",
             return_value=copied_outcome(),
@@ -59,7 +62,7 @@ class ServiceTests(unittest.TestCase):
             return_value=imported_result(),
         ), mock.patch(
             "open_law_lens.scholar_recovery_service._re_extract_authority",
-            return_value={"text": "imported text"},
+            return_value=authority,
         ):
             result = recover_official_copy(
                 client,
@@ -72,6 +75,7 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertIsNotNone(result.imported)
         self.assertEqual(result.imported.marker_count, 19)
+        self.assertIs(result.authority, authority)
         # Progress reported Validating copy and Importing opinion.
         stages = [call.args[0] for call in progress.call_args_list]
         self.assertIn("Validating copy", stages)
@@ -341,7 +345,7 @@ class ServiceTests(unittest.TestCase):
             return_value=imported_result(),
         ), mock.patch(
             "open_law_lens.scholar_recovery_service._re_extract_authority",
-            return_value={"text": "imported"},
+            return_value=AuthorityResult(True, "case", "11 Cal.5th 614", text="imported"),
         ):
             result = recover_official_copy(
                 client, query="11 Cal.5th 614", citation="11 Cal.5th 614"
@@ -378,29 +382,45 @@ class ServiceTests(unittest.TestCase):
 
     def test_failed_readback_reports_saved_but_unverified(self) -> None:
         client = self._client()
-        with mock.patch(
-            "open_law_lens.scholar_recovery_service.run_scholar_recovery",
-            return_value=copied_outcome(),
-        ), mock.patch(
-            "open_law_lens.scholar_recovery_service.read_regular_clipboard",
-            return_value="fake opinion text",
-        ), mock.patch(
-            "open_law_lens.scholar_recovery_service.import_scholar_text",
-            return_value=imported_result(),
-        ), mock.patch(
-            "open_law_lens.scholar_recovery_service._re_extract_authority",
-            return_value=None,
+        imported = imported_result()
+        for readback in (
+            {"return_value": None},
+            {"return_value": AuthorityResult(False, "case", "11 Cal.5th 614")},
+            {"return_value": AuthorityResult(True, "case", "11 Cal.5th 614", text="  \n")},
+            {"side_effect": sqlite3.OperationalError("Readback failed")},
         ):
-            result = recover_official_copy(
-                client, query="11 Cal.5th 614", citation="11 Cal.5th 614"
-            )
-        # Saved-but-unverified is never not-found and never re-searched.
-        self.assertEqual(result.outcome, OUTCOME_IMPORTED)
-        self.assertTrue(result.ok)
-        self.assertEqual(result.reason_code, "reextract_failed")
-        self.assertEqual(result.stage, "reextraction")
-        self.assertIn("saved to the Library", result.reason)
-        self.assertIn("could not be re-verified", result.reason)
+            with (
+                self.subTest(readback=readback),
+                mock.patch(
+                    "open_law_lens.scholar_recovery_service.run_scholar_recovery",
+                    return_value=copied_outcome(),
+                ) as recover,
+                mock.patch(
+                    "open_law_lens.scholar_recovery_service.read_regular_clipboard",
+                    return_value="fake opinion text",
+                ),
+                mock.patch(
+                    "open_law_lens.scholar_recovery_service.import_scholar_text",
+                    return_value=imported,
+                ) as persist,
+                mock.patch("open_law_lens.authority_resolver.extract_case", **readback) as extract,
+            ):
+                result = recover_official_copy(
+                    client, query="11 Cal.5th 614", citation="11 Cal.5th 614"
+                )
+                # Saved-but-unverified is never not-found and never re-searched.
+                self.assertEqual(result.outcome, OUTCOME_IMPORTED)
+                self.assertTrue(result.ok)
+                self.assertIs(result.imported, imported)
+                self.assertIsNone(result.authority)
+                self.assertNotIn("authority", result.to_json())
+                self.assertEqual(result.reason_code, "reextract_failed")
+                self.assertEqual(result.stage, "reextraction")
+                self.assertIn("saved to the Library", result.reason)
+                self.assertIn("could not be re-verified", result.reason)
+                recover.assert_called_once()
+                persist.assert_called_once()
+                extract.assert_called_once()
 
     def test_blocked_carries_challenge_reason_code(self) -> None:
         client = self._client()

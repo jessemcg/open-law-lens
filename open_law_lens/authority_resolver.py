@@ -235,14 +235,8 @@ def extract_case(
             identifier="",
             source_url="",
             text="",
-            warnings=[
-                *warnings,
-                "No CourtListener case cluster matched. Browser Google Scholar recovery is next.",
-            ],
-            error=(
-                "Neither a CourtListener/slip baseline nor an official Scholar copy "
-                "was available."
-            ),
+            warnings=warnings,
+            error="No CourtListener case cluster matched.",
         )
     return _extract_case_from_cluster(
         clusters[0],
@@ -382,28 +376,15 @@ def _extract_case_from_cluster(
         pass
 
     if is_known_unpublished(cluster):
-        warnings.append("Known unpublished cases do not have an official reporter copy.")
-        return AuthorityResult(
-            ok=bool(best_text), authority_type="case", input=original_input,
-            resolved_input=resolved, source=best_source, title=cluster_short_title(cluster),
-            citation=citation, identifier=cluster_id_from_cluster(cluster),
-            source_url=_cluster_source_url(cluster),
-            text=best_text, warnings=warnings,
-            error="" if best_text else "No opinion text found after official-copy fallbacks.",
-            official_pagination=False, pagination_marker_count=0,
-        )
-
-    warnings.append(
-        "No official reporter copy was found; a default-browser Google Scholar "
-        "recovery is the next step."
-    )
+        status = cluster.get("precedential_status") or cluster.get("status")
+        warnings.append(f"CourtListener publication status: {status}.")
     return AuthorityResult(
         ok=bool(best_text), authority_type="case", input=original_input,
         resolved_input=resolved, source=best_source, title=cluster_short_title(cluster),
         citation=citation, identifier=cluster_id_from_cluster(cluster),
         source_url=_cluster_source_url(cluster),
         text=best_text, warnings=warnings,
-        error="" if best_text else "No opinion text found after official-copy fallbacks.",
+        error="" if best_text else "No readable opinion text found in the CourtListener/slip baseline.",
         official_pagination=False, pagination_marker_count=0,
     )
 

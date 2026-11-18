@@ -9,16 +9,23 @@ if _model_sys.argv[1:2] == ["model-settings"]:
 import argparse
 import json
 import os
-from pathlib import Path
 import re
+import sqlite3
 import subprocess
 import sys
+from dataclasses import replace
+from pathlib import Path
 from typing import Any, Mapping
 
 from . import APP_ID
 from .agent_commands import agent_cli_command
 from .authority_passages import build_authority_passages
-from .authority_resolver import extract_authority, extract_case_by_cluster_id, read_selected_text_from_os
+from .authority_resolver import (
+    AuthorityResult,
+    extract_authority,
+    extract_case_by_cluster_id,
+    read_selected_text_from_os,
+)
 from .cache import JsonCache
 from .cli_commands import build_cli_commands_text
 from .client import (
@@ -214,60 +221,58 @@ def _recovery_progress_active(options: "argparse.Namespace") -> bool:
 
 
 def _recover_official_authority(
-    result: Any,
+    result: AuthorityResult,
     *,
     cluster_id: str,
     progress: bool,
     timeout: float | None,
-) -> Any:
+) -> AuthorityResult:
     """Apply one deterministic Scholar recovery to an unpaginated baseline.
 
     Returns the re-extracted Library-backed authority on success, or the
     original baseline (with an added recovery warning) otherwise. Usable
     unpaginated baselines are never turned into a failure.
     """
-    if getattr(result, "official_pagination", False):
+    if result.official_pagination:
         return result
-    citation = normalize_official_citation(str(getattr(result, "citation", "") or ""))
-    if not citation and not (getattr(result, "identifier", "") or cluster_id):
+    citation = normalize_official_citation(result.citation)
+    target_cluster_id = (result.identifier or cluster_id).strip()
+    if not citation and not target_cluster_id:
         return result
-    client = CourtListenerClient.default()
-    existing_cluster = None
-    target_cluster_id = str(getattr(result, "identifier", "") or cluster_id or "").strip()
-    if target_cluster_id:
-        try:
+
+    try:
+        client = CourtListenerClient.default()
+        existing_cluster = None
+        if target_cluster_id:
             existing_cluster = client.fetch_url(
                 f"/api/rest/v4/clusters/{target_cluster_id}/",
                 kind="clusters",
                 refresh=False,
             )
-        except (CourtListenerError, ValueError, RuntimeError):
-            existing_cluster = None
-    active_progress = _stderr_progress if progress else None
-    service = recover_official_copy(
-        client,
-        query=citation or str(getattr(result, "input", "") or ""),
-        citation=citation,
-        cluster_id=target_cluster_id,
-        case_name=str(getattr(result, "title", "") or ""),
-        existing_cluster=existing_cluster,
-        timeout=timeout or DEFAULT_TIMEOUT_SECONDS,
-        progress=active_progress,
-    )
-    if service.ok and service.authority is not None:
-        return service.authority
-    reason = _strip_recovery_reason(service.reason)
-    reason_code = str(getattr(service, "reason_code", "") or "").strip()
-    warning = f"Scholar recovery: {service.outcome}"
-    if reason_code:
-        warning += f" [{reason_code}]"
-    if reason:
-        warning += f" — {reason}"
-    warnings = list(getattr(result, "warnings", []) or [])
-    warnings.append(warning)
-    if hasattr(result, "warnings"):
-        result.warnings = warnings
-    return result
+        service = recover_official_copy(
+            client,
+            query=citation or result.input,
+            citation=citation,
+            cluster_id=target_cluster_id,
+            case_name=result.title,
+            existing_cluster=existing_cluster,
+            timeout=timeout or DEFAULT_TIMEOUT_SECONDS,
+            progress=_stderr_progress if progress else None,
+        )
+    except (OSError, sqlite3.Error, RuntimeError, ValueError):
+        # Recovery is optional. Its exception may include private paths or raw
+        # lookup details, and does not establish absence or successful import.
+        warning = "Scholar recovery: failed — An operational error interrupted recovery."
+    else:
+        if service.ok and service.authority is not None:
+            return service.authority
+        reason = _strip_recovery_reason(service.reason)
+        warning = f"Scholar recovery: {service.outcome}"
+        if service.reason_code:
+            warning += f" [{service.reason_code}]"
+        if reason:
+            warning += f" — {reason}"
+    return replace(result, warnings=[*result.warnings, warning])
 
 
 def _strip_recovery_reason(reason: str) -> str:

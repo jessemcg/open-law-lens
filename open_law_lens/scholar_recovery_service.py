@@ -31,9 +31,10 @@ Privacy invariants:
 
 from __future__ import annotations
 
+import sqlite3
 import time
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from .browser_recovery import (
     DEFAULT_TIMEOUT_SECONDS,
@@ -58,6 +59,9 @@ from .scholar_browser import (
     read_regular_clipboard,
 )
 from .slip_opinions import case_number_from_cluster, case_number_from_url_values
+
+if TYPE_CHECKING:
+    from .authority_resolver import AuthorityResult
 
 # Outcome values a caller can branch on.
 OUTCOME_IMPORTED = "imported"
@@ -90,7 +94,7 @@ class ScholarRecoveryServiceResult:
     outcome: str
     recovery: ScholarRecoveryOutcome
     imported: ScholarClipboardImport | None = None
-    authority: Any = None
+    authority: AuthorityResult | None = None
     reason: str = ""
     # Backward-compatible optional fields: the pipeline stage (controlled
     # identifier) where the outcome was reached and a stable reason code.
@@ -486,7 +490,7 @@ def _recover_locked(
         )
 
     authority = _re_extract_authority(client, imported)
-    if authority is None:
+    if authority is None or not authority.ok or not authority.text.strip():
         # The copy was saved but the post-persistence readback failed: never
         # report not-found and never trigger another search.
         return ScholarRecoveryServiceResult(
@@ -511,14 +515,14 @@ def _recover_locked(
     )
 
 
-def _re_extract_authority(client: Any, imported: ScholarClipboardImport) -> Any:
+def _re_extract_authority(client: Any, imported: ScholarClipboardImport) -> AuthorityResult | None:
     """Re-extract the imported copy from the durable Library."""
     from .authority_resolver import extract_case
 
     citation = imported.official_citation
     try:
         return extract_case(citation, client=client)
-    except (RuntimeError, ValueError):
+    except (OSError, sqlite3.Error, RuntimeError, ValueError):
         return None
 
 
