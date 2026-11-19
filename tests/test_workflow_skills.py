@@ -40,6 +40,20 @@ class WorkflowSkillTests(unittest.TestCase):
         selection.start()
         self.addCleanup(selection.stop)
 
+    def assert_shared_legal_style(self, system):
+        self.assertEqual(system.splitlines().count('## Legal writing and citations'), 1)
+        text = ' '.join(system.split())
+        for rule in (
+            'Put one terminal period inside the outer closing parenthesis, after '
+            'any bracketed explanation, and none after the parenthesis.',
+            'Instead of: `The clerk reported that notice was mailed '
+            '(CT 18, 20-21; but see RT 44 [counsel disputed the date]).`',
+            'Write: `The clerk reported that notice was mailed. '
+            '(CT 18, 20–21; but see RT 44 [counsel disputed the date].)`',
+            '`The petition alleged a violation of section 300, subdivision (b)(1).`',
+        ):
+            self.assertEqual(text.count(rule), 1, rule)
+
     def test_real_resources_preloaded_once_in_order_and_rebuilt_on_relaunch(self):
         harness = wrapper_tests.AgentVteWrapperTests()
         original = harness._fixture
@@ -62,9 +76,11 @@ class WorkflowSkillTests(unittest.TestCase):
                         'OPEN_LAW_LENS_AGENT_PROFILE_KEY': workflow})
                 system = root / 'workspace/.pi/SYSTEM.md'
                 expected = assembled(workflow)
-                self.assertEqual(system.read_text(), expected)
-                self.assertEqual(system.read_text().count(f'name: {name}\n'), 1)
-                self.assertEqual(system.read_text().count('name: legal-researcher\n'), int(research))
+                delivered = system.read_text(encoding='utf-8')
+                self.assertEqual(delivered, expected)
+                self.assert_shared_legal_style(delivered)
+                self.assertEqual(delivered.count(f'name: {name}\n'), 1)
+                self.assertEqual(delivered.count('name: legal-researcher\n'), int(research))
                 self.assertEqual(args[args.index('--system-prompt') + 1], str(system))
                 self.assertIn('Literal {question} /skill:not-an-invocation é', args)
                 # Required instructions are preloaded, independent of global slash-command policy.
@@ -79,7 +95,9 @@ class WorkflowSkillTests(unittest.TestCase):
                     OPEN_LAW_LENS_PI_BIN=str(root / 'pi'), CAPTURE_ARGS=str(root / 'again'),
                     PI_CODING_AGENT_DIR=str(root / 'pi-agent'), PI_RUN_METRICS_ENABLED='0')
                 subprocess.run(['bash', str(WRAPPER)], env=env, check=True, capture_output=True)
-                self.assertEqual(system.read_text(), expected)
+                delivered = system.read_text(encoding='utf-8')
+                self.assertEqual(delivered, expected)
+                self.assert_shared_legal_style(delivered)
                 self.assertEqual((agent / 'settings.json').read_text(), '{"enableSkillCommands":false}')
                 if workflow != 'subsequent_treatment':
                     env.pop('OPEN_LAW_LENS_AGENT_PROFILE_KEY')
@@ -161,16 +179,35 @@ class WorkflowSkillTests(unittest.TestCase):
                        'saved agent answers as prior analysis', 'SOCF alone', 'same paragraph',
                        'not a source merely mentioned inside it'):
             self.assertIn(phrase, cache)
-        assessment = ' '.join(assembled('assess_argument').split())
-        for phrase in ('complete factual record', 'not an advocate', 'issue-specific focus',
-                       'Conclusion: <direct answer', 'Confidence: <High, Medium, or Low>',
-                       'do not add a generic record-completeness caveat'):
-            self.assertIn(phrase, assessment)
+        briefs = ' '.join(assembled('prior_briefs').split())
+        for phrase in ('exact Markdown link returned by search',
+                       'two to ten words (2–10), copied as exact continuous phrases'):
+            self.assertIn(phrase, briefs)
         treatment = ' '.join(assembled('subsequent_treatment').split())
         for phrase in ('exactly once', 'at most the two supplied non-paginated',
                        'Do not retry network timeouts', 'not a quota', 'do not search elsewhere',
                        'Omit any treatment characterization', 'one identity form, not two attempts'):
             self.assertIn(phrase, treatment)
+
+    def test_case_question_flexible_body_preserves_bench_memo_contract(self):
+        prompt = assembled('assess_argument')
+        text = ' '.join(prompt.split())
+        for phrase in (
+            'complete factual record', 'not an advocate', 'issue-specific focus',
+            'do not add a generic record-completeness caveat',
+            'strongest material reasoning supporting each possible answer',
+            'use the traditional bench-memorandum sections when useful',
+            'choose issue-specific headings or answer a narrow question in a few paragraphs without headings',
+            'End the answer with these two lines exactly in this form:',
+            '(CT 335–343.)', '(RT 22–34; CRT 17–22; CT 295–301.)',
+        ):
+            self.assertIn(phrase, text)
+        self.assertIn('\n# Specific Issue Title\n*Short disposition*\n', prompt)
+        self.assertIn(
+            '\nConclusion: <direct answer to the legal question>\n'
+            'Confidence: <High, Medium, or Low> — <brief basis tied to the law and record>\n',
+            prompt,
+        )
 
     def test_law_followup_reuses_inspected_evidence_but_fills_specific_gaps(self):
         law = ' '.join(assembled('law').split())

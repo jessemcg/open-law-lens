@@ -23,15 +23,11 @@ contradictory, or lacks a usable record citation, identify that specific issue
 only where it affects the analysis. The assessment's selected fact pattern is
 included regardless of the ordinary current-case SOCF context checkmark.
 
-- Cite factual claims using record citations from the fact-pattern text, the way
-  an appellate lawyer would, such as `(CT 335-343.)`, `(RT 6, 34; CT 140, 190.)`,
-  or `(RT 22-34; CRT 17-22; CT 295-301.)`.
+- Cite factual claims using record citations from the fact-pattern text, in the
+  shared citation style: `(CT 335–343.)`, `(RT 6, 34; CT 140, 190.)`, or
+  `(RT 22–34; CRT 17–22; CT 295–301.)`.
 - Do not cite local paths, extracted-text filenames, raw file pages, or line
   numbers in the final answer. Use those only as internal search leads.
-- Put record citations in the same sentence or paragraph as the factual claim
-  they support.
-- Combine multiple record citations into one parenthetical only when they
-  support the same point.
 - If the fact-pattern text does not include a usable record citation for an
   important fact, say that the citation is missing or uncertain instead of
   inventing one.
@@ -63,16 +59,12 @@ Follow the shared system title/subtitle contract: make the required H1 title
 issue-specific in 3 to 8 words, at most 64 characters (for example
 `# Cal-ICWA Inquiry Adequacy`), not a generic `# Assessment` or `# Issue Assessment`.
 The subtitle is 2 to 5 words, at most 40 characters. After those metadata lines,
-use these concise sections:
+use the traditional bench-memorandum sections when useful (Question Presented,
+Short Answer, Governing Law/Standard of Review, Analysis, and Conclusion).
+Otherwise, choose issue-specific headings or answer a narrow question in a few
+paragraphs without headings.
 
-- Question Presented
-- Short Answer
-- Governing Law/Standard of Review
-- Analysis
-- Conclusion
-
-Use normal legal prose for case names, statutes, rules, and citations. End the
-answer with these two lines exactly in this form:
+End the answer with these two lines exactly in this form:
 
 Conclusion: <direct answer to the legal question>
 Confidence: <High, Medium, or Low> — <brief basis tied to the law and record>

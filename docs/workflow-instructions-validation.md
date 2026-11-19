@@ -60,7 +60,7 @@ not a legal-answer quality claim.
 | Assessment: neutral California appellate bench memo, not advocacy or question-premised outcome | case-assessment opening / Analysis |
 | Assessment: supplied fact pattern is complete record, read first; no generic missing-record caveat; specific consequential ambiguities only | case-assessment Factual record; source paths are runtime data |
 | Assessment: actual record cites near supported claims; no invented pinpoints/local paths; express issue-specific focus | case-assessment Factual record / Research and analysis |
-| Assessment: five memorandum sections; strongest reasoning on both sides; material preservation/prejudice/remedy; direct answer | case-assessment Bench memorandum / Analysis |
+| Assessment: five memorandum sections; strongest reasoning on both sides; material preservation/prejudice/remedy; direct answer | case-assessment Bench memorandum / Analysis; traditional sections are optional, and issue-specific headings or a short paragraph answer are allowed |
 | Assessment: final Conclusion/Confidence lines and calibrated High/Medium/Low meanings | case-assessment final section, retained verbatim in substance |
 | Treatment: graph once; if necessary exact citation then exact name searches only; no query rewriting, pagination, semantic/web search, timeout retries | subsequent-treatment Discovery ceiling; exact commands generated in Python, including quoted title/citation/cluster arguments |
 | Treatment: confirmed SQLite startup lock retry only; no replay of recovery outcomes | subsequent-treatment plus unchanged Legal Researcher transient-lock contract |
@@ -236,7 +236,55 @@ Controls, callbacks, model profiles, persistence and agent instructions are unch
   `/tmp/oll-settings-preview-4l_3m_8q`. Existing disposable source/environment reused;
   production settings remain byte-for-byte unchanged.
 
-## Rollout and rollback
+## Shared legal house style (2026-11-19)
+
+The **Legal writing and citations** section in `.pi/SYSTEM.md` is the one
+source for all five Agent workflows. It teaches standalone citation placement
+with contrasting fictional examples and distinguishes it from sentence-ending
+statutory subdivisions and references embedded in continuing prose. The style
+rules do not change research, verification, corpus, or treatment limits. Cache
+retains exact 2–5-word quotations and nearby identifiers; Prior Briefs retains
+exact links and 2–10-word quotations. Local Search Briefs is unaffected.
+
+The rules were adapted from these Prose references at revision `26da5c1`:
+
+| Prose reference | Adapted guidance |
+|---|---|
+| `.pi/shared/legal_writing_style_rules.md` | Formal prose, dependency terms, dates, initials, and typography |
+| `.pi/skills/direct/references/legal-style.md` | Exact quotations and consistent legal usage; typography applies only to authored prose |
+| `.pi/skills/check-citations-document/ref/citation_rules.txt` | Standalone citation punctuation and record, authority, enactment, and filing citation forms |
+| `.pi/skills/check-usage-style-document/ref/usage_style_rules.txt` | Direct sentences, accurate attribution, and smooth quotation lead-ins without altering source text |
+
+Open Law Lens owns the adapted text and does not read Prose at runtime. Review
+future Prose changes deliberately before adopting them here. No proofing
+checklist, drafting length, heading convention, or dictation correction was
+imported. Case Question keeps its neutral bench-memo analysis and complete fact
+pattern. Its body can use traditional sections, issue-specific headings, or
+paragraphs without headings; the opening issue title and disposition subtitle
+and the exact closing `Conclusion:` and `Confidence:` lines remain required.
+
+Implementation validation used a disposable tracked-source checkout and locked
+Python 3.13 environment, with temporary HOME/XDG paths and synthetic data. Of 41
+focused checks, 40 passed and one optional PiRunMetrics test skipped because no
+sibling adapter was staged. The fake-Pi wrapper delivered the shared section
+and both contrasting examples exactly once for each workflow, on fresh and
+reused workspaces. Checks also covered the flexible Case Question body and fixed
+ending, quotation and brief links, and saved-answer metadata.
+
+Separately, the approved plan recorded a synthetic live GTK4 preview that
+preserved the punctuation, en dash, and custom heading. Short quotation marks
+remained in the authored text and were hidden in the live pane as designed;
+the bold, clickable quotation behavior was unchanged. These checks establish
+instruction delivery and display, not model compliance or legal accuracy. No
+paid quality run was performed.
+
+Start a **new Agent question** to receive the style update. No restart, settings
+migration, postprocessing, renderer change, or regeneration is needed. Existing
+sessions and follow-ups keep their original instructions. Rollback for this
+update is limited to the Open Law Lens prompt, skill, tests, and documentation;
+Prose and existing answers are untouched.
+
+## Original workflow rollout and rollback
 
 Deliver Python, wrapper and `.pi` resources together. Restart the GUI and start a
 new Agent session to receive the new layout/instructions; existing sessions and

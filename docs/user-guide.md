@@ -453,12 +453,19 @@ keys. No deployment migration or private-settings cleanup occurs. Saved answers
 and existing sessions are not rewritten or relabeled. Follow-ups keep their
 original session instructions and corpus even if the composer scope changes.
 
-Restart the GUI and start a **new Agent session** for this update; do not interrupt
-an existing session. Rollback restores prior code/resources, whose prompt settings
-remain available without reverse migration. No dependency synchronization,
-case/library/cache migration, or answer regeneration is required. See
-[workflow instruction and Settings validation](workflow-instructions-validation.md)
-for the shipped-prompt mapping, isolated checks, and limitations.
+All five AI workflows share the legal writing and citation conventions in
+`.pi/SYSTEM.md`. For example, an answer puts a standalone record citation after
+its supporting sentence, with the citation’s period inside the parentheses:
+`The hearing ended at noon. (RT 8–9.)` These are writing instructions, not new
+research requirements. The model can choose headings, paragraphs, and lists
+that suit the question. Exact quotations and brief links keep their existing
+requirements and behavior; local Search Briefs is unaffected.
+
+Start a **new Agent question** to pick up the revised writing instructions; a
+GUI restart is not needed. Existing follow-ups keep their original instructions.
+No settings migration, dependency synchronization, or answer regeneration is
+required. See [workflow instruction and Settings validation](workflow-instructions-validation.md)
+for the shipped-prompt mapping, style references, isolated checks, and limitations.
 
 Law, Subsequent Treatment, and Assess Legal Question runs are research-capable.
 The launcher preloads the tracked legal-researcher skill into the disposable
@@ -740,13 +747,14 @@ question's wording. It treats the selected fact pattern as the complete
 factual record and prohibits speculation about a more complete record or a
 generic record-completeness caveat. A concrete ambiguity, contradiction, or
 missing record citation in the supplied text may still be addressed where it
-affects the analysis. The answer follows a concise bench-memorandum structure
-(Question Presented, Short Answer, Governing Law/Standard of Review, Analysis,
-Conclusion) and applies the law neutrally, addressing the strongest material
-reasoning supporting each possible answer. Preservation, prejudice, harmless
-error, and remedy are addressed when legally material, not as a mechanical
-checklist. The answer always ends with a direct conclusion and a calibrated
-confidence line:
+affects the analysis. After the issue title and disposition subtitle, the body
+can use traditional bench-memorandum sections when useful, choose issue-specific
+headings, or answer a narrow question in a few paragraphs without headings.
+Whatever the structure, the assessment applies the law neutrally and addresses
+the strongest material reasoning supporting each possible answer. Preservation,
+prejudice, harmless error, and remedy are addressed when legally material, not
+as a mechanical checklist. The answer always ends with a direct conclusion and
+a calibrated confidence line:
 
 ```text
 Conclusion: <direct answer to the legal question>

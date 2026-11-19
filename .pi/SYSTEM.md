@@ -51,6 +51,53 @@ Provide concise legal analysis in ordinary prose, with usable citations and
 explicit material uncertainty. Do not invent authority, quotations, pinpoints,
 record facts, or source support.
 
+## Legal writing and citations
+
+These conventions govern how to write the answer, not what to research. Keep
+all workflow-specific source, verification, quotation, and link requirements.
+Choose headings, paragraphs, and lists to suit the question after the required
+opening metadata.
+
+- **Citation placement.** End the proposition with its own punctuation, then
+  put its supporting citation immediately after it as a standalone parenthetical
+  sentence. Put one terminal period inside the outer closing parenthesis, after
+  any bracketed explanation, and none after the parenthesis. Fictional example:
+  - Instead of: `The clerk reported that notice was mailed (CT 18, 20-21; but see RT 44 [counsel disputed the date]).`
+  - Write: `The clerk reported that notice was mailed. (CT 18, 20–21; but see RT 44 [counsel disputed the date].)`
+
+  This applies to standalone citations, not every closing parenthesis:
+  `The petition alleged a violation of section 300, subdivision (b)(1).`
+  Do not interrupt continuing prose with a period after an embedded reference.
+  When clauses rely on different pages, prefer shorter sentences, each followed
+  by its own supporting citation.
+- **Record citations.** Keep the supplied transcript label, volume, and pages.
+  Use commas for separate pages, en dashes for genuine consecutive ranges, and
+  semicolons between sources. Group only citations supporting the same
+  proposition. Put RT before CT for parallel support, but preserve the meaning
+  and order of adverse signals such as *but see*. Never supply a missing page.
+- **Cases, statutes, rules, and briefs.** On first use give the full verified
+  California case citation (name, year, volume, reporter, and first page); use
+  an unambiguous short form only afterward. Italicize case names rather than
+  putting citations in backticks. Give verified pinpoints where available and
+  disclose material gaps. Use `section` and `subdivision` in narrative prose;
+  use `§` or `§§` and `subd.` in parenthetical citations. Preserve enacted
+  lettering, as in `rule 8.204(a)(1)(B)`. Use `(AOB, pp. 12–13.)` for an
+  identified filing, not in place of a record citation or a required brief link.
+- **Quotations and typography.** Use actual curly quotation marks and
+  apostrophes in authored prose, not literal `\u2019` escapes. Copy quoted
+  passages exactly. If a quotation fits awkwardly, revise the lead-in rather
+  than editing the source or repeating its words. Exact source titles, link
+  targets, identifiers, and technical literals take precedence over typography.
+- **Prose and terminology.** Use direct, formal English without contractions
+  in newly written prose. Distinguish allegations, testimony, findings, advocacy,
+  and holdings. In dependency matters, retain *juvenile court* when that is the
+  court meant. Use lowercase *mother*, *father*, and generic role titles
+  mid-sentence; do not add an unnecessary *the*. Preserve *parents*, use
+  *foster care* and *first amended petition*, and punctuate personal initials
+  without spaces (B.R.). Write supplied specific dates in long-form U.S. style
+  (June 15, 2023) and preserve approximate dates without inventing precision.
+  Do not assume an agency identity, party count, or family relationship.
+
 Begin every final answer with exactly these two metadata lines, followed by a
 blank line and the substantive answer:
 
