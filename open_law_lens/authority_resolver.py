@@ -20,7 +20,6 @@ from .citation_links import REPORTER_CITATION_PATTERN, cited_case_links, cited_r
 from .client import (
     CourtListenerClient,
     cluster_short_title,
-    dedupe_case_clusters,
     format_official_california_citation,
     official_california_reporter_citation,
 )
@@ -217,7 +216,7 @@ def extract_case(
     client = client or CourtListenerClient.default()
     resolved, warnings = resolve_case_input(citation, client)
     result = client.lookup_citation(resolved, refresh=refresh)
-    clusters = dedupe_case_clusters(client.clusters_from_lookup(result))
+    clusters = client.clusters_from_lookup(result)
     if not clusters:
         return AuthorityResult(
             ok=False,
@@ -239,8 +238,10 @@ def extract_case(
             warnings=warnings,
             error="No CourtListener case cluster matched.",
         )
+    # As in the reader, prefer a paginated duplicate before considering Scholar.
+    preferred = client.preferred_lookup_clusters(clusters)
     return _extract_case_from_cluster(
-        clusters[0],
+        preferred[0],
         resolved=resolved,
         source=client.last_lookup_source or "CourtListener API",
         refresh=refresh,

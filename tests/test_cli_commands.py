@@ -12,7 +12,7 @@ from open_law_lens.authority_resolver import AuthorityResult
 from open_law_lens.browser_recovery import ScholarRecoveryOutcome
 from open_law_lens.cli import PROJECT_DIR, _activate_open_authority, build_parser, main
 from open_law_lens.cli_commands import CLI_COMMANDS, build_cli_commands_text
-from open_law_lens.client import CourtListenerError
+from open_law_lens.client import CourtListenerClient, CourtListenerError
 from open_law_lens.scholar_browser import ScholarClipboardImport
 from open_law_lens.scholar_recovery_service import recover_official_copy
 
@@ -115,6 +115,31 @@ class CliCommandTests(unittest.TestCase):
         self.assertEqual(status, 0)
         extract.assert_called_once_with("6240402", refresh=False)
         self.assertIn('"identifier": "6240402"', output.getvalue())
+
+    def test_extract_case_uses_paginated_duplicate_without_scholar(self) -> None:
+        citation = [{"volume": "128", "reporter": "Cal.App.4th", "page": "1051"}]
+        older = {"id": 10, "case_name_short": "Example", "citations": citation}
+        official = {"id": 20, "case_name": "In re Example", "citations": citation}
+        opinions = {
+            10: [{"id": 101, "plain_text": "[*88]Parallel reporter text."}],
+            20: [{"id": 201, "plain_text": "[*1058]Official text. [*1059]Next page."}],
+        }
+        client = CourtListenerClient(cache=MagicMock(), library=MagicMock())
+        client.library.read_opinion_display.return_value = None
+        with (
+            patch.object(CourtListenerClient, "default", return_value=client),
+            patch.object(client, "lookup_citation", return_value=[{"clusters": [older, official]}]),
+            patch.object(client, "fetch_cluster_opinions", side_effect=lambda c, **kw: opinions[c["id"]]),
+            patch("open_law_lens.cli.recover_official_copy") as scholar,
+            redirect_stdout(StringIO()) as out,
+        ):
+            code = main(["extract-case", "128 Cal.App.4th 1051", "--recover-official"])
+        self.assertEqual(code, 0)
+        result = json.loads(out.getvalue())
+        self.assertEqual(result["identifier"], "20")
+        self.assertTrue(result["official_pagination"])
+        self.assertIn("Official text.", result["text"])
+        scholar.assert_not_called()
 
     def test_parser_accepts_repeated_find_with_extract_case(self) -> None:
         parser = build_parser()
