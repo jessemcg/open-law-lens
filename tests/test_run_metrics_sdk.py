@@ -24,7 +24,8 @@ class RunMetricsSDKTests(unittest.TestCase):
             self.skipTest('Installed Node and sibling PiRunMetrics required for offline SDK acceptance')
         helper = wrapper_tests.AgentVteWrapperTests()
         for mode, workflow in [('general', 'law'), ('case', 'research_cache'), ('brief', 'prior_briefs'),
-                               ('appeal', 'assess_argument'), ('general', 'subsequent_treatment')]:
+                               ('appeal', 'assess_argument'), ('general', 'subsequent_treatment'),
+                               ('general', 'prep_reply'), ('general', 'prep_respondent'), ('general', 'prep_opposition')]:
             with self.subTest(workflow=workflow), tempfile.TemporaryDirectory() as d:
                 root = Path(d)
                 project, workspace, prompt = helper._fixture(root)
@@ -45,7 +46,12 @@ class RunMetricsSDKTests(unittest.TestCase):
                     'assess_argument': agent_prompts.assessment_request(literal, export),
                     'subsequent_treatment': agent_prompts.treatment_request(literal, '42', '10 Cal.App.5th 25'),
                 }
-                prompt.write_text(requests[workflow])
+                if workflow.startswith('prep_'):
+                    literal = 'CANARY B123456 brief-prep manifest é.json'
+                    request = agent_prompts.brief_prep_request(workflow.removeprefix('prep_'), workspace / literal)
+                else:
+                    request = requests[workflow]
+                prompt.write_text(request)
                 executable = root / 'synthetic-pi.mjs'
                 shutil.copyfile(PROJECT / 'tests/metrics_sdk_fixture.mjs', executable)
                 executable.chmod(0o700)
@@ -84,6 +90,7 @@ class RunMetricsSDKTests(unittest.TestCase):
                     skill_names = {'law': 'law-question', 'research_cache': 'research-cache',
                         'prior_briefs': 'prior-briefs', 'assess_argument': 'case-assessment',
                         'subsequent_treatment': 'subsequent-treatment'}
+                    skill = 'brief-prep' if workflow.startswith('prep_') else skill_names[workflow]
                     systems = []
                     for context in data['contexts']:
                         # Current Pi normalizes systemPrompt into transcript system
@@ -99,7 +106,7 @@ class RunMetricsSDKTests(unittest.TestCase):
                                 text += ''.join(section for section in message.get('sections', {}).values()
                                                 if isinstance(section, str))
                         systems.append(text)
-                        self.assertEqual(text.count(f'name: {skill_names[workflow]}\n'), 1)
+                        self.assertEqual(text.count(f'name: {skill}\n'), 1)
                         self.assertEqual(text.count('name: legal-researcher\n'), int(mode in {'general', 'appeal'}))
                     self.assertEqual(systems[0], systems[-1])
                     self.assertIn(literal, json.dumps(data['contexts'], ensure_ascii=False))
@@ -116,6 +123,7 @@ class RunMetricsSDKTests(unittest.TestCase):
                 for path in files:
                     text = path.read_text()
                     self.assertNotIn('CANARY', text)
+                    self.assertNotIn('B123456', text)
                     self.assertNotIn('synthetic.txt', text)
                     start, end = map(json.loads, text.splitlines())
                     self.assertEqual(start['run_id'], end['run_id'])

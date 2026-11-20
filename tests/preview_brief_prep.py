@@ -100,10 +100,11 @@ def primary(root: Path, original: Path, other: Path, hold: bool) -> int:
         assert window._agent_prep.case_number == 'B123456'
         assert window._agent_last_answer_text == ANSWER
         assert window._agent_save_answer_button.get_sensitive()
-        busy = subprocess.Popen([sys.executable, __file__, '--send', str(other)], stdout=subprocess.DEVNULL)
+        busy = subprocess.Popen([sys.executable, __file__, '--send', str(other)], stdout=subprocess.PIPE)
         attempts.append(busy)
         yield lambda: busy.poll() is not None
         assert busy.returncode == 2  # warm command rejected, not queued
+        assert busy.communicate(timeout=2)[0] == b'brief-prep: rejected\n'
         assert window._agent_prep.case_number == 'B123456'
         window._agent_followup_entry.set_text('interrupt this synthetic turn')
         window._on_agent_followup_activate(window._agent_followup_entry)
@@ -135,7 +136,24 @@ def primary(root: Path, original: Path, other: Path, hold: bool) -> int:
         assert window._selected_agent_answer['answer_id'] == answer_id
         assert window._selected_agent_answer['text'].endswith('Synthetic follow-up.')
         window._stop_agent()
-        print('PASS cold/warm command line, case pin, ambiguity choice, Answer, interrupted follow-up, Save, reader, Research Set', flush=True)
+        yield lambda: not window._agent_answer_working and not window._agent_answer_finishing
+        warm = subprocess.Popen([sys.executable, __file__, '--send', str(other)], stdout=subprocess.PIPE)
+        attempts.append(warm)
+        yield lambda: warm.poll() is not None
+        assert warm.returncode == 0
+        assert warm.communicate(timeout=2)[0] == b'brief-prep: requested\n'
+        assert app._main_window() is window
+        assert window._brief_prep_dialog.get_heading() == 'Opposition to Dismissal'
+        assert other.name in window._brief_prep_dialog.get_body()
+        assert 'any unsaved answer' in window._brief_prep_dialog.get_body()
+        window._brief_prep_dialog.response('cancel')
+        assert window._agent_prep.case_number == 'B123456'
+        assert window._current_case_socf_path is None
+        window._on_brief_prep_menu_choice(None, SimpleNamespace(popdown=lambda: None), 'respondent')
+        assert window._brief_prep_dialog.get_heading() == 'Respondent’s Brief Prep'
+        assert other.name in window._brief_prep_dialog.get_body()
+        window._brief_prep_dialog.response('cancel')
+        print('PASS cold/accepted/busy warm command line, no-SOCF menu, case pin, ambiguity choice, Answer, interrupted follow-up, Save, reader, Research Set', flush=True)
 
     checks = steps()
 
@@ -148,7 +166,9 @@ def primary(root: Path, original: Path, other: Path, hold: bool) -> int:
                 next_check = next(checks)
         except StopIteration:
             successful = True
-            if not hold:
+            if hold:
+                ui.GLib.timeout_add_seconds(90, lambda: (app.quit(), False)[1])
+            else:
                 app.quit()
             return False
         except Exception:

@@ -135,11 +135,27 @@ class SourceTests(unittest.TestCase):
             self.assertNotEqual(staged, source)
             self.assertEqual(staged.read_bytes(), source.read_bytes())
             raise prep.PrepError('Provide a searchable PDF copy.')
-        with patch.object(prep, '_image_only_sheets', return_value=True), patch.object(prep, '_local_ocr', side_effect=ocr):
+        with patch.object(prep, '_scanned_sheets', return_value={0}), patch.object(prep, '_local_ocr', side_effect=ocr):
             with self.assertRaisesRegex(prep.PrepError, 'searchable PDF copy'):
                 prep.discover(self.case, 'respondent', self.work, allow_ocr=True)
         self.assertEqual(list(self.work.iterdir()), [])
         self.assertFalse(source.with_suffix('.txt').exists())
+
+    def test_mixed_ocr_keeps_searchable_sheets_verbatim_and_requires_every_scan(self):
+        source = self.filing('AOB.pdf', 'AOB')
+        with patch.object(prep, '_local_ocr', return_value='lower-quality OCR\fRecovered scan text\f'):
+            self.assertEqual(prep._fill_scanned_sheets(source, 'Native searchable text\f 1\f', {1}),
+                             'Native searchable text\fRecovered scan text\f')
+        with patch.object(prep, '_local_ocr', return_value='only one sheet\f'):
+            with self.assertRaisesRegex(prep.PrepError, 'searchable PDF copy'):
+                prep._fill_scanned_sheets(source, 'Native text\f\f', {1})
+
+    def test_unattributed_motion_title_does_not_prove_respondent_filed(self):
+        pdf(self.root / 'MTD.pdf', ['B123456', 'Motion to Dismiss Appeal', 'Synthetic, Respondent'])
+        with self.assertRaisesRegex(prep.PrepError, 'respondent’s motion'):
+            prep.discover(self.case, 'opposition', self.work)
+        pdf(self.root / 'MTD.pdf', ['B123456', 'Motion to Dismiss Appeal', 'Attorney for Respondent'])
+        self.assertEqual(list(prep.discover(self.case, 'opposition', self.work).choices), ['mtd'])
 
     def test_root_pin_fails_on_replacement_and_symlinks(self):
         alias = self.root.with_name('link')

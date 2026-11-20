@@ -12302,11 +12302,17 @@ class OpenLawLensApp(Adw.Application):
                 window._set_status("Use --brief-prep and --case-dir together, without --open-authority.")
             else:
                 accepted = window.request_brief_prep(kind.get_string(), case_dir.get_string())
-            if not command_line.get_is_remote():
-                # The primary process stays alive. A content-free receipt lets
-                # a terminal shortcut distinguish dispatch from an app exit.
+            # The content-free receipt distinguishes a cold app that remains
+            # alive, or a warm app that knows this request, from an older app
+            # that ignores the forwarded options and exits the CLI with zero.
+            receipt = "brief-prep: requested" if accepted else "brief-prep: rejected"
+            if command_line.get_is_remote():
+                remote_print = getattr(command_line, "print_literal", None)
+                if remote_print is not None:
+                    remote_print(receipt + "\n")
+            else:
                 try:
-                    print("brief-prep: requested" if accepted else "brief-prep: rejected", flush=True)
+                    print(receipt, flush=True)
                 except OSError:
                     pass
             return 0 if accepted else 2

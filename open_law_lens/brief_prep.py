@@ -11,7 +11,7 @@ import stat
 import subprocess
 import tempfile
 from collections import Counter
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
@@ -38,7 +38,7 @@ COVER_CASE = re.compile(r"\b([A-H])\s*[- ]?\s*(\d{6})\b", re.I)
 ROLE_PATTERNS = {
     "aob": r"\bappellant(?:s|['’]s|s['’])?\s+opening\s+brief\b|\bopening\s+brief\s+(?:of|for)\s+(?:the\s+)?appellant\b",
     "rb": r"\brespondent(?:s|['’]s|s['’])?\s+(?:answer(?:ing)?\s+)?brief\b|\bbrief\s+(?:of|for)\s+(?:the\s+)?respondent\b",
-    "mtd": r"\b(?:respondent(?:s|['’]s|s['’])?\s+(?:\w+\s+){0,3}motion\s+to\s+dismiss|motion\s+to\s+dismiss\s+(?:the\s+)?appeal)\b",
+    "mtd": r"\brespondent(?:s|['’]s|s['’])?\s+(?:notice of\s+)?motion\s+to\s+dismiss\b",
 }
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
@@ -164,19 +164,28 @@ def _pages(text: str) -> list[str]:
     return pages[:-1] if pages and pages[-1] == "" else pages
 
 
-def _image_only_sheets(pdf: Path, text: str) -> bool:
+def _scanned_sheets(pdf: Path, text: str) -> set[int]:
     pages = _pages(text)
-    sparse = {i for i, page in enumerate(pages, 1) if sum(c.isalnum() for c in page) < 20}
+    sparse = {i for i, page in enumerate(pages) if sum(c.isalnum() for c in page) < 20}
     if not sparse:
-        return False
+        return set()
     result = subprocess.run(["pdfimages", "-list", str(pdf)], capture_output=True,
                             check=True, text=True, timeout=30)
+    scanned = set()
     for line in result.stdout.splitlines()[2:]:
         fields = line.split()
-        if len(fields) >= 5 and fields[0].isdigit() and int(fields[0]) in sparse:
-            if fields[2] == "image" and int(fields[3]) >= 500 and int(fields[4]) >= 500:
-                return True
-    return False
+        if len(fields) >= 5 and fields[0].isdigit() and int(fields[0]) - 1 in sparse:
+            if fields[2] == "image" and min(int(fields[3]), int(fields[4])) >= 350:
+                scanned.add(int(fields[0]) - 1)
+    return scanned
+
+
+def _fill_scanned_sheets(pdf: Path, native_text: str, scanned: set[int]) -> str:
+    native, recovered = _pages(native_text), _pages(_local_ocr(pdf))
+    if len(native) != len(recovered) or any(not recovered[index].strip() for index in scanned):
+        raise PrepError("Local OCR did not recover every scanned sheet. Provide a searchable PDF copy.")
+    return "".join((recovered[index] if index in scanned else text) + "\f"
+                   for index, text in enumerate(native))
 
 
 def _local_ocr(pdf: Path) -> str:
@@ -232,8 +241,14 @@ def _cover(text: str) -> tuple[str, str] | None:
         if re.search(r"\b(?:draft|not for filing|sample|proposed order)\b", compact, re.I):
             continue
         roles = {role for role, pattern in ROLE_PATTERNS.items() if re.search(pattern, compact, re.I)}
-        if "mtd" in roles and (not re.search(r"\brespondents?\b", compact, re.I) or re.search(
-                r"\bappellant['’]s motion\b|\b(?:attorneys?|counsel) for (?:the )?appellants?\b", compact, re.I)):
+        for role, title, party in (("aob", "opening brief", "appellants?"),
+                                   ("rb", "responding brief", "respondents?"),
+                                   ("mtd", r"motion to dismiss(?: the)? appeal", "respondents?")):
+            if (re.search(rf"^\s*{title}\s*$", page, re.I | re.M)
+                    and re.search(rf"\b(?:attorneys?|counsel) for (?:the )?{party}\b", compact, re.I)):
+                roles.add(role)
+        if "mtd" in roles and re.search(
+                r"\bappellant['’]s motion\b|\b(?:attorneys?|counsel) for (?:the )?appellants?\b", compact, re.I):
             continue
         if len(roles) == 1 and not re.search(
                 r"\b(?:reply brief|petition for rehearing|request for extension|joinder|proof of service only|"
@@ -292,10 +307,11 @@ def _inspect(root: int, relative: Path, work: Path, roles: set[str], allow_ocr: 
         cover = _pdf_command(pdf, "-l", "2")
         identity = _cover(cover)
         ocr = False
-        if identity is None and _hints(relative) & roles and _image_only_sheets(pdf, cover):
+        if identity is None and _hints(relative) & roles and _scanned_sheets(pdf, cover):
             if not allow_ocr:
                 raise PrepError("The cover is scanned. Provide a searchable PDF copy or enable local OCR.")
-            cover = _local_ocr(pdf)
+            native = _pdf_command(pdf)
+            cover = _fill_scanned_sheets(pdf, native, _scanned_sheets(pdf, native))
             identity = _cover(cover)
             ocr = True
         if identity is None or identity[0] not in roles:
@@ -304,10 +320,10 @@ def _inspect(root: int, relative: Path, work: Path, roles: set[str], allow_ocr: 
         if expected and case_number != expected:
             raise PrepError(f"Cover identifies a different appeal ({case_number}).")
         text = cover if ocr else _pdf_command(pdf)
-        if not ocr and _image_only_sheets(pdf, text):
+        if not ocr and (scanned := _scanned_sheets(pdf, text)):
             if not allow_ocr:
                 raise PrepError("Some filing sheets are scanned. Provide a searchable PDF copy or enable local OCR.")
-            text = _local_ocr(pdf)
+            text = _fill_scanned_sheets(pdf, text, scanned)
             ocr = True
         if not text.strip() or not text.endswith("\f"):
             raise PrepError("Full filing text could not be extracted with page boundaries.")
@@ -487,12 +503,13 @@ def stage_evidence(case: CaseRoot, discovery: Discovery, chosen: dict[str, Filin
         files.append({"role": role, "source": selected.path.as_posix(), "ocr": selected.ocr,
                       "parts": str(Path(artifact["manifest_path"]).relative_to(workspace))})
     record: dict = {"note": "No confined record bundle was available. Do not claim record verification."}
-    try:
-        with case.open() as root:
-            with _directory(root, Path("0_record/case_bundle")) as fd:
-                record = _stage_record(fd, workspace)
-    except (FileNotFoundError, NotADirectoryError):
-        pass
+    with case.open() as root, ExitStack() as directories:
+        try:
+            fd = directories.enter_context(_directory(root, Path("0_record/case_bundle")))
+        except OSError:
+            pass  # Missing, unreadable or linked optional record bundle.
+        else:
+            record = _stage_record(fd, workspace)
     manifest = workspace / "brief-prep-manifest.json"
     manifest.write_text(json.dumps({**discovery.provenance.payload(), "filings": files,
                                     "context_note": discovery.optional_warning, "record": record},
