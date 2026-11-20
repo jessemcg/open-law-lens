@@ -96,6 +96,7 @@ opening metadata.
   *foster care* and *first amended petition*, and punctuate personal initials
   without spaces (B.R.). Write supplied specific dates in long-form U.S. style
   (June 15, 2023) and preserve approximate dates without inventing precision.
+  Always capitalize “Legislature” in your own prose.
   Do not assume an agency identity, party count, or family relationship.
 
 Begin every final answer with exactly these two metadata lines, followed by a
