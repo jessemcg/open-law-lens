@@ -4,7 +4,9 @@ Open Law Lens owns all three workflows. Current Case TUI sends a selected folder
 through `project-env run OpenLawLens open-law-lens app --brief-prep KIND
 --case-dir ABSOLUTE`. Lens acknowledges cold and warm requests without echoing a
 case identifier. The acknowledgement means the request reached Lens, not that
-preparation or research finished. Busy requests are rejected, not replayed.
+preparation or research finished. The shortcut starts without a popup, with
+progress, errors, and any necessary filing choice shown inline. Busy requests
+and attempts to replace an unsaved answer are rejected, not replayed.
 The TUI registry and its matching release binary must be deployed together.
 
 ## Local validation (synthetic only)
@@ -14,9 +16,11 @@ The TUI registry and its matching release binary must be deployed together.
   OCR failure, unchanged source files, and restricted schema-v2 record staging.
 - The native private-bus preview used GTK, the production wrapper, a fake Pi
   session and Unix follow-up transport. It verified cold, warm and busy requests,
-  a case path with an apostrophe, menu access without an SOCF, selection changes
-  during preparation, Answer, an interrupted turn's Save guard, linked reader
-  rendering, and a checked Brief Prep report surviving a Research Set round-trip.
+  a case path with an apostrophe, cold and warm automatic start with unambiguous
+  filings, inline choice/cancel and missing-filing errors, protection of an
+  unsaved answer, menu access without an SOCF, selection changes during
+  preparation, Answer, an interrupted turn's Save guard, linked reader rendering,
+  and a checked Brief Prep report surviving a Research Set round-trip.
 - The real GTK sidebar tests cover light, dark and high contrast. The installed
   Pi SDK fixture exercised all eight workflows with metrics enabled, disabled,
   missing or unwritable, without using a model provider or tagging case identity.

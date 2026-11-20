@@ -581,23 +581,28 @@ context checkmark starts off for each case and remembers that case's choice
 across app launches. Assess Legal Question always includes its selected fact
 pattern, regardless of this ordinary-question checkmark.
 
-Use **Current Case → Brief Prep** (or the **Brief Prep** shortcut in Current Case
-TUI) to request reply recommendations, respondent’s brief recommendations, or
-opposition to dismissal. A Statement of Case and Facts is not required. A
-standalone installation without a configured Current Case can choose a folder
-for that run only. Lens checks the filings in that folder, asks you to choose
-when more than one operative filing matches, and uses the same **Agent Model**
-setting as its other workflows. Filing text and excerpts used by the Agent may
-reach your model provider. Use searchable PDFs, or opt in to LightOnOCR on a
-supported, already provisioned local machine. OCR never edits originals.
+Use **Brief Prep** in Current Case TUI to start reply recommendations,
+respondent’s brief recommendations, or opposition to dismissal directly in
+Open Law Lens for the selected case. There is no confirmation popup. Lens shows
+progress and errors in the main window. If more than one operative filing
+matches, choose the filing inline and select **Continue**. Lens uses the same
+**Agent Model** setting as its other workflows; filing text and relevant record
+excerpts may be sent to that model provider.
+
+The TUI shortcut uses searchable PDFs. For scanned filings, start from Lens’s
+**Current Case → Brief Prep** menu and opt in to local LightOnOCR on a supported,
+already provisioned machine. OCR never edits originals. A Statement of Case and
+Facts is not required; standalone installations without a configured Current
+Case can choose a folder for one run from the Lens menu.
 
 Recommendations appear in **Answer**. **Save** adds the current completed answer
 to **Brief Prep** in the Research Cache, with its verified appeal number and type.
 A checked report is past analysis, not authority. Use **Save Research Set** to keep
 a restorable copy before clearing the active Research Cache in the maintained
 installation. Standalone clearing still preserves saved answers. New runs create
-no case-folder reports and there is no report export feature. Finish an active
-Agent session before requesting another prep run; busy requests are not queued.
+no case-folder reports and there is no report export feature. The TUI shortcut
+won’t replace an active session or an unsaved answer. Save the answer and exit
+the session before requesting another run. Busy requests aren’t queued.
 
 For historical reports, Open Law Lens still searches the selected case directory recursively for
 `suggested_reply_arguments.md`,

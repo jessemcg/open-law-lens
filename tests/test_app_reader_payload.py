@@ -852,8 +852,12 @@ class AppReaderPayloadTests(unittest.TestCase):
         for button in window._agent_mode_buttons.values():
             self.assertIsInstance(button, Gtk.ToggleButton)
             self.assertTrue(button.has_css_class("composer-scope-button"))
-        self.assertIsInstance(controls.get_next_sibling(), Gtk.Box)  # status/help
-        self.assertIs(controls.get_next_sibling().get_next_sibling(), window._agent_ask_row)
+        status_row = controls.get_next_sibling()
+        self.assertIsInstance(status_row, Gtk.Box)
+        choice_slot = status_row.get_next_sibling()
+        self.assertIs(choice_slot, window._brief_prep_choice_slot)
+        self.assertFalse(choice_slot.get_visible())
+        self.assertIs(choice_slot.get_next_sibling(), window._agent_ask_row)
         self.assertEqual(window._selected_agent_mode, AGENT_MODE_GENERAL)
         for mode, button in window._agent_mode_buttons.items():
             with self.subTest(mode=mode):

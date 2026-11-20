@@ -1936,6 +1936,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_answer_failure_status = ""
         self._composer_spinner: Gtk.Spinner | None = None
         self._composer_message_label: Gtk.Label | None = None
+        self._brief_prep_filing_choice: tuple[Gtk.Box, Path] | None = None
         self._composer_message_is_error = False
         self._brief_search_summary_box: Gtk.Widget | None = None
         self._brief_search_previous_button: Gtk.Button | None = None
@@ -1956,6 +1957,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         self._agent_answer_recheck = False
         self._agent_answer_render_id: int | None = None
         self._agent_last_answer_text = ""
+        self._agent_saved_answer_text: str | None = None
         self._agent_last_question = ""
         self._agent_search_output_visible = False
         self._agent_search_query = ""
@@ -3647,6 +3649,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         search_summary.append(next_button)
         message_row.append(search_summary)
         composer.append(message_row)
+        self._brief_prep_choice_slot = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, visible=False)
+        composer.append(self._brief_prep_choice_slot)
         self._composer_spinner = spinner
         self._composer_message_label = message
         self._brief_search_summary_box = search_summary
@@ -4109,6 +4113,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _on_window_close_request(self, _window: Gtk.Window) -> bool:
         self._agent_request_generation = getattr(self, "_agent_request_generation", 0) + 1
         self._agent_request_pending = False
+        if getattr(self, "_brief_prep_filing_choice", None) is not None:
+            self._discard_brief_prep_filing_choice()
         if close_settings_before_parent(self.get_application()):
             return True
         self._agent_requests_closed = True
@@ -6222,6 +6228,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if not answer_id:
             self._set_status("No agent final answer to save.")
             return
+        self._agent_saved_answer_text = text
         self._set_sidebar_authorities(
             self._clusters,
             self._statutes,
@@ -6690,6 +6697,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         pending = getattr(self, "_agent_request_pending", False)
         self._agent_request_generation = getattr(self, "_agent_request_generation", 0) + 1
         self._agent_request_pending = False
+        if getattr(self, "_brief_prep_filing_choice", None) is not None:
+            self._discard_brief_prep_filing_choice()
         self.client = CourtListenerClient.default()
         previous_briefs = getattr(self, "prior_briefs", None)
         folder_changed = (
@@ -9797,12 +9806,15 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def _brief_prep_busy(self) -> bool:
         if getattr(self, "_agent_active", False):
-            self._set_status("Brief Prep not started. Finish the current Agent session, save any answer, then use /exit in Session.")
+            self._set_composer_error("Brief Prep not started. Save any answer and use /exit in Session first.")
             return True
         if (getattr(self, "_agent_request_pending", False)
+                or getattr(self, "_agent_answer_working", False)
                 or getattr(self, "_agent_answer_finishing", False)
                 or getattr(self, "_brief_prep_dialog", None) is not None):
-            self._set_status("Brief Prep not started. Open Law Lens is busy; request it again when ready.")
+            # Don't replace the instructions for an already pending filing choice.
+            if getattr(self, "_brief_prep_filing_choice", None) is None:
+                self._set_composer_error("Brief Prep not started. Open Law Lens is busy; request it again when ready.")
             return True
         return False
 
@@ -9840,18 +9852,30 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             return
         self.request_brief_prep(kind, root)
 
-    def request_brief_prep(self, kind: str, case_dir: str | Path) -> bool:
+    def request_brief_prep(self, kind: str, case_dir: str | Path, *, direct: bool = False) -> bool:
         variant = brief_prep.VARIANTS.get(kind)
         if variant is None:
-            self._set_status("Unknown Brief Prep action.")
+            self._set_composer_error("Unknown Brief Prep action.")
             return False
         if self._brief_prep_busy():
+            return False
+        if direct and self._has_unsaved_agent_answer():
+            self._set_composer_error(
+                "Brief Prep not started. Save the previous answer first, or use Current Case → Brief Prep "
+                "in Lens to explicitly replace it."
+            )
             return False
         try:
             case = brief_prep.validate_case_root(case_dir)
         except brief_prep.PrepError as exc:
-            self._set_status(str(exc))
+            self._set_composer_error(str(exc))
             return False
+        if direct:
+            accepted = self._begin_agent_request(True, lambda: self._start_brief_prep_worker(case, kind, False))
+            if accepted:
+                self._set_composer_busy(f"Starting {variant.label} for {case.path.name}… "
+                                        "Filing and record text may be sent to your model provider.")
+            return accepted
         body = f"Case folder: {case.path.name}\n\nFiling text and relevant record excerpts used by the Agent may be sent to the configured model provider."
         if getattr(self, "_agent_workspace_path", None) is not None:
             body += "\n\nStarting replaces the previous Agent conversation and any unsaved answer in this window."
@@ -9880,8 +9904,13 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         dialog.present()
         return True
 
+    def _has_unsaved_agent_answer(self) -> bool:
+        text = self._agent_last_answer_text.strip()
+        return bool(text and text != self._agent_saved_answer_text)
+
     def _start_brief_prep_worker(self, case: brief_prep.CaseRoot, kind: str, allow_ocr: bool) -> None:
-        self._set_status("Checking the selected appeal’s filings…")
+        self._set_composer_busy(f"Checking filings for {case.path.name}… "
+                                "Filing and record text may be sent to your model provider.")
         request = _AGENT_REQUEST.get()
 
         def work() -> None:
@@ -9893,7 +9922,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                 if workspace is not None:
                     shutil.rmtree(workspace, ignore_errors=True)
                 message = str(exc) if isinstance(exc, brief_prep.PrepError) else "Could not read the case or create private Brief Prep evidence."
-                self._agent_prepare_idle(self._set_status, message)
+                self._agent_prepare_idle(self._set_composer_error, message)
                 return
             GLib.idle_add(self._choose_brief_prep_filings, request, case, workspace, discovery)
 
@@ -9909,51 +9938,87 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
         if not ambiguous:
             self._stage_brief_prep(request, case, workspace, discovery, selected)
             return False
-        self._agent_request_pending = False
-        dialog = Adw.MessageDialog.new(self, "Choose the operative filings", discovery.provenance.label)
-        dialog.add_response("cancel", "Cancel")
-        dialog.add_response("continue", "Continue")
-        dialog.set_close_response("cancel")
-        dialog.set_default_response("cancel")
-        dialog.set_response_enabled("continue", False)
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        dropdowns = {}
+        self._set_composer_message(f"{discovery.provenance.label}: Choose the operative filings to continue. "
+                                   "Filing and record text may be sent to your model provider.")
+        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        options_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_max_content_height(170)
+        scroller.set_propagate_natural_height(True)
+        scroller.set_child(options_box)
+        panel.append(scroller)
+        actions = Gtk.Box(spacing=6, halign=Gtk.Align.END)
+        cancel = Gtk.Button(label="Cancel")
+        proceed = Gtk.Button(label="Continue")
+        proceed.add_css_class("suggested-action")
+        proceed.set_sensitive(False)
+        actions.append(cancel)
+        actions.append(proceed)
+        panel.append(actions)
+        chosen: dict[str, brief_prep.Filing] = {}
 
-        def update(*_args: Any) -> None:
-            dialog.set_response_enabled("continue", all(
-                picker.get_selected() != Gtk.INVALID_LIST_POSITION for picker in dropdowns.values()))
+        def toggled(button: Gtk.CheckButton, role: str, filing: brief_prep.Filing) -> None:
+            if button.get_active():
+                chosen[role] = filing
+            elif chosen.get(role) == filing:
+                chosen.pop(role)
+            proceed.set_sensitive(chosen.keys() == ambiguous.keys())
 
         for role, options in ambiguous.items():
-            box.append(Gtk.Label(label=brief_prep.ROLES[role].capitalize(), xalign=0))
-            picker = Gtk.DropDown.new_from_strings([filing.path.as_posix() for filing in options])
-            picker.set_selected(Gtk.INVALID_LIST_POSITION)
-            picker.connect("notify::selected", update)
-            box.append(picker)
-            dropdowns[role] = picker
-        dialog.set_extra_child(box)
-        self._brief_prep_dialog = dialog
+            heading = Gtk.Label(label=brief_prep.ROLES[role].capitalize(), xalign=0)
+            heading.add_css_class("heading")
+            options_box.append(heading)
+            group = None
+            for filing in options:
+                path = filing.path.as_posix()
+                button = Gtk.CheckButton()
+                label = Gtk.Label(label=path, xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR)
+                button.set_child(label)
+                button.update_property([Gtk.AccessibleProperty.LABEL], [path])
+                if group is None:
+                    group = button
+                else:
+                    button.set_group(group)
+                button.connect("toggled", toggled, role, filing)
+                options_box.append(button)
 
-        def response(dialog: Adw.MessageDialog, result: str) -> None:
-            self._brief_prep_dialog = None
-            indexes = {role: picker.get_selected() for role, picker in dropdowns.items()}
-            dialog.destroy()
-            if (result != "continue" or Gtk.INVALID_LIST_POSITION in indexes.values()
-                    or not self._agent_request_current(request)):
-                shutil.rmtree(workspace, ignore_errors=True)
-                if result == "cancel" and request.generation == getattr(self, "_agent_request_generation", 0):
-                    self._set_status("Brief Prep canceled.")
+        def respond(_button: Gtk.Button, start: bool) -> None:
+            current = self._brief_prep_filing_choice
+            if current is None or current[1] != workspace:
                 return
-            for role, index in indexes.items():
-                selected[role] = ambiguous[role][index]
-            self._stage_brief_prep(request, case, workspace, discovery, selected)
+            if not self._agent_request_current(request):
+                self._discard_brief_prep_filing_choice()
+            elif not start:
+                self._discard_brief_prep_filing_choice()
+                self._agent_request_pending = False
+                self._set_composer_message("Brief Prep canceled.")
+            elif chosen.keys() == ambiguous.keys():
+                self._discard_brief_prep_filing_choice(keep_workspace=True)
+                self._stage_brief_prep(request, case, workspace, discovery, selected | chosen)
 
-        dialog.connect("response", response)
-        dialog.present()
+        cancel.connect("clicked", respond, False)
+        proceed.connect("clicked", respond, True)
+        self._brief_prep_filing_choice = (panel, workspace)
+        self._brief_prep_choice_slot.append(panel)
+        self._brief_prep_choice_slot.set_visible(True)
         return False
+
+    def _discard_brief_prep_filing_choice(self, *, keep_workspace: bool = False) -> None:
+        choice = getattr(self, "_brief_prep_filing_choice", None)
+        if choice is None:
+            return
+        self._brief_prep_filing_choice = None
+        panel, workspace = choice
+        self._brief_prep_choice_slot.remove(panel)
+        self._brief_prep_choice_slot.set_visible(False)
+        if not keep_workspace:
+            shutil.rmtree(workspace, ignore_errors=True)
 
     def _stage_brief_prep(self, request: AgentRequest, case: brief_prep.CaseRoot, workspace: Path,
                          discovery: brief_prep.Discovery, selected: dict[str, brief_prep.Filing]) -> None:
-        self._set_status("Preparing private filing and record text…")
+        self._set_composer_busy("Preparing private filing and record text… "
+                                "Filing and record text may be sent to your model provider.")
         self._agent_request_pending = True
 
         def work() -> None:
@@ -9974,7 +10039,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
                     return False
                 self._agent_request_pending = False
                 if prompt is None:
-                    self._set_status(message)
+                    self._set_composer_error(message)
                     return False
                 prep = discovery.provenance
                 context = _AGENT_REQUEST.set(request)
@@ -10008,6 +10073,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _on_agent_launch(self, _widget: Gtk.Widget) -> None:
         self._agent_request_generation = getattr(self, "_agent_request_generation", 0) + 1
         self._agent_request_pending = False
+        if getattr(self, "_brief_prep_filing_choice", None) is not None:
+            self._discard_brief_prep_filing_choice()
         mode = self._selected_agent_mode
         question = self.agent_question_entry.get_text().strip()
         if not question:
@@ -10390,6 +10457,8 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
     def _begin_agent_request(self, research: bool, continuation: Callable) -> bool:
         self._agent_request_generation = getattr(self, "_agent_request_generation", 0) + 1
         self._agent_request_pending = False
+        if getattr(self, "_brief_prep_filing_choice", None) is not None:
+            self._discard_brief_prep_filing_choice()
         config = load_config()
         token = courtlistener_token()
         result = task_prerequisites.cheap_check(
@@ -10566,7 +10635,10 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
             self._agent_last_answer_text = ""
             self._set_agent_subview(AGENT_SUBVIEW_SESSION)
             self._start_agent_answer_polling()
-            self._set_status(success_status)
+            if prep is not None:
+                self._set_composer_busy(success_status)
+            else:
+                self._set_status(success_status)
             self._refresh_agent_followup_state()
             self._agent_terminal.grab_focus()
         except Exception as exc:
@@ -10623,6 +10695,7 @@ class OpenLawLensWindow(Adw.ApplicationWindow):
 
     def _clear_agent_answer(self) -> None:
         self._agent_last_answer_text = ""
+        self._agent_saved_answer_text = None
         self._agent_answer_content_height = AGENT_ANSWER_MIN_HEIGHT
         self._agent_answer_layout_width = -1
         self._agent_search_output_visible = False
@@ -12299,9 +12372,9 @@ class OpenLawLensApp(Adw.Application):
             window.present()
             accepted = False
             if kind is None or case_dir is None or open_text:
-                window._set_status("Use --brief-prep and --case-dir together, without --open-authority.")
+                window._set_composer_error("Use --brief-prep and --case-dir together, without --open-authority.")
             else:
-                accepted = window.request_brief_prep(kind.get_string(), case_dir.get_string())
+                accepted = window.request_brief_prep(kind.get_string(), case_dir.get_string(), direct=True)
             # The content-free receipt distinguishes a cold app that remains
             # alive, or a warm app that knows this request, from an older app
             # that ignores the forwarded options and exits the CLI with zero.

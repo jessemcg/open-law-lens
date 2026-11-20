@@ -1,6 +1,7 @@
 """Private-bus native Brief Prep acceptance. Real GTK, wrapper and Save; fake Pi.
 
-Run with dbus-run-session -- python tests/preview_brief_prep.py [--hold].
+Run with dbus-run-session -- python tests/preview_brief_prep.py
+[--unambiguous] [--hold-choice] [--hold].
 """
 from __future__ import annotations
 
@@ -25,12 +26,18 @@ def fake_pi():
     workspace = Path.cwd()
     args = sys.argv[2:]
     assert args[args.index('--tools') + 1] == 'read,bash,grep,find,ls'
-    assert os.environ['OPEN_LAW_LENS_AGENT_PROFILE_KEY'] == 'prep_reply'
-    assert 'Brief Prep variant: reply' in args[-1]
     evidence = json.loads((workspace / 'brief-prep-manifest.json').read_text())
-    assert evidence['case_number'] == 'B123456'
-    assert [s['role'] for s in evidence['filings']] == ['aob', 'rb']
-    assert evidence['filings'][0]['source'] == 'nested/AOB-two.pdf'
+    profile = os.environ['OPEN_LAW_LENS_AGENT_PROFILE_KEY']
+    if profile == 'prep_reply':
+        assert 'Brief Prep variant: reply' in args[-1]
+        assert evidence['case_number'] == 'B123456'
+        assert [s['role'] for s in evidence['filings']] == ['aob', 'rb']
+        assert evidence['filings'][0]['source'] == 'nested/AOB-two.pdf'
+    else:
+        assert profile == 'prep_opposition'
+        assert 'Brief Prep variant: opposition' in args[-1]
+        assert evidence['case_number'] == 'D234567'
+        assert [s['role'] for s in evidence['filings']] == ['mtd']
     log = Path(os.environ['PI_CODING_AGENT_SESSION_DIR']) / 'synthetic.jsonl'
     token = os.environ['OPEN_LAW_LENS_AGENT_FOLLOWUP_TOKEN']
     log.write_text(json.dumps({'type': 'session', 'cwd': str(workspace)}) + '\n')
@@ -64,7 +71,7 @@ def fake_pi():
                     write_turn(text, 'aborted' if 'interrupt' in text else 'stop')
 
 
-def primary(root: Path, original: Path, other: Path, hold: bool) -> int:
+def primary(root: Path, original: Path, other: Path, *, ambiguous: bool, hold_choice: bool, hold: bool) -> int:
     from open_law_lens import app as ui
     from open_law_lens.library import CaseLibrary
     from test_research_cache_sidebar import rows
@@ -78,33 +85,58 @@ def primary(root: Path, original: Path, other: Path, hold: bool) -> int:
     attempts = []
     fake_db = CaseLibrary(root / 'library.sqlite3')
 
+    def send(case: Path, kind: str = 'opposition'):
+        process = subprocess.Popen([sys.executable, __file__, '--send', kind, str(case)], stdout=subprocess.PIPE)
+        attempts.append(process)
+        return process
+
+    def check_receipt(process, *, accepted: bool):
+        assert process.returncode == (0 if accepted else 2)
+        assert process.communicate(timeout=2)[0] == (b'brief-prep: requested\n' if accepted else b'brief-prep: rejected\n')
+        assert not getattr(window, '_brief_prep_dialog', None)
+        assert app.get_windows() == [window]
+
     def steps():
         nonlocal window
         window = app._main_window()
         window.set_title('Synthetic Open Law Lens — Brief Prep')
-        assert window._brief_prep_dialog.get_heading() == 'Reply Brief Prep'
-        assert 'configured model provider' in window._brief_prep_dialog.get_body()
-        window._brief_prep_dialog.response('start')
-        # Change the pinned selection while the async prerequisite check runs.
+        assert not getattr(window, '_brief_prep_dialog', None)
+        # Changing Current Case after dispatch must not retarget the active request.
         (root / 'selection').write_text(other.name)
         window._refresh_current_case_context()
-        yield lambda: getattr(window, '_brief_prep_dialog', None) is not None
-        dialog = window._brief_prep_dialog
-        assert dialog.get_heading() == 'Choose the operative filings'
-        picker = dialog.get_extra_child().get_last_child()
-        assert picker.get_model().get_string(1) == 'nested/AOB-two.pdf'
-        picker.set_selected(1)
-        dialog.response('continue')
+        if ambiguous:
+            yield lambda: window._brief_prep_filing_choice is not None
+            panel, _ = window._brief_prep_filing_choice
+            assert not getattr(window, '_brief_prep_dialog', None)
+            assert window._brief_prep_choice_slot.get_visible()
+            assert window._agent_request_pending and not window._agent_active
+            assert 'B123456' in window._composer_message_label.get_text()
+            choice_busy = send(other)
+            yield lambda: choice_busy.poll() is not None
+            check_receipt(choice_busy, accepted=False)
+            assert window._brief_prep_filing_choice[0] is panel
+            proceed = panel.get_last_child().get_last_child()
+            assert not proceed.get_sensitive()
+            if hold_choice:
+                resume_at = time.monotonic() + 15
+                yield lambda: time.monotonic() >= resume_at
+            picker = panel.get_first_child().get_child().get_child().get_last_child()
+            assert picker.get_child().get_text() == 'nested/AOB-two.pdf'
+            picker.set_active(True)
+            assert proceed.get_sensitive()
+            proceed.emit('clicked')
         yield lambda: window._agent_answer_eligible and not window._agent_answer_working
+        assert window._brief_prep_filing_choice is None
+        assert not window._brief_prep_choice_slot.get_visible()
+        assert app.get_windows() == [window]
         assert window._agent_subview_name == 'answer'
         assert window._agent_prep.case_number == 'B123456'
         assert window._agent_last_answer_text == ANSWER
         assert window._agent_save_answer_button.get_sensitive()
-        busy = subprocess.Popen([sys.executable, __file__, '--send', str(other)], stdout=subprocess.PIPE)
-        attempts.append(busy)
+        busy = send(other)
         yield lambda: busy.poll() is not None
-        assert busy.returncode == 2  # warm command rejected, not queued
-        assert busy.communicate(timeout=2)[0] == b'brief-prep: rejected\n'
+        check_receipt(busy, accepted=False)  # warm command rejected, not queued
+        assert 'use /exit' in window._composer_message_label.get_text()
         assert window._agent_prep.case_number == 'B123456'
         window._agent_followup_entry.set_text('interrupt this synthetic turn')
         window._on_agent_followup_activate(window._agent_followup_entry)
@@ -135,32 +167,55 @@ def primary(root: Path, original: Path, other: Path, hold: bool) -> int:
         window._open_agent_answer(cache.read_agent_answer_index()[answer_id])
         assert window._selected_agent_answer['answer_id'] == answer_id
         assert window._selected_agent_answer['text'].endswith('Synthetic follow-up.')
-        window._stop_agent()
-        yield lambda: not window._agent_answer_working and not window._agent_answer_finishing
-        warm = subprocess.Popen([sys.executable, __file__, '--send', str(other)], stdout=subprocess.PIPE)
-        attempts.append(warm)
-        yield lambda: warm.poll() is not None
-        assert warm.returncode == 0
-        assert warm.communicate(timeout=2)[0] == b'brief-prep: requested\n'
-        assert app._main_window() is window
-        assert window._brief_prep_dialog.get_heading() == 'Opposition to Dismissal'
-        assert other.name in window._brief_prep_dialog.get_body()
-        assert 'any unsaved answer' in window._brief_prep_dialog.get_body()
-        window._brief_prep_dialog.response('cancel')
+        # Stop the fake Pi normally through Vte's child-exited signal, so its
+        # final transcript has settled before testing an idle warm launch.
+        os.kill(window._agent_pid, 15)
+        yield lambda: not (window._agent_active or window._agent_answer_working or window._agent_answer_finishing)
+        assert not window._has_unsaved_agent_answer()
+        missing = send(other, 'respondent')
+        yield lambda: missing.poll() is not None and not window._agent_request_pending
+        check_receipt(missing, accepted=True)
+        assert window._composer_message_is_error
+        assert 'opening brief' in window._composer_message_label.get_text()
         assert window._agent_prep.case_number == 'B123456'
+        if ambiguous:
+            cancel = send(original, 'reply')
+            yield lambda: cancel.poll() is not None and window._brief_prep_filing_choice is not None
+            check_receipt(cancel, accepted=True)
+            panel, scratch = window._brief_prep_filing_choice
+            panel.get_last_child().get_first_child().emit('clicked')
+            assert not scratch.exists() and window._brief_prep_filing_choice is None
+            assert not window._agent_request_pending and not window._agent_active
+        warm = send(other)
+        yield lambda: warm.poll() is not None and window._agent_active
+        check_receipt(warm, accepted=True)
+        assert app._main_window() is window
+        assert window._agent_prep.case_number == 'D234567'
+        yield lambda: window._agent_answer_eligible and not window._agent_answer_working
+        assert window._agent_subview_name == 'answer'
+        assert window._agent_last_answer_text == ANSWER
+        os.kill(window._agent_pid, 15)
+        yield lambda: not (window._agent_active or window._agent_answer_working or window._agent_answer_finishing)
+        assert window._has_unsaved_agent_answer()
+        unsaved = send(original, 'reply')
+        yield lambda: unsaved.poll() is not None
+        check_receipt(unsaved, accepted=False)
+        assert 'Save the previous answer first' in window._composer_message_label.get_text()
+        assert window._agent_prep.case_number == 'D234567'
+        assert window._agent_last_answer_text == ANSWER
         assert window._current_case_socf_path is None
         window._on_brief_prep_menu_choice(None, SimpleNamespace(popdown=lambda: None), 'respondent')
         assert window._brief_prep_dialog.get_heading() == 'Respondent’s Brief Prep'
-        assert other.name in window._brief_prep_dialog.get_body()
+        assert 'any unsaved answer' in window._brief_prep_dialog.get_body()
         window._brief_prep_dialog.response('cancel')
-        print('PASS cold/accepted/busy warm command line, no-SOCF menu, case pin, ambiguity choice, Answer, interrupted follow-up, Save, reader, Research Set', flush=True)
+        print(f'PASS cold ({"inline choice" if ambiguous else "direct"}), warm direct, inline error/cancel, busy/unsaved guards, case pin, Answer, follow-up, Save and Research Set', flush=True)
 
     checks = steps()
 
     def tick():
         nonlocal next_check, successful
         try:
-            if time.monotonic() - start > 28:
+            if time.monotonic() - start > (50 if hold_choice else 32):
                 raise AssertionError(f'timed out at step {next_check}')
             if next_check():
                 next_check = next(checks)
@@ -195,7 +250,7 @@ if __name__ == '__main__':
     elif '--send' in sys.argv:
         from open_law_lens import app as ui
         ui.APP_ID += '.BriefPrepPreview'
-        raise SystemExit(ui.main(['--brief-prep', 'opposition', '--case-dir', sys.argv[-1]]))
+        raise SystemExit(ui.main(['--brief-prep', sys.argv[-2], '--case-dir', sys.argv[-1]]))
     else:
         with tempfile.TemporaryDirectory(prefix='oll-prep-', dir='/tmp') as td:
             root = Path(td)
@@ -218,8 +273,13 @@ if __name__ == '__main__':
             original = root / 'cases' / "B123456 Synthetic's Appeal"
             other = root / 'cases' / 'D234567 Different Synthetic Appeal'
             other.mkdir(parents=True)
-            for filename, role, body in [('AOB-one.pdf', 'AOB', 'One opening brief.'),
-                                          ('AOB-two.pdf', 'AOB', 'Another opening brief.'), ('RB.pdf', 'RB', 'Respondent text.')]:
+            ambiguous = '--unambiguous' not in sys.argv
+            filings = [('AOB-two.pdf', 'AOB', 'An opening brief.'), ('RB.pdf', 'RB', 'Respondent text.')]
+            if ambiguous:
+                filings.append(('AOB-one.pdf', 'AOB', 'Another opening brief.'))
+            for filename, role, body in filings:
                 pdf(original / 'nested' / filename, ['Court of Appeal', 'B123456', TITLE[role]], [body])
+            pdf(other / 'MTD.pdf', ['Court of Appeal', 'D234567', TITLE['MTD']], ['Motion text.'])
             (root / 'selection').write_text(original.name)
-            raise SystemExit(primary(root, original, other, '--hold' in sys.argv))
+            raise SystemExit(primary(root, original, other, ambiguous=ambiguous,
+                                     hold_choice='--hold-choice' in sys.argv, hold='--hold' in sys.argv))
