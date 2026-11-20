@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+from html import escape
 import json
 from pathlib import Path
 import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
+import zipfile
 
 from open_law_lens import brief_prep as prep
 from open_law_lens.agent_prompts import brief_prep_request
@@ -41,6 +43,14 @@ def pdf(path: Path, *sheets: list[str]) -> Path:
 
 
 TITLE = {"AOB": "Appellant's Opening Brief", "RB": "Respondent's Brief", "MTD": "Respondent's Motion to Dismiss Appeal"}
+
+
+def odt(path: Path, text: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr('content.xml', '<document xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">'
+                         f'<text:p>{escape(text)}</text:p></document>')
+    return path
 
 
 @unittest.skipUnless(shutil.which('pdftotext') and shutil.which('pdfimages'), 'Poppler required')
@@ -85,6 +95,38 @@ class SourceTests(unittest.TestCase):
                 self.assertIn(f'variant: {kind}', brief_prep_request(kind, manifest))
                 self.assertNotIn(str(self.root), manifest.read_text())
         self.assertEqual(before, {p.relative_to(self.root): p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
+
+    def test_stamped_court_notice_does_not_outrank_nested_opening_brief(self):
+        notice = pdf(self.root / 'Notice.pdf', ['California Court of Appeal', 'No. B123456',
+                     'Electronically Filed', "The Appellant's Opening Brief was received."], ['Notice text.'])
+        self.filing('Respondent Brief.pdf', 'RB')
+        with self.assertRaisesRegex(prep.PrepError, 'opening brief'):
+            prep.discover(self.case, 'reply', self.work)
+        original = pdf(self.root / 'AOB/Filed original.pdf',
+                       ['California Court of Appeal', 'No. B123456', "APPELLANT'S", 'OPENING BRIEF'],
+                       ['Opening argument in the filed brief.'])
+        found = prep.discover(self.case, 'reply', self.work)
+        self.assertEqual([f.path for f in found.choices['aob']], [original.relative_to(self.root)])
+        self.assertNotEqual(found.choices['aob'][0].path, notice.relative_to(self.root))
+
+    def test_socf_is_neither_staged_nor_a_substitute_for_a_required_brief(self):
+        socf = odt(self.root / 'SOCF/B123456_SOCF_Test.odt', 'Synthetic summary of the opening brief.')
+        original = socf.read_bytes()
+        self.filing('RB.pdf', 'RB')
+        with self.assertRaisesRegex(prep.PrepError, 'opening brief'):
+            prep.discover(self.case, 'reply', self.work)
+        self.filing('AOB/AOB.pdf', 'AOB')
+        found = prep.discover(self.case, 'reply', self.work)
+        chosen = {role: options[0] for role, options in found.choices.items()}
+        payload = json.loads(prep.stage_evidence(self.case, found, chosen, self.work).read_text())
+        self.assertEqual([f['role'] for f in payload['filings']], ['aob', 'rb'])
+        self.assertNotIn('socf', payload)
+        self.assertFalse((self.work / 'socf').exists())
+        self.assertEqual(socf.read_bytes(), original)
+        prompt = brief_prep_request('reply', self.work / 'brief-prep-manifest.json')
+        self.assertIn('aob/manifest.json', prompt)
+        self.assertIn('rb/manifest.json', prompt)
+        self.assertIn('rather than giving one-sided recommendations', prompt)
 
     def test_missing_wrong_case_role_and_opposition_without_context(self):
         self.filing('AOB.pdf', 'AOB', 'D234567')

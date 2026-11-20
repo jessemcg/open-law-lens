@@ -72,7 +72,15 @@ def assessment_request(issue: str, export: Any) -> str:
 
 
 def brief_prep_request(kind: str, manifest_path: Path) -> str:
-    return f"Brief Prep variant: {kind}\n\nPrivate evidence manifest:\n{manifest_path}\n"
+    request = f"Brief Prep variant: {kind}\n\nPrivate evidence manifest:\n{manifest_path}\n"
+    if kind == "reply":
+        request += (
+            "\nBoth required filings were staged. Read the opening brief via `aob/manifest.json` "
+            "and the respondent's brief via `rb/manifest.json` before analysis. Each index lists "
+            "the text parts in its own directory. If either filing cannot be read in full, report "
+            "which source could not be read and stop rather than giving one-sided recommendations.\n"
+        )
+    return request
 
 
 def treatment_request(target_title: str, cluster_id: str, target_citation: str) -> str:

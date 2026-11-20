@@ -591,9 +591,11 @@ excerpts may be sent to that model provider.
 
 The TUI shortcut uses searchable PDFs. For scanned filings, start from Lens’s
 **Current Case → Brief Prep** menu and opt in to local LightOnOCR on a supported,
-already provisioned machine. OCR never edits originals. A Statement of Case and
-Facts is not required; standalone installations without a configured Current
-Case can choose a folder for one run from the Lens menu.
+already provisioned machine. OCR never edits originals. Reply Brief Prep
+requires both the filed opening brief and the respondent’s brief. It does not
+include the sidebar’s Statement of Case and Facts or use it as a substitute.
+Standalone installations without a configured Current Case can choose a folder
+for one run from the Lens menu.
 
 Recommendations appear in **Answer**. **Save** adds the current completed answer
 to **Brief Prep** in the Research Cache, with its verified appeal number and type.

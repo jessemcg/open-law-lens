@@ -36,9 +36,9 @@ ROLES = {"aob": "appellant’s opening brief", "rb": "respondent’s brief",
 CASE_NUMBER = re.compile(r"\b[A-H]\d{6}\b", re.I)
 COVER_CASE = re.compile(r"\b([A-H])\s*[- ]?\s*(\d{6})\b", re.I)
 ROLE_PATTERNS = {
-    "aob": r"\bappellant(?:s|['’]s|s['’])?\s+opening\s+brief\b|\bopening\s+brief\s+(?:of|for)\s+(?:the\s+)?appellant\b",
-    "rb": r"\brespondent(?:s|['’]s|s['’])?\s+(?:answer(?:ing)?\s+)?brief\b|\bbrief\s+(?:of|for)\s+(?:the\s+)?respondent\b",
-    "mtd": r"\brespondent(?:s|['’]s|s['’])?\s+(?:notice of\s+)?motion\s+to\s+dismiss\b",
+    "aob": r"appellant(?:s|['’]s|s['’])?\s+opening\s+brief|opening\s+brief\s+(?:of|for)\s+(?:the\s+)?appellants?",
+    "rb": r"respondent(?:s|['’]s|s['’])?\s+(?:answer(?:ing)?\s+)?brief|brief\s+(?:of|for)\s+(?:the\s+)?respondents?",
+    "mtd": r"respondent(?:s|['’]s|s['’])?\s+(?:notice of\s+)?motion\s+to\s+dismiss(?:\s+(?:the\s+)?appeal)?",
 }
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
@@ -240,11 +240,21 @@ def _cover(text: str) -> tuple[str, str] | None:
             continue
         if re.search(r"\b(?:draft|not for filing|sample|proposed order)\b", compact, re.I):
             continue
-        roles = {role for role, pattern in ROLE_PATTERNS.items() if re.search(pattern, compact, re.I)}
+        # A reference to a brief in a court notice is not the filing's title.
+        # Keep titles on their own line(s), while allowing normal PDF line wraps.
+        lines = [" ".join(line.split()) for line in page[:8000].splitlines()]
+        headings = [line for line in lines if line]
+        headings.extend(f"{first} {second}" for first, second in zip(lines, lines[1:]) if first and second)
+
+        def has_title(pattern: str) -> bool:
+            return any(re.fullmatch(rf"(?:amended\s+|corrected\s+)?(?:{pattern})", title, re.I)
+                       for title in headings)
+
+        roles = {role for role, pattern in ROLE_PATTERNS.items() if has_title(pattern)}
         for role, title, party in (("aob", "opening brief", "appellants?"),
                                    ("rb", "responding brief", "respondents?"),
                                    ("mtd", r"motion to dismiss(?: the)? appeal", "respondents?")):
-            if (re.search(rf"^\s*{title}\s*$", page, re.I | re.M)
+            if (has_title(title)
                     and re.search(rf"\b(?:attorneys?|counsel) for (?:the )?{party}\b", compact, re.I)):
                 roles.add(role)
         if "mtd" in roles and re.search(

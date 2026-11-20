@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import traceback
 from unittest.mock import patch
 
-from test_brief_prep import pdf, TITLE
+from test_brief_prep import odt, pdf, TITLE
 
 ANSWER = '# Synthetic Notice Issue\n*Check the waiver*\n\nRead Welf. & Inst. Code, § 300.'
 
@@ -32,7 +32,9 @@ def fake_pi():
         assert 'Brief Prep variant: reply' in args[-1]
         assert evidence['case_number'] == 'B123456'
         assert [s['role'] for s in evidence['filings']] == ['aob', 'rb']
-        assert evidence['filings'][0]['source'] == 'nested/AOB-two.pdf'
+        assert evidence['filings'][0]['source'] == 'AOB/AOB-two.pdf'
+        assert 'aob/manifest.json' in args[-1] and 'rb/manifest.json' in args[-1]
+        assert 'socf' not in evidence and not (workspace / 'fact_pattern').exists()
     else:
         assert profile == 'prep_opposition'
         assert 'Brief Prep variant: opposition' in args[-1]
@@ -121,7 +123,7 @@ def primary(root: Path, original: Path, other: Path, *, ambiguous: bool, hold_ch
                 resume_at = time.monotonic() + 15
                 yield lambda: time.monotonic() >= resume_at
             picker = panel.get_first_child().get_child().get_child().get_last_child()
-            assert picker.get_child().get_text() == 'nested/AOB-two.pdf'
+            assert picker.get_child().get_text() == 'AOB/AOB-two.pdf'
             picker.set_active(True)
             assert proceed.get_sensitive()
             proceed.emit('clicked')
@@ -278,7 +280,11 @@ if __name__ == '__main__':
             if ambiguous:
                 filings.append(('AOB-one.pdf', 'AOB', 'Another opening brief.'))
             for filename, role, body in filings:
-                pdf(original / 'nested' / filename, ['Court of Appeal', 'B123456', TITLE[role]], [body])
+                pdf(original / ('AOB' if role == 'AOB' else 'nested') / filename,
+                    ['Court of Appeal', 'B123456', TITLE[role]], [body])
+            pdf(original / 'Notice.pdf', ['Court of Appeal', 'B123456', 'Electronically Filed',
+                                          "The Appellant's Opening Brief was received."], ['Notice text.'])
+            odt(original / 'SOCF/B123456_SOCF_Preview.odt', 'Synthetic SOCF not supplied to Reply Brief Prep.')
             pdf(other / 'MTD.pdf', ['Court of Appeal', 'D234567', TITLE['MTD']], ['Motion text.'])
             (root / 'selection').write_text(original.name)
             raise SystemExit(primary(root, original, other, ambiguous=ambiguous,
