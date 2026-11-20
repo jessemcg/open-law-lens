@@ -71,6 +71,10 @@ def assessment_request(issue: str, export: Any) -> str:
     )
 
 
+def brief_prep_request(kind: str, manifest_path: Path) -> str:
+    return f"Brief Prep variant: {kind}\n\nPrivate evidence manifest:\n{manifest_path}\n"
+
+
 def treatment_request(target_title: str, cluster_id: str, target_citation: str) -> str:
     def exact_search(text: str) -> str:
         phrase = json.dumps(text.strip(), ensure_ascii=False)

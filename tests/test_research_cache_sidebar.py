@@ -12,6 +12,7 @@ from open_law_lens.app import (
     Adw, Gdk, Gtk, OpenLawLensWindow, RESEARCH_CACHE_CSS, RESEARCH_CACHE_GROUPS,
 )
 from open_law_lens.config import AppConfig
+from open_law_lens.brief_prep import PrepProvenance
 from open_law_lens.cache import JsonCache
 from open_law_lens.library import CaseLibrary
 
@@ -103,7 +104,7 @@ class SidebarTests(unittest.TestCase):
             self.window.render(**{key: expected})
             self.assertEqual(self.window.case_list.get_selected_row()._open_law_lens_authority_id, expected)
         headers = [r for r in rows(self.window) if not r.get_selectable()]
-        self.assertEqual([r._open_law_lens_cache_section for r in headers], [g.key + "_header" for g in RESEARCH_CACHE_GROUPS])
+        self.assertEqual([r._open_law_lens_cache_section for r in headers], [g.key + "_header" for g in RESEARCH_CACHE_GROUPS if g.key != "brief_prep"])
         self.assertEqual([r._open_law_lens_cache_count for r in headers], [2, 1, 1, 1])
         for header in headers:
             self.assertFalse(header.get_focusable())
@@ -241,6 +242,7 @@ class SidebarTests(unittest.TestCase):
         manager = Adw.StyleManager.get_default()
         original = manager.get_color_scheme()
         self.addCleanup(manager.set_color_scheme, original)
+        self.cache.save_agent_answer("Synthetic prep", prep=PrepProvenance("reply", "B123456"))
         self.window.render()
         cache_list = self.window.case_list
         pinned = Gtk.ListBox()

@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .brief_prep import PrepProvenance
 from .case_titles import cluster_short_title_value
 from .citation_model import (
     canonicalize_cluster_citations,
@@ -1131,11 +1132,16 @@ class JsonCache:
         title: str = "",
         subtitle: str = "",
         question: str = "",
+        prep: PrepProvenance | None = None,
     ) -> str:
         clean_text = text.strip()
         if not clean_text:
             return ""
-        answer_id = hashlib.sha256(clean_text.encode("utf-8")).hexdigest()[:24]
+        identity = clean_text.encode("utf-8")
+        if prep is not None:
+            identity = f"\0brief-prep\0{prep.case_number}\0{prep.kind}\0".encode("ascii") + identity
+        answer_id = ("prep-" if prep is not None else "") + hashlib.sha256(identity).hexdigest()[:24]
+        provenance = {"brief_prep": prep.payload()} if prep is not None else {}
         now = _utc_now()
         index = self.read_agent_answer_index()
         existing = index.get(answer_id, {})
@@ -1155,10 +1161,12 @@ class JsonCache:
             "text": clean_text,
             "saved_at": existing.get("saved_at", now),
             "last_accessed": now,
+            **provenance,
         }
         self.write_json(self.agent_answer_path(answer_id), answer)
         index[answer_id] = {
             **existing,
+            **provenance,
             "answer_id": answer_id,
             "title": resolved_title,
             "subtitle": resolved_subtitle,

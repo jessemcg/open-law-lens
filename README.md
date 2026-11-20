@@ -10,7 +10,7 @@ and the [Pi coding agent](https://pi.dev/) for optional AI questions.
 - Look up California cases, statutes, and Rules of Court in a focused reader.
 - Keep authorities, highlights, saved answers, and named research sets locally.
 - Search your own prior briefs and read linked quotations in context.
-- Ask AI research questions, follow up, or assess a question against supplied facts.
+- Ask AI research questions, assess supplied facts, or prepare appellate argument recommendations from the Current Case filings.
 
 ## Install
 

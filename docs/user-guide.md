@@ -46,7 +46,7 @@ means `~/.config/open-law-lens/config.json`.
 - California statute and California Rules of Court lookup.
 - Pinned Current Case SOCF and brief-prep Markdown reports above the Research Cache, with per-case SOCF agent-context selection.
 - Research Cache sidebar grouped as **Statutes**, **Case Law**, **Prior Briefing**,
-  and **Saved Answers**, in that order. Statutes includes all supported court
+  **Saved Answers**, and **Brief Prep**, in that order. Statutes includes all supported court
   rules; saved answers from every workflow remain answers, not legal authority.
   Statute rows match the reader masthead: full code name with just `§ number`
   beneath it, rather than repeating the code in an abbreviated citation.
@@ -581,7 +581,25 @@ context checkmark starts off for each case and remembers that case's choice
 across app launches. Assess Legal Question always includes its selected fact
 pattern, regardless of this ordinary-question checkmark.
 
-Open Law Lens also searches the selected case directory recursively for
+Use **Current Case → Brief Prep** (or the **Brief Prep** shortcut in Current Case
+TUI) to request reply recommendations, respondent’s brief recommendations, or
+opposition to dismissal. A Statement of Case and Facts is not required. A
+standalone installation without a configured Current Case can choose a folder
+for that run only. Lens checks the filings in that folder, asks you to choose
+when more than one operative filing matches, and uses the same **Agent Model**
+setting as its other workflows. Filing text and excerpts used by the Agent may
+reach your model provider. Use searchable PDFs, or opt in to LightOnOCR on a
+supported, already provisioned local machine. OCR never edits originals.
+
+Recommendations appear in **Answer**. **Save** adds the current completed answer
+to **Brief Prep** in the Research Cache, with its verified appeal number and type.
+A checked report is past analysis, not authority. Use **Save Research Set** to keep
+a restorable copy before clearing the active Research Cache in the maintained
+installation. Standalone clearing still preserves saved answers. New runs create
+no case-folder reports and there is no report export feature. Finish an active
+Agent session before requesting another prep run; busy requests are not queued.
+
+For historical reports, Open Law Lens still searches the selected case directory recursively for
 `suggested_reply_arguments.md`,
 `suggested_respondents_brief_arguments.md`, and
 `suggested_opposition_arguments.md`. Every matching file appears below the

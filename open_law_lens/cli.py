@@ -26,6 +26,7 @@ from .authority_resolver import (
     extract_case_by_cluster_id,
     read_selected_text_from_os,
 )
+from .brief_prep import VARIANTS
 from .cache import JsonCache
 from .cli_commands import build_cli_commands_text
 from .client import (
@@ -114,9 +115,16 @@ def _print_json(value: Any) -> None:
 
 
 def _cmd_app(args: argparse.Namespace) -> int:
+    open_authority = str(getattr(args, "open_authority", "") or "").strip()
+    kind = getattr(args, "brief_prep", None)
+    case_dir = getattr(args, "case_dir", None)
+    if (kind is None) != (case_dir is None) or (kind is not None and open_authority):
+        print("Use --brief-prep and --case-dir together, without --open-authority.", file=sys.stderr)
+        return 2
     from .app import main as app_main
 
-    open_authority = str(getattr(args, "open_authority", "") or "").strip()
+    if kind is not None:
+        return app_main(["--brief-prep", kind, "--case-dir", case_dir])
     if open_authority:
         return app_main(["--open-authority", open_authority])
     return app_main()
@@ -1124,6 +1132,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--open-authority",
         help=argparse.SUPPRESS,
     )
+    app_parser.add_argument("--brief-prep", choices=tuple(VARIANTS), help="request a Brief Prep workflow")
+    app_parser.add_argument("--case-dir", help="absolute case folder for --brief-prep")
     app_parser.set_defaults(func=_cmd_app)
 
     lookup_parser = subparsers.add_parser("lookup-citation", help="look up a case citation")

@@ -15,7 +15,7 @@ RESOURCES = (
     ".pi/SYSTEM.md", ".pi/extensions/open-law-lens-followup-bridge.ts",
     *[f".pi/skills/{name}/SKILL.md" for name in (
         "legal-researcher", "law-question", "research-cache", "prior-briefs",
-        "case-assessment", "subsequent-treatment")],
+        "case-assessment", "subsequent-treatment", "brief-prep")],
     "open-law-lens-icon.png", "open-law-lens-icon.svg", "open-law-lens-icon-symbolic.svg",
     "scripts/open-law-lens.desktop.in",
     *[f"open_law_lens/icons/hicolor/scalable/actions/{name}-symbolic.svg" for name in (

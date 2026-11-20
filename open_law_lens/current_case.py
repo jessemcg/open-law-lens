@@ -75,6 +75,8 @@ def read_current_case(case_file: Path | None = None) -> str:
 def resolve_case_dir(
     case_name: str,
     roots: list[Path] | None = None,
+    *,
+    resolve_links: bool = True,
 ) -> Path:
     if roots is None:
         configured = os.environ.get("OPEN_LAW_LENS_CASE_ROOTS", "")
@@ -87,7 +89,7 @@ def resolve_case_dir(
     for root in roots:
         target = normalize_root(root) / cleaned
         if target.is_dir():
-            return target.resolve(strict=False)
+            return target.resolve(strict=False) if resolve_links else target
     roots_text = ", ".join(str(root) for root in roots)
     raise CurrentCaseError(f"Selected case {cleaned!r} not found in {roots_text}.")
 

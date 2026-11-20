@@ -52,6 +52,7 @@ case "$agent_mode:$workflow" in
   brief:prior_briefs) workflow_name=prior-briefs ;;
   appeal:assess_argument) workflow_name=case-assessment ;;
   general:subsequent_treatment) workflow_name=subsequent-treatment ;;
+  general:prep_reply|general:prep_respondent|general:prep_opposition) workflow_name=brief-prep ;;
   *)
     printf 'Invalid Open Law Lens mode/workflow pair: %s / %s. Use a supported workflow.\n' "$agent_mode" "$workflow" >&2
     exit 2

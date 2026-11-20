@@ -31,7 +31,7 @@ class AgentVteWrapperTests(unittest.TestCase):
         skill = project / ".pi" / "skills" / "legal-researcher" / "SKILL.md"
         skill.parent.mkdir(parents=True)
         skill.write_text("---\nname: legal-researcher\ndescription: Test.\n---\n", encoding="utf-8")
-        for name in ("law-question", "research-cache", "prior-briefs", "case-assessment", "subsequent-treatment"):
+        for name in ("law-question", "research-cache", "prior-briefs", "case-assessment", "subsequent-treatment", "brief-prep"):
             workflow_skill = project / ".pi" / "skills" / name / "SKILL.md"
             workflow_skill.parent.mkdir(parents=True)
             workflow_skill.write_text(f"---\nname: {name}\ndescription: Test.\n---\n")

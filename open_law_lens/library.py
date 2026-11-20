@@ -12,6 +12,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterator
 
+from .brief_prep import PrepProvenance
 from .cache import JsonCache, cluster_id_from_cluster, normalize_citation, resource_id_from_url
 from .case_titles import cluster_short_title_value, normalize_case_title
 from .citation_model import (
@@ -2135,6 +2136,7 @@ class CaseLibrary:
                         title=item.title,
                         subtitle=str(item.payload.get("subtitle") or ""),
                         question=str(item.payload.get("question") or ""),
+                        prep=PrepProvenance.from_payload(item.payload.get("brief_prep")),
                     )
                     if item.agent_selected:
                         cache.set_agent_answer_selected(answer_id or item.authority_id, True)

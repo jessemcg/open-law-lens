@@ -39,7 +39,7 @@ acceptance notes; neither certifies support across Linux distributions.
 | CourtListener case research | Internet and a CourtListener API token (Settings or `COURTLISTENER_TOKEN`) |
 | Embedded agent workflows | VTE 3.91, Pi and its supported Node (>=22.19), authorized model/provider |
 | Prior-brief indexing | `pandoc`, an existing readable ODT archive selected in Settings |
-| PDF extraction | `pdftotext` |
+| PDF extraction | `pdftotext`; Brief Prep also uses `pdfimages` (Poppler) |
 | Scholar / LegInfo browser recovery | Supported default HTTPS browser, standalone native `computer-use-linux`, accessibility/exact window targeting, regular clipboard reader |
 | Selection lookup | `wl-paste`, `xclip` or `xsel`, with actual desktop access |
 | Current Case | Optional selected-case file and case roots; not required for manual fact-pattern selection |
@@ -119,7 +119,7 @@ Standalone model discovery ignores the tracked personal project fallback. The
 single shared Agent Model selection in Settings applies to every new Agent
 session; otherwise the user's Pi defaults apply. Every new Agent request, in
 both storage modes, verifies executable/terminal/launcher availability and its
-authorized model before source validation or prompt/workspace preparation. All five profiles expose only
+authorized model before preparing private source text or a run workspace. All fixed workflows expose only
 `read,bash,grep,find,ls`; no general web-search tool is available. Closed-corpus
 workflows keep their source restrictions. Baseline extraction works without
 Computer Use; the source installer includes the standalone native runtime for
@@ -153,7 +153,9 @@ Saved Prior Briefs Folder remains below the explicit source-folder override.
 `OPEN_LAW_LENS_CURRENT_CASE_FILE` plus colon-separated absolute
 `OPEN_LAW_LENS_CASE_ROOTS` enable the optional personal integration. Without
 these, standalone does not inspect Jesse's case paths. The fact-pattern chooser
-remains usable without that integration.
+remains usable without that integration, as does a one-run case-folder choice for
+Brief Prep. Brief Prep requires searchable filing PDFs unless optional local
+LightOnOCR is already provisioned and opted in. It does not export case reports.
 
 Local storage is **not** a promise of entirely local processing. CourtListener
 receives case lookup/search requests. Selected facts, briefing and research

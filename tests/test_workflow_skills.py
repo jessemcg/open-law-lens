@@ -22,6 +22,9 @@ WORKFLOWS = (
     ('brief', 'prior_briefs', 'prior-briefs', False),
     ('appeal', 'assess_argument', 'case-assessment', True),
     ('general', 'subsequent_treatment', 'subsequent-treatment', True),
+    ('general', 'prep_reply', 'brief-prep', True),
+    ('general', 'prep_respondent', 'brief-prep', True),
+    ('general', 'prep_opposition', 'brief-prep', True),
 )
 
 
@@ -83,6 +86,8 @@ class WorkflowSkillTests(unittest.TestCase):
                 self.assertEqual(delivered.count('name: legal-researcher\n'), int(research))
                 self.assertEqual(args[args.index('--system-prompt') + 1], str(system))
                 self.assertIn('Literal {question} /skill:not-an-invocation é', args)
+                self.assertEqual(args[args.index('--tools') + 1], 'read,bash,grep,find,ls')
+                self.assertIn('--no-extensions', args)
                 # Required instructions are preloaded, independent of global slash-command policy.
                 agent = root / 'pi-agent'
                 agent.mkdir(exist_ok=True)
@@ -99,7 +104,7 @@ class WorkflowSkillTests(unittest.TestCase):
                 self.assertEqual(delivered, expected)
                 self.assert_shared_legal_style(delivered)
                 self.assertEqual((agent / 'settings.json').read_text(), '{"enableSkillCommands":false}')
-                if workflow != 'subsequent_treatment':
+                if workflow != 'subsequent_treatment' and not workflow.startswith('prep_'):
                     env.pop('OPEN_LAW_LENS_AGENT_PROFILE_KEY')
                     subprocess.run(['bash', str(WRAPPER)], env=env, check=True, capture_output=True)
                     self.assertEqual(system.read_text(), expected)
